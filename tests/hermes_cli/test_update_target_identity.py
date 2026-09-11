@@ -58,7 +58,6 @@ def update_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, 'PROJECT_ROOT', clone)
     monkeypatch.setattr(update_receipt, '_code_identity', lambda **_: {'commit': base})
     monkeypatch.setattr(cli_main, '_capture_active_lazy_features', lambda: [])
-    monkeypatch.setattr(cli_main, '_capture_active_tool_dependencies', lambda: [])
     monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: None)
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda: None)
     resumed = []

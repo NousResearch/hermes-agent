@@ -83,7 +83,9 @@ def cmd_acp(args):
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
     except ImportError:
         print("ACP dependencies not installed.", file=sys.stderr)
-        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+        print("From the Hermes environment, run: "
+              "python -c \"from pm import sync_venv; sync_venv(['acp'], explicit=True)\"", file=sys.stderr)
+        print("Then restart Hermes.", file=sys.stderr)
         sys.exit(1)
 
 

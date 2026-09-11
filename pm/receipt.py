@@ -37,6 +37,7 @@ sync never displaces the outer update's entry.
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import copy
 import json
 import os
@@ -65,11 +66,49 @@ _completed_by_update: contextvars.ContextVar[Optional[dict[str, dict[str, Any]]]
 )
 
 
+_worker_update: contextvars.ContextVar[tuple[Optional[str]] | None] = contextvars.ContextVar(
+    "pm_worker_update", default=None
+)
+_last_completed: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "pm_last_completed", default=None
+)
+
+
+@contextmanager
+def worker_context(update_id: Optional[str]):
+    """Carry correlation across the worker seam without consulting disk state."""
+    token = _worker_update.set((update_id,))
+    completed = _last_completed.set(None)
+    try:
+        yield
+    finally:
+        _last_completed.reset(completed)
+        _worker_update.reset(token)
+
+
+def last_completed() -> Optional[dict[str, Any]]:
+    return copy.deepcopy(_last_completed.get())
+
+
+def accept_worker_receipt(data: Optional[dict[str, Any]], update_id: Optional[str]) -> None:
+    if data is None:
+        return
+    if data.get("update_id") != update_id:
+        raise ValueError("PM worker receipt correlation mismatch")
+    if update_id:
+        completed = dict(_completed_by_update.get() or {})
+        completed[update_id] = copy.deepcopy(data)
+        _completed_by_update.set(completed)
+
+
 def _ambient_update_id() -> Optional[str]:
     """The update correlation id in force in this context, or None.
 
     Lazy import: hermes_cli.update_receipt imports pm.receipt at embed
     time, so this direction must stay function-scoped. Never raises."""
+    worker = _worker_update.get()
+    if worker is not None:
+        return worker[0]
     try:
         from hermes_cli.update_receipt import current_correlation_id
 
@@ -209,6 +248,7 @@ def finalize(
     current["outcome"] = outcome
     current["exit_code"] = exit_code
     current["finished_at"] = _utc_now_iso()
+    _last_completed.set(copy.deepcopy(current))
     # Correlation: file this completion under its update id (copy-on-write
     # — a deep-copied entry in a freshly copied map, never a shared dict).
     update_id = current.get("update_id")

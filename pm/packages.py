@@ -160,6 +160,7 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
     name = "uv"
     deps = ("python",)
     internal = True
+    on_path = False
     binary_rel = {"win32": "uv.exe", "posix": "uv"}
     # The staged .deb's main binary: DebPackage.verify checks it.
     main_bin_rel = "bin/uv"
@@ -354,50 +355,6 @@ def uv_cache_dir() -> Path:
     return machine_cache
 
 
-def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
-    """Sanitized env for pm's internal uv invocations: user-level UV
-    overrides and active-venv leakage must not steer which interpreter or
-    install dir uv picks (the interpreter-hijack class, #83914), and
-    ambient user/system uv config (uv.toml under XDG_CONFIG_HOME/DIRS)
-    must not reach the subprocess either. User config discovery is
-    redirected to an empty dir; HOME is left alone so caches, credentials,
-    and git keep working (the #82446 isolation contract, which lived in
-    the installers' run_locked_uv_sync() before the sync moved into pm).
-    UV_CACHE_DIR always points at the hermes-owned cache (shipped with
-    bundles, shared machine-wide) — never the user's ambient cache."""
-    env = dict(os.environ if base_env is None else base_env)
-    for key in list(env):
-        if key.startswith("UV_") or key in (
-            "VIRTUAL_ENV",
-            "PYTHONPATH",
-            "PYTHONHOME",
-            "PYTHONSTARTUP",
-            "PYTHONEXECUTABLE",
-        ):
-            env.pop(key)
-    isolated = _isolated_config_dir()
-    env["XDG_CONFIG_HOME"] = str(isolated)
-    env["XDG_CONFIG_DIRS"] = str(isolated)
-    env["UV_NO_CONFIG"] = "1"
-    env["UV_CACHE_DIR"] = str(uv_cache_dir())
-    return env
-
-
-_ISOLATED_CONFIG_DIR: Optional[str] = None
-
-
-def _isolated_config_dir() -> Path:
-    """A per-process empty dir ambient uv config is redirected to. One
-    shared empty dir is all that's needed (and all that ever gets
-    created); it is never populated, so it cannot steer resolution."""
-    import tempfile
-
-    global _ISOLATED_CONFIG_DIR
-    if _ISOLATED_CONFIG_DIR is None:
-        _ISOLATED_CONFIG_DIR = tempfile.mkdtemp(prefix="pm-uv-")
-    return Path(_ISOLATED_CONFIG_DIR)
-
-
 @register
 class Venv(StatePackage):
     """The project venv: pyproject.toml + uv.lock + enabled extras.
@@ -406,10 +363,13 @@ class Venv(StatePackage):
     name = "venv"
     deps = ("uv",)
 
+    def __init__(self, project_root: Path | None = None):
+        self._project_root = project_root
+
     def project_root(self) -> Path:
         from pm.paths import repo_root
 
-        return repo_root()
+        return repo_root() if self._project_root is None else self._project_root
 
     def venv_dir(self) -> Path:
         from hermes_cli.runtime_paths import selected_venv
@@ -442,28 +402,19 @@ class Venv(StatePackage):
         """Prepare one complete environment; the caller commits its selection."""
         import uuid
         from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
-        from pm.ensure import uv as pm_uv
+        from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
         candidate = generation / "venv"
-        uv_bin, env = pm_uv(explicit=repair)
-        if uv_bin is None:
-            raise InstallError(self.name, "uv is not installed")
-        env["UV_PROJECT_ENVIRONMENT"] = str(candidate)
-        env.pop("UV_NO_CONFIG", None)  # project indexes/sources belong to the project
+        environment = managed_environment(candidate, explicit=repair)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
-            create = subprocess.run(
-                [uv_bin, "venv", "--relocatable", str(candidate)],
-                env=env, capture_output=True, text=True, timeout=120,
-            )
-            if create.returncode:
-                raise InstallError(self.name, f"uv venv failed: {create.stderr[-600:]}")
+            environment.create()
             prior = Facts(runtime_facts_path(project), strict=repair).get("venv") or {}
             replay = None
             if repair and ("environment" in prior or "resolved_lock" in prior):
@@ -479,18 +430,13 @@ class Venv(StatePackage):
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
             lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
-                          seed_lock=seed, frozen=repair or not members, env=env, replay=replay)
+                          seed_lock=seed, frozen=repair or not members, replay=replay,
+                          source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
-            python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-            checked = subprocess.run(
-                [uv_bin, "pip", "check", "--python", str(python)],
-                env=env, capture_output=True, text=True, timeout=60,
-            )
-            if checked.returncode:
-                raise InstallError(self.name, f"dependency validation failed: {checked.stderr[-600:]}")
+            environment.check()
             if repair:
                 from pm.recovery import validate_environment
-                validate_environment(python, env=env, cwd=resolved_lock.parent)
+                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise

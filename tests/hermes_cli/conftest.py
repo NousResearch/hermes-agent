@@ -61,30 +61,6 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture
-def patch_pm_uv_to_shutil_which():
-    """Make pm.uv follow shutil.which mocking; update-flow test modules that
-    stub uv availability via shutil.which patches apply this autouse=True."""
-    import os
-    import shutil
-    from unittest.mock import patch
-
-    def _fake_pm_uv(*, venv=None, realize=True):
-        env = dict(os.environ)
-        if venv is not None:
-            env["VIRTUAL_ENV"] = str(venv)
-        return shutil.which("uv"), env
-
-    with patch("pm.uv", side_effect=_fake_pm_uv):
-        yield
-
-
-@pytest.fixture
-def isolated_update_uv(patch_pm_uv_to_shutil_which):
-    """Make pm.uv follow shutil.which mocking in tests."""
-    yield
-
-
-@pytest.fixture
 def isolated_update_processes():
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
 
@@ -103,6 +79,7 @@ def isolated_update_processes():
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
          patch("os.kill"), \
          patch("pm.sync_venv"), \
+         patch("pm.client.sync_venv"), \
          patch(
              "hermes_cli.update_inventory.collect_runtime_inventory",
              return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),

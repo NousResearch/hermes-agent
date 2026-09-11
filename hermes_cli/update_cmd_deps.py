@@ -156,18 +156,6 @@ def _capture_active_lazy_features() -> list[str]:
         return []
 
 
-def _capture_active_tool_dependencies() -> list[str]:
-    """Snapshot Python dependencies installed explicitly through ``hermes tools``."""
-    try:
-        from hermes_cli import tools_config
-        return tools_config.active_restorable_python_tool_dependencies()
-    except Exception as exc:
-        logger.debug("Could not snapshot active Hermes Tools dependencies: %s", exc)
-        return []
-
-
-
-
 def _refresh_active_lazy_features(features: list[str] | None = None) -> bool:
     """Re-sync the venv's enabled extras against the (possibly new) uv.lock.
 
@@ -176,7 +164,7 @@ def _refresh_active_lazy_features(features: list[str] | None = None) -> bool:
     the locked versions of everything enabled. Never raises.
     """
     try:
-        from pm.ensure import sync_venv
+        from pm.client import sync_venv
 
         sync_venv(features, explicit=True)
         return True
@@ -647,7 +635,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
 
 def _sync_python_dependencies_after_pull(
-    git_cmd, branch, pre_pull_sha, *, active_lazy_features, active_tool_dependencies,
+    git_cmd, branch, pre_pull_sha, *, active_lazy_features,
     _windows_gateway_resume, desktop_dir, had_desktop_app_before_update):
     """Reinstall Python deps for the pulled checkout (PM flow). Order matters: ownership preflight ->
     core marker -> ``pm.sync_venv(["all"], explicit=True)`` (stages + commits a fresh generation

@@ -342,12 +342,12 @@ class TestDoctorMemoryProviderSection:
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        import yaml
+        import hermes_yaml as yaml
         config = dict(memory_config or {})
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
         return home
 
     def _run_doctor_and_capture(
@@ -448,10 +448,10 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
 
-    import yaml
+    import hermes_yaml as yaml
 
     (home / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "model": {
                     "provider": "volcengine-plan",
@@ -1763,11 +1763,13 @@ class TestStagedRuntimeVenv:
         assert "runs outside it" in out
         assert "active in this process" not in out
 
-    def test_staged_and_active_names_both_facts(self, monkeypatch, capsys):
-        staged = Path("/payload/venv")
+    def test_staged_and_active_names_both_facts(self, monkeypatch, capsys, tmp_path):
+        from hermes_cli.runtime_paths import site_packages
+
+        staged = tmp_path / "venv"
+        site_packages(staged).mkdir(parents=True)
         monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: staged)
-        monkeypatch.setattr(doctor_platform.sys, "prefix", str(staged))
-        monkeypatch.setattr(doctor_platform.sys, "base_prefix", "/usr")
+        monkeypatch.syspath_prepend(str(site_packages(staged)))
 
         doctor_platform._check_python_environment(False)
 

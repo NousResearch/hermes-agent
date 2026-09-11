@@ -1,101 +1,20 @@
-"""Sync the install's Python environment to its tree — and nothing else.
+"""Pre-venv entry point for PM's dependency transaction.
 
-One of the two separately-invocable, stdlib-only-at-import halves of
-"make this install runnable":
-
-* ``pm`` — pinned tools and the venv ledger (facts.json), shape-universal.
-* THIS module — the pre-venv entry point, whose meaning depends on the
-  install shape:
-
-  - **checkout** (git clone + venv): make the venv match
-    ``pyproject.toml``/``uv.lock``. For the tree this module runs FROM,
-    the work is delegated to :func:`pm.sync_venv` — pm owns the extras
-    ledger and records the result in facts.json, so update and fresh
-    clone converge on one authority. For a foreign ``--project-root``
-    (installer bootstrapping a clone it has not exec'd into yet), uv is
-    driven directly with pm's pinned binary and sanitized env.
-  - **sealed** (desktop bundle, nix, docker): the interpreter tree is a
-    build artifact — syncing it is not possible and not meaningful.
-    Exit 0 with ``{"state": "sealed"}``, cleanly.
-
-Stdlib-only at import is a hard contract: this runs on freshly-cloned
-trees where the venv does not exist yet, and after tree swaps where the
-venv is not trustworthy — exactly the moments a third-party import
-would explode. ``pm`` is first-party code and is imported at sync time,
-not when this module is imported.
-
-PM decides whether this checkout needs a sync from its recorded inputs
-and selected environment. A foreign bootstrap root retains its separate
-lockfile-digest stamp until execution moves into that checkout.
-
-Invocation:
-
-    python -m hermes_cli.venv_sync                # sync if stale
-    python -m hermes_cli.venv_sync --check        # report, change nothing
-    python -m hermes_cli.venv_sync --json         # machine-readable
-
-Exit 0: current/synced/sealed. Exit 1: a sync was needed and failed.
+Stdlib-only at import: installers call this before dependencies exist.
+All checkout roots use PM's selected generation and facts; sealed payloads
+remain build-owned. ``--check`` is passive and never provisions tools.
 """
-
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
 
-STAMP_NAME = "venv-sync.json"
-STAMP_SCHEMA = 1
-
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
-
-
-def _runtime_dir(project_root: Path) -> Path:
-    """Where per-install runtime state lives for ``project_root``.
-
-    Mirrors pm.paths.store_root()'s ladder (HERMES_RUNTIME_DIR, then the
-    install stamp's runtimeDir) but stays stdlib-local and falls back to
-    ``<root>/.hermes-runtime`` instead of the machine-global tool store:
-    the venv-sync stamp is per-install, and two checkouts sharing the
-    default store must not share a currency claim.
-    """
-    env = os.environ.get("HERMES_RUNTIME_DIR")
-    if env:
-        return Path(env)
-    try:
-        data = json.loads(
-            (project_root / "install-stamp.json").read_text(encoding="utf-8-sig")
-        )
-        stamped = data.get("runtimeDir") if isinstance(data, dict) else None
-        if stamped:
-            return Path(stamped)
-    except (OSError, ValueError):
-        pass
-    return project_root / ".hermes-runtime"
-
-
-def _stamp_path(project_root: Path) -> Path:
-    return _runtime_dir(project_root) / "cache" / STAMP_NAME
-
-
-def _lock_digest(project_root: Path) -> str | None:
-    """Hash the manifest and lock inputs for a foreign-root bootstrap."""
-    h = hashlib.sha256()
-    found = False
-    for name in ("uv.lock", "pyproject.toml"):
-        try:
-            h.update((project_root / name).read_bytes())
-            found = True
-        except OSError:
-            h.update(b"-")
-    return h.hexdigest() if found else None
 
 
 def _is_sealed(project_root: Path) -> bool:
@@ -130,114 +49,24 @@ def _is_sealed(project_root: Path) -> bool:
     return True
 
 
-def _managed_uv() -> tuple:
-    """(uv binary path, sanitized env) from pm, or (None, None).
-
-    ``pm.ensure.uv`` IS the resolution: facts from the store the pins
-    point at, env sanitized against interpreter hijack (#83914). pm is
-    stdlib-only first-party code, so the lazy import costs nothing and
-    keeps this module's bare-import surface stdlib-pure.
-    """
-    try:
-        from pm.ensure import uv as pm_uv
-
-        uv_bin, env = pm_uv(realize=True)
-    except Exception:
-        return None, None
-    return uv_bin, env
-
-
-def read_stamp(project_root: Path) -> dict:
-    try:
-        data = json.loads(_stamp_path(project_root).read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def write_stamp(project_root: Path, digest: str) -> None:
-    path = _stamp_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(
-            {
-                "schemaVersion": STAMP_SCHEMA,
-                "lockDigest": digest,
-                "python": sys.version.split()[0],
-            }
-        ),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
-
-
-def _sync_foreign(root: Path) -> dict:
-    """Bootstrap a foreign checkout with PM's pinned uv and environment."""
-    uv, env = _managed_uv()
-    if uv is None:
-        return {
-            "ok": False,
-            "detail": "managed uv not provisioned (run `hermes pm install`)",
-        }
-    env = dict(env)
-    env["UV_PROJECT_ENVIRONMENT"] = str(root / "venv")
-    # A stale VIRTUAL_ENV from the calling shell would win over the
-    # project environment and sync the WRONG venv.
-    env.pop("VIRTUAL_ENV", None)
-    cmd = [str(uv), "sync"]
-    if (root / "uv.lock").is_file():
-        cmd.append("--frozen")
-    proc = subprocess.run(cmd, cwd=str(root), env=env)
-    if proc.returncode != 0:
-        return {"ok": False, "detail": f"uv sync exited {proc.returncode}"}
-    return {"ok": True, "detail": None}
-
-
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
     """Report or sync dependencies. A malformed install stamp is a build error."""
-    root = Path(project_root) if project_root else _project_root()
-
+    root = Path(project_root) if project_root is not None else _project_root()
     if _is_sealed(root):
         return {"state": "sealed", "ok": True}
-
+    if not (root / "pyproject.toml").is_file():
+        return {"state": "failed", "ok": False, "detail": f"no pyproject.toml under {root}"}
     try:
-        from pm import paths as pm_paths
+        import pm
 
-        if Path(pm_paths.repo_root()).resolve() == root.resolve():
-            from pm import sync_venv
-            from pm.ensure import venv_is_current
-
-            if venv_is_current():
-                return {"state": "current", "ok": True}
-            if check:
-                return {"state": "would-sync", "ok": True}
-            sync_venv(explicit=True)
-            return {"state": "synced", "ok": True}
+        if pm.venv_is_current(project_root=root):
+            return {"state": "current", "ok": True}
+        if check:
+            return {"state": "would-sync", "ok": True}
+        pm.sync_venv(explicit=True, project_root=root)
+        return {"state": "synced", "ok": True}
     except Exception as exc:
         return {"state": "failed", "ok": False, "detail": str(exc)}
-
-    digest = _lock_digest(root)
-    if digest is None:
-        return {
-            "state": "failed",
-            "ok": False,
-            "detail": f"no pyproject.toml or uv.lock under {root}",
-        }
-
-    if read_stamp(root).get("lockDigest") == digest:
-        return {"state": "current", "ok": True}
-
-    if check:
-        return {"state": "would-sync", "ok": True}
-
-    result = _sync_foreign(root)
-    if not result["ok"]:
-        # No stamp write: the next run must try again, not skip.
-        return {"state": "failed", "ok": False, "detail": result["detail"]}
-
-    write_stamp(root, digest)
-    return {"state": "synced", "ok": True}
 
 
 def main(argv: list | None = None) -> int:

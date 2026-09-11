@@ -10,6 +10,8 @@ def test_admission_reads_other_profiles_after_taking_lock(tmp_path, monkeypatch)
     import pm.paths as paths
 
     ensure = importlib.import_module("pm.ensure")
+    # Exercise the engine lock ordering, not cross-process transport.
+    monkeypatch.setattr("pm.client.sync_venv", ensure.sync_venv)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     repo = tmp_path / "repo"
     repo.mkdir()

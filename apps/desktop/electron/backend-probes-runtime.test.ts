@@ -8,8 +8,8 @@ import { test } from 'vitest'
 
 import { canImportHermesCli } from './backend-probes'
 
-const REPO = path.resolve(import.meta.dirname, '../../..')
-const PYTHON = process.env.HERMES_PYTHON || process.env.UV_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+const REPO: string = path.resolve(import.meta.dirname, '../../..')
+const PYTHON: string = process.env.HERMES_PYTHON || process.env.UV_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
 
 interface RuntimeFixture {
   python: string
@@ -17,11 +17,11 @@ interface RuntimeFixture {
   dependencies: string
 }
 
-test('the real bootstrap supplies selected dependencies and rejects foreign-path rescue', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-runtime-'))
-  const home = path.join(temp, 'home')
+test('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', (): void => {
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-runtime-'))
+  const home: string = path.join(temp, 'home')
 
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_HOME: home,
     HERMES_RUNTIME_DIR: path.join(temp, 'tools'),
@@ -33,7 +33,7 @@ test('the real bootstrap supplies selected dependencies and rejects foreign-path
     PYTHONDONTWRITEBYTECODE: '1'
   }
 
-  const setup = `
+  const setup: string = `
 import json, os, re, shutil, subprocess, sys, tomllib, venv
 from pathlib import Path
 root, temp = map(Path, sys.argv[1:])
@@ -44,7 +44,7 @@ venv.EnvBuilder(with_pip=False).create(seed)
 dependencies = temp / 'dependencies'
 manifest = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))
 specs = [spec for spec in manifest['project']['dependencies']
-         if re.split(r'[<>=;\\[]', spec, maxsplit=1)[0].lower() in ('pyyaml', 'python-dotenv')]
+         if re.split(r'[<>=;\\[]', spec, maxsplit=1)[0].lower() in ('ruamel.yaml', 'python-dotenv')]
 assert len(specs) == 2, specs
 subprocess.run([shutil.which('uv'), 'pip', 'install', '--python', sys.executable,
                 '--target', str(dependencies), '--no-deps', *specs],
@@ -61,7 +61,7 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
 `
 
   try {
-    const fixture = JSON.parse(execFileSync(PYTHON, ['-I', '-c', setup, REPO, temp], {
+    const fixture: RuntimeFixture = JSON.parse(execFileSync(PYTHON, ['-I', '-c', setup, REPO, temp], {
       cwd: temp, env, encoding: 'utf8', timeout: 90_000, windowsHide: true
     })) as RuntimeFixture
 
@@ -72,7 +72,7 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
     }), true, 'Python home overrides must be scrubbed before the interpreter starts')
 
     fs.unlinkSync(path.join(fixture.site, 'selected-dependencies.pth'))
-    const foreign = path.join(temp, 'foreign-packages')
+    const foreign: string = path.join(temp, 'foreign-packages')
     fs.symlinkSync(fixture.dependencies, foreign, process.platform === 'win32' ? 'junction' : 'dir')
     assert.equal(canImportHermesCli(fixture.python, {
       cwd: REPO,

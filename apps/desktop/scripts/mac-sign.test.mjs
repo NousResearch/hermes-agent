@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url)
 const config = require('../electron-builder.config.cjs')
 const repo = path.resolve(import.meta.dirname, '../../..')
 const desktop = path.resolve(import.meta.dirname, '..')
-const python = process.env.HERMES_PYTHON || process.env.UV_PYTHON || 'python'
+const python = process.env.HERMES_PYTHON || 'python'
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-digest-order-'))
@@ -23,7 +23,7 @@ function fixture() {
   const nested = path.join(tools, 'chromium', 'Browser.app')
   const binaries = [path.join(app, 'Contents', 'MacOS', 'Hermes'),
     path.join(tools, 'python', 'bin', 'python3'),
-    path.join(nested, 'Contents', 'MacOS', 'Browser')]
+    path.join(nested, 'Contents', 'MacOS', process.platform === 'win32' ? 'chrome.exe' : 'Chromium')]
   for (const binary of binaries) {
     fs.mkdirSync(path.dirname(binary), { recursive: true })
     const bytes = Buffer.alloc(64)
@@ -34,14 +34,16 @@ function fixture() {
   const ignored = path.join(tools, 'python', 'non-macho.bin')
   fs.writeFileSync(ignored, Buffer.alloc(64))
   const env = { ...process.env, HERMES_HOME: path.join(root, 'home'),
-    HERMES_RUNTIME_DIR: path.join(root, 'state'), UV_PYTHON: python,
+    HERMES_RUNTIME_DIR: path.join(root, 'state'), HERMES_PYTHON: python,
     UV_OFFLINE: '1', UV_PYTHON_DOWNLOADS: 'never', UV_CACHE_DIR: path.join(root, 'cache') }
   delete env.PYTHONHOME
   delete env.PYTHONPATH
   const py = code => childProcess.execFileSync(python, ['-c', code, payload], {
     cwd: repo, env, encoding: 'utf8', timeout: 60000
   }).trim()
-  py('from pathlib import Path; import sys; from scripts.bundles.payload import record_tools,write_manifest; from pm.store import current_target; root=Path(sys.argv[1]); write_manifest(root,target=current_target(),repo="repo"); record_tools(root,Path("pm/lock.json"),current_target(),{"python":"python","chromium":"chromium"})')
+  // The digest hook only needs the manifest to mark the payload as present.
+  fs.writeFileSync(path.join(payload, 'manifest.json'), '{}')
+  py('from pathlib import Path; import sys; from scripts.bundles.payload import record_tools; from pm.store import current_target; root=Path(sys.argv[1]); record_tools(root,Path("pm/lock.json"),current_target(),{"python":"python","chromium":"chromium"})')
   const facts = path.join(tools, 'facts.json')
   const initial = JSON.parse(fs.readFileSync(facts, 'utf8'))
   return { root, app, payload, tools, nested, binaries, ignored, env, py, facts, initial }
@@ -67,7 +69,7 @@ async function signThroughBuilder(f) {
 }
 
 function armEnvironment(f) {
-  for (const name of ['HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UV_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
+  for (const name of ['HERMES_HOME', 'HERMES_RUNTIME_DIR', 'HERMES_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
     vi.stubEnv(name, f.env[name])
   }
   vi.stubEnv('PYTHONHOME', undefined)

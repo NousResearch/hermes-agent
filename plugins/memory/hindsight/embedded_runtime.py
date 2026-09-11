@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,17 +15,11 @@ logger = logging.getLogger(__name__)
 
 _EMBED_VERSION = "0.9.2"
 _API_SLIM_VERSION = "0.9.2"
-# Marker file written inside each generation recording what it was built from;
-# a generation whose marker no longer matches is replaced (new generation) on
-# the next ensure — never mutated in place.
-_EXPECTED = {"hindsight-embed": _EMBED_VERSION, "hindsight-api-slim": _API_SLIM_VERSION}
-_STATE_FILE = ".hermes-sideenv.json"
-_ACTIVE_RECORD = "active.json"
+_REQUIREMENTS = (f"hindsight-embed=={_EMBED_VERSION}", f"hindsight-api-slim[all]=={_API_SLIM_VERSION}")
 
 # First successful daemon start downloads/loads ML models — minutes, not seconds.
 _DEFAULT_DAEMON_START_TIMEOUT = 900.0
-_UV_LOCK_TIMEOUT = 900.0
-_UV_SYNC_TIMEOUT = 3600.0
+_INSTALL_TIMEOUT = 3600
 _PROBE_TIMEOUT = 300.0
 
 _PORT_HEALTH_GRACE_ENV = "HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT"
@@ -66,122 +58,20 @@ def sideenv_root() -> Path:
     return get_hermes_home() / "profiles" / "Hindsight" / "env"
 
 
-def _active_generation(root: Path) -> Path | None:
-    """The published generation directory, or None when nothing is active."""
-    try:
-        record = json.loads((root / _ACTIVE_RECORD).read_text(encoding="utf-8-sig"))
-        gen = root / str(record.get("generation", ""))
-    except Exception:
-        return None
-    return gen if gen.resolve().is_relative_to(root.resolve()) and gen != root and gen.is_dir() else None
-
-
-def _publish_generation(root: Path, generation: Path) -> None:
-    """Point the selection record at *generation* atomically (file replace —
-    never a directory rename: venv launchers embed absolute paths)."""
-    from utils import atomic_json_write
-
-    atomic_json_write(root / _ACTIVE_RECORD, {"generation": generation.name, "pins": _EXPECTED})
-
-
 def sideenv_python(root: Path | None = None) -> Path | None:
-    """The active generation's interpreter, or None when the side env is not
-    installed. Resolved through the selection record — the generation dir is
-    created at its final path and never renamed."""
-    root = Path(root) if root is not None else sideenv_root()
-    gen = _active_generation(root)
-    if gen is None:
-        return None
-    exe = "python.exe" if os.name == "nt" else "python"
-    for scripts in ("Scripts", "bin"):
-        candidate = gen / ".venv" / scripts / exe
-        if candidate.is_file():
-            return candidate
-    return None
+    """Read PM's selected side interpreter without creating an environment."""
+    import pm
 
-
-def sideenv_pyproject() -> str:
-    """Exact pinned requirements of the isolated runtime (public PyPI versions,
-    frozen into uv.lock at install time; never resolved against the main env)."""
-    return (
-        '[project]\n'
-        'name = "hermes-hindsight-embedded"\n'
-        'version = "0.9.2"\n'
-        'requires-python = ">=3.11"\n'
-        'dependencies = [\n'
-        f'    "hindsight-embed=={_EMBED_VERSION}",\n'
-        f'    "hindsight-api-slim[all]=={_API_SLIM_VERSION}",\n'
-        ']\n'
-    )
-
-
-def _generation_current(generation: Path) -> bool:
-    """Installed and matching the pinned versions (marker written at build)."""
-    if generation is None:
-        return False
-    try:
-        state = json.loads((generation / _STATE_FILE).read_text(encoding="utf-8-sig"))
-    except Exception:
-        return False
-    return state.get("pins") == _EXPECTED
-
-
-def _uv_bridge(venv: Path) -> tuple[str, dict[str, str]]:
-    """The sanctioned pm bridge: pinned uv binary + sanitized env for *venv*."""
-    from pm.ensure import uv as pm_uv
-
-    uv_bin, env = pm_uv(venv=venv)
-    if not uv_bin:
-        raise RuntimeError(
-            "pm could not realize the pinned uv binary; run 'hermes pm install' "
-            "before installing the isolated Hindsight runtime"
-        )
-    return str(uv_bin), env
-
-
-def _run_uv(uv_bin: str, env: dict[str, str], args: list[str], timeout: float) -> None:
-    result = subprocess.run(  # noqa: S603 — fixed argv, no shell
-        [uv_bin, *args], env=env, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=timeout,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()[-2000:]
-        raise RuntimeError(f"uv {' '.join(args)} failed (exit {result.returncode}): {detail}")
+    return pm.environment_python("hindsight", root=root if root is not None else sideenv_root())
 
 
 def ensure_sideenv() -> Path:
-    """Install/update the isolated runtime; returns the active generation dir.
+    """Provision the isolated embedded runtime; PM owns generation publication."""
+    import pm
 
-    Each install is an immutable generation built at its final path and
-    published via the ``active.json`` selection record. A failed build removes
-    only its own unpublished generation; the previous generation (and any
-    daemon running from it) stays untouched."""
-    root = sideenv_root()
-    active = _active_generation(root)
-    if _generation_current(active) and sideenv_python(root) is not None:
-        return active
-
-    generation = root / f"gen-{uuid.uuid4().hex}"
-    generation.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Hindsight embedded runtime: building generation %s (pins=%s)",
-                generation, _EXPECTED)
-    try:
-        generation.mkdir(parents=True)
-        (generation / "pyproject.toml").write_text(sideenv_pyproject(), encoding="utf-8")
-        uv_bin, env = _uv_bridge(generation / ".venv")
-        _run_uv(uv_bin, env, ["lock", "--project", str(generation)], _UV_LOCK_TIMEOUT)
-        _run_uv(uv_bin, env, ["sync", "--project", str(generation), "--frozen"], _UV_SYNC_TIMEOUT)
-        (generation / _STATE_FILE).write_text(
-            json.dumps({"pins": _EXPECTED}, sort_keys=True) + "\n", encoding="utf-8")
-    except BaseException:
-        # The failed generation was never published; nothing can be running
-        # from it, so removing it leaks nothing. Previous generations stay.
-        shutil.rmtree(generation, ignore_errors=True)
-        raise
-    _publish_generation(root, generation)
-    logger.info("Hindsight embedded runtime: generation %s published (side env %s)",
-                generation.name, root)
-    return generation
+    return pm.ensure_environment(
+        "hindsight", _REQUIREMENTS, root=sideenv_root(), explicit=True, timeout=_INSTALL_TIMEOUT,
+    )
 
 
 def _probe_interpreter(python: Path, timeout: float = _PROBE_TIMEOUT) -> tuple[bool, str | None]:

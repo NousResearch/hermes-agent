@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-import yaml
+import hermes_yaml as yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles

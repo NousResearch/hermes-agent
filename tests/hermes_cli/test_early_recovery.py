@@ -137,7 +137,7 @@ def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
     if pyproject:
         (root / "pyproject.toml").write_text(
             '[project]\nname = "x"\ndependencies = [\n'
-            '  "PyYAML==6.0.2",\n'
+            '  "ruamel.yaml==0.18.17",\n'
             '  "python-dotenv==1.2.2",\n'
             '  "PyJWT[crypto]==2.13.0",\n'
             "]\n",

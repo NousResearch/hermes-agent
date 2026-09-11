@@ -124,6 +124,20 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(tmp_path):
     result, calls = invoke('--bundle-env', 'NAME=value')
     assert result.returncode == 2 and not calls
 
+    result, calls = invoke('--build-commit', tip, '--publish', *flags,
+                           '--bundle-unset', 'HERMES_HOME')
+    assert result.returncode == 0, result.stderr
+    dispatch = next(call for call in calls if call[1:3] == ['workflow', 'run'])
+    assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == {
+        **values, 'HERMES_HOME': None}
+    for invalid in (['--bundle-unset', 'BAD-NAME'],
+                    ['--bundle-env', 'HERMES_HOME=x', '--bundle-unset', 'HERMES_HOME'],
+                    ['--bundle-unset', 'HERMES_HOME', '--bundle-unset', 'HERMES_HOME']):
+        result, calls = invoke('--build-commit', tip, '--publish', *invalid)
+        assert result.returncode != 0 and not calls
+    result, calls = invoke('--bundle-unset', 'HERMES_HOME')
+    assert result.returncode == 2 and not calls
+
     git(repo, 'checkout', '-qb', 'feature')
     (repo / 'feature').write_text('pushed feature', encoding='utf-8')
     git(repo, 'add', 'feature')
@@ -172,7 +186,7 @@ def test_workflow_admission_checks_trust_before_publishing_outputs(tmp_path):
            'GITHUB_WORKFLOW_REF': 'fixture-owner/fixture-repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main',
            'GITHUB_ACTOR': 'maintainer', 'GITHUB_TRIGGERING_ACTOR': 'maintainer',
            'GITHUB_OUTPUT': str(output), 'UPLOAD_RELEASE': 'false',
-           'BUNDLE_ENV_JSON': '{"HERMES_GUEST_ONBOARDING":"1"}'}
+           'BUNDLE_ENV_JSON': '{"HERMES_GUEST_ONBOARDING":"1","HERMES_HOME":null}'}
     result, calls = invoke('admit', extra=env)
     assert result.returncode == 0, result.stderr
     assert dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()) == {

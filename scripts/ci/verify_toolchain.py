@@ -27,7 +27,7 @@ def main() -> None:
     facts = Facts(facts_path())
     target = current_target()
     rows = {}
-    for name in ("python", "python3", "uv", "node", "npm", "npx"):
+    for name in ("python", "python3", "node", "npm", "npx"):
         binary = shutil.which(name)
         if binary is None:
             raise RuntimeError(f"{name} is missing from PATH")
@@ -35,7 +35,7 @@ def main() -> None:
         package = {"python3": "python", "npx": "npm"}.get(name, name)
         pin = lock.version(package)
         expected = pin.partition("+")[0]
-        actual = result.split()[1] if package in ("python", "uv") else result.removeprefix("v")
+        actual = result.split()[1] if package == "python" else result.removeprefix("v")
         if actual != expected:
             raise RuntimeError(f"{name} on PATH is {result}, expected {pin}: {binary}")
         entry = store_root() / facts.get(package)["entry"]
@@ -48,15 +48,14 @@ def main() -> None:
             raise RuntimeError(f"{name} store was mutated after verification")
         rows[name] = {"path": binary, "version": result, "target": target}
     if args.extras:
-        selected = Facts(runtime_facts_path()).get("venv")
-        if selected["extras"] != ["dev"]:
-            raise RuntimeError(f"unexpected PM extras: {selected['extras']}")
-        if Path(sys.prefix).resolve() != Path(selected["environment"]).resolve():
-            raise RuntimeError("PATH Python did not select the PM dependency environment")
+        if Facts(runtime_facts_path()).get("venv") is not None:
+            raise RuntimeError("CI test dependencies must not publish a runtime generation")
+        if Path(sys.prefix).resolve() != Path(os.environ["VIRTUAL_ENV"]).resolve():
+            raise RuntimeError("PATH Python did not select the isolated test environment")
         import pytest
-        import yaml
+        import ruamel.yaml
 
-        rows["dependencies"] = {"pytest": pytest.__version__, "pyyaml": yaml.__version__}
+        rows["dependencies"] = {"pytest": pytest.__version__, "ruamel.yaml": ruamel.yaml.__version__}
         code = "import sys,pytest; print(sys.prefix); print(pytest.__version__)"
         probe = subprocess.check_output([shutil.which("python3"), "-c", code], text=True, encoding="utf-8", timeout=60)
         if pytest.__version__ not in probe:

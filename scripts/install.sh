@@ -10,7 +10,7 @@ set -u
 
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
 # wrong user's home directory when running under sudo -u <user>.  See #21269.
-# pm's own venv sync re-isolates (pm/packages.py::uv_env), so this bootstrap
+# pm's own venv sync re-isolates (pm/environment.py), so this bootstrap
 # hygiene can't break the locked sync the way it used to before pm owned it.
 export UV_NO_CONFIG=1
 
@@ -177,8 +177,7 @@ ensure_uv() {
         chmod +x "$_entry/uvx" 2>/dev/null || true
         rm -rf "$_tmp"
     fi
-    # Make the staged (or found) uv available to bare `uv` invocations.
-    export PATH="$(dirname "$UV_CMD"):$PATH"
+    # Bootstrap keeps the installer private; only UV_CMD invokes it.
     if ! "$UV_CMD" --version >/dev/null 2>&1; then
         fail "pinned uv staged but does not run on this host"
     fi
@@ -319,25 +318,32 @@ stage_repository() {
 }
 
 stage_venv() {
-    ensure_uv
-    log "creating venv"
-    (cd "$INSTALL_DIR" && "$UV_CMD" venv --allow-existing venv) || fail "uv venv failed"
+    # Keep the installer stage protocol; PM alone creates dependency environments.
+    local boot_py
+    bootstrap_python
+    log "bootstrap Python ready; PM prepares the dependency environment"
 }
 
-# Resolve the bootstrap interpreter without assuming a checkout-local venv.
+# Tool-only bootstrap: acquire uv and Python before PM's own dependencies exist.
+# The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
     local _py
-    _py="$(awk '/^    "python": \{/ { in_py = 1 }
-        in_py && /^      "version":/ { gsub(/.*: "|"$|",$/, ""); print; exit }' \
-        "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
+    # Read packages.python.version by following object names and braces, not
+    # indentation — same pre-Python reader contract as setup-hermes.sh's pin().
+    _py="$(awk -F '"' '
+        /^[[:space:]]*("[^"]+"[[:space:]]*:[[:space:]]*)?\{/ { path[++depth] = $2; next }
+        /^[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/ { delete path[depth--]; next }
+        path[2] == "packages" && path[3] == "python" && $2 == "version" && depth == 3 { print $4; exit }
+    ' "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
     "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
     boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
     boot_py="${boot_py%$'\r'}"
 }
 
-# uv exits before PM can replace its tool entry.
+# uv exits before PM can replace its tool entry. pm.cli then prepares and
+# enters its independently locked runtime before mutating application deps.
 bootstrap_pm() {
     local boot_py
     bootstrap_python

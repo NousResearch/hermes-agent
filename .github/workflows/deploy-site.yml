@@ -72,10 +72,10 @@ jobs:
           toolchain: all
           node-cache-dependency-path: website/package-lock.json
 
-      - name: Install PyYAML for skill extraction
+      - name: Install ruamel.yaml for skill extraction
         uses: ./.github/actions/retry
         with:
-          command: uv pip install --python "$HERMES_PYTHON" pyyaml==6.0.2 httpx==0.28.1
+          command: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 httpx==0.28.1
 
       - name: Prepare skills index (unified multi-source catalog)
         env:

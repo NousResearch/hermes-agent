@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -529,9 +529,9 @@ class TestSaveConfigAtomicity:
             config_path = tmp_path / "config.yaml"
             assert config_path.exists()
 
-            # Simulate a crash during yaml.dump by making atomic_yaml_write's
-            # yaml.dump raise after the temp file is created but before replace.
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            # Simulate a crash during yaml.safe_dump by making atomic_yaml_write's
+            # yaml.safe_dump raise after the temp file is created but before replace.
+            with patch("utils.yaml.safe_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)
@@ -548,7 +548,7 @@ class TestSaveConfigAtomicity:
             config = load_config()
             save_config(config)
 
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            with patch("utils.yaml.safe_dump", side_effect=OSError("disk full")):
                 try:
                     save_config(config)
                 except OSError:

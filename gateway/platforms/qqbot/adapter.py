@@ -190,8 +190,9 @@ class QQAdapter(BasePlatformAdapter):
         """Authenticate, obtain gateway URL, and open the WebSocket. ``is_reconnect``
         is accepted for interface conformance only (QQBot has no server-side update queue)."""
         for ok, code, what, hint in (
-            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed", ". Run: pip install aiohttp"),
-            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: pip install httpx"),
+            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed",
+             ". Run: python -c \"from pm import sync_venv; sync_venv(['messaging'], explicit=True)\""),
+            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: hermes pm repair"),
             (self._app_id and self._client_secret, "qq_missing_credentials",
              "QQ_APP_ID and QQ_CLIENT_SECRET are required", "")):
             if not ok:
@@ -1132,7 +1133,8 @@ class QQAdapter(BasePlatformAdapter):
         try:
             import pilk
         except ImportError:
-            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk", self._log_tag)
+            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: "
+                           "python -c \"from pm import sync_venv; sync_venv(['silk'], explicit=True)\"", self._log_tag)
             return None
 
         silk_path = src_path.rsplit(".", 1)[0] + ".silk"

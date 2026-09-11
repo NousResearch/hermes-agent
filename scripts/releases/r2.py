@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import hmac
 import http.client
-import ntpath
 import os
 import re
 import sys
@@ -409,12 +408,37 @@ def is_full_sha(value: str) -> bool:
     return bool(isinstance(value, str) and _FULL_SHA_RE.fullmatch(value))
 
 
+# Windows reserved names (CPython ntpath parity). COM/LPT superscript forms
+# (COM² etc.) are reserved under NTFS namespace rules, same as the digit forms.
+_WIN_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+    + [f"COM{i}" for i in range(1, 10)] + ["COM¹", "COM²", "COM³"]
+    + [f"LPT{i}" for i in range(1, 10)] + ["LPT¹", "LPT²", "LPT³"]
+)
+
+
+def _is_windows_reserved(value: str) -> bool:
+    """True if any path component is reserved on Windows.
+
+    Port of ntpath.isreserved() (added in Python 3.13; release CI may run
+    older system Pythons, so inline the semantics rather than depend on it).
+    """
+    for part in reversed(value.split("/")):
+        # Trailing dots and spaces are reserved.
+        if part[-1:] in (".", " ") and part not in (".", ".."):
+            return True
+        stem = part.partition(".")[0].rstrip(" ").upper()
+        if stem in _WIN_RESERVED_NAMES:
+            return True
+    return False
+
+
 def relative_artifact_path(value: str) -> str:
     """Validate the original path before any filesystem normalization."""
     if (not isinstance(value, str) or not value or value.startswith("/")
             or any(part in ("", ".", "..") for part in value.split("/"))
             or any(c in value for c in "\\:%?#") or any(ord(c) < 32 for c in value)
-            or ntpath.isreserved(value)):
+            or _is_windows_reserved(value)):
         raise ValueError("Invalid release artifact path")
     return value
 

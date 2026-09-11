@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { runPython } from '../../../scripts/build/python.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -6,7 +6,7 @@ import path from 'node:path'
 export function rehashPayloadDigests(payload) {
   // Light builds have no payload. Present payloads require valid tool facts.
   if (!fs.existsSync(path.join(payload, 'manifest.json'))) return
-  execFileSync('uv', ['run', '--no-project', 'python',
+  runPython([
     path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'rehash', payload],
   { stdio: 'inherit' })
 }

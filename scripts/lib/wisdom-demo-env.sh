@@ -19,7 +19,7 @@ wisdom_demo_repo_root() {
 }
 
 wisdom_demo_python_is_ready() {
-  "$1" -c 'import dotenv, pydantic, requests, yaml' >/dev/null 2>&1
+  "$1" -c 'import dotenv, pydantic, requests, ruamel.yaml' >/dev/null 2>&1
 }
 
 wisdom_demo_pick_python() {

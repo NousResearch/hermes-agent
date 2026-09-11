@@ -1103,7 +1103,7 @@ def list_authenticated_providers(
         except Exception:
             pass
 
-    # PyYAML parses unquoted numeric names (`provider: 2070`) as int.
+    # YAML parses unquoted numeric names (`provider: 2070`) as int.
     # seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     current_provider = coerce_provider_id(current_provider)
     current_base_url = str(current_base_url or "").strip()

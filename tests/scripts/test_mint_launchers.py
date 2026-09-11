@@ -1,4 +1,4 @@
-"""Live tests for the win32 launcher mint (scripts/bundles/mint_launchers.py).
+"""Live tests for the win32 launcher mint (scripts/build/mint_launchers.py).
 
 These RUN the real mint on the current interpreter and then execute the
 minted launcher — the strongest proof the mechanism is intact (the research
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_MINT = _REPO / "scripts" / "bundles" / "mint_launchers.py"
+_MINT = _REPO / "scripts" / "build" / "mint_launchers.py"
 
 pytestmark = [
     pytest.mark.platforms("windows"),
@@ -99,7 +99,7 @@ def _mint(bin_dir: Path, wrapper: Path, specs) -> list[str]:
 
 
 def _render_wrapper(tmp_path: Path) -> Path:
-    from scripts.bundles.payload import render_wrapper
+    from scripts.build.launchers import render_wrapper
     text = render_wrapper("hermes_cli.main:main", "../repo", "../venv/Lib/site-packages")
     out = tmp_path / "wrapper.py"
     out.write_text(text, encoding="utf-8")

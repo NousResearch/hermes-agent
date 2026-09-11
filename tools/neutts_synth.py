@@ -4,7 +4,7 @@
 Called by tts_tool via subprocess so the ~500MB TTS model lives in a process that exits
 after synthesis. Usage:
     python -m tools.neutts_synth --text "Hello" --out out.wav --ref-audio jo.wav --ref-text jo.txt
-Requires ``pip install -U neutts[all]`` and espeak-ng (apt/brew).
+Run ``hermes setup tts`` and choose NeuTTS; espeak-ng is also required (apt/brew).
 """
 
 import argparse
@@ -50,7 +50,7 @@ def main():
     try:
         from neutts import NeuTTS
     except ImportError:
-        print("Error: neutts not installed. Run: python -m pip install -U neutts[all]", file=sys.stderr)
+        print("Error: neutts not installed. Run hermes setup tts and choose NeuTTS.", file=sys.stderr)
         sys.exit(1)
 
     # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";

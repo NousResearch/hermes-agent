@@ -215,12 +215,10 @@ def _config_default_interface_early() -> str:
         else:
             cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
         if os.path.exists(cfg_path):
-            import yaml as _yaml_iface
+            import hermes_yaml as _yaml_iface
 
             with open(cfg_path, encoding="utf-8-sig") as _f:
-                raw = _yaml_iface.load(
-                    _f, Loader=getattr(_yaml_iface, "CSafeLoader", None) or _yaml_iface.SafeLoader
-                ) or {}
+                raw = _yaml_iface.safe_load(_f) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")
@@ -2031,7 +2029,7 @@ def select_provider_and_model(args=None):
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_assess_parked_branch_switch",
-        "_capture_active_lazy_features", "_capture_active_tool_dependencies",
+        "_capture_active_lazy_features",
         "_cold_start_windows_gateway_after_update", "_detect_venv_python_processes", "_discard_stashed_changes",
         "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
         "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
@@ -2458,12 +2456,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         import uvicorn  # noqa: F401
     except ImportError as e:
         print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
+        print("Run `hermes pm install`, then restart Hermes to activate the dependencies.")
         print(f"Import error: {e}")
         sys.exit(1)
 

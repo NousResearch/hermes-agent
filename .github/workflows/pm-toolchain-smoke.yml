@@ -33,22 +33,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # cryptography has no win_arm64 wheel. Its native build uses the
-      # same OpenSSL prerequisite as the bundled release, not an x64 Python.
-      - name: Cache native OpenSSL
+      # The dev extra can build ARM64 sdists during setup-pm itself.
+      - name: Set up native ARM64 build dependencies
         if: matrix.target == 'win32-arm64'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: C:\vcpkg\installed\arm64-windows-static-md
-          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
-      - name: Install native OpenSSL
-        if: matrix.target == 'win32-arm64'
-        shell: bash
-        run: |
-          if [ ! -f /c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib ]; then
-            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
-          fi
-          printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\nOPENSSL_STATIC=1\n' >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-windows-build-deps
 
       - name: Set up tools and dev extra from PM
         id: pm
@@ -84,7 +72,7 @@ jobs:
       - name: Run the PM and action contracts
         shell: bash
         run: |
-          scripts/run_tests.sh -j 2 tests/scripts/test_setup_toolchain.py tests/pm/test_pm_core.py tests/pm/test_bootstrap_import_closure.py tests/pm/test_uv_cache.py
+          scripts/run_tests.sh -j 2 tests/scripts/test_setup_toolchain.py tests/pm/test_pm_core.py tests/pm/test_bootstrap_import_closure.py tests/pm/test_uv_cache.py tests/pm/test_windows_build_deps.py
           python scripts/ci/verify_toolchain.py --extras
 
       - name: Upload native setup proof

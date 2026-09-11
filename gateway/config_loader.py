@@ -344,7 +344,7 @@ def read_yaml_layers(home: Path) -> dict:
     (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     config_yaml_path = home / "config.yaml"
     yaml_cfg: dict = {}

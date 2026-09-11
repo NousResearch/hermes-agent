@@ -182,7 +182,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             import openai
         except ImportError:
             return error_response(
-                error="openai Python package not installed (pip install openai)",
+                error="openai Python package not installed. Run: hermes pm repair",
                 error_type="missing_dependency", provider=self.name,
             )
 

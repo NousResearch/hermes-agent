@@ -1,5 +1,8 @@
 # QQ Bot
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 通过**官方 QQ Bot API（v2）**将 Hermes 接入 QQ——支持私聊（C2C）、群组 @-提及、频道及直接消息，并具备语音转写功能。
 
 ## 概述
@@ -20,7 +23,7 @@ QQ Bot 适配器使用[官方 QQ Bot API](https://bot.q.qq.com/wiki/develop/api-
 
 2. **依赖项** — 适配器需要 `aiohttp` 和 `httpx`：
    ```bash
-   pip install aiohttp httpx
+   python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
    ```
 
 ## 配置
@@ -118,6 +121,6 @@ platforms:
 
 ### 连接错误
 
-- 确保已安装 `aiohttp` 和 `httpx`：`pip install aiohttp httpx`
+- 确保已安装 `aiohttp` 和 `httpx`：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`
 - 检查与 `api.sgroup.qq.com` 及 WebSocket gateway 的网络连通性
 - 查看 gateway 日志以获取详细错误信息和重连行为

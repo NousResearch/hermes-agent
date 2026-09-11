@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node ../scripts/generate-icons.mjs",
-    "build": "tsc -b && vite build",
+    "prebuild": "node ../scripts/generate-icons.mjs --source .. --out ..",
+    "build": "node ../scripts/build/web.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",

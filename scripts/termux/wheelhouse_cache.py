@@ -14,7 +14,9 @@ def build_identity(repo: Path, builder: str, platform_tag: str, python_abi: str)
         "scripts/termux/runtime_libs.json", "scripts/termux/build_config.sh",
         "scripts/termux/termux_build.sh", "scripts/termux/build_wheels.py",
         "scripts/termux/retag_wheel.py", "scripts/termux/python_linkage.py",
-        "scripts/termux/wheelhouse_cache.py",
+        "scripts/termux/wheelhouse_cache.py", "scripts/termux/build_environment.py",
+        "pm/environment.py", "pm/build_operations.py", "pm/operations.py",
+        "pm/pyproject.toml", "pm/uv.lock",
         "scripts/termux/termux-builder.Dockerfile",
     )
     return {

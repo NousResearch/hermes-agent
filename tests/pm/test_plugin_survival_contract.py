@@ -33,9 +33,8 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
-import pm.plugins_state as pstate
 import pm.workspace as ws
 
 
@@ -82,6 +81,7 @@ def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkey
         '[project]\nname = "mnemosyne-sidecar"\nversion = "1.0.0"\n', encoding="utf-8"
     )
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     assert ws._is_member_candidate(wrapper) is False, (
@@ -163,16 +163,16 @@ def admission_env(tmp_path, monkeypatch):
     ensure = importlib.import_module("pm.ensure")
     import pm.paths
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
-    # Keep the real dependency transaction. Substitute only tool provisioning.
-    from pm.packages import uv_env
-    monkeypatch.setattr(ensure, "uv", lambda **kwargs: (
-        shutil.which("uv"), {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable},
-    ))
+    # Exercise the real dependency transaction in-process so the local uv
+    # fixture owns provisioning; worker transport is covered separately.
+    monkeypatch.setattr("pm.client.sync_venv", ensure.sync_venv)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(shutil.which("uv")), Path(sys.executable)))
     return tmp_path, home
 
 

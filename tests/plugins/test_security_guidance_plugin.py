@@ -265,7 +265,7 @@ class TestPluginDiscovery:
     def test_loads_via_plugin_manager(self, _isolate_env, monkeypatch):
         """End-to-end: enable in config.yaml and verify the PluginManager
         picks it up via the standard discovery path."""
-        import yaml
+        import hermes_yaml as yaml
 
         config = {"plugins": {"enabled": ["security-guidance"]}}
         (_isolate_env / "config.yaml").write_text(yaml.safe_dump(config))

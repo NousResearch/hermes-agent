@@ -556,7 +556,7 @@ def _load_secrets_config(home_path: Path) -> dict:
         except Exception:
             pass
     try:
-        import yaml  # type: ignore
+        import hermes_yaml as yaml
     except ImportError:
         return {}
     try:

@@ -24,7 +24,6 @@ import tempfile
 from pathlib import Path
 
 from hermes_constants import venv_python_path
-from hermes_cli.runtime_repair import _RUNTIME_DIR_NAME
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -32,12 +31,84 @@ logger = logging.getLogger(__name__)
 _MARKER_NAME = ".tcc-anchor-source"
 
 _STORE_COMMON_MARKERS = ("cpython-", "-macos-")
-# The runtime-store marker is derived from runtime_repair so a rename of the
-# repair-generation directory cannot silently stop the anchor from matching.
-_STORE_ROOT_MARKERS = ("/uv/python/", f"/{_RUNTIME_DIR_NAME}/python/")
+# Recognize both historical interpreter locations during upgrades.
+_STORE_ROOT_MARKERS = ("/uv/python/", "/.hermes-runtime/python/")
+_MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 
 _ALIAS_NAMES = ("python3", f"python3.{sys.version_info.minor}")
 _STORE_BIN_NAMES = (f"python3.{sys.version_info.minor}", "python3", "python")
+
+
+def _macos_sign_managed_python(python: Path) -> bool:
+    """Give a newly downloaded managed Python a stable macOS code identity.
+
+    python-build-standalone binaries are ad-hoc signed, which leaves macOS
+    TCC with a cdhash-only identity that changes whenever Hermes provisions a
+    new runtime generation.  An identifier-pinned designated requirement
+    gives those generations a stable identity even when no Developer ID
+    certificate is available locally.
+
+    Signing is deliberately best effort.  An unavailable or incompatible ``codesign``
+    must not prevent a bootable interpreter from being anchored.
+    """
+    if platform.system() != "Darwin":
+        return False
+
+    codesign = shutil.which("codesign")
+    if not codesign:
+        logger.info(
+            "macOS codesign is unavailable; using the downloaded Python signature"
+        )
+        return False
+
+    requirement = (
+        "=designated => identifier "
+        f'"{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
+    )
+    try:
+        signed = subprocess.run(
+            [
+                codesign,
+                "--force",
+                "--deep",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                "--identifier",
+                _MACOS_MANAGED_PYTHON_IDENTIFIER,
+                "--requirements",
+                requirement,
+                str(python),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if signed.returncode != 0:
+            logger.warning(
+                "could not stably sign managed Python %s: %s",
+                python,
+                (signed.stderr or signed.stdout or "codesign failed").strip(),
+            )
+            return False
+
+        verified = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(python)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if verified.returncode != 0:
+            logger.warning(
+                "macOS signature verification failed for managed Python %s: %s",
+                python,
+                (verified.stderr or verified.stdout or "verification failed").strip(),
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("could not sign managed Python %s: %s", python, exc)
+        return False
 
 
 class _BootGateFailed(Exception):
@@ -292,8 +363,6 @@ def _install_anchor(venv_dir: Path, source_file: Path) -> None:
     tmp_path = _stage_copy(venv_bin, ".python-tcc-", source_file)
     try:
         try:
-            from hermes_cli.runtime_repair import _macos_sign_managed_python
-
             _macos_sign_managed_python(tmp_path)
         except Exception:  # pragma: no cover - never block the anchor
             logger.debug("anchor copy signing skipped", exc_info=True)

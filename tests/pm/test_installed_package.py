@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pm
 from pm import paths
+from pm.ensure import ensure
 from pm.lock import Lockfile
 from tests.pm.test_pm_authority import pm_env, served  # noqa: F401
 
 
 def test_installed_lookup_prefers_current_pin_then_recorded_fallback(pm_env, tmp_path, monkeypatch):
-    pm.ensure("faketool", explicit=True)
+    ensure("faketool", explicit=True)
     original = pm.installed_package("faketool")
     assert original is not None and original.binary.is_file()
 

@@ -516,12 +516,9 @@ function Stage-Repository {
 }
 
 function Stage-Venv {
-    $uv = Get-Uv
-    Log "creating venv"
-    Push-Location $InstallDir
-    & $uv venv --allow-existing venv; $code = $LASTEXITCODE
-    Pop-Location
-    if ($code) { Fail "uv venv failed" }
+    # Keep the installer stage protocol; PM alone creates dependency environments.
+    Get-BootstrapPython | Out-Null
+    Log "bootstrap Python ready; PM prepares the dependency environment"
 }
 
 # Delegate the whole python+venv+tools install to pm: stage the pinned uv,
@@ -529,7 +526,9 @@ function Stage-Venv {
 # the venv (default extras = [all], matching `hermes update`), and the
 # tool store — all hash-verified against pm/lock.json + uv.lock. install.ps1
 # no longer runs `uv sync` directly; pm is the single install authority
-# (the run_locked_uv_sync contract moved into pm/packages.py::uv_env).
+# (the run_locked_uv_sync contract moved into pm/environment.py).
+# This tool-only bootstrap runs before PM's own dependencies exist. pm.cli
+# prepares and enters its independently locked runtime before installing apps.
 function Get-BootstrapPython {
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json

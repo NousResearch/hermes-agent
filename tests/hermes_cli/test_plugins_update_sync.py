@@ -1,7 +1,6 @@
 """Every update surface validates staged code before changing an active plugin."""
 from __future__ import annotations
 
-import importlib
 import subprocess
 
 import pytest
@@ -44,7 +43,7 @@ def test_disabled_update_does_not_change_dependencies_or_enablement(installed, m
     config = (home / "config.yaml").read_bytes()
     facts = paths.runtime_facts_path().read_bytes()
     state["sha"] = _version(repo, "2.0.0")
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv",
+    monkeypatch.setattr("pm.client.sync_venv",
                         lambda **kwargs: pytest.fail("disabled plugin changed the dependency selection"))
     result = pc.dashboard_update_user_plugin("transactional")
     assert result["ok"], result

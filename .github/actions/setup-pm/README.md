@@ -11,28 +11,31 @@ not resolve a version range, install another setup action, or modify the lock.
   with:
     toolchain: all
     extras: '["dev"]'
-- run: python --version && uv --version && node --version && npm --version
+- run: python --version && node --version && npm --version
 ```
 
-`toolchain` defaults to `python` (Python and uv). `node` installs Node and npm;
+`toolchain` defaults to `python` (Python and PM's private installer). `node` installs Node and npm;
 `all` installs both pairs. There are no version overrides. `extras` is a JSON
 array because GitHub action inputs are strings. Omit it for tools only; `[]`
 installs the core Python dependencies, and `["dev"]` adds the dev extra. PM
-checks `uv.lock`, installs the requested dependencies, validates the environment,
-and publishes its selection. It does not enable plugins.
+checks `uv.lock`, installs the requested dependencies, and validates the environment.
+The dev extra uses an independent test environment including the test dependency
+group; only non-test installs publish an application selection. It does not enable plugins.
 
-Subsequent steps get `python`, `python3`, `uv`, `uvx`, `node`, `npm` and `npx`
+Subsequent steps get `python`, `python3`, `node`, `npm` and `npx`
 for the selected toolchain on PATH. The pinned npm precedes Node's bundled npm.
 On Windows, PM selects the host architecture even if the bootstrap interpreter
 runs under x64 emulation. A disposable command environment supplies the missing
 `python3.exe` alias without changing the verified interpreter store.
 
-For Python dependencies, the action exports `HERMES_PYTHON`, `VIRTUAL_ENV` and
-`UV_PROJECT_ENVIRONMENT`. Use `scripts/run_tests.sh`; do not activate `.venv`.
-The environment belongs to PM under the runner's temporary home, not the
-checkout. Tool-only jobs can install small CI-specific package subsets with
-`uv pip install --python "$HERMES_PYTHON" package==version`; these writes do not
-modify the cached tool store. Native builds still need their system libraries
+For Python dependencies, the action exports `HERMES_PYTHON` and `VIRTUAL_ENV`.
+Use `scripts/run_tests.sh`; do not activate `.venv`. The environment belongs to
+PM under the runner's temporary home, not the checkout. No installer executable
+or `UV_*` policy variables are exposed. Tool-only jobs can prepare small isolated
+CI environments with `python -m scripts.ci.python_packages package==version`.
+This exports the selected Python and tool entrypoints for subsequent steps;
+append `-- -m module ...` to run a Python command directly and preserve its exit
+status. Neither route modifies the cached tool store. Native builds still need their system libraries
 and compiler, such as OpenSSL for Windows ARM64 cryptography.
 
 ## Caches
@@ -59,7 +62,7 @@ that toolchain. `python-cache-dependency-glob` defaults to `pyproject.toml` and
 An npm cache without a matching lockfile fails, rather than caching an
 unversioned dependency set.
 
-`prune-python-cache: true` registers `uv cache prune --ci --force` at teardown,
+`prune-python-cache: true` registers PM's CI cache-pruning operation at teardown,
 after the caller's installs and before the cache save. It is skipped on an
 exact hit. The default is `false`, as in setup-uv v9; migrated v8 callers opt in
 to retain their former policy. The small nested JavaScript action exists only
@@ -67,7 +70,7 @@ because GitHub composite actions cannot declare their own post step. It uses
 Node's standard library and has no bundled dependencies.
 
 Outputs include `python-version`, `uv-version`, `node-version`, `npm-version`,
-`python-path`, `uv-path`, `venv`, `target`, and the three `*-cache-hit` flags.
+`python-path`, `venv`, `target`, and the three `*-cache-hit` flags.
 Use the version outputs in installed-tree cache keys instead of repeating pins.
 
 `.github/workflows/pm-toolchain.yml` exercises cold setup and a separate warm

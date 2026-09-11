@@ -287,14 +287,40 @@ def test_realtime_session_cancel_response_when_disconnected():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("windows")
 def test_cmd_install_refuses_windows(capsys):
     from plugins.google_meet.cli import _cmd_install
 
-    with patch("plugins.google_meet.cli.platform" if False else "platform.system",
-               return_value="Windows"):
-        rc = _cmd_install(realtime=False, assume_yes=True)
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "Windows" in out
+    assert _cmd_install(realtime=False, assume_yes=True) == 1
+    assert "Windows" in capsys.readouterr().out
 
 
+@pytest.mark.platforms("linux", "macos")
+def test_cmd_install_uses_declared_dependencies_and_pm_chromium(monkeypatch, capsys):
+    import pm
+
+    calls = []
+    monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append(("sync", extras, kwargs)))
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: calls.append(("ensure", name, kwargs)))
+    from plugins.google_meet import cli
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **kw: pytest.fail("direct installer subprocess"))
+    assert cli._cmd_install(realtime=False, assume_yes=True) == 0
+    assert calls == [("sync", ["google-meet"], {"explicit": True}),
+                     ("ensure", "chromium", {"explicit": True})]
+    from pm.features import declared_extras
+
+    assert set(calls[0][1]) <= set(declared_extras(Path(__file__).resolve().parents[2]))
+    assert "hermes meet setup" in capsys.readouterr().out
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_cmd_install_reports_dependency_failure(monkeypatch, capsys):
+    import pm
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("dependency resolution failed")
+
+    monkeypatch.setattr(pm, "sync_venv", fail)
+    from plugins.google_meet import cli
+    assert cli._cmd_install(realtime=False, assume_yes=True) == 1
+    assert "dependency resolution failed" in capsys.readouterr().out

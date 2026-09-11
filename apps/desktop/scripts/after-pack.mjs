@@ -21,7 +21,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { runPython } from '../../../scripts/build/python.mjs'
 
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
@@ -36,7 +36,7 @@ export default async function afterPack(context) {
     : path.join(context.appOutDir, 'resources')
   const payload = path.join(resources, 'agent-payload')
   if (platform !== 'win32' && fs.existsSync(path.join(payload, 'manifest.json'))) {
-    execFileSync('uv', ['run', '--no-project', 'python',
+    runPython([
       path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
   }
   if (platform === 'darwin') {

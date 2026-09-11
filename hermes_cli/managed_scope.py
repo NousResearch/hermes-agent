@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 

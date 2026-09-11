@@ -1,33 +1,12 @@
-"""Emit Termux entrypoints and package-manager hooks from declared scripts."""
+"""APT maintainer hooks; agent entrypoints belong to scripts.build.launchers."""
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 import shlex
-import tomllib
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-
-def write_launchers(payload: Path, entries: dict[str, str]) -> None:
-    from scripts.bundles.payload import posix_launcher
-
-    lock = payload / "app/pm/lock.json"
-    if lock.is_file():
-        import json
-        version = json.loads(lock.read_text(encoding="utf-8-sig"))["packages"]["python"]["version"]
-        minor = version.split("+")[0].rsplit(".", 1)[0]
-    else:
-        minor = f"{sys.version_info.major}.{sys.version_info.minor}"
-    bindir = payload / "bin"
-    bindir.mkdir(parents=True, exist_ok=True)
-    for name, entry in entries.items():
-        text = posix_launcher(name, entry, python="venv/bin/python", repo="app",
-                              site=f"venv/lib/python{minor}/site-packages", target="linux-arm64-bionic")
-        path = bindir / name
-        path.write_text(text, encoding="utf-8")
-        path.chmod(0o755)
 
 
 def write_maintainer_scripts(control: Path, names: list[str]) -> None:
@@ -72,12 +51,11 @@ done
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload", type=Path, required=True)
-    parser.add_argument("--control", type=Path)
+    parser.add_argument("--control", type=Path, required=True)
     args = parser.parse_args()
-    entries = tomllib.loads((args.payload / "app/pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
-    write_launchers(args.payload, entries)
-    if args.control is not None:
-        write_maintainer_scripts(args.control, list(entries))
+    from scripts.build.inputs import project_entries
+    entries = project_entries(args.payload / "app/pyproject.toml")
+    write_maintainer_scripts(args.control, list(entries))
 
 
 if __name__ == "__main__":

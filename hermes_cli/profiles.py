@@ -523,7 +523,7 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
     try:
-        import yaml
+        import hermes_yaml as yaml
         data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return None
@@ -563,7 +563,7 @@ def _seed_model_config(profile_dir: Path) -> None:
     if config_path.exists():
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
-        import yaml
+        import hermes_yaml as yaml
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         source = get_hermes_home() / "config.yaml"

@@ -492,7 +492,7 @@ class TestRootLevelProviderOverride:
 
     def test_model_provider_wins_over_root_provider(self, tmp_path, monkeypatch):
         """model.provider takes priority — root-level provider is only a fallback."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -515,7 +515,7 @@ class TestRootLevelProviderOverride:
 
     def test_root_provider_used_as_fallback_when_model_provider_missing(self, tmp_path, monkeypatch):
         """Legacy root-level provider still populates model.provider in the CLI loader."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -538,7 +538,7 @@ class TestRootLevelProviderOverride:
 
     def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
         """Legacy root-level base_url still populates model.base_url in the CLI loader."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -560,7 +560,7 @@ class TestRootLevelProviderOverride:
 
     def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
         """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -351,10 +351,10 @@ class TestMatrixConfigBridge:
 
         import os
 
-        import yaml
+        import hermes_yaml as yaml
 
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(yaml_content))
+        config_file.write_text(yaml.safe_dump(yaml_content))
 
         # Simulate the bridge logic from gateway/config.py
         yaml_cfg = yaml.safe_load(config_file.read_text())

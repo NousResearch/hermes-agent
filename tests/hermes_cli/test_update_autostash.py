@@ -10,20 +10,6 @@ from hermes_cli import main as hermes_main
 from hermes_cli import update_cmd
 
 
-# ---------------------------------------------------------------------------
-# Managed-uv compatibility for tests that patch shutil.which
-# ---------------------------------------------------------------------------
-# The production code resolves uv through ``pm.uv()`` instead of
-# ``shutil.which("uv")``.  Many tests in this file patch ``shutil.which``
-# to control whether uv is "available" — this autouse fixture makes
-# pm.uv delegate to the patched ``shutil.which`` so the existing test
-# setup keeps working without per-test changes.
-@pytest.fixture(autouse=True)
-def _patch_managed_uv(request, patch_pm_uv_to_shutil_which):
-    """Make pm.uv follow shutil.which mocking in tests."""
-    yield
-
-
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery(monkeypatch):
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.

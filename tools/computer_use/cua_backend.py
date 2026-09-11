@@ -100,7 +100,7 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import yaml
+        import hermes_yaml as yaml
 
         with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
@@ -278,8 +278,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # backend uses — so users never hit an opaque `No module named 'mcp'`
         # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
         # (default on); when it's disabled or fails, ensure_import() raises
-        # InstallError carrying an actionable `uv pip install mcp==…`
-        # hint, which surfaces via the backend-unavailable path in tool.py.
+        # InstallError explaining why PM could not enable the SDK,
+        # which surfaces via the backend-unavailable path in tool.py.
         from pm import ensure_import
         ensure_import("computer-use")
         # A just-installed package may not be importable until the import

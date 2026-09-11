@@ -8,13 +8,37 @@ import pytest
 
 import pm.packages as pkgs
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-def test_uv_env_pins_cache_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(pkgs, "uv_cache_dir", lambda: tmp_path / "c")
-    env = pkgs.uv_env({"UV_CACHE_DIR": "/ambient/user/cache", "PATH": "x"})
-    assert env["UV_CACHE_DIR"] == str(tmp_path / "c")
-    # ambient UV_ vars are stripped, not inherited
-    assert "UV_PROJECT_ENVIRONMENT" not in env
+
+
+def test_managed_environment_pins_cache_dir(monkeypatch, tmp_path):
+    import shutil
+    import sys
+    from pm.environment import managed_environment
+
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (Path(uv), Path(sys.executable)))
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(pkgs, "uv_cache_dir", lambda: cache)
+    hostile = tmp_path / "ambient-cache"
+    monkeypatch.setenv("UV_CACHE_DIR", str(hostile))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="cache-proof"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\n', encoding="utf-8",
+    )
+    environment = managed_environment(tmp_path / "candidate", offline=True)
+    environment.create()
+    environment.lock(project)
+    environment.sync(project)
+    assert cache.is_dir()
+    assert not hostile.exists()
 
 
 def test_uv_cache_dir_seeds_from_payload(monkeypatch, tmp_path):

@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
-from pm.ensure import uv as pm_uv
+from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
 from pm.registry import get_package
@@ -357,13 +357,10 @@ def cmd_update(args) -> int:
         print("pm update: nothing to update")
 
     if args.uv:
-        uv_bin, env = pm_uv(realize=False)
-        if uv_bin is None:
-            print("✗ uv: not installed")
-            return 1
-        code, tail = _run_live([uv_bin, "lock", "--upgrade"], cwd=str(repo_root()), env=env)
-        if code != 0:
-            print(f"✗ uv lock --upgrade failed:\n{tail}")
+        try:
+            lock_project(repo_root(), upgrade=True, explicit=True)
+        except InstallError as exc:
+            print(f"✗ Python lock refresh failed: {exc}")
             return 1
         print("✓ uv.lock refreshed")
         try:
@@ -488,6 +485,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("bundle", help="stage a payload (repo+store+facts+relocatable venv) into --out")
     p.add_argument("--out", required=True)
     p.add_argument("--ref", help="git ref for the repo snapshot (default HEAD)")
+    p.add_argument("--cache", type=Path, help="persistent uv build cache (default: output sibling .uv-cache)")
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("status", help="print the latest pm sync receipt (machine-readable)")
@@ -502,7 +500,15 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_update)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    from pm.runtime import is_runtime, run_cli
+
+    try:
+        if not is_runtime():
+            return run_cli(list(sys.argv[1:] if argv is None else argv))
+        return args.func(args)
+    except InstallError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
 def test_install_dependencies_force_resyncs_declared_extra(tmp_path, monkeypatch):
     """force=True re-syncs the provider's extra even when it imports fine,
     so a downgraded/stripped bridge package is restored on hermes update."""
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     plugin_dir = tmp_path / "mem0"
     plugin_dir.mkdir()

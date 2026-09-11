@@ -20,9 +20,10 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     import shutil
 
     from scripts.ci import setup_toolchain
-    from pm.packages import uv_env
+    from pm import lock_project
     from tests.pm.test_workspace_build_inputs import _wheel
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     core = tmp_path / "core"
     core.mkdir()
     wheels = tmp_path / "wheels"
@@ -37,15 +38,15 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     )
     uv = shutil.which("uv")
     assert uv
-    environment = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    environment.pop("UV_NO_CONFIG")
-    subprocess.run([uv, "lock"], cwd=core, env=environment, check=True, capture_output=True, timeout=60)
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    lock_project(core, python=Path(sys.executable), offline=True, explicit=True)
     home = tmp_path / "ci-home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
-    import importlib
-    engine = importlib.import_module("pm.ensure")
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (uv, dict(environment)))
+    # This test exercises the worker-side CI environment split with offline uv.
+    # Dispatch into that worker is covered by test_runtime_entrypoints.
+    monkeypatch.setattr("pm.runtime.is_runtime", lambda: True)
     files = {name: tmp_path / name for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
     for name, file in files.items():
         monkeypatch.setenv(name, str(file))

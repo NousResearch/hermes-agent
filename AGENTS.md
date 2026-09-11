@@ -299,8 +299,16 @@ Table-driven beats condition ladders for ids/routes/views. `src/app` owns routes
 All dependencies carry upper bounds (litellm compromise #2796/#2810; Mini Shai-Hulud worm,
 May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(minor+2)`
 (`>=0.29,<0.32`). Git URLs: 40-char commit SHA. GitHub Actions: SHA + `# vN` comment. CI-only
-pip: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers. Run `uv lock` after
-changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+Python requirements: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers.
+After changing `pyproject.toml`, run `python -m pm.build_env --source . --lock-only`
+with the checkout's prepared Python. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+
+PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=True)`
+for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`
+for damaged dependencies. Do not mutate Hermes environments with raw pip or uv.
+Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` for
+isolated tool environments. Callers receive an interpreter or tool path, not uv.
+Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
 
 ## Commits, Merges, PRs
 
@@ -320,6 +328,17 @@ vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `HERMES_HOME` → temp dir, and per-file s
 isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU count) so
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
+
+Prepare a test interpreter with the checkout's bootstrapped Python:
+
+```bash
+python -m pm.build_env --source . --out .venv --extra dev --group test
+```
+
+This is a fresh build, not an in-place sync. If the disposable output exists,
+stop its processes and intentionally remove it before regeneration. The runner
+clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
+fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
 
 ```bash
 scripts/run_tests.sh                                    # full suite

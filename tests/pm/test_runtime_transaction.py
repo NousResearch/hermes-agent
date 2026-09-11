@@ -7,6 +7,12 @@ import pytest
 from pm.lock import Facts
 from pm.package import InstallError
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 @pytest.mark.parametrize("failure", ["build", "record", "missing", None])
 def test_sync_commits_only_a_successful_candidate(tmp_path, monkeypatch, failure):
@@ -95,9 +101,7 @@ def test_real_uv_builds_separate_environment_before_selection(tmp_path, monkeypa
     monkeypatch.setattr(paths, "repo_root", lambda: core)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr("pm.workspace.enabled_member_dirs", lambda: [])
-    ensure = importlib.import_module("pm.ensure")
-    from pm.packages import uv_env
-    monkeypatch.setattr(ensure, "uv", lambda **kw: (uv, {**uv_env(kw.get("base_env")), "UV_PYTHON": sys.executable}))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (Path(uv), Path(sys.executable)))
     prepared = Venv().apply([])
     assert selected_venv(core) == base
     candidate = prepared["environment"]
@@ -124,6 +128,6 @@ def test_lazy_import_reports_restart_instead_of_importing_mixed_versions(tmp_pat
     (candidate / "pyvenv.cfg").write_text("home = test")
     def prepare(requested):
         Facts(runtime_facts_path(root)).record_state("venv", "new", requested, environment=candidate)
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", prepare)
+    monkeypatch.setattr("pm.client.sync_venv", prepare)
     with pytest.raises(InstallError, match="restart"):
         extras.ensure_import("new-extra")

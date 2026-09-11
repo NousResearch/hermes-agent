@@ -115,12 +115,11 @@ _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """Parse YAML with the shared safe loader, imported lazily."""
     global _yaml_load_fn
     if _yaml_load_fn is None:
-        import functools
-        import yaml
-        _yaml_load_fn = functools.partial(yaml.load, Loader=getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader)
+        from hermes_yaml import safe_load
+        _yaml_load_fn = safe_load
     return _yaml_load_fn(content)
 
 

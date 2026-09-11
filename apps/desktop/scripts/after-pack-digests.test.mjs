@@ -9,7 +9,7 @@ import { test } from 'vitest'
 
 const repo = path.resolve(import.meta.dirname, '../../..')
 const hook = pathToFileURL(path.join(import.meta.dirname, 'after-pack.mjs')).href
-const python = process.env.HERMES_PYTHON || process.env.UV_PYTHON || 'python'
+const python = process.env.HERMES_PYTHON || 'python'
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'after-pack-digests-'))
@@ -29,15 +29,17 @@ function fixture() {
   fs.writeFileSync(binary, pe)
   const env = { ...process.env, HERMES_HOME: path.join(directory, 'home'),
     HERMES_RUNTIME_DIR: path.join(directory, 'runtime'),
-    UV_PYTHON: python, UV_PYTHON_DOWNLOADS: 'never', UV_OFFLINE: '1',
+    HERMES_PYTHON: python, UV_PYTHON_DOWNLOADS: 'never', UV_OFFLINE: '1',
     UV_CACHE_DIR: path.join(directory, 'uv-cache') }
   for (const key of Object.keys(env)) {
     if (key.startsWith('AZURE_SIGN_')) delete env[key]
   }
   delete env.PYTHONHOME
   delete env.PYTHONPATH
+  // The digest hook only needs the manifest to mark the payload as present.
+  fs.writeFileSync(path.join(payload, 'manifest.json'), '{}')
   execFileSync(python, ['-c',
-    'from pathlib import Path; import sys; from scripts.bundles.payload import record_tools, write_manifest; from pm.store import current_target; root=Path(sys.argv[1]); write_manifest(root,target=current_target(),repo="repo"); record_tools(root,Path("pm/lock.json"),current_target(),{"uv":"uv"})',
+    'from pathlib import Path; import sys; from scripts.bundles.payload import record_tools; from pm.store import current_target; root=Path(sys.argv[1]); record_tools(root,Path("pm/lock.json"),current_target(),{"uv":"uv"})',
     payload], { cwd: repo, env, encoding: 'utf8' })
   const facts = path.join(payload, 'tools', 'facts.json')
   const before = JSON.parse(fs.readFileSync(facts, 'utf8'))

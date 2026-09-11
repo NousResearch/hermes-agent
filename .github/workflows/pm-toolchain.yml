@@ -5,10 +5,17 @@ on:
   pull_request:
     paths:
       - '.github/actions/setup-pm/**'
+      - '.github/actions/save-pm-cache/**'
+      - '.github/actions/setup-windows-build-deps/**'
+      - 'scripts/windows-build-deps.ps1'
+      - 'scripts/build/windows-deps.ps1'
+      - 'scripts/build/windows_deps.py'
+      - 'tests/pm/test_windows_build_deps.py'
       - '.github/workflows/pm-toolchain*.yml'
       - 'scripts/ci/*toolchain.py'
       - 'tests/scripts/test_setup_toolchain.py'
       - 'tests-js/setup-pm-post.test.mjs'
+      - 'tests-js/setup-pm-cache.test.mjs'
       - 'pm/**'
   workflow_dispatch:
 permissions:
@@ -52,15 +59,14 @@ jobs:
           cache-suffix: smoke-consumers-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Install the docs tools into the command environment
         run: |
-          uv pip install --python "$HERMES_PYTHON" ascii-guard==2.3.0 pyyaml==6.0.3 httpx==0.28.1
-          python3 -c 'import yaml,httpx; print(yaml.__version__, httpx.__version__)'
+          python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 httpx==0.28.1 -- -c 'import ruamel.yaml,httpx; print(ruamel.yaml.__version__, httpx.__version__)'
       - name: Install the locked desktop and test workspaces
         run: npm ci --workspace apps/desktop --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
       - name: Exercise the actual after-pack relocation hook
         working-directory: apps/desktop
         run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/after-pack-toolchain.test.mjs
       - name: Verify the icon and cache-post contracts
-        run: node node_modules/vitest/vitest.mjs run --root tests-js generate-icons.test.mjs setup-pm-post.test.mjs
+        run: node node_modules/vitest/vitest.mjs run --root tests-js generate-icons.test.mjs setup-pm-post.test.mjs setup-pm-cache.test.mjs
       - name: Exercise the payload and icon build entrypoints
         run: |
           npm run payload --workspace apps/desktop -- --help

@@ -2789,7 +2789,7 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     if not used_canonical:
         try:
             if config_path.exists():
-                import yaml
+                import hermes_yaml as yaml
                 with open(config_path, 'r', encoding='utf-8-sig') as f:
                     raw = yaml.safe_load(f) or {}
         except Exception:
@@ -3246,7 +3246,7 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
     Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
                      "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
     Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
-                       "Yuanbao: websockets not installed. Run: pip install websockets")}
+                       "Yuanbao: websockets not installed. Run: hermes pm repair")}
 
 
 def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
@@ -5416,7 +5416,7 @@ def main():
 
     config = None
     if args.config:
-        import yaml
+        import hermes_yaml as yaml
         with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
 

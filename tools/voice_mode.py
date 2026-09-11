@@ -5,8 +5,8 @@ STT dispatch via tools.transcription_tools, and TTS playback via
 sounddevice or system audio players.
 
 Dependencies (optional):
-    pip install sounddevice numpy
-    or: uv sync --extra voice
+    python -c "from pm import sync_venv; sync_venv(['audio-io'], explicit=True)"
+    Configure speech-to-text with ``hermes tools``.
 """
 
 import logging
@@ -118,20 +118,7 @@ def _default_input_samplerate(sd) -> int:
 
 
 def _voice_capture_install_hint() -> str:
-    # If we're running inside a venv (e.g. the bundled Hermes venv at
-    # ~/.hermes/profiles/<name>/hermes-agent/venv/), `pip install` on the
-    # user's PATH won't reach the right site-packages — the bare hint sends
-    # them off to whichever Python their shell resolves first, which on macOS
-    # is often a system Python under Rosetta with a totally separate wheel
-    # index. Point them at the actual interpreter pip is sitting next to.
-    try:
-        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
-            if pip_in_venv.exists():
-                return f"{pip_in_venv} install sounddevice numpy"
-    except Exception:
-        pass
-    return "pip install sounddevice numpy"
+    return "python -c \"from pm import sync_venv; sync_venv(['audio-io'], explicit=True)\""
 
 
 def _pulse_socket_reachable() -> bool:
@@ -815,7 +802,7 @@ class AudioRecorder:
         except ImportError as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy"
+                f"Install with: {_voice_capture_install_hint()}"
             ) from e
 
         with self._lock:
@@ -1888,9 +1875,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append(f"STT provider: OK (plugin: {stt_provider})")
     else:
         details_parts.append(
-            "STT provider: MISSING (uv pip install faster-whisper — "
-            "`pip install faster-whisper` also works if pip is on PATH, "
-            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
+            "STT provider: MISSING (run `hermes tools` and configure "
+            "Speech-to-Text: Local Whisper or a cloud provider)"
         )
 
     for warning in env_check["warnings"]:

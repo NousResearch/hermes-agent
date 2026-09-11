@@ -23,17 +23,16 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
-    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test"}
+    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
     monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
-    monkeypatch.setattr(desktop.shutil, "which", lambda name: name)
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: None if name == "uv" else name)
     monkeypatch.setattr(desktop, "npm_command", lambda node: [node, "npm-cli.js"])
+    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
     from pm.store import current_target
     target_arch = current_target().split("-")[1]
     def capture(argv, cwd):
         if argv[0] == "git":
             return _git(*argv[1:], cwd=cwd)
-        if argv == ["uv", "--version"]:
-            return "uv 0.12.0 aarch64-pc-windows-msvc"
         if "process.arch" in argv:
             return target_arch
         return "26.7.0"
@@ -52,19 +51,18 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
         assert env.get("HERMES_PAYLOAD_TAG", "") == ""
         assert env["HERMES_BUILD_COMMIT"] == sha
         assert env["GITHUB_SHA"] == sha
+        assert env["HERMES_PYTHON"] == sys.executable
         assert env["HERMES_PAYLOAD_VERSION"] == "0.1.2"
         assert json.loads(env["HERMES_BUNDLE_ENV_JSON"]) == defaults
-        if "pm.cli" in argv:
-            assert argv[-2:] == ["--ref", sha]
+        if "scripts.bundles.stage" in argv:
+            assert argv[argv.index("--ref") + 1] == sha
+            assert "--tui" in argv and "--web" in argv
             payload = repo / 'apps/desktop/build/agent-payload'
             (payload / 'hermes-agent').mkdir(parents=True)
             (payload / 'manifest.json').write_text(json.dumps({'repo': 'hermes-agent', 'target': current_target()}), encoding='utf-8')
-    launcher_calls = []
-    monkeypatch.setattr(desktop, 'stage_launchers', lambda payload, manifest: launcher_calls.append((payload, manifest)))
     monkeypatch.setattr(desktop, "run", run)
     desktop.build(repo, None, variant, ['--publish=never'], commit_build=sha)
-    assert any('pm.cli' in argv for argv, _, _ in calls) == (variant != 'light')
-    assert bool(launcher_calls) == (variant != 'light')
+    assert any('scripts.bundles.stage' in argv for argv, _, _ in calls) == (variant != 'light')
     argv, cwd, env = calls[-1]
     assert argv[:5] == ['node', 'npm-cli.js', 'run', 'builder', '--']
     assert '-c.extraMetadata.version=0.1.2' in argv

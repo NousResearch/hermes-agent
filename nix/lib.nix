@@ -174,6 +174,9 @@ let
       in
       if relPath == "" then
         true
+      else if lib.hasPrefix "scripts/build/" relPath && lib.hasSuffix ".mjs" relPath then
+        # Frontend recipes belong to their product source filters, not Python.
+        false
       else if builtins.elem relPath excludedFiles then
         false
       else if builtins.elem topComponent excludedDirs then

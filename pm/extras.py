@@ -9,6 +9,7 @@ true; pm owns HOW (uv sync inside the venv package).
 from __future__ import annotations
 
 import importlib.util
+from typing import Callable
 
 
 # extra name -> module that proves it is installed
@@ -20,9 +21,14 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "exa": "exa_py",
     "firecrawl": "firecrawl",
     "parallel-web": "parallel",
+    "ddgs": "ddgs",
     "otlp": "opentelemetry.sdk",
+    "langfuse": "langfuse",
     "mistral": "mistralai",
     "edge-tts": "edge_tts",
+    "neutts": "neutts",
+    "kittentts": ("kittentts", "soundfile"),
+    "piper": "piper",
     "tts-premium": "elevenlabs",
     "voice": "faster_whisper",
     "stt-whisper": "faster_whisper",
@@ -49,8 +55,9 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "modal": "modal",
     "daytona": "daytona",
     "vercel": "vercel",
-    "google": "googleapiclient",
+    "google": ("googleapiclient", "google.auth", "google_auth_oauthlib.flow", "google_auth_httplib2"),
     "google-chat": "google.cloud.pubsub_v1",
+    "google-meet": ("playwright.sync_api", "websockets"),
     "youtube": "youtube_transcript_api",
     "acp": "acp",
     "web": "fastapi",
@@ -118,13 +125,14 @@ def _platform_gates() -> dict[str, str]:
 _PLATFORM_GATES: dict[str, str] | None = None
 
 
-def extra_supported(extra: str) -> bool:
+def extra_supported(extra: str, *, environment: dict[str, str] | None = None,
+                    importable: Callable[[str], bool] | None = None) -> bool:
     """Is this extra installable on THIS platform? True when the extra
     carries no gate, or its marker matches the running platform. An
     extra that IS present on this machine (anchors importable) is always
     supported — an installed override beats the table (dev machines,
     hand-synced venvs)."""
-    if all(_importable(a) for a in _anchors(extra)):
+    if all((importable or _importable)(a) for a in _anchors(extra)):
         return True
     marker = _platform_gates().get(extra)
     if marker is None:
@@ -135,12 +143,13 @@ def extra_supported(extra: str) -> bool:
 
     from packaging.markers import Marker
 
-    environment = {
-        "sys_platform": sys.platform,
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "os_name": os.name,
-    }
+    if environment is None:
+        environment = {
+            "sys_platform": sys.platform,
+            "platform_system": platform.system(),
+            "platform_machine": platform.machine(),
+            "os_name": os.name,
+        }
     try:
         return bool(Marker(marker).evaluate(environment=environment))
     except Exception:
@@ -164,7 +173,7 @@ def ensure_import(extra: str) -> None:
             f"extra {extra!r} is not supported on this platform "
             f"(gate: {marker!r}); the adapter degrades without it",
         )
-    from pm.ensure import sync_venv
+    from pm.client import sync_venv
 
     sync_venv([extra])
     # Activation is a process-boot operation. Never mix a newly resolved

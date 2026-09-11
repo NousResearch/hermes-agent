@@ -6,7 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import migrate_config
 from hermes_cli.doctor_config import collect_relay_plugin_cutover_findings

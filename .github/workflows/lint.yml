@@ -46,7 +46,7 @@ jobs:
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: uv tool install ruff && uv tool install ty
+          command: python -m scripts.ci.python_packages ruff==0.15.10 ty==0.0.21
 
       - name: Determine base ref
         id: base
@@ -137,7 +137,7 @@ jobs:
       - name: Install ruff
         uses: ./.github/actions/retry
         with:
-          command: uv tool install ruff
+          command: python -m scripts.ci.python_packages ruff==0.15.10
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,

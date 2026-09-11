@@ -26,11 +26,14 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
-from importlib.metadata import version as _distribution_version
 from pathlib import Path
+
+try:
+    import pm
+except ImportError:
+    # A copied skill must not install into an unrelated Python environment.
+    pm = None
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -53,21 +56,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
-]
-
-# Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
-# and the pyproject 'google' extra.
-# Pinning all protects against version drift and ensures the security floors
-# (httplib2 GHSA-j5g9-f88f-gfj3, stale pyasn1/google-auth) are honoured
-# regardless of install path.
-REQUIRED_PACKAGES = [
-    "google-api-python-client==2.194.0",
-    "google-auth==2.55.1",
-    "google-auth-oauthlib==1.3.1",
-    "google-auth-httplib2==0.3.1",
-    # GHSA-j5g9-f88f-gfj3 — Decompression Bomb DoS via unbounded gzip/deflate
-    "httplib2==0.32.0",
-    "pyasn1==0.6.4",
 ]
 
 # OAuth redirect for "out of band" manual code copy flow.
@@ -107,85 +95,29 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
-def _missing_required_packages() -> list[str]:
-    """Return exact requirements absent or stale in this interpreter.
-
-    All REQUIRED_PACKAGES entries are exact ``name==version`` pins, so a
-    direct version comparison is sufficient — no ``packaging`` dependency
-    needed in this standalone script.
-    """
-    missing = []
-    for spec in REQUIRED_PACKAGES:
-        name, _, wanted = spec.partition("==")
-        try:
-            if _distribution_version(name) != wanted:
-                missing.append(spec)
-        except Exception:
-            missing.append(spec)
-    return missing
-
-
 def install_deps():
-    """Install missing or stale Google API packages. Returns True on success."""
-    missing = _missing_required_packages()
-    if not missing:
-        print("Dependencies already installed.")
-        return True
-
-    print("Installing Google API dependencies...")
-
-    # First choice: pip in the current interpreter. Works for most installs.
+    """Sync Hermes' declared Google extra, ready for the next process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
+        return False
     try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
-            stdout=subprocess.DEVNULL,
-        )
-        remaining = _missing_required_packages()
-        if remaining:
-            print(f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}")
-            return False
-        print("Dependencies installed.")
-        return True
-    except subprocess.CalledProcessError as e:
-        pip_error = e
-
-    # Fallback: the interpreter has no pip (the Hermes Docker image's venv is
-    # built with `uv sync`, which does not bootstrap pip). `uv pip install
-    # --python <interpreter>` installs into that exact interpreter without
-    # needing pip present. Targeting sys.executable keeps us on the venv the
-    # script is actually running under, rather than guessing.
-    uv = shutil.which("uv")
-    if uv:
-        try:
-            subprocess.check_call(
-                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
-                + missing,
-                stdout=subprocess.DEVNULL,
-            )
-            remaining = _missing_required_packages()
-            if remaining:
-                print(f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}")
-                return False
-            print("Dependencies installed.")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to install dependencies via uv: {e}")
-            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
-            return False
-
-    print(f"ERROR: Failed to install dependencies: {pip_error}")
-    print(
-        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
-        "uv-managed venv), install the optional extra instead:"
-    )
-    print("  hermes setup")
-    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
-    return False
+        pm.sync_venv(["google"], explicit=True)
+    except Exception as exc:
+        print(f"ERROR: Failed to install Google dependencies: {exc}")
+        return False
+    print("Google dependencies synced. Restart Hermes, then rerun setup to continue OAuth.")
+    return True
 
 
 def _ensure_deps():
-    """Check exact dependency versions, install if stale, exit on failure."""
-    if _missing_required_packages() and not install_deps():
+    """Let PM check imports and stop if activation needs a new process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
+        sys.exit(1)
+    try:
+        pm.ensure_import("google")
+    except Exception as exc:
+        print(f"ERROR: Google dependencies unavailable: {exc}")
         sys.exit(1)
 
 

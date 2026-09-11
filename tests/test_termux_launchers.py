@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from scripts.termux.launchers import write_launchers
+from scripts.build.launchers import write_launchers
 
 
 @pytest.mark.platforms("posix")
@@ -28,7 +28,8 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
     )
     (tmp_path / "json.py").write_text("raise RuntimeError('cwd shadowed stdlib')\n", encoding="utf-8")
     entries = {name: "capture_entry:main" for name in ("hermes", "hermes-agent", "hermes-acp")}
-    write_launchers(payload, entries)
+    write_launchers(payload, entries, python="venv/bin/python", repo="app",
+                    site="venv/lib/python3.14/site-packages", target="linux-arm64-bionic")
     bin_dir = tmp_path / "prefix/bin"
     bin_dir.mkdir(parents=True)
     for name in entries:

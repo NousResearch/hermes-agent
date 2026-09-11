@@ -40,16 +40,14 @@ if [ "${1:-}" = "--in-container" ]; then
     PAYLOAD_ROOT="${5:-}"
     export PREFIX=/data/data/com.termux/files/usr
     STAGED_PY="$PAYLOAD_ROOT/python$PREFIX/bin/python3.14"
-    STAGED_UV="$PAYLOAD_ROOT/uv$PREFIX/bin/uv"
     # The staged binaries' RUNPATHs point at the phone's $PREFIX layout
     # (linkerconfig on-device). Inside the container the tree lives at
     # $PAYLOAD_ROOT/python$PREFIX, so the dynamic linker needs to be told
     # where the payload's libs live before any staged binary runs.
     export LD_LIBRARY_PATH="$PAYLOAD_ROOT/python$PREFIX/lib:$PAYLOAD_ROOT/node$PREFIX/lib:$PAYLOAD_ROOT/runtime-libs/lib:$PREFIX/lib"
-    if [ -n "$PAYLOAD_ROOT" ] && [ -x "$STAGED_PY" ] && [ -x "$STAGED_UV" ]; then
+    if [ -n "$PAYLOAD_ROOT" ] && [ -x "$STAGED_PY" ]; then
         PY="$STAGED_PY"
-        UV="$STAGED_UV"
-        log "Using the staged payload python ($PY) and uv ($UV)"
+        log "Using the staged payload Python ($PY)"
     else
         # No payload staged (or missing): refuse. Building against any
         # other interpreter (the container's pkg python is 3.14!) ships
@@ -85,7 +83,6 @@ if [ "${1:-}" = "--in-container" ]; then
     # Serial builds only -- parallel Rust/C builds OOM arm runners.
     export CARGO_BUILD_JOBS=1
     export MAKEFLAGS=-j1
-    export UV_CONCURRENT_BUILDS=1
     # Native extension links need the STAGED payload's libpython: the
     # container's own $PREFIX/lib (bootstrap only) is on the default
     # -L path, but libpython3.14.so lives in the staged tree. setuptools
@@ -113,26 +110,27 @@ if [ "${1:-}" = "--in-container" ]; then
     # at it (nemo-relay's worker-proto otherwise fails codegen).
     export PROTOC="$PREFIX/bin/protoc"
     export PROTOC_BIN_PATH="$PREFIX/bin/protoc"
-    log "Creating the scratch build venv + enforcing toolchain pins (staged uv)"
-    # The container runs as its own uid: /out (runner-owned) and /tmp are
-    # NOT writable, but the container's own termux prefix IS (provisioning
-    # already writes there). Scratch venv under $PREFIX/tmp.
+    log "Preparing the scratch build environment through PM"
     mkdir -p "$PREFIX/tmp"
-    BUILD_VENV="$PREFIX/tmp/hermes-build-venv"
-    "$UV" venv --python "$PY" "$BUILD_VENV" \
-        || fail "scratch build venv creation failed"
-    # uv venvs ship WITHOUT pip; the sdist build loop shells out to
-    # `python -m pip wheel`, which needs pip INSIDE the venv. uv installs
-    # it from outside (the only tool that can, cleanly, on bionic).
-    "$UV" pip install --python "$BUILD_VENV/bin/python" pip packaging \
-        || fail "pip bootstrap into the build venv failed"
-    "$UV" pip install --python "$BUILD_VENV/bin/python" "${TOOLCHAIN_PINS[@]}" \
-        || fail "toolchain pin enforcement failed"
+    BUILD_ROOT="$(mktemp -d "$PREFIX/tmp/hermes-build-XXXXXX")"
+    BUILD_VENV="$BUILD_ROOT/venv"
+    export HERMES_HOME="$BUILD_ROOT/home"
+    export HERMES_RUNTIME_DIR="$BUILD_ROOT/tools"
+    PYTHONPATH="$(cd "$HERE/../.." && pwd)"
+    export PYTHONPATH
+    "$PY" "$HERE/build_environment.py" prepare-tools \
+        --root "$BUILD_ROOT" --source-tools "$PAYLOAD_ROOT"
+    requirements=(--requirement pip==26.2.1 --requirement packaging==26.0)
+    for requirement in "${TOOLCHAIN_PINS[@]}"; do
+        requirements+=(--requirement "$requirement")
+    done
+    "$PY" -m pm.build_env --out "$BUILD_VENV" --python "$PY" "${requirements[@]}" \
+        || fail "scratch build environment preparation failed"
     log "Building the android wheel set from sdist (bionic, payload ABI)"
     "$BUILD_VENV/bin/python" -u "$HERE/build_wheels.py" \
         --resolved "$RESOLVED" --build-set "$BUILD_SET" \
         --wheelhouse "$WHEELHOUSE" --retag "$HERE/retag_wheel.py" \
-        --platform-tag "$PLATFORM_TAG" --uv "$UV" \
+        --platform-tag "$PLATFORM_TAG" \
         || fail "wheel building failed"
     log "Wheelhouse container phase complete"
     # Root-owned outputs: make world-readable BEFORE exiting so the
@@ -160,7 +158,7 @@ done
 [ -n "$REPO" ] && [ -n "$OUT" ] && { [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } && { [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || {
     printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir>\n' >&2; exit 2; }
 
-for tool in uv git curl docker python3; do
+for tool in git curl docker python3; do
     command -v "$tool" >/dev/null 2>&1 \
         || fail "missing tool: $tool (CI must provision the pinned toolchain before running this script)"
 done
@@ -228,9 +226,9 @@ mkdir -p "$WHEELHOUSE"
 rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/build_set.txt"
 # [d] Resolve the real graph from the tag's own lock.
 log "Resolving dependency graph from the tag's uv.lock"
-( cd "$WORK/tree" && uv export --frozen --no-emit-project --extra acp \
-    --no-hashes --no-annotate --no-header -o "$WORK/req.txt" ) \
-    || fail "uv export failed (frozen lock at $REF)"
+( cd "$REPO_ROOT" && python3 -m pm.build_env --source "$WORK/tree" \
+    --extra acp --export-requirements "$WORK/req.txt" ) \
+    || fail "PM requirements export failed (frozen lock at $REF)"
 # Host parsing needs packaging too. Use the release lock, not runner packages.
 PACKAGING_SPEC="$(python3 - "$WORK/tree/uv.lock" <<'PY'
 import sys, tomllib
@@ -240,7 +238,11 @@ package, = [item for item in packages if item["name"] == "packaging"]
 print("packaging==" + package["version"])
 PY
 )" || fail "locked packaging dependency missing"
-HOST_PY=(uv run --isolated --no-project --python "$(command -v python3)" --with "$PACKAGING_SPEC" python)
+HOST_ENV="$(mktemp -d "$WORK/host-parser-XXXXXX")"
+( cd "$REPO_ROOT" && python3 -m pm.build_env --out "$HOST_ENV/venv" \
+    --python "$(command -v python3)" --requirement "$PACKAGING_SPEC" ) \
+    || fail "host parser environment preparation failed"
+HOST_PY=("$HOST_ENV/venv/bin/python")
 RESOLVED="$WORK/resolved.txt"
 "${HOST_PY[@]}" "$HERE/build_wheels.py" --normalize "$WORK/req.txt" "$WORK/tree/uv.lock" "$RESOLVED" \
     || fail "failed to normalize requirements"

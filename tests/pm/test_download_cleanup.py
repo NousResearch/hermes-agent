@@ -10,7 +10,7 @@ import pytest
 
 import pm
 from pm import paths, registry
-from pm.ensure import stage_only
+from pm.ensure import ensure, stage_only
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
@@ -56,7 +56,7 @@ def install_case(tmp_path, monkeypatch, dl_server):
 def install(package, mode):
     if mode == "stage":
         return stage_only(package.name, pm.current_target())
-    pm.ensure(package.name, explicit=True, base_env={})
+    ensure(package.name, explicit=True, base_env={})
     return pm.installed_package(package.name).path
 
 

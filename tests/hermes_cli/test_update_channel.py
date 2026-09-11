@@ -161,7 +161,7 @@ class TestSetChannel:
         return home
 
     def test_set_resolve_round_trip(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
 
         home = self._home(tmp_path, monkeypatch)
         root = tmp_path / "install"
@@ -177,7 +177,7 @@ class TestSetChannel:
         assert resolve_update_channel(written, root) == CHANNEL_STABLE
 
     def test_preserves_other_config_and_other_installs(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
 
         home = self._home(tmp_path, monkeypatch)
         other = tmp_path / "other"
@@ -220,7 +220,7 @@ class TestSetChannel:
         text = (home / "config.yaml").read_text()
         assert "# my hand-maintained settings" in text
         assert "# keep this" in text
-        import yaml
+        import hermes_yaml as yaml
 
         written = yaml.safe_load(text)
         assert written["model"] == {"provider": "nous"}
@@ -313,7 +313,7 @@ class TestSetChannelCLI:
     def test_metadata_commands_precede_managed_refusal_and_write_once(
         self, tmp_path, monkeypatch, capsys
     ):
-        import yaml
+        import hermes_yaml as yaml
         import utils
         from hermes_cli import config, main
 

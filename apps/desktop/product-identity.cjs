@@ -42,13 +42,26 @@ const name = variants[store ? 'bundled' : (variant || '')]
 // never overwrite the stable feed file, and vice versa.
 const canary = /-canary\.20\d{6}(?:\d{6})?$/.test(process.env.HERMES_PAYLOAD_TAG || '')
 
+// Display-name qualifiers, display-only by design: appId/appNamePascal/
+// msixAppIdWithOrg stay fixed so a canary MSIX still updates in place
+// over stable and userData/single-instance sharing is unaffected. A
+// commit build names the exact SHA it was built from (Hermes Agent abc1234);
+// a canary tags itself so side-by-side installs are readable at a glance.
+const buildCommitEnv = process.env.HERMES_BUILD_COMMIT || ''
+const buildCommit = /^[a-f0-9]{40}$/.test(buildCommitEnv) ? buildCommitEnv.slice(0, 7) : null
+const displayName = buildCommit
+  ? `${name.display} ${buildCommit}`
+  : canary
+    ? `${name.display} Canary`
+    : name.display
+
 /** @typedef {import("./product-identity.d.cts")} ProductIdentity */
 
 /** @type {ProductIdentity} */
 const identity = {
   store,
   light,
-  displayName: name.display,
+  displayName,
   appId: `com.nousresearch.${name.kebab}`,
   // The store build never publishes to a release feed (the Store owns its
   // updates); null means "no feed" for its publish config.

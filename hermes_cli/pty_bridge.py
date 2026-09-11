@@ -89,7 +89,7 @@ class PtyBridge:
                 raise PtyUnavailableError("Pseudo-terminals are unavailable on this platform. "
                                           "Hermes Agent supports Windows only via WSL.")
             raise PtyUnavailableError("The `ptyprocess` package is missing. "  # only other way _PTY_AVAILABLE is False
-                                      "Install with: pip install ptyprocess (or pip install -e '.[pty]').")
+                                      "Run hermes pm repair, then restart Hermes.")
         # env=None: callers own env policy (process_registry already sanitizes), so inherit via the
         # factory with exact preservation. Backfill TERM when missing/blank — CI often lacks it and
         # probes like `tput cols` then fail before winsize reads; explicit overrides are kept.

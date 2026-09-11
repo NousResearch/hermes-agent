@@ -341,40 +341,24 @@ def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]
         if not dependencies:
             return []
         return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Route through pm's venv sync — the ONE install authority (uv.lock owns the
-    # pins; no pip against sys.executable, and tools.lazy_deps is deleted).
-    # Extras come from the existing ``_provider_extras`` owner: the declared
-    # plugin.yaml ``extra:`` — or, for legacy third-party declared python
-    # dependencies, it materializes the specs into a generated pyproject and
-    # admits the provider dir into the workspace union BEFORE the post-config
-    # selection; one sync then carries the deps.
+    # Setup precedes config selection. Include the candidate without dropping
+    # active providers; PM resolves legacy declarations and pyprojects alike.
     target = ", ".join(missing) or extra
     command = "hermes pm install"
     try:
-        from hermes_cli.memory_setup import _provider_extras
+        from hermes_cli.plugins_admission import candidate_member_dirs
+        from pm.workspace import _is_member_candidate
         from plugins.memory import find_provider_dir
 
         plugin_dir = find_provider_dir(name)
-        extras = _provider_extras(name, manifest, plugin_dir=plugin_dir)
-        if extras:
-            pm.sync_venv(extras, explicit=True)
-        elif plugin_dir is not None and any(
-            manifest.get(k) for k in ("pip_dependencies", "python_dependencies")
-        ):
-            # Legacy declared deps with no own extra: admit the provider dir
-            # into the workspace union (materialize is idempotent; it also
-            # covers the python_dependencies key _provider_extras doesn't
-            # read), then one sync carries the deps.
-            from pm.workspace import enabled_member_dirs
-
-            members = enabled_member_dirs()
-            candidate = Path(plugin_dir)
-            pm.sync_venv(explicit=True, plugin_dirs=members + ([candidate] if candidate not in members else []))
-        else:
+        member = plugin_dir is not None and _is_member_candidate(plugin_dir)
+        if not extra and not member:
             return [_command_result(
                 kind="pip", name=target, status="failed", command=command,
                 error="no declared extra and no plugin directory to materialize declared dependencies from",
             )]
+        inputs = {"plugin_dirs": lambda: candidate_member_dirs((), extra_dirs=[plugin_dir])} if member else {}
+        pm.sync_venv([extra] if extra else None, explicit=True, **inputs)
     except Exception as exc:
         return [_command_result(kind="pip", name=target, status="failed", command=command, error=str(exc))]
     still_missing = [dep for dep in missing if not _dependency_importable(dep)]

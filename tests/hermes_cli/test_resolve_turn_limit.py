@@ -141,7 +141,7 @@ class TestGatewayBridgeNullHandling:
 
     def test_none_value_not_bridged(self, monkeypatch, tmp_path):
         """YAML ``max_turns: null`` should not set HERMES_MAX_ITERATIONS."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("agent:\n  max_turns: null\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_MAX_ITERATIONS", "stale-120")
@@ -172,7 +172,7 @@ class TestGatewayBridgeNullHandling:
 
     def test_bare_key_treated_as_null(self, monkeypatch, tmp_path):
         """YAML ``max_turns:`` (bare key, no value) parses as Python None."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("agent:\n  max_turns:\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_MAX_ITERATIONS", "stale-90")

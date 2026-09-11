@@ -73,7 +73,7 @@ def test_trusted_dispatch_admits_a_pushed_feature_without_switching_checkout(tmp
         'stream.write(json.dumps(sys.argv[1:])+"\\n")\nprint("write")\n'
     )
     if os.name == 'nt':
-        from scripts.bundles.mint_launchers import mint_one
+        from scripts.build.mint_launchers import mint_one
         mint_one(str(helper), sys.executable, code, {'name': 'gh', 'module': 'fixture', 'func': 'main'})
     else:
         module = helper / 'gh.py'

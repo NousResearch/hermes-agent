@@ -17,6 +17,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.HERMES_DESKTOP_VARIANT
   delete process.env.HERMES_PAYLOAD_TAG
+  delete process.env.HERMES_BUILD_COMMIT
   vi.resetModules()
 })
 
@@ -56,6 +57,38 @@ test('a canary payload tag moves BOTH variants onto their canary feed channel', 
   process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
   const light = await identityForVariant('light')
   assert.equal(light.channel, 'light-canary')
+})
+
+test('a canary tag renames the DISPLAY name only, keeping machine identity intact', async () => {
+  const stable = await identityForVariant(undefined)
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
+  const canaryIdentity = await identityForVariant(undefined)
+
+  assert.equal(canaryIdentity.displayName, 'Hermes Canary')
+  // Machine identity is shared with stable so the canary MSIX still updates
+  // in place over stable and userData/single-instance stay shared.
+  assert.equal(canaryIdentity.appId, stable.appId)
+  assert.equal(canaryIdentity.appNamePascal, stable.appNamePascal)
+  assert.equal(canaryIdentity.msixAppIdWithOrg, stable.msixAppIdWithOrg)
+})
+
+test('a commit build names the SHA in the display name, machine identity intact', async () => {
+  process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
+  const full = await identityForVariant(undefined)
+  assert.equal(full.displayName, 'Hermes abcdef1')
+
+  const bundled = await identityForVariant('bundled')
+  assert.equal(bundled.displayName, 'Hermes Agent abcdef1')
+
+  delete process.env.HERMES_BUILD_COMMIT
+  const plain = await identityForVariant(undefined)
+  assert.equal(plain.displayName, 'Hermes')
+
+  // Malformed commit values must not leak into the name (commit builds
+  // validate the full SHA elsewhere; the display derivation stays total).
+  process.env.HERMES_BUILD_COMMIT = 'not-a-sha'
+  const malformed = await identityForVariant(undefined)
+  assert.equal(malformed.displayName, 'Hermes')
 })
 
 test('stable tags and tagless dev builds publish to the stable channels', async () => {

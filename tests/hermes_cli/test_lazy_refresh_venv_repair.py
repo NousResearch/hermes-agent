@@ -11,7 +11,7 @@ import pytest
 
 def test_refresh_failure_reports_pm_error(monkeypatch, capsys):
     import importlib
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.client")
     def fail(*args, **kwargs):
         raise RuntimeError("resolution failed")
     monkeypatch.setattr(ensure, "sync_venv", fail)
@@ -21,23 +21,11 @@ def test_refresh_failure_reports_pm_error(monkeypatch, capsys):
 
 def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
     import importlib
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.client")
     calls = []
     monkeypatch.setattr(ensure, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
     assert m._refresh_active_lazy_features(["telegram"]) is True
     assert calls == [(["telegram"], {"explicit": True})]
-
-
-def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):
-    from hermes_cli import tools_config_post_setup
-
-    monkeypatch.setattr(
-        tools_config_post_setup,
-        "_module_installed",
-        lambda module: module in {"langfuse", "ddgs"},
-    )
-
-    assert m._capture_active_tool_dependencies() == ["ddgs", "langfuse"]
 
 
 def test_cmd_update_repairs_before_refreshing_dependency_inputs(tmp_path, monkeypatch):
@@ -46,7 +34,6 @@ def test_cmd_update_repairs_before_refreshing_dependency_inputs(tmp_path, monkey
 
     (tmp_path / ".git").mkdir()
     snapshot = ["platform.telegram"]
-    tool_snapshot = ["langfuse"]
     refresh_calls = []
 
     class SyncReached(Exception):
@@ -65,9 +52,6 @@ def test_cmd_update_repairs_before_refreshing_dependency_inputs(tmp_path, monkey
 
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(m, "_capture_active_lazy_features", lambda: snapshot.copy())
-    monkeypatch.setattr(
-        m, "_capture_active_tool_dependencies", lambda: tool_snapshot.copy()
-    )
     monkeypatch.setattr(m, "_is_windows", lambda: False)
     monkeypatch.setattr(hermes_cli_main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(m, "_run_pre_update_backup", lambda args: None)
@@ -82,18 +66,8 @@ def test_cmd_update_repairs_before_refreshing_dependency_inputs(tmp_path, monkey
         update_cmd, "_venv_core_imports_healthy", lambda: (False, "broken")
     )
     monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
-    # _restore_active_tool_dependencies retired (pm-clean-audit-49945b1402 item 9).
     monkeypatch.setattr(m.subprocess, "run", fake_run)
     import pm
-    from pm.packages import uv_env as _uv_env
-
-    def fake_uv(**kw):
-        env = _uv_env()
-        if kw.get("venv"):
-            env["VIRTUAL_ENV"] = str(kw["venv"])
-        return "uv", env
-
-    monkeypatch.setattr(pm, "uv", fake_uv)
     monkeypatch.setattr(pm, "sync_venv", fake_sync_raises)
 
     args = SimpleNamespace(

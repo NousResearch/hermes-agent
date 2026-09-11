@@ -394,7 +394,7 @@ class TestHasAzureIdentityCredentials:
         """With allow_install=True (default), the probe must trigger the
         lazy-install path before bailing — otherwise the wizard's
         ``preflight`` would silently fail for fresh installs that haven't
-        run ``pip install azure-identity`` yet."""
+        enabled the Azure identity extra yet."""
         from agent import azure_identity_adapter as _adapter
 
         installed = {"called": False}
@@ -481,7 +481,7 @@ class TestDescribeActiveCredential:
         )
         assert info["ok"] is False
         assert "lazy installs disabled" in info["error"]
-        assert "lazy" in info["hint"].lower()
+        assert "sync_venv(['azure-identity'], explicit=True)" in info["hint"]
 
     def test_reports_env_sources_for_managed_identity(self, fake_azure_identity, monkeypatch):
         from agent.azure_identity_adapter import describe_active_credential

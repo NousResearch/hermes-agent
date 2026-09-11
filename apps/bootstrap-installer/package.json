@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175",
-    "prebuild": "node ../../scripts/generate-icons.mjs",
+    "prebuild": "node ../../scripts/generate-icons.mjs --source ../.. --out ../..",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

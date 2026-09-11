@@ -12,8 +12,8 @@ pytestmark = pytest.mark.platforms("windows")
 INSTALLER = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
 
 
-@pytest.mark.parametrize("exit_code", [0, 17])
-def test_python_stage_delegates_to_pin_without_touching_existing_env(tmp_path, exit_code):
+@pytest.mark.parametrize("stage,exit_code", [("venv", 0), ("python-deps", 0), ("python-deps", 17)])
+def test_python_stage_delegates_to_pin_without_touching_existing_env(tmp_path, stage, exit_code):
     powershell = shutil.which("powershell")
     assert powershell
     install = tmp_path / "install with spaces"
@@ -52,11 +52,11 @@ function Invoke-WebRequest { throw 'network access outside test boundary' }
 . $Installer -InstallDir $InstallDir -HermesHome $HomeDir
 # Dot-sourcing defines Get-Uv, so override only that acquisition boundary.
 function Get-Uv { return 'uv' }
-Invoke-StageByName 'python-deps'
+Invoke-StageByName $env:PROBE_STAGE
 exit $LASTEXITCODE
 ''', encoding="utf-8-sig")
     # uv python find returns the distribution interpreter, not a venv launcher.
-    env = dict(os.environ, PROBE_EXIT=str(exit_code), BOOTSTRAP_PYTHON=sys._base_executable,
+    env = dict(os.environ, PROBE_STAGE=stage, PROBE_EXIT=str(exit_code), BOOTSTRAP_PYTHON=sys._base_executable,
                PM_LOG=str(pm_log), UV_BUSY=str(tmp_path / "uv-busy"), PATHEXT=".COM;.EXE;.BAT;.CMD")
     env.pop("PYTHONPATH", None)
     run = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
@@ -67,5 +67,8 @@ exit $LASTEXITCODE
     assert [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()] == [
         ["python", "install", "--no-bin", "3.12"], ["python", "find", "--managed-python", "--no-project", "3.12"],
     ]
-    assert json.loads(pm_log.read_text(encoding="utf-8-sig")) == ["install"]
+    if stage == "python-deps":
+        assert json.loads(pm_log.read_text(encoding="utf-8-sig")) == ["install"]
+    else:
+        assert not pm_log.exists()
     assert existing.read_text(encoding="utf-8-sig") == "previous generation"

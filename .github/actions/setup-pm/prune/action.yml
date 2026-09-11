@@ -1,8 +1,8 @@
 name: Prune the PM uv cache at job teardown
 description: Register uv pruning before the enclosing cache action saves.
 inputs:
-  uv:
-    description: Absolute path to the PM-provisioned uv executable.
+  python:
+    description: Prepared Python used to invoke the PM cache operation.
     required: true
   cache:
     description: Cache directory restored by the enclosing setup action.

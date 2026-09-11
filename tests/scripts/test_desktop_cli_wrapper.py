@@ -1,6 +1,6 @@
 """Unit tests for the bundled payload's win32 launcher wrapper.
 
-scripts/bundles/launcher_wrapper.py is the zip overlay a distlib
+scripts/build/launcher_wrapper.py is the zip overlay a distlib
 ScriptMaker packs into every minted CLI launcher exe (the rust shim's
 replacement). The wrapper is import-safe on purpose, so these tests drive
 its real logic — path resolution, sys.path order, the pycache_prefix
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_WRAPPER = _REPO / "scripts" / "bundles" / "launcher_wrapper.py"
+_WRAPPER = _REPO / "scripts" / "build" / "launcher_wrapper.py"
 
 
 def _load(env=None):
@@ -87,6 +87,36 @@ def test_configure_prepends_repo_then_site_packages(tmp_path):
         assert sys.path[:2] == entries
         assert sys.path[0] == os.path.join(here, "..", "repo")
         assert sys.path[1] == os.path.join(here, "..", "venv", "Lib", "site-packages")
+    finally:
+        sys.path[:] = original
+
+
+def test_configure_processes_site_pth_files(tmp_path):
+    """site-packages goes through site.addsitedir(), not a raw append.
+
+    Only addsitedir() runs .pth files, and pywin32.pth is load-bearing on
+    Windows bundles: it puts win32\\lib on sys.path, which is what makes
+    `import pywintypes` resolve (portalocker's Win32Locker →
+    concurrent-log-handler → hermes_logging.py's file handlers). The old
+    raw sys.path[0:0] = entries skipped .pth processing entirely, silently
+    killing file logging on Windows bundles (and any future .pth-based
+    dependency on every platform).
+    """
+    ns = _load()
+    here = str(tmp_path / "bin")
+    site = os.path.join(here, "..", "venv", "Lib", "site-packages")
+    os.makedirs(site)
+    added = tmp_path / "pth-added"
+    added.mkdir()
+    with open(os.path.join(site, "load-bearing.pth"), "w", encoding="utf-8") as f:
+        f.write(f"{added}\n")
+    original = list(sys.path)
+    try:
+        ns["configure"](here, environ={})
+        repo = os.path.join(here, "..", "repo")
+        # Repo first, site second, .pth-added dirs after both.
+        assert sys.path[:2] == [repo, site]
+        assert sys.path.index(str(added)) > 1
     finally:
         sys.path[:] = original
 

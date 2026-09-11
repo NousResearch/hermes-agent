@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from urllib.parse import unquote, urlsplit
 
 import httpx
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger("tools.skills_hub")
 

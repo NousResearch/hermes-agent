@@ -46,7 +46,7 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        import yaml
+        import hermes_yaml as yaml
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
             meta = yaml.safe_load(f) or {}
         return meta.get("description", "")

@@ -195,7 +195,7 @@ class TestSessionDbInitTimeout:
     def test_timeout_resolved_from_config_yaml(self, tmp_path, monkeypatch):
         """cron.session_db_timeout_seconds in config.yaml is respected when
         the env var is not set — the canonical config-first resolution path."""
-        import yaml
+        import hermes_yaml as yaml
 
         monkeypatch.delenv("HERMES_CRON_SESSION_DB_TIMEOUT", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -66,7 +66,7 @@ def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True)
     except Exception as e:  # ImportError or partial install
         raise OTLPUnavailable(
             "OTLP export requires the optional dependency. Install with:\n"
-            "    pip install 'hermes-agent[otlp]'\n"
+            "    python -c \"from pm import sync_venv; sync_venv(['otlp'], explicit=True)\"\n"
             f"(import error: {e})"
         )
 

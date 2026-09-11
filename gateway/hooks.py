@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import get_hermes_home
 

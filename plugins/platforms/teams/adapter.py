@@ -787,19 +787,8 @@ def interactive_setup() -> None:
 
 
 def _install_hint() -> str:
-    """Build the Teams install hint string.
-
-    Prefers ``uv sync --frozen --extra teams`` (respects pyproject pinning);
-    falls back to a plain pip install of the two packages if that is
-    unavailable. Restarting the gateway also auto-installs via pm.
-    """
-    try:
-        cmd = "uv sync --frozen --extra teams"
-    except Exception:  # pragma: no cover — defensive
-        cmd = None
-    if not cmd:
-        cmd = f"{sys.executable} -m pip install microsoft-teams-apps aiohttp"
-    return f"Teams SDK missing — restart the gateway to auto-install, or run: {cmd}"
+    """Point to the setup flow that requests PM's declared Teams extra."""
+    return "Teams SDK missing — run `hermes setup`, configure Teams, then restart the gateway"
 
 
 def register(ctx) -> None:

@@ -16,14 +16,17 @@ from pm.ensure import (
     adopt,
     check,
     enabled_extras,
-    ensure,
     env_for,
     is_installed,
     installed_package,
     lazy_installs_allowed,
-    sync_venv,
-    uv,
 )
+from pm.client import (
+    ensure, sync_venv, build_environment, lock_project, stage_manager_runtime,
+    ensure_environment, ensure_python_tool, venv_is_current,
+    check_project_lock, export_requirements, build_requirements_environment, prune_cache,
+)
+from pm.operations import environment_python, python_tool
 from pm.extras import available, ensure_import
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, compose_env
@@ -43,8 +46,18 @@ __all__ = [
     "ensure_import",
     "enabled_extras",
     "lazy_installs_allowed",
-    # NOTE: pm.uv is importable but deliberately not in __all__ — it is the
-    # marked transitional bridge for update/repair and must not spread.
+    "build_environment",
+    "lock_project",
+    "stage_manager_runtime",
+    "ensure_environment",
+    "environment_python",
+    "ensure_python_tool",
+    "python_tool",
+    "venv_is_current",
+    "check_project_lock",
+    "export_requirements",
+    "build_requirements_environment",
+    "prune_cache",
     "Facts",
     "Lockfile",
     "InstallError",

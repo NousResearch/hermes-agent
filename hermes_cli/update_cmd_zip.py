@@ -317,7 +317,7 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
+def _reinstall_python_deps_after_zip() -> None:
     """Reinstall Python deps via the PM sync authority (pm.sync_venv, no pip fallback).
 
     The PM sync stages a fresh generation environment and commits the selection — the live
@@ -327,13 +327,6 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     from hermes_cli.update_cmd import _m
 
     import pm
-
-    # Same raising-uv realize the current-checkout repair path uses: the update command
-    # must SEE realization failures rather than silently fall back.
-    try:
-        pm.ensure("uv")
-    except pm.InstallError as e:
-        print(f"⚠ Managed uv unavailable: {e}")
 
     try:
         pm.sync_venv(["all"], explicit=True)
@@ -366,7 +359,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     )
     from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
     from hermes_cli.update_cmd_maint import _sweep_bytecode_after_update
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
     pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
@@ -387,7 +379,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/{ref}.zip")
     _sweep_bytecode_after_update(branch)
     print("→ Updating Python dependencies...")
-    _reinstall_python_deps_after_zip(active_tool_dependencies)
+    _reinstall_python_deps_after_zip()
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs
     # *after* the dep reinstall so a genuinely-new third-party requirement isn't misreported as a partial
     # copy. No SHA to roll back to — surface a concrete recovery step instead of success over a bricked install.

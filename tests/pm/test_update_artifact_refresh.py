@@ -1,6 +1,7 @@
 """Minor-style updates follow advertised artifacts without dropping other pins."""
 from __future__ import annotations
 
+from argparse import Namespace
 import hashlib
 import importlib
 import io
@@ -65,11 +66,13 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     engine = importlib.import_module("pm.ensure")
     monkeypatch.setattr(engine, "sync_venv", lambda **kwargs: syncs.append(kwargs))
     before = lock.path.read_bytes()
-    assert cli.main(["update", "rolling-tool", "--check"]) == 1
+    args = Namespace(names=["rolling-tool"], target=None, check=True, uv=False, npm=False)
+    assert cli.cmd_update(args) == 1
     assert lock.path.read_bytes() == before and not requests and not syncs
     assert not store.exists()
 
-    assert cli.main(["update", "rolling-tool"]) == 0
+    args.check = False
+    assert cli.cmd_update(args) == 0
     after = json.loads(lock.path.read_text(encoding="utf-8"))["packages"]
     original = json.loads(before)["packages"]
     assert after["unrelated"] == original["unrelated"]
@@ -86,6 +89,7 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     pinned = lock.path.read_bytes()
     requests.clear()
     syncs.clear()
-    for flags in (["--check"], []):
-        assert cli.main(["update", "rolling-tool", *flags]) == 0
+    for check in (True, False):
+        args.check = check
+        assert cli.cmd_update(args) == 0
     assert lock.path.read_bytes() == pinned and not requests and not syncs

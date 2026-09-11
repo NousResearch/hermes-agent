@@ -43,7 +43,7 @@ def _resolve_timezone_name() -> str:
             from hermes_cli.config import read_raw_config
             cfg = read_raw_config() or {}
         except Exception:
-            import yaml
+            import hermes_yaml as yaml
             config_path = get_config_path()
             cfg = (yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}) if config_path.exists() else {}
         if cfg:

@@ -48,7 +48,7 @@ RUN apt-get -o Acquire::Retries=3 update && \
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
-FROM debian:13.4
+FROM debian:13.4 AS runtime_base
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
@@ -187,8 +187,8 @@ WORKDIR /opt/hermes
 # download — the same code path pm.sh/pm.ps1 and the desktop payload use)
 # into the image's own runtime dir, a self-contained store baked under
 # /opt/hermes, outside the /opt/data volume so it survives the overlay.
-# The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
-# build steps below run the lockfile's uv, not a second download.
+# PM alone resolves the pinned uv for dependency preparation; build consumers
+# receive Python environments, never an installer executable.
 #
 # Full Chromium supports both headed and headless sessions. It is staged
 # here rather than by `npx playwright install`,
@@ -207,55 +207,52 @@ COPY pm/ pm/
 COPY hermes_constants.py hermes_constants.py
 # PM imports the shared stdlib runtime path and locking owners before deps exist.
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
+COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -m pm.cli install uv chromium; \
-    ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
+    python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium")]'; \
     python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
-    uv --version; \
     browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
     printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
 
-# Raw uv commands must use PM's staged interpreter, not download another
-# under /root where the unprivileged runtime user cannot traverse it.
-ENV UV_PYTHON=/usr/local/bin/python3
-ENV UV_PYTHON_DOWNLOADS=never
+# PM is resident too: never borrow application libraries or create its worker
+# environment under /root (unreachable to the runtime UID).
+RUN python3 -c 'from pathlib import Path; from pm import stage_manager_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes"); python = Path("/usr/local/bin/python3").resolve(); stage_manager_runtime(python=python, destination=root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'
+
+# JS build helpers use the prepared interpreter without an installer parent.
+ENV HERMES_PYTHON=/usr/local/bin/python3
 # The standalone interpreter records its builder's clang toolchain;
 # native extensions must use the compiler installed in this image.
 ENV CC=gcc CXX=g++
 
-# ---------- Layer-cached dependency install ----------
-# Copy only package manifests first so npm install is cached unless the
-# lockfiles themselves change.
-#
-# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
-# because it is referenced as a `file:` workspace dependency from
-# ui-tui/package.json.  Copying the tree up front lets npm resolve the
-# workspace to real content instead of stopping at a bare package.json.
+# Frontend dependencies never enter the runtime layers.
+FROM runtime_base AS frontend_build
 COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
-# apps/shared/ is copied IN FULL because web/package.json references it as a
-# `file:` workspace dependency (same pattern as hermes-ink above).
 COPY apps/shared/ apps/shared/
-
-# `npm_config_install_links=false` forces npm to install `file:` deps as
-# symlinks instead of copies.  This is the default since npm 10+, which is
-# what the image ships now (via the node:22 source stage).  We set it
-# explicitly anyway as defense-in-depth: the previous Debian-bundled npm
-# 9.x defaulted to install-as-copy, which produced a hidden
-# node_modules/.package-lock.json that permanently disagreed with the root
-# lock on the @hermes/ink entry, tripped the TUI launcher's
-# `_tui_need_npm_install()` check on every startup, and triggered a
-# runtime `npm install` that then failed with EACCES.  Keeping the env
-# guards against a future regression if the source npm version changes.
+COPY scripts/build/node-deps.mjs scripts/build/node-deps.mjs
 ENV npm_config_install_links=false
+RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
 
-RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
-    npm cache clean --force
+COPY pyproject.toml uv.lock ./
+COPY web/ web/
+COPY ui-tui/ ui-tui/
+COPY scripts/build/*.mjs scripts/build/
+COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
+COPY assets/ assets/
+RUN node scripts/generate-icons.mjs --source /opt/hermes --out /tmp/hermes-icons && \
+    node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
+    node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
+
+FROM runtime_base AS runtime
+# Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
+COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
+RUN mkdir -p /opt/hermes/node_modules/.bin && \
+    ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
 # The photon plugin's Node sidecar needs its own node_modules
@@ -315,22 +312,17 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
-# The editable link is created after the source copy below.
+# Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
+    --out /opt/hermes/.venv --no-install-project --sealed \
+    --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
+    --extra azure-identity --extra hindsight --extra matrix
 
-# ---------- Frontend build (cached independently from Python source) ----------
-# Copy only the frontend source trees first so that Python-only changes don't
-# invalidate the (relatively slow) web + ui-tui build layer.
-COPY web/ web/
-COPY ui-tui/ ui-tui/
-COPY apps/shared/ apps/shared/
-COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
-COPY assets/ assets/
-RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build && \
-    rm -rf /opt/hermes/.cache/icon-build
+# Shared product outputs are independent of application dependency assembly.
+COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
+COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -342,11 +334,8 @@ RUN cd web && npm run build && \
 # write so the build steps below don't need chmod u+w dances.
 COPY --link --chmod=a+rX,go-w . .
 
-# ---------- Permissions ----------
-# Link hermes-agent itself (editable). Deps are already installed in the
-# cached layer above; `--no-deps` makes this a fast egg-link creation with no
-# resolution or downloads.
-RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps -e "."
+# The shared assembler binds the prepared environment and frontend products.
+RUN /opt/hermes/.venv/bin/python -m docker.build_agent
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and
@@ -393,6 +382,7 @@ RUN set -eu; \
         printf '{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback","updateMechanism":"external"}\n' \
             > /opt/hermes/install-stamp.json; \
     fi; \
+    python3 -c 'import json; from pathlib import Path; path = Path("/opt/hermes/install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     mkdir -p /etc/hermes; \
     python3 -c 'import json, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
 

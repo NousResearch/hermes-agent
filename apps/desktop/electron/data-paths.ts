@@ -50,8 +50,8 @@ export function resolveDesktopHermesHome({
     return paths.join(paths.resolve(env.HERMES_DESKTOP_USER_DATA_DIR), 'hermes-home')
   }
 
-  if (platform === 'win32') {
-    // Explorer can retain an old environment after the user runs setx.
+  if (platform === 'win32' && env.HERMES_HOME === undefined) {
+    // Explorer can miss setx changes. An explicit empty value opts out of that fallback.
     const registryHome: string | null = readWindowsHome()
 
     if (registryHome) {

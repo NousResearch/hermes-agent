@@ -32,7 +32,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 ### 前置要求
 
 项目要求 Python 3.14（`>=3.14,<3.15`）。PM 提供固定版本的解释器和工具。
-准备 Git、git-lfs 和 uv。JS 构建使用 PM 的 Node/npm，或满足相应 `package.json` engines 的版本。
+准备 Git 和 git-lfs。JS 构建使用 PM 的 Node/npm，或满足相应 `package.json` engines 的版本。
 
 ### PM 开发环境
 
@@ -56,40 +56,29 @@ python hermes --version
 ```
 
 PowerShell 开头的点和空格用于 dot-source，不能省略。
-激活读取已安装工具和所选依赖，不下载、不创建 JS workspaces，也不设置常规 venv 提示符。
+激活通过 PM 准备工具并同步依赖，但不创建 JS workspaces，也不设置常规 venv 提示符。
 使用 `python hermes` 明确运行当前 checkout，避免命中全局命令或 MSIX 别名。
 `deactivate` 恢复激活前的环境，不卸载依赖或停止已启动的进程。
 
 ### 独立开发和测试环境 {#manual-development-and-test-environment}
 
-托管 bootstrap 安装运行时依赖，不包含测试所需的 `dev` extra。
-先退出 PM 激活，再准备独立测试环境，保持同一个开发 `HERMES_HOME`。
-测试 runner 清除 `PYTHONPATH`，因此需要自身环境中安装了 pytest 的解释器。
-Windows 源码依赖需为目标架构初始化 C++ 编译环境。不要修改签名应用的载荷。
-
-POSIX：
+先按 [PM 开发工作流](/reference/package-management#developer-workflow) 准备 Python 3.14。
+在该 checkout 中使用准备好的 Python，并保持相同的开发 `HERMES_HOME`。
+PM 必须能够启动，才能构建独立测试环境：
 
 ```bash
-uv venv "$HOME/.hermes/venvs/hermes-dev" --python 3.14
-export UV_PROJECT_ENVIRONMENT="$HOME/.hermes/venvs/hermes-dev"
-uv sync --locked --extra all --extra dev
-export HERMES_PYTHON="$UV_PROJECT_ENVIRONMENT/bin/python"
-"$HERMES_PYTHON" hermes --version
+python -m pm.build_env --source . --out .venv --extra dev --group test
 ```
 
-PowerShell：
+此命令使用提交的锁文件，创建新环境并检查依赖一致性。输出路径必须不存在。
+如需重新生成，请先停止使用该环境的进程，再明确删除该可丢弃的环境。
+PM 不会自动删除已有目录。不要通过原始 pip 或 uv 命令修改 Hermes 环境。
 
-```powershell
-$devEnv = Join-Path $env:LOCALAPPDATA 'hermes-dev-env'
-uv venv $devEnv --python 3.14
-$env:UV_PROJECT_ENVIRONMENT = $devEnv
-uv sync --locked --extra all --extra dev
-$env:HERMES_PYTHON = Join-Path $devEnv 'Scripts/python.exe'
-& $env:HERMES_PYTHON hermes --version
-```
+测试 runner 自动发现仓库的 `.venv`。它会清除 `PYTHONPATH`，因此 pytest 必须安装在解释器自身的环境中。
+也可将 `--out` 指向仓库外的新路径，再将 `HERMES_PYTHON` 设为该环境的解释器。
+Windows 上通过 Bash 运行 `scripts/run_tests.sh`，并预先准备本机 C++ 编译环境。
 
-使用 `uv pip check --python` 和该环境的解释器检查依赖。
-独立测试环境不替代 PM 工具存储或应用的依赖选择。
+独立测试环境不替代 PM 工具存储或应用的依赖选择。不要修改签名应用的载荷。
 运行开发实例前，选择临时的 `HERMES_HOME`，再使用 `python hermes setup` 配置它。
 不要把生产凭据复制到 checkout。
 

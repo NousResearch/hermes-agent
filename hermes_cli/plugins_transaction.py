@@ -86,7 +86,7 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     from hermes_cli import plugins_cmd
     from hermes_cli.runtime_state import recover_publication, runtime_lock
     from pm import paths
-    from pm.ensure import sync_venv
+    from pm.client import sync_venv
     from pm.workspace import _is_member_candidate, enabled_plugin_dirs, member_sources
 
     project = paths.repo_root()

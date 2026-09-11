@@ -69,10 +69,8 @@ def _try_lazy_install_stt() -> bool:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
             "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
+            "write to the dependency environment. Run `hermes tools` as the "
+            "Hermes installation owner and select Local Whisper under Speech-to-Text.",
             exc)
     return False
 

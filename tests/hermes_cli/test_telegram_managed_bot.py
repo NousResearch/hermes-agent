@@ -27,9 +27,14 @@ class TestQRCode:
             assert isinstance(result, str)
             assert len(result) > 10
 
-    def test_render_graceful_without_qrcode(self):
+    def test_render_graceful_without_qrcode(self, capsys):
         with patch.dict("sys.modules", {"qrcode": None}):
-            render_qr_terminal("https://example.com")
+            assert render_qr_terminal("https://example.com") == ""
+            print_qr_code("https://example.com")
+        output = capsys.readouterr().out
+        assert "https://example.com" in output
+        assert "sync_venv" in output
+        assert "pip install" not in output
 
     def test_print_qr_code_with_url(self, capsys):
         print_qr_code("https://t.me/newbot/Bot/test_bot")

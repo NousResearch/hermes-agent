@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a WhatsApp bot via Meta's official Business
 
 # WhatsApp Business Cloud API Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes can connect to WhatsApp through Meta's **official** WhatsApp Business Cloud API. This is the production-grade path: no Node.js bridge subprocess, no QR codes, no account-ban risk.
 
 In exchange:
@@ -365,7 +369,7 @@ If the model emits tool-call-shaped text instead of a structured call, it usuall
 
 ### STT (voice note transcription) returns empty / "could not transcribe"
 
-The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through the managed gateway instead — select **Nous Subscription** for speech-to-text in `hermes tools`, or set it directly:
+The default `stt.provider: local` requires `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`.  If you're a Nous subscriber, you can route STT through the managed gateway instead — select **Nous Subscription** for speech-to-text in `hermes tools`, or set it directly:
 
 ```bash
 hermes config set stt.provider nous

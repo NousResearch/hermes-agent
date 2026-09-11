@@ -10,7 +10,7 @@ from pm.package import InstallError
 
 
 STARTUP_IMPORTS = (
-    ("PyYAML", "yaml", "SafeDumper"),
+    ("ruamel.yaml", "ruamel.yaml", "YAML"),
     ("python-dotenv", "dotenv", "load_dotenv"),
     ("click", "click", "Command"),
     ("certifi", "certifi", "contents"),
@@ -49,7 +49,7 @@ def validate_environment(python: Path, *, env: dict, cwd: Path) -> None:
 
 def repair_dependencies(project_root: Path) -> None:
     """Restore this installation's recorded set; never repair a foreign tree."""
-    from pm.ensure import sync_venv
+    from pm.client import sync_venv
     from pm.paths import repo_root
 
     if Path(project_root).resolve() != repo_root().resolve():

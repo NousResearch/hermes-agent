@@ -145,7 +145,7 @@ def test_requests_send_httpx_user_agent(tmp_path):
 
 
 def test_skill_md_frontmatter_invariants():
-    yaml = pytest.importorskip("yaml")
+    yaml = pytest.importorskip("hermes_yaml")
     content = SKILL_MD.read_text()
     assert content.startswith("---\n")
     fm = yaml.safe_load(re.search(r"^---\n(.*?)\n---", content, re.DOTALL).group(1))

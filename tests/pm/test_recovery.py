@@ -12,8 +12,51 @@ import sys
 import pytest
 
 from pm.lock import Facts
-from pm.packages import uv_env
+from pm.runtime import runtime_environment
 from tests.pm.test_workspace_build_inputs import _wheel
+
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
+
+@pytest.mark.parametrize("failure", [None, "missing_distribution", "broken_module"])
+def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
+    from importlib.metadata import distribution
+    import venv
+
+    import ruamel.yaml
+
+    from hermes_cli.runtime_paths import site_packages
+    from pm.package import InstallError
+    from pm.recovery import validate_environment
+
+    candidate = tmp_path / "candidate"
+    venv.EnvBuilder(with_pip=False).create(candidate)
+    python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    target = site_packages(candidate)
+    package = target / "ruamel" / "yaml"
+    # Copy the real parser and distribution metadata into an isolated candidate.
+    # A fake YAML class would not detect a broken install or missing dependency.
+    ignored = ["__pycache__"] + (["main.py"] if failure == "broken_module" else [])
+    shutil.copytree(Path(ruamel.yaml.__file__).parent, package, ignore=shutil.ignore_patterns(*ignored))
+    installed = distribution("ruamel.yaml")
+    assert installed.files
+    metadata = next(Path(installed.locate_file(path)).parent for path in installed.files if path.name == "METADATA")
+    if failure != "missing_distribution":
+        shutil.copytree(metadata, target / metadata.name)
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="yaml-recovery"\ndependencies=["ruamel.yaml"]\n', encoding="utf-8",
+    )
+
+    if failure:
+        with pytest.raises(InstallError, match="ruamel"):
+            validate_environment(python, env=dict(os.environ), cwd=tmp_path)
+    else:
+        validate_environment(python, env=dict(os.environ), cwd=tmp_path)
 
 
 @pytest.mark.parametrize("failure", [None, "missing_lock", "corrupt_facts", "empty_environment", "missing_extras", "validation", "publication"])
@@ -45,14 +88,12 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     )
     monkeypatch.setattr(paths, "repo_root", lambda: core)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
-        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
-    ))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(workspace, "enabled_member_dirs", lambda: [plugin])
     # The committed core lock is independent of the plugin union.
-    env = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    env.pop("UV_NO_CONFIG")
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
     subprocess.run([uv, "lock"], cwd=core, env=env, capture_output=True, check=True, timeout=60)
     engine.sync_venv([], explicit=True)
     old = selected_venv(core)
@@ -122,6 +163,8 @@ def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_pa
     from hermes_cli.runtime_paths import install_state_dir, selected_venv, site_packages
 
     engine = importlib.import_module("pm.ensure")
+    # Use the same engine for admission and repair with the offline uv fixture.
+    monkeypatch.setattr("pm.client.sync_venv", engine.sync_venv)
     uv = shutil.which("uv")
     assert uv
     core = tmp_path / "core"
@@ -149,12 +192,10 @@ def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_pa
     sibling_config.write_text("plugins:\n  enabled: [worker-deps]\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(paths, "repo_root", lambda: core)
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
-        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
-    ))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
-    env = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    env.pop("UV_NO_CONFIG")
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
     subprocess.run([uv, "lock"], cwd=core, env=env, check=True, capture_output=True, timeout=60)
     engine.sync_venv([], explicit=True)
     old = selected_venv(core)

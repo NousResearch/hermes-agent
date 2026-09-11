@@ -1,13 +1,13 @@
 """The release workflow's dependency graph enforces publication ordering."""
 from pathlib import Path
 
-import yaml
+from ruamel.yaml import YAML
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def workflow(name):
-    return yaml.load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
 
 
 def ancestors(jobs, name):

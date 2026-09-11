@@ -9,9 +9,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
-import pm
 from hermes_cli import memory_setup
 from hermes_cli.runtime_paths import selected_venv
 from pm import paths
@@ -61,13 +60,10 @@ def test_setup_requires_dependencies_and_keeps_the_existing_union(tmp_path, monk
     monkeypatch.setattr(paths, 'repo_root', lambda: core)
     ensure = importlib.import_module('pm.ensure')
     monkeypatch.setattr(ensure, 'lazy_installs_allowed', lambda: True)
-    from pm.packages import uv_env
-
-    monkeypatch.setattr(ensure, 'uv', lambda **kwargs: (
-        uv, {**uv_env(kwargs.get('base_env')), 'UV_PYTHON': sys.executable,
-             'UV_OFFLINE': '1', 'UV_CACHE_DIR': str(tmp_path / 'cache')},
-    ))
-    pm.sync_venv(explicit=True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    # Keep the public client and real engine; only tool acquisition is injected.
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    ensure.sync_venv(explicit=True)
     original_environment = selected_venv(core)
     before = {file: file.read_bytes() for file in (config, other_config, paths.runtime_facts_path())}
     post_calls = []

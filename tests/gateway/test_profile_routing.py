@@ -53,7 +53,7 @@ class TestParseProfileRoutes:
         assert parse_profile_routes([]) == []
 
     def test_coerces_yaml_native_int_ids_to_str(self):
-        # PyYAML loads unquoted snowflakes / negative Telegram ids as int;
+        # YAML loads unquoted snowflakes / negative Telegram ids as int;
         # inbound SessionSource ids are str, so un-coerced routes never match.
         routes = parse_profile_routes([
             {"name": "server", "platform": "discord", "profile": "p",

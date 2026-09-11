@@ -36,7 +36,7 @@ def _auth_state_path() -> Path:
 # ``hermes meet <sub>`` in help order.
 _SUBCOMMAND_HELP = (
     ("setup", "Preflight: playwright, chromium, auth"),
-    ("install", "Install prerequisites (pip deps, Chromium, platform audio tools)"),
+    ("install", "Install prerequisites (Python dependencies, Chromium, platform audio tools)"),
     ("auth", "Sign in to Google and save session state"),
     ("join", "Join a Meet URL"),
     ("status", "Print current Meet bot state"),
@@ -100,7 +100,7 @@ def _cmd_setup() -> int:
     system_ok = system in {"Linux", "Darwin"}
     print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
     pw_ok = importlib.util.find_spec("playwright") is not None
-    print("  playwright     : " + ("installed" if pw_ok else "NOT installed — run: pip install playwright"))
+    print("  playwright     : " + ("installed" if pw_ok else "NOT installed — run: hermes meet install"))
     chromium_ok, chromium_msg = False, "unknown"
     if pw_ok:
         try:
@@ -108,7 +108,7 @@ def _cmd_setup() -> int:
             with sync_playwright() as p:
                 exe = chromium_executable() or p.chromium.executable_path
             chromium_ok = bool(exe and Path(exe).exists())
-            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: python -m playwright install chromium --no-shell"
+            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: hermes meet install"
         except Exception as e:
             chromium_msg = f"probe failed: {e}"
     print(f"  chromium       : {chromium_msg}")
@@ -122,8 +122,8 @@ def _cmd_setup() -> int:
 
 
 def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
-    """pip deps + Chromium; ``--realtime`` adds the platform audio bridge deps.
-    Prompts before every package-manager invocation unless ``--yes``. Linux/macOS only."""
+    """PM dependencies + Chromium; ``--realtime`` adds platform audio tools.
+    Prompts before system package-manager invocations unless ``--yes``."""
     system = platform.system()
     if system not in {"Linux", "Darwin"}:
         print(f"google_meet install: {system} is not supported (linux/macos only)")
@@ -144,23 +144,19 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
             print(fail_msg)
 
     print("google_meet install\n-------------------")
-    pip_pkgs = ["playwright", "websockets"]
-    print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
+    print("\n[1/3] Python dependencies (google-meet extra)")
     try:
-        from hermes_cli.tools_config import _pip_install
-        if _pip_install(["--upgrade", *pip_pkgs], capture_output=False).returncode != 0:
-            print("  pip install failed")
-            return 1
-    except Exception as e:
-        print(f"  pip install failed: {e}")
+        import pm as package_manager
+
+        package_manager.sync_venv(["google-meet"], explicit=True)
+    except Exception as exc:
+        print(f"  dependency install failed: {exc}")
         return 1
-    print("\n[2/3] python -m playwright install chromium --no-shell")
+    print("\n[2/3] PM-managed Chromium")
     try:
-        if subprocess.run([sys.executable, "-m", "playwright", "install", "chromium", "--no-shell"], check=False,
-                          stdin=subprocess.DEVNULL).returncode != 0:
-            print("  playwright install failed (may already be installed)")
-    except Exception as e:
-        print(f"  playwright install failed: {e}")
+        package_manager.ensure("chromium", explicit=True)
+    except Exception as exc:
+        print(f"  Chromium install failed: {exc}")
         return 1
     if not realtime:
         print("\n[3/3] skipped (pass --realtime to install audio tooling too)")
@@ -201,8 +197,7 @@ def _cmd_auth() -> int:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("playwright is not installed. run:\n"
-              "  pip install playwright && python -m playwright install chromium --no-shell")
+        print("playwright is not installed. Run: hermes meet install")
         return 1
     path = _auth_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)

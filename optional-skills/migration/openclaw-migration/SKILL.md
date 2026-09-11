@@ -226,6 +226,9 @@ The helper script still supports category-level `--include` / `--exclude`, but t
 
 ## Commands
 
+Run the helper with Hermes' Python environment, which includes `ruamel.yaml`.
+For a standalone Python environment, install `ruamel.yaml==0.18.17` first.
+
 Dry run with full discovery:
 
 ```bash

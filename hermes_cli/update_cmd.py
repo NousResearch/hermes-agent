@@ -75,7 +75,7 @@ from hermes_cli.update_cmd_config import (  # noqa: F401
 from hermes_cli.update_cmd_deps import (  # noqa: F401
     _INSTALL_DEFINING_FILES, _UPDATE_CRITICAL_MODULES,
     _capture_active_lazy_features,
-    _capture_active_tool_dependencies, _critical_module_import_failures,
+    _critical_module_import_failures,
     _desktop_app_present,
     _editable_install_is_current,
     _npm_bin_exists,
@@ -1014,7 +1014,7 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
 
 def _repair_venv_on_current_checkout(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
-    had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
+    had_desktop_app_before_update, active_lazy_features,
     _windows_gateway_resume) -> bool:
     """Stage a replacement dependency environment; keep the marker on failure."""
     _write_update_incomplete_marker()
@@ -1052,20 +1052,10 @@ def _repair_venv_on_current_checkout(
 
 def _repair_current_checkout(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
-    had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
+    had_desktop_app_before_update, active_lazy_features,
     upstream_checked, _windows_gateway_resume) -> bool:
     """Already-up-to-date path: keep the managed runtime current, repair a broken venv.
     Returns whether the checkout can be reported complete."""
-    # "No new commits" does not mean the venv is safe: pm owns the uv pin now — a pin bump
-    # realizes a NEW entry on the next ensure. The update command is the one caller that
-    # must SEE realization failures, so use the raising API, not the None-swallowing uv().
-    import pm
-
-    try:
-        pm.ensure("uv")
-    except pm.InstallError as e:
-        print(f"⚠ Managed uv unavailable: {e}")
-
     # A current checkout does NOT imply a healthy install: a previous dependency sync may
     # have failed partway (classic on Windows: a running gateway/desktop backend keeps .pyd
     # locked and the installer dies with access-denied, stranding the venv between
@@ -1088,7 +1078,6 @@ def _repair_current_checkout(
             pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             active_lazy_features=active_lazy_features,
-            active_tool_dependencies=active_tool_dependencies,
             _windows_gateway_resume=_windows_gateway_resume)
     return _repair_node_deps_on_current_checkout(
         _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
@@ -1363,7 +1352,6 @@ class _UpdateOptions:
     """Resolved ``hermes update`` inputs (flags, config, pre-update snapshots)."""
 
     active_lazy_features: object
-    active_tool_dependencies: object
     pre_update_version: object
     gw_input_fn: object
     assume_yes: bool
@@ -1377,7 +1365,6 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     # Snapshot before a managed-runtime refresh can replace site-packages, while the old
     # environment can still prove which optional backends were active.
     active_lazy_features = _m()._capture_active_lazy_features()
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
     # Captured before any pull so the completion line can report the transition.
     # Snapshot the pre-update version before files are replaced so the completion line can report the
@@ -1406,7 +1393,7 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
             discard_local_changes = _mode == "discard"
     return _UpdateOptions(
         active_lazy_features=active_lazy_features,
-        active_tool_dependencies=active_tool_dependencies, pre_update_version=pre_update_version,
+        pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes)
 
@@ -1578,7 +1565,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
     gw_input_fn, pre_update_snapshot_id, desktop_dir, had_desktop_app_before_update: bool,
-    active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> None:
+    active_lazy_features, _windows_gateway_resume) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     _invalidate_update_cache()
@@ -1605,7 +1592,7 @@ def _finish_already_up_to_date(
         pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
         had_desktop_app_before_update=had_desktop_app_before_update,
         active_lazy_features=active_lazy_features,
-        active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
+        upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
     _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
@@ -1651,7 +1638,6 @@ def _apply_pulled_update(
     # consumes its outcome instead of recomputing it.
     node_failures, desktop_build_ok = _sync_python_dependencies_after_pull(
         git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
-        active_tool_dependencies=opts.active_tool_dependencies,
         _windows_gateway_resume=_windows_gateway_resume, desktop_dir=desktop_dir,
         had_desktop_app_before_update=had_desktop_app_before_update)
 
@@ -1795,7 +1781,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
                 had_desktop_app_before_update=had_desktop_app_before_update,
                 active_lazy_features=opts.active_lazy_features,
-                active_tool_dependencies=opts.active_tool_dependencies,
                 _windows_gateway_resume=_windows_gateway_resume)
             return
 

@@ -90,7 +90,7 @@ class ProfileRoute:
 def _coerce_route_id(value: Any) -> Optional[str]:
     """Normalize a route discriminator to str for strict equality matching.
 
-    PyYAML loads unquoted numeric IDs as ``int`` while ``SessionSource`` fields are ``str``. Only
+    YAML loads unquoted numeric IDs as ``int`` while ``SessionSource`` fields are ``str``. Only
     ``int`` (not ``bool``) is coerced; floats stringify to something (``"123.0"``) that can never
     match, so they get a load-time warning instead.
 

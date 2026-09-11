@@ -681,8 +681,7 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
 
     def test_ensure_helper_always_delegates_to_install_cli(self):
         """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
-        helper — install_cli() owns the managed-copy check and provisions
-        $HERMES_HOME/bin when only side installs exist."""
+        helper — install_cli() owns PM's isolated tool environment selection."""
         with patch(
             "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
         ), patch(
@@ -694,20 +693,22 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
             _ensure_browser_use_cli()
         install.assert_called_once()
 
-    def test_ensure_helper_install_failure_is_non_fatal(self):
-        """A failed install must warn and fall back, never raise — the
-        uvx zero-install path and the built-in tools remain available."""
+    def test_ensure_helper_install_failure_is_non_fatal(self, capsys):
+        """A failed install names the PM retry, never an ambient uv fallback."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
         with patch(
             "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
         ), patch(
             "tools.browser_use_cli.install_cli",
-            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+            return_value=(False, "PM browser-use install failed:\nboom"),
         ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
             _ensure_browser_use_cli()  # must not raise
 
         assert any("failed" in c.args[0] for c in warn.call_args_list)
+        output = capsys.readouterr().out
+        assert "hermes tools post-setup browser_use_cli" in output
+        assert "uvx" not in output and "uv tool" not in output
 
 
 class TestImagegenBackendRegistry:

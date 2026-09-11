@@ -56,7 +56,8 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
     if sdk is None:
-        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
+                          "python -c \"from pm import sync_venv; sync_venv(['anthropic'], explicit=True)\"")
     return sdk
 
 
@@ -427,7 +428,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
     return sdk.AnthropicBedrock(
         aws_region=region, timeout=_client_timeout(None),
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)

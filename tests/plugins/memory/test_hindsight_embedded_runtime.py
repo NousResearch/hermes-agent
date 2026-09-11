@@ -1,7 +1,7 @@
 """The isolated local_embedded Hindsight runtime (embedded_runtime).
 
-Real imports of the plugin modules; the only fakes sit at the subprocess
-boundary (the uv bridge invocations and the side-python bridge) — the URL the
+Real plugin imports with fakes at PM's operation interface and the side-python
+bridge. Generation ownership is tested in tests/pm; here the URL the
 daemon reports is proven against a real loopback HTTP /health server, never a
 constant port. The boot-selected main environment is never touched.
 """
@@ -16,8 +16,6 @@ import pytest
 
 import plugins.memory.hindsight.embedded_runtime as rt
 
-_STATE = rt._STATE_FILE
-
 
 @pytest.fixture()
 def side_root(tmp_path, monkeypatch):
@@ -30,88 +28,44 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-# -- pinned pyproject ---------------------------------------------------------
-
-
-def test_sideenv_pyproject_pins_exact_pair():
-    text = rt.sideenv_pyproject()
-    assert 'hindsight-embed==0.9.2' in text
-    assert 'hindsight-api-slim[all]==0.9.2' in text  # [all]: full feature parity
-    assert 'requires-python = ">=3.11"' in text
-
-
-# -- ensure_sideenv: candidate build -> atomic commit via the pm uv bridge ----
-
-
-def test_ensure_sideenv_builds_and_publishes_generation(side_root, monkeypatch):
-    calls = []
-
-    def fake_bridge(venv):
-        calls.append(("bridge", venv))
-        return "uv-bin", {"VIRTUAL_ENV": str(venv), "UV_PYTHON": "pm-python"}
-
-    def fake_run(cmd, **kwargs):
-        calls.append(("run", cmd, kwargs["env"]))
-        return _fake_completed()
-
-    monkeypatch.setattr(rt, "_uv_bridge", fake_bridge)
-    monkeypatch.setattr(rt.subprocess, "run", fake_run)
-
-    gen = rt.ensure_sideenv()
-
-    # The generation was built at its FINAL path (no rename), published by the
-    # selection record, and no candidate/prev leftovers exist.
-    assert gen.is_dir() and gen.name.startswith("gen-")
-    assert rt.sideenv_pyproject() in (gen / "pyproject.toml").read_text(encoding="utf-8")
-    assert json.loads((gen / _STATE).read_text(encoding="utf-8"))["pins"] == rt._EXPECTED
-    assert json.loads((side_root / "active.json").read_text(encoding="utf-8"))["generation"] == gen.name
-    assert [p for p in side_root.iterdir() if p.is_dir()] == [gen]
-    # uv invoked for lock+sync against the generation's own venv.
-    runs = [c for c in calls if c[0] == "run"]
-    assert [c[1][1] for c in runs] == ["lock", "sync"]
-    assert all(c[2]["VIRTUAL_ENV"].endswith(".venv") for c in runs)
-    assert all(c[2]["UV_PYTHON"] == "pm-python" for c in runs)
-    assert calls[0][1] == gen / ".venv"
-
-
-def test_ensure_sideenv_short_circuits_when_current(side_root, monkeypatch):
-    gen = side_root / "gen-1"
-    gen.mkdir(parents=True)
-    (side_root / "active.json").write_text(json.dumps({"generation": "gen-1", "pins": rt._EXPECTED}), encoding="utf-8")
-    (gen / _STATE).write_text(json.dumps({"pins": rt._EXPECTED}), encoding="utf-8")
+def test_ensure_sideenv_uses_pm_selected_python(side_root, monkeypatch):
+    import pm
     from hermes_constants import venv_python_path
 
-    py = venv_python_path(gen / ".venv")
-    py.parent.mkdir(parents=True, exist_ok=True)
-    py.write_bytes(b"")
-    monkeypatch.setattr(rt, "_uv_bridge", lambda venv: pytest.fail("bridge used for an up-to-date env"))
-    assert rt.ensure_sideenv() == gen
+    python = venv_python_path(side_root / "selected")
+    seen = {}
+
+    def ensure(name, requirements, **kwargs):
+        seen.update(name=name, requirements=requirements, **kwargs)
+        return python
+
+    monkeypatch.setattr(pm, "ensure_environment", ensure)
+    assert rt.ensure_sideenv() == python
+    assert seen == dict(
+        name="hindsight", requirements=(f"hindsight-embed=={rt._EMBED_VERSION}",
+                                        f"hindsight-api-slim[all]=={rt._API_SLIM_VERSION}"),
+        root=side_root, explicit=True, timeout=3600,
+    )
 
 
-def test_ensure_sideenv_failure_preserves_previous_generation(side_root, monkeypatch):
-    old = side_root / "gen-old"
-    old.mkdir(parents=True)
-    (old / "keep.txt").write_text("old", encoding="utf-8")
-    (side_root / "active.json").write_text(json.dumps({"generation": "gen-old"}), encoding="utf-8")
+def test_sideenv_python_is_pm_passive_selection(side_root, monkeypatch):
+    import pm
+    from hermes_constants import venv_python_path
 
-    def boom(*a, **kw):
-        raise RuntimeError("uv sync failed: disk full")
-
-    monkeypatch.setattr(rt, "_uv_bridge", boom)
-    with pytest.raises(RuntimeError, match="disk full"):
-        rt.ensure_sideenv()
-    # Previous generation untouched and still the published one; the failed
-    # unpublished generation is gone.
-    assert (old / "keep.txt").read_text(encoding="utf-8") == "old"
-    assert json.loads((side_root / "active.json").read_text(encoding="utf-8"))["generation"] == "gen-old"
-    assert [p for p in side_root.iterdir() if p.is_dir()] == [old]
+    python = venv_python_path(side_root / "selected")
+    seen = []
+    monkeypatch.setattr(pm, "environment_python",
+                        lambda name, **kw: seen.append((name, kw)) or python)
+    assert rt.sideenv_python() == python
+    assert seen == [("hindsight", {"root": side_root})]
+    assert not side_root.exists()
 
 
 # -- runtime probe: side interpreter, never the boot env ----------------------
 
 
 def test_check_local_runtime_probes_the_side_python(side_root, monkeypatch):
-    py = _install_side_python(side_root)
+    py = _install_side_python(side_root, monkeypatch)
     seen = {}
 
     def fake_run(cmd, **kw):
@@ -128,7 +82,7 @@ def test_check_local_runtime_probes_the_side_python(side_root, monkeypatch):
 
 
 def test_check_local_runtime_reports_probe_failure(side_root, monkeypatch):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     monkeypatch.setattr(
         rt.subprocess, "run",
         lambda cmd, **kw: _fake_completed(returncode=1, stderr="Illegal instruction (core dumped)"),
@@ -168,24 +122,19 @@ def loopback_health():
     server.server_close()
 
 
-def _install_side_python(side_root, name="gen-1"):
-    """A minimal 'installed' generation: selection record + interpreter file
-    (laid out by the canonical venv_python_path, so the test matches the
-    platform layout the runtime itself resolves)."""
+def _install_side_python(side_root, monkeypatch):
+    """A daemon/probe test needs a selected interpreter, not PM's record format."""
     from hermes_constants import venv_python_path
 
-    gen = side_root / name
-    py = venv_python_path(gen / ".venv")
-    py.parent.mkdir(parents=True, exist_ok=True)
-    (side_root / "active.json").write_text(json.dumps({"generation": name}), encoding="utf-8")
-    py.write_bytes(b"")
-    return py
+    python = venv_python_path(side_root / "selected")
+    monkeypatch.setattr(rt, "sideenv_python", lambda root=None: python)
+    return python
 
 
 def test_ensure_daemon_url_from_sideenv_output_is_reachable(side_root, monkeypatch, loopback_health):
     """The bridge subprocess reports the URL the side env resolved (here: a real
     loopback /health server) — the plugin never invents a port."""
-    py = _install_side_python(side_root)
+    py = _install_side_python(side_root, monkeypatch)
     seen = {}
 
     def fake_run(cmd, *, env=None, **kw):
@@ -209,7 +158,7 @@ def test_ensure_daemon_url_from_sideenv_output_is_reachable(side_root, monkeypat
 
 
 def test_ensure_daemon_env_carries_grace_and_version_pin(side_root, monkeypatch, loopback_health):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     captured = {}
 
     def fake_run(cmd, *, env=None, **kw):
@@ -238,7 +187,7 @@ def test_ensure_daemon_missing_runtime_raises_with_hint(side_root, monkeypatch):
 
 
 def test_ensure_daemon_bridge_failure_surfaces(side_root, monkeypatch):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     monkeypatch.setattr(
         rt.subprocess, "run",
         lambda cmd, **kw: _fake_completed(returncode=1, stderr="boom inside side env"),
@@ -248,7 +197,7 @@ def test_ensure_daemon_bridge_failure_surfaces(side_root, monkeypatch):
 
 
 def test_ensure_daemon_not_ok_surfaces_bridge_error(side_root, monkeypatch):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     monkeypatch.setattr(
         rt.subprocess, "run",
         lambda cmd, **kw: _fake_completed(
@@ -275,7 +224,7 @@ def test_local_runtime_hint_points_at_isolated_install(side_root):
 
 
 def test_trace_logs_on_daemon_start_and_ready(side_root, monkeypatch, caplog, loopback_health):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     monkeypatch.setattr(
         rt.subprocess, "run",
         lambda cmd, **kw: _fake_completed(stdout=f"{rt._BRIDGE_MARKER}" + json.dumps({"ok": True, "url": loopback_health})),
@@ -288,7 +237,7 @@ def test_trace_logs_on_daemon_start_and_ready(side_root, monkeypatch, caplog, lo
 
 
 def test_trace_logs_on_startup_failure(side_root, monkeypatch, caplog):
-    _install_side_python(side_root)
+    _install_side_python(side_root, monkeypatch)
     monkeypatch.setattr(
         rt.subprocess, "run",
         lambda cmd, **kw: _fake_completed(returncode=1, stderr="no dice"),

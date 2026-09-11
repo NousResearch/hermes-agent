@@ -2466,7 +2466,8 @@ class GatewayTurnMixin:
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
-            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
+            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Run: "
+                                            "python -c \"from pm import sync_venv; sync_venv(['messaging'], explicit=True)\"")
 
         proxy_url = self._get_proxy_url()
         if not proxy_url:

@@ -18,6 +18,12 @@ import pytest
 
 import pm.workspace as ws
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 def _site_packages(venv: Path) -> Path:
     """The fixture supplies this interpreter as the PM toolchain."""
@@ -60,13 +66,10 @@ def mini_workspace(tmp_path, monkeypatch):
     store.mkdir()
     venv = tmp_path / "venv"
 
-    import importlib
     import shutil
     import pm.paths
-    from pm.packages import uv_env
 
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
-                        lambda **kwargs: (shutil.which("uv"), {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable}))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(shutil.which("uv")), Path(sys.executable)))
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(pm.paths, "store_root", lambda: store)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)

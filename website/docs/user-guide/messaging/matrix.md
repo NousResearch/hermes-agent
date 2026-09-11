@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a Matrix bot"
 
 # Matrix Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
 
 Hermes works with any Matrix homeserver — Synapse, Conduit, Dendrite, or matrix.org.
@@ -360,11 +364,8 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
 
 ```bash
-# Install mautrix with E2EE support
-pip install 'mautrix[encryption]'
-
-# Or install with hermes extras
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+# Request the declared Matrix dependencies
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 You also need `libolm` installed on your system:
@@ -618,13 +619,13 @@ If this returns your user info, the token is valid. If it returns an error, gene
 **Fix**: Install it:
 
 ```bash
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 Or with Hermes extras:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 ### Encryption errors / "could not decrypt event"
@@ -801,18 +802,10 @@ services:
       - ./matrix-store:/root/.hermes/platforms/matrix/store
 ```
 
-**`Dockerfile`:**
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
-
-CMD ["hermes", "gateway"]
-```
-
-That's the entire container. No API keys for OpenRouter, Anthropic, or any inference provider.
+Use the repository's [Docker build](/user-guide/docker), which includes the
+Matrix extra on compatible Linux targets and the required native libraries.
+Do not install dependencies into the sealed image at runtime. The container
+needs Matrix credentials and proxy access, not inference-provider API keys.
 
 ### Step 3: Start Both
 

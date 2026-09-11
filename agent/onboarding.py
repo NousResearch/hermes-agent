@@ -153,10 +153,10 @@ def is_seen(config: Mapping[str, Any], flag: str) -> bool:
 def mark_seen(config_path: Path, flag: str) -> bool:
     """Persist ``onboarding.seen.<flag> = True`` atomically; False on any error (best-effort)."""
     try:
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.config import atomic_config_write
     except Exception as e:  # pragma: no cover — dependency issue
-        logger.debug("onboarding: failed to import yaml/utils: %s", e)
+        logger.debug("onboarding: failed to import hermes_yaml/utils: %s", e)
         return False
     try:
         cfg: dict = {}

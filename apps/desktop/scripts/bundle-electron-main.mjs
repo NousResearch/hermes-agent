@@ -1,92 +1,82 @@
 #!/usr/bin/env node
-// bundle-electron-main.mjs — bundles electron/main.ts and electron/preload.ts
-// into self-contained js files in dist/ so the packaged app doesn't need
-// node_modules/ or tsx at runtime.
-//
-// Output:
-//   dist/electron-main.mjs    (MJS bundle — entry point for packaged app)
-//   dist/electron-preload.js (CJS bundle — loaded via BrowserWindow preload)
-//
-// `electron` and `node-pty` are external (provided by the runtime / staged
-// separately via stage-native-deps).
-import { build } from 'esbuild'
-import { createRequire } from 'node:module'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { parseArgs } from 'node:util'
+import { isMain, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 import { environmentDefaultsBanner } from './bundle-env.mjs'
 
-const require = createRequire(import.meta.url)
+const repoRoot = resolve(import.meta.dirname, '../../..')
 
-const here = dirname(fileURLToPath(import.meta.url))
-const root = resolve(here, '..')
-const distDir = resolve(root, 'dist')
-mkdirSync(distDir, { recursive: true })
-
-const mainEntry = resolve(root, 'electron/main.ts')
-const mainOut = resolve(distDir, 'electron-main.mjs')
-const preloadEntry = resolve(root, 'electron/preload.ts')
-const preloadOut = resolve(distDir, 'electron-preload.js')
-
-const external = ['electron', 'node-pty', 'get-windows', 'fs']
-// Production bundles bake packaged=true so unpackaged `electron .` still
-// behaves like a packaged build. Dev bundles (`--dev`) leave the env alone
-// so HERMES_DESKTOP_DEV_SERVER / source-tree resolution keep working.
-const isDev = process.argv.includes('--dev')
-
-// The install stamp is baked INTO the bundle: the define below sets the
-// __HERMES_INSTALL_STAMP__ global to the stamp OBJECT literal (the JSON
-// text is a valid JS expression, so no string round-trip). A baked
-// constant cannot be missing, stale, or edited after signing.
-// `npm run build` writes build/install-stamp.json immediately before this
-// script runs, so a missing file here is a broken build, not a thin one.
-// Dev bundles bake nothing — install-stamp.ts's typeof guard yields null,
-// because a dev run has no artifact to be truthful about (a stale stamp
-// from a previous build would lie about provenance).
-function bakedInstallStamp() {
-  const raw = readFileSync(resolve(root, 'build/install-stamp.json'), 'utf8')
-  JSON.parse(raw) // fail the build on malformed output, not first launch
-  return raw
+// Evaluate the one identity module in a fresh process. Its CJS cache and the
+// caller's environment must not carry a previous variant into this artifact.
+function productIdentity(source, stamp) {
+  const variant = stamp.updateMechanism === 'microsoft-store' ? 'store'
+    : stamp.payload === 'bootstrap' ? '' : stamp.payload
+  if (!['', 'bundled', 'light', 'store'].includes(variant)) {
+    throw new Error(`Invalid desktop stamp payload: ${stamp.payload}`)
+  }
+  return execFileSync(process.execPath, ['-e', 'console.log(JSON.stringify(require(process.argv[1])))',
+    join(source, 'apps/desktop/product-identity.cjs')], {
+    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: stamp.tag || '',
+      // Commit builds stamp source='commit-build'; the display name carries
+      // the short SHA (see product-identity.cjs). Tagged builds pass ''.
+      HERMES_BUILD_COMMIT: stamp.source === 'commit-build' ? (stamp.commit || '') : '' },
+    encoding: 'utf8',
+  }).trim()
 }
 
-const define = isDev
-  ? {}
-  : {
-      'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true),
-      '__HERMES_INSTALL_STAMP__': bakedInstallStamp(),
-      // The product identity (name object, appId, deep-link scheme)
-      // baked the same way electron-builder gets it
-      '__HERMES_PRODUCT_IDENTITY__': JSON.stringify(require('../product-identity.cjs')),
-    }
+/** Bundle main/preload using only the prepared workspace's compiler. */
+export async function bundleElectronMain({ source, out, stamp, dev = false }) {
+  source = resolve(source)
+  out = resolve(out)
+  const { build } = await import(pathToFileURL(workspaceTool(source, 'apps/desktop', 'esbuild')).href)
+  // Defaults must run before bundled modules resolve paths or onboarding flags.
+  // Dev bundles leave the environment alone so source-tree resolution keeps working.
+  const envBanner = dev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')
+  const define = {}
+  if (!dev) {
+    if (!stamp) throw new Error('A prepared install stamp is required')
+    const raw = readFileSync(stamp, 'utf8')
+    const metadata = JSON.parse(raw)
+    define['process.env.HERMES_DESKTOP_IS_PACKAGED'] = JSON.stringify(true)
+    define.__HERMES_INSTALL_STAMP__ = raw
+    define.__HERMES_PRODUCT_IDENTITY__ = productIdentity(source, metadata)
+  }
+  mkdirSync(out, { recursive: true })
+  const common = {
+    absWorkingDir: join(source, 'apps/desktop'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    external: ['electron', 'node-pty', 'get-windows', 'fs'],
+    define,
+    logLevel: 'info',
+  }
+  await build({
+    ...common,
+    entryPoints: [join(source, 'apps/desktop/electron/main.ts')],
+    format: 'esm',
+    outfile: join(out, 'electron-main.mjs'),
+    banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner },
+  })
+  await build({
+    ...common,
+    entryPoints: [join(source, 'apps/desktop/electron/preload.ts')],
+    format: 'cjs',
+    outfile: join(out, 'electron-preload.js'),
+  })
+}
 
-// Bundle main.ts → dist/electron-main.mjs
-await build({
-  entryPoints: [mainEntry],
-  bundle: true,
-  platform: 'node',
-  format: 'esm',
-  target: 'node20',
-  outfile: mainOut,
-  external,
-  banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
-      + (isDev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')),
-  },
-  define,
-  logLevel: 'info',
-})
-console.log(`bundled ${mainOut}${isDev ? ' (dev)' : ''}`)
-
-// Bundle preload.ts → dist/electron-preload.js
-await build({
-  entryPoints: [preloadEntry],
-  bundle: true,
-  platform: 'node',
-  format: 'cjs',
-  target: 'node20',
-  outfile: preloadOut,
-  external,
-  define,
-  logLevel: 'info',
-})
-console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+if (isMain(import.meta.url)) {
+  const { values } = parseArgs({ options: {
+    source: { type: 'string', default: repoRoot },
+    out: { type: 'string' }, stamp: { type: 'string' }, dev: { type: 'boolean' },
+  } })
+  await bundleElectronMain({
+    ...values,
+    out: values.out || join(values.source, 'apps/desktop/dist'),
+    stamp: values.stamp || join(values.source, 'apps/desktop/build/install-stamp.json'),
+  })
+}

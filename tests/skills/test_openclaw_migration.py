@@ -213,7 +213,7 @@ def test_readable_config_keeps_every_pre_existing_key(tmp_path: Path):
 
     migrator.migrate()
 
-    import yaml
+    import hermes_yaml as yaml
 
     merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert merged["model"] == "hermes-4-405b"
@@ -632,7 +632,7 @@ def test_rebrand_text_replaces_openclaw_variants():
 def _run_model_migration(tmp_path: Path, openclaw_json: dict) -> dict:
     """Helper: run just migrate_model_config on an openclaw.json and return
     the parsed destination config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     mod = load_module()
     source = tmp_path / ".openclaw"

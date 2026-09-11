@@ -6,6 +6,9 @@ description: "将 Hermes Agent 设置为 Matrix 机器人"
 
 # Matrix 设置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 与 Matrix 集成，Matrix 是一种开放的联邦消息协议。Matrix 允许你运行自己的 homeserver，也可以使用 matrix.org 等公共 homeserver——无论哪种方式，你都保持对通信的控制权。机器人通过 `mautrix` Python SDK 连接，通过 Hermes Agent 管道（包括工具调用、记忆和推理）处理消息，并实时响应。它支持文本、文件附件、图片、音频、视频，以及可选的端对端加密（E2EE）。
 
 Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matrix.org。
@@ -244,10 +247,10 @@ E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
 
 ```bash
 # 安装带 E2EE 支持的 mautrix
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 
 # 或通过 hermes extras 安装
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 你还需要在系统上安装 `libolm`：
@@ -422,13 +425,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 **解决方法**：安装它：
 
 ```bash
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 或通过 Hermes extras：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 ### 加密错误/"无法解密事件"
@@ -584,18 +587,8 @@ services:
       - ./matrix-store:/root/.hermes/platforms/matrix/store
 ```
 
-**`Dockerfile`：**
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
-
-CMD ["hermes", "gateway"]
-```
-
-这就是整个容器。无需 OpenRouter、Anthropic 或任何推理提供商的 API 密钥。
+使用仓库的 [Docker 构建](/user-guide/docker)。它在兼容的 Linux 目标上包含 Matrix extra 和所需的本机库。
+不要在运行时向密封镜像安装依赖。容器需要 Matrix 凭据和代理访问，不需要推理提供商的 API 密钥。
 
 ### 第三步：同时启动
 

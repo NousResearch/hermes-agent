@@ -2945,6 +2945,9 @@ def main():
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")
+    parser.add_argument("--bundle-unset", action="append", default=[], metavar="NAME",
+                        help="Clear an inherited variable at desktop launch, even when set. "
+                             "Uses an explicit empty value; repeat for multiple variables.")
     parser.add_argument("--prune-canaries", action="store_true",
                         help="Delete canary releases+tags older than 14 days")
     parser.add_argument("--publish", action="store_true",
@@ -2963,8 +2966,8 @@ def main():
                         help="Skip changelog")
     args = parser.parse_args()
 
-    if args.bundle_env and args.build_commit is None:
-        parser.error("--bundle-env requires --build-commit")
+    if (args.bundle_env or args.bundle_unset) and args.build_commit is None:
+        parser.error("--bundle-env and --bundle-unset require --build-commit")
     if args.canary and args.bump:
         parser.error("--canary and --bump are mutually exclusive")
     if args.build_commit is not None:

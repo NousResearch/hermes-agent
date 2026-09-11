@@ -135,9 +135,9 @@ async def test_clear_reactions_handles_api_error_gracefully(monkeypatch):
 
 def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
     """gateway/config.py bridges telegram.reactions to TELEGRAM_REACTIONS env var."""
-    import yaml
+    import hermes_yaml as yaml
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(yaml.dump({
+    config_file.write_text(yaml.safe_dump({
         "telegram": {
             "reactions": True,
         },

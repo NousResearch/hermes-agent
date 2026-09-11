@@ -12,9 +12,15 @@ import sys
 import pytest
 
 from pm.lock import Facts, Lockfile
-from pm.packages import uv_env
+from pm.runtime import runtime_environment
 from pm.store import current_target, sha256_file, tree_digest
 from tests.pm.test_workspace_build_inputs import _wheel
+
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
 
 
 @pytest.mark.parametrize("marker_name", [".update-incomplete", ".lazy-refresh-incomplete", None, "manual", "baseline"])
@@ -48,12 +54,10 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     monkeypatch.setattr(paths, "repo_root", lambda: core)
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
-        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
-    ))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
-    clean = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    clean.pop("UV_NO_CONFIG")
+    clean = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    clean.pop("UV_NO_CONFIG", None)
     subprocess.run([uv, "lock"], cwd=core, env=clean, capture_output=True, check=True, timeout=60)
     engine.sync_venv([], explicit=True, plugin_dirs=[])
     old = selected_venv(core)

@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import subprocess
-import yaml
+import hermes_yaml as yaml
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional

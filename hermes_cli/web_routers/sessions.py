@@ -543,9 +543,13 @@ async def get_session_messages(
         default_page = limit is None
         latest_page = order == "latest" or (order is None and default_page)
         _limit = 500 if default_page else min(limit, 500)
-        return sid, _limit, db.get_messages(
-            sid, limit=_limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted)
+        if include_compacted:
+            messages = db.get_display_messages(
+                sid, limit=_limit, offset=offset, latest=latest_page)
+        else:
+            messages = db.get_messages(
+                sid, limit=_limit, offset=offset, latest=latest_page)
+        return sid, _limit, messages
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:

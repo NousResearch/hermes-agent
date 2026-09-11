@@ -416,15 +416,30 @@ class SessionSessionsMixin:
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
-    # Children that are NOT compression continuations (branches, delegates, tool sessions). Markers
+    # Children that are NOT compression continuations (branches, delegates, resets, tool sessions). Markers
     # are bound to the queried parent id: continuations inherit model_config verbatim, so
     # presence-matching misclassified them as delegates.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
         " '$._branched_from'), '') != ?\n"
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n  AND COALESCE({alias}source, '') != 'tool'\n"
+        " '$._delegate_from'), '') != ?\n"
+        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
+        " '$._reset_from'), '') != ?\n  AND COALESCE({alias}source, '') != 'tool'\n"
     )
+
+    _LINEAGE_CONTINUATION_EDGE_SQL = """
+                  AND COALESCE(json_extract(
+                        CASE WHEN json_valid({child}.model_config) THEN {child}.model_config ELSE '{{}}' END,
+                        '$._branched_from'), '') != {parent}.id
+                  AND COALESCE(json_extract(
+                        CASE WHEN json_valid({child}.model_config) THEN {child}.model_config ELSE '{{}}' END,
+                        '$._delegate_from'), '') != {parent}.id
+                  AND COALESCE(json_extract(
+                        CASE WHEN json_valid({child}.model_config) THEN {child}.model_config ELSE '{{}}' END,
+                        '$._reset_from'), '') != {parent}.id
+                  AND COALESCE({child}.source, '') != 'tool'
+    """
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
@@ -806,6 +821,7 @@ class SessionSessionsMixin:
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+                {self._LINEAGE_CONTINUATION_EDGE_SQL.format(child='child', parent='parent')}
               ),
               descendants(id) AS (
                 SELECT ?
@@ -815,6 +831,7 @@ class SessionSessionsMixin:
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+                {self._LINEAGE_CONTINUATION_EDGE_SQL.format(child='child', parent='parent')}
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors

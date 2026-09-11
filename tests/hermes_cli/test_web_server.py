@@ -2215,6 +2215,40 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
+    def test_get_session_messages_pages_across_rotated_compression_lineage(self):
+        """The Desktop display path keeps the parent prefix reachable after rotation."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rotation-parent", source="telegram")
+            db.append_message("rotation-parent", role="user", content="old q", timestamp=1.0)
+            db.append_message("rotation-parent", role="assistant", content="old a", timestamp=2.0)
+            db.end_session("rotation-parent", "compression")
+            db.create_session(
+                session_id="rotation-child", source="telegram",
+                parent_session_id="rotation-parent")
+            db.append_message("rotation-child", role="user", content="summary", timestamp=3.0)
+            # Rotation carries a protected tail into the child. It must not consume a
+            # second pagination slot or move from its original chronological position.
+            db.append_message("rotation-child", role="assistant", content="old a", timestamp=2.0)
+            db.append_message("rotation-child", role="assistant", content="recent a", timestamp=4.0)
+        finally:
+            db.close()
+
+        tail = self.client.get(
+            "/api/sessions/rotation-child/messages"
+            "?include_compacted=true&limit=2&order=latest"
+        )
+        prefix = self.client.get(
+            "/api/sessions/rotation-child/messages"
+            "?include_compacted=true&limit=2&offset=2&order=latest"
+        )
+
+        assert tail.status_code == prefix.status_code == 200
+        assert [m["content"] for m in prefix.json()["messages"]] == ["old q", "old a"]
+        assert [m["content"] for m in tail.json()["messages"]] == ["summary", "recent a"]
+
     def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
         from agent.context_compressor import (
             HISTORICAL_TASK_HEADING,

@@ -811,6 +811,52 @@ class SessionMessagesMixin:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
+    def get_display_messages(self, session_id: str, *, limit: Optional[int] = None,
+                             offset: int = 0, latest: bool = False) -> List[Dict[str, Any]]:
+        """Page the logical display transcript across a compression lineage.
+
+        Legacy rotating compression stores the visible prefix in ended ancestors and the
+        summary/tail in the live tip.  Display pagination must span both without changing
+        the active-only model replay.  ``display_identity`` collapses protected-tail copies
+        before LIMIT/OFFSET, and ``display_order`` retains their original chronology.
+        """
+        session_ids = self.get_compression_lineage(session_id) or [session_id]
+        if len(session_ids) == 1:
+            return self.get_messages(
+                session_id, include_compacted=True, limit=limit, offset=offset, latest=latest)
+        if all(self._ensure_display_order(sid) for sid in session_ids):
+            placeholders = _placeholders(session_ids)
+            direction = "DESC" if latest else "ASC"
+            sql = f"""WITH logical AS (
+                    SELECT display_identity, MIN(display_order) AS display_order
+                    FROM messages
+                    WHERE session_id IN ({placeholders}) AND (active = 1 OR compacted = 1)
+                    GROUP BY display_identity
+                ), page AS (
+                    SELECT display_identity, display_order FROM logical
+                    ORDER BY display_order {direction} LIMIT ? OFFSET ?
+                )
+                SELECT chosen.* FROM page
+                JOIN messages AS chosen ON chosen.id = (
+                    SELECT candidate.id FROM messages AS candidate
+                    WHERE candidate.session_id IN ({placeholders})
+                      AND candidate.display_identity = page.display_identity
+                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                )
+                ORDER BY page.display_order ASC"""
+            rows = self._read_all(
+                sql, [*session_ids, -1 if limit is None else limit, offset, *session_ids])
+        else:
+            # A read-only pre-index store cannot backfill display identities. Preserve the
+            # historical projection exactly, then page the deduped logical rows in memory.
+            rows = self._dedupe_display_generations(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
+                "AND (active = 1 OR compacted = 1) ORDER BY id ASC", session_ids))
+            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+        return [self._row_to_message_dict(row, warn_context="get_display_messages", summary_flag=True)
+                for row in rows]
+
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
         ids = [s for s in session_ids if s]
@@ -1239,6 +1285,31 @@ class SessionMessagesMixin:
             return False
         markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
         parent_id = session.get("parent_session_id")
+        return parent_id in markers if parent_id else any(m is not None for m in markers)
+
+    def _is_lineage_boundary_child_row(self, session: Dict[str, Any]) -> bool:
+        """True for a parent-bound branch, delegate, reset, or tool edge.
+
+        Compression continuations inherit ``model_config`` verbatim, so a marker for an older
+        parent is not a boundary on the current edge. Malformed config does not invent a
+        boundary.
+        """
+        if session.get("source") == "tool":
+            return True
+        cfg = session.get("model_config")
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                return False
+        if not isinstance(cfg, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        markers = (
+            cfg.get("_branched_from"),
+            cfg.get("_delegate_from"),
+            cfg.get("_reset_from"),
+        )
         return parent_id in markers if parent_id else any(m is not None for m in markers)
 
     def is_explicit_fork_child(self, session_id: str) -> bool:

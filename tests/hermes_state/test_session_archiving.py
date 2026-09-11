@@ -49,3 +49,20 @@ def test_unarchiving_compression_tip_unarchives_projected_root(db):
     assert db.get_session("root")["archived"] == 0
     assert db.get_session("tip")["archived"] == 0
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["tip"]
+
+
+def test_archiving_respects_parent_bound_reset_but_crosses_inherited_reset(db):
+    _compression_pair(db)
+    db.patch_session_model_config("tip", {"_reset_from": "root"})
+
+    assert db.set_session_archived("tip", True) is True
+
+    assert db.get_session("root")["archived"] == 0
+    assert db.get_session("tip")["archived"] == 1
+    assert db.set_session_archived("tip", False) is True
+    db.patch_session_model_config("tip", {"_reset_from": "older-parent"})
+
+    assert db.set_session_archived("tip", True) is True
+
+    assert db.get_session("root")["archived"] == 1
+    assert db.get_session("tip")["archived"] == 1

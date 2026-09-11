@@ -169,6 +169,29 @@ def test_turn_lease_walks_compression_child_that_inherited_fork_markers(tmp_path
     db.release_session_turn_lease("original-parent", original_holder)
 
 
+def test_turn_lease_respects_parent_bound_reset_but_walks_inherited_reset(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", source="test")
+    db.end_session("parent", "compression")
+    db.create_session(
+        "reset-child",
+        source="test",
+        parent_session_id="parent",
+        model_config={"_reset_from": "parent"},
+    )
+    db.create_session("continuation-parent", source="test")
+    db.end_session("continuation-parent", "compression")
+    db.create_session(
+        "continuation",
+        source="test",
+        parent_session_id="continuation-parent",
+        model_config={"_reset_from": "older-parent"},
+    )
+
+    assert db._session_turn_lease_key("reset-child") == "reset-child"
+    assert db._session_turn_lease_key("continuation") == "continuation-parent"
+
+
 def test_turn_lease_write_txn_does_not_trust_fail_open_key_helper(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):

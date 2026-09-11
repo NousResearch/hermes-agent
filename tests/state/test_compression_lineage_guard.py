@@ -158,6 +158,26 @@ def test_compression_lineage_includes_continuation_with_foreign_markers(
     ]
 
 
+def test_compression_lineage_includes_continuation_with_foreign_reset_marker(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "reset-descendant")
+    db.create_session(
+        "reset-descendant-tip",
+        source="webui",
+        parent_session_id="reset-descendant",
+        model_config={"_reset_from": "some-original-parent"},
+    )
+
+    assert db.get_compression_lineage("reset-descendant-tip") == [
+        "reset-descendant",
+        "reset-descendant-tip",
+    ]
+    child = db.find_live_compression_child("reset-descendant")
+    assert child is not None
+    assert child["id"] == "reset-descendant-tip"
+
+
 def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
     db: SessionDB,
 ) -> None:

@@ -180,6 +180,80 @@ class TestAncestorPrefix:
         assert _texts(display) == [("user", "branch turn")]
 
 
+class TestLogicalDisplayLineage:
+    def test_reset_child_does_not_expose_or_resume_from_compression_parent(self, db):
+        db.create_session("parent", source="desktop")
+        db.append_message("parent", "user", "parent private transcript")
+        db.end_session("parent", "compression")
+        db.create_session(
+            "reset-child",
+            source="desktop",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.append_message("reset-child", "user", "new conversation")
+
+        assert db.find_live_compression_child("parent") is None
+        assert db.resolve_resume_session_id("parent") == "parent"
+        assert db.get_compression_lineage("reset-child") == ["reset-child"]
+        assert _texts(db.get_display_messages("reset-child")) == [
+            ("user", "new conversation"),
+        ]
+
+    def test_direct_delegate_excludes_parent_transcript(self, db):
+        db.create_session("root", source="telegram")
+        db.append_message("root", "user", "root turn")
+        db.create_session(
+            "delegate",
+            source="delegate",
+            parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.append_message("delegate", "user", "delegate turn")
+
+        display = db.get_display_messages("delegate")
+
+        assert _texts(display) == [("user", "delegate turn")]
+
+    def test_compressed_branch_continuation_keeps_branch_local_prefix(self, db):
+        db.create_session("root", source="desktop")
+        db.append_message("root", "user", "root turn")
+        db.create_session(
+            "branch",
+            source="desktop",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch", "user", "branch turn")
+        db.end_session("branch", "compression")
+        db.create_session("branch-tip", source="desktop", parent_session_id="branch")
+        db.append_message("branch-tip", "assistant", "branch-tip turn")
+
+        display = db.get_display_messages("branch-tip")
+
+        assert _texts(display) == [
+            ("user", "branch turn"),
+            ("assistant", "branch-tip turn"),
+        ]
+
+    def test_live_continuation_ignores_stale_compression_sibling(self, db):
+        db.create_session("parent", source="desktop")
+        db.append_message("parent", "user", "parent prefix")
+        db.end_session("parent", "compression")
+        db.create_session("stale", source="desktop", parent_session_id="parent")
+        db.append_message("stale", "assistant", "stale sibling")
+        db.end_session("stale", "ws_orphan_reap")
+        db.create_session("live", source="desktop", parent_session_id="parent")
+        db.append_message("live", "assistant", "live tip")
+
+        display = db.get_display_messages("live")
+
+        assert _texts(display) == [
+            ("user", "parent prefix"),
+            ("assistant", "live tip"),
+        ]
+
+
 class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):
         """The guard must not undercount: it bounds an in-memory materialization."""

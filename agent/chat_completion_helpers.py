@@ -1814,6 +1814,30 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
 
 
+def _rescope_fallback_fast_mode(agent) -> None:
+    """Re-resolve the static ``/fast`` param for the NEW route, dropping the old one.
+
+    ``{"speed": "fast"}`` (Anthropic) and ``{"service_tier": "priority"}`` (OpenAI/xAI)
+    are route-specific and pinned at build time. Carrying one onto a fallback that does
+    not accept it raises TypeError inside ``Completions.create()`` before any request is
+    sent, so the turn dies with no response — the failure survives a provider swap that
+    was supposed to rescue it. Bounded auto/cold tiers are layered per request by
+    ``agent.fast_mode`` and are deliberately left alone here.
+    """
+    try:
+        overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        overrides.pop("speed", None)
+        overrides.pop("service_tier", None)
+        if getattr(agent, "service_tier", None) == "priority":
+            from hermes_cli.models import resolve_fast_mode_overrides
+            overrides.update(resolve_fast_mode_overrides(
+                getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None)) or {})
+        agent.request_overrides = overrides
+    except Exception as _fast_err:
+        logger.debug("Failed to re-scope fast-mode overrides for fallback %s: %s", agent.model, _fast_err)
+
+
 def _buffer_fallback_notice(agent, notice: str) -> None:
     """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
     _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
@@ -1905,6 +1929,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             _update_fallback_context_compressor(agent)
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            _rescope_fallback_fast_mode(agent)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (

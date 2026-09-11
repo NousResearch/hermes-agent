@@ -1,6 +1,5 @@
 """Bootstrap entrypoints must hand dependency operations to PM's own interpreter."""
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

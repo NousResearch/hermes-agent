@@ -58,6 +58,19 @@ hermes plugins enable delegation-router
 Route when the work needs a specialist's context (a project repo, an ad account, a QA harness).
 Leave it stock when the task is generic and cheap, or when you deliberately want a clone.
 
+## Relation to the Kanban board
+
+The board is a **durable queue of cards**: every worker starts fresh from a written brief, which is
+right for work that must outlive a conversation (scheduled jobs, unattended fan-outs, a paper trail).
+It is a poor fit for a live loop — cards need claims, leases and notify subscriptions to be kept
+straight by hand, a completed card is not a committed one, and the knowledge a worker gains dies
+with the card. A board is not a conversation.
+
+Profile-pool delegation is the counterpart. The orchestrator stays in the conversation, the handoff
+is a call rather than a card, and each task runs in a standing profile whose skills and memory
+survive it. The two compose: keep long-lived unattended work on the board, and route interactive
+work to profiles — from a card too, since a Kanban worker is just another Hermes session.
+
 ## The routing table
 
 `$HERMES_HOME/plugins/delegation-router/routing.yaml` (the plugin ships

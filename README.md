@@ -144,6 +144,45 @@ without ever running away with itself.
 Both stay available. A task that resolves to no bucket is handed to stock delegation untouched, so
 routing never silently swallows work.
 
+### Kanban, and what this fixes
+
+We ran a multi-profile fleet on the Kanban board before building this, and it taught us where a
+board helps and where it hurts. A board is a **durable queue of cards**, and every card is picked up
+by a fresh worker with a hand-written brief. That is genuinely good for work that must outlive a
+conversation — scheduled jobs, unattended fan-outs, a paper trail of who did what. It is a poor fit
+for a live loop with a human in it, and the friction is concrete, not philosophical:
+
+| what we hit | why it happens |
+|---|---|
+| Cards sit in `ready` and never spawn | Board capacity counts **all** running tasks across every profile, so an unrelated swarm starves your work; a `kanban_link` written in the wrong direction deadlocks both cards; and the dispatcher itself can wedge (`ready` queue non-empty for N ticks, 0 workers spawned). |
+| A card stays `running` after the worker is done | A completion that does not persist leaves `claim_lock` / `worker_pid` set. The dispatcher skips any card holding a live-looking claim, so nothing downstream moves — and the same applies to a card whose worker crashed. |
+| A completed card is not a committed card | A worker can complete with a confident summary while the work sits uncommitted in its worktree, or committed but never pushed. Downstream cards are blind to it until someone checks the branch by hand. |
+| Verdicts need auditing | A "BLOCKED: needs a human credential" verdict is the cheapest kind to disprove — often the credential was on disk, or a host in the same stack was already authenticated. Judgement only counts when it names the file it was formed from. |
+| Triage has one exit | `unblock` does not apply; only `specify` — and that rewrite strips the original brief, so the operating context has to be re-posted as a comment. |
+| Dispatch preflight is manual | Approvals gates, provider blocks and per-profile config have to be checked before a fan-out, or the worker dies headless at the first write. |
+| Chat stays silent | The board posts nothing until a notify subscription exists; the usual cause of "why did nothing tell me?" is zero rows in the notify table. |
+| Bookkeeping is the orchestrator's job | Leases, stale claims, dependency direction, block loops, shared-browser serialisation, durable retry scripts — all real, all handled by hand at the command centre. |
+
+The deeper issue is that **a board is not a conversation**. Every worker starts from zero, so the
+brief has to be re-written each time; the knowledge it gains dies with the card; and the human
+loses the live thread — you check the board instead of talking to the thing doing the work.
+
+Profile-pool delegation is the counterpart, not the replacement:
+
+- **Live loop.** The orchestrator stays in the conversation. You talk to one agent that dispatches,
+  reads results and keeps the record — no board trip to see where something is.
+- **Knowledge accumulates.** A routed task runs in a standing profile, so the skills and memory it
+  builds survive the run. The brief gets shorter every time, not longer.
+- **Handoff is a call, not a card.** `delegate_task(routing="qa", goal=…)` needs no lease, no claim,
+  no dependency graph and no notify subscription: the child registers as a visible subagent, the
+  result comes back as a message, the transcript stays on disk.
+- **Observability for free.** Live transcripts, the run audit log, `delegation_router_status`, and
+  `action="list"`/`action="stop"` on running children.
+
+They compose: keep Kanban for work that must outlive the session (a nightly audit, a multi-day
+delivery), and use routed profiles for the interactive loop — including *from* a card, because a
+Kanban worker is just another Hermes session that can route its own sub-work.
+
 ### Quickstart
 
 ```bash

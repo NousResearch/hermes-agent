@@ -146,9 +146,25 @@ def _tabify(src: str) -> str:
 # `space.getMessage`, `toInboundMessages` for the live stream), plus stubs of
 # the helpers they close over. Mirrors the published shape — tab-indented (via
 # `_tabify`), `const ... = async` declarations, single-line builder calls — so
-# the anchors exercise the real code path, and exporting the two functions lets
+# the anchors exercise the real code path, and exporting the functions lets
 # the test assert runtime behavior rather than only string shape.
 _SPECTRUM_IMESSAGE_FIXTURE = """
+const asPoll = (input) => {
+  if (!input.title) throw new Error("poll title must not be empty");
+  return { type: "poll", ...input };
+};
+const toCachedPoll = (input) => {
+  const poll = asPoll({
+    title: input.title,
+    options: input.options.map((optionInfo) => ({ title: optionInfo.text }))
+  });
+  const optionsByIdentifier = new Map();
+  for (const [index, optionInfo] of input.options.entries()) {
+    const option = poll.options[index];
+    if (option && optionInfo.optionIdentifier) optionsByIdentifier.set(optionInfo.optionIdentifier, option);
+  }
+  return { poll, optionsByIdentifier };
+};
 const formatChildId = (partIndex, parentGuid) => `p:${partIndex}/${parentGuid}`;
 const asText = (text) => ({ type: "text", text });
 const asCustom = (message) => ({ type: "custom" });
@@ -225,7 +241,7 @@ const toInboundMessages = async (client, cache, event, phone) => {
   cacheMessage(cache, msg);
   return [msg];
 };
-export { rebuildFromAppleMessage, toInboundMessages };
+export { rebuildFromAppleMessage, toCachedPoll, toInboundMessages };
 """
 
 
@@ -262,6 +278,39 @@ def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:
     # The text is captured in both mappers before the attachment branches run.
     assert "const text2 = message.content.text;" in patched
     assert "const text2 = event.message.content.text;" in patched
+
+    # Photon can return an empty title for a poll that was sent with one. The
+    # patched mapper must still reconstruct its option-id map so a vote reaches
+    # the clarify response path.
+    probe = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            (
+                f"import {{toCachedPoll}} from {json.dumps(chunk.as_uri())};"
+                "const options=["
+                "{text:'Route',optionIdentifier:'choice-1'},"
+                "{text:'Calendar',optionIdentifier:'choice-2'}];"
+                "const empty=toCachedPoll({title:'',options});"
+                "const missing=toCachedPoll({options});"
+                "const named=toCachedPoll({title:'Question?',options});"
+                "console.log(JSON.stringify({emptyTitle:empty.poll.title,"
+                "missingTitle:missing.poll.title,namedTitle:named.poll.title,"
+                "choice:empty.optionsByIdentifier.get('choice-1').title}));"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert json.loads(probe.stdout) == {
+        "emptyTitle": "Poll",
+        "missingTitle": "Poll",
+        "namedTitle": "Question?",
+        "choice": "Route",
+    }
 
     # Re-running is a no-op (idempotent self-heal on every sidecar start).
     again = subprocess.run(

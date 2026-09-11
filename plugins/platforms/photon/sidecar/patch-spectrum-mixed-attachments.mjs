@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads";
+const POLL_MARKER = "Hermes patch: Accept empty inbound iMessage poll titles";
 
 function scriptDir() {
   return path.dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,28 @@ function patchChildIndices(source) {
   );
 }
 
+function patchEmptyPollTitles(source) {
+  if (source.includes(POLL_MARKER)) {
+    return source;
+  }
+  // Photon currently returns an empty poll title in both the live `created`
+  // delta and `client.polls.get()`, even when the outbound poll had a title.
+  // spectrum-ts validates the reconstructed Poll before it can map a vote's
+  // option identifier, so the empty title drops every selection. The title is
+  // internal metadata on this inbound path; Hermes only consumes the selected
+  // option title. Supply a non-empty placeholder and preserve the option map.
+  const anchor = `\tconst poll = asPoll({\n\t\ttitle: input.title,`;
+  if (!source.includes("const toCachedPoll =") || !source.includes(anchor)) {
+    return source;
+  }
+  return replaceOnce(
+    source,
+    anchor,
+    `\t// ${POLL_MARKER}\n\tconst poll = asPoll({\n\t\ttitle: input.title || "Poll",`,
+    "empty inbound poll title"
+  );
+}
+
 export function patchSpectrumTs(root = scriptDir()) {
   const dist = path.join(
     root,
@@ -132,9 +155,6 @@ export function patchSpectrumTs(root = scriptDir()) {
 
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
-    if (raw.includes(MARKER)) {
-      return { patched: false, file, reason: "already patched" };
-    }
     // Normalize to LF for matching so the patch works regardless of the
     // checkout's line-ending style (Windows git autocrlf produces CRLF,
     // which would otherwise defeat the \n-based search strings). The
@@ -144,25 +164,34 @@ export function patchSpectrumTs(root = scriptDir()) {
     const CRLF = CR + "\n";
     const usedCRLF = raw.includes(CRLF);
     const original = usedCRLF ? raw.split(CRLF).join("\n") : raw;
-    if (!original.includes("const toInboundMessages = async") ||
-        !original.includes("const rebuildFromAppleMessage = async")) {
+    const hasMixedMapper =
+      original.includes("const toInboundMessages = async") &&
+      original.includes("const rebuildFromAppleMessage = async");
+    const hasPollMapper = original.includes("const toCachedPoll =");
+    if (!hasMixedMapper && !hasPollMapper) {
       continue;
     }
+
+    let patched = patchEmptyPollTitles(original);
     // spectrum-ts 12.x replaced the attachment-only branches with
     // `buildUnwrappedContentMessage` + `toOrderedParts`, which already emits a
     // group containing both text and attachments. There is nothing left for
     // Hermes to patch; keep the legacy v8 path below for older pinned installs.
-    if (
+    const upstreamPreservesMixed =
       original.includes("const buildUnwrappedContentMessage = async") &&
-      original.includes("const parts = toOrderedParts(message.content.text, attachments);")
-    ) {
-      return { patched: false, file, reason: "upstream preserves mixed payloads" };
+      original.includes("const parts = toOrderedParts(message.content.text, attachments);");
+    if (hasMixedMapper && !original.includes(MARKER) && !upstreamPreservesMixed) {
+      patched = patchRebuild(patched);
+      patched = patchInbound(patched);
+      patched = patchChildIndices(patched);
+      patched = `// ${MARKER}\n${patched}`;
     }
-    let patched = original;
-    patched = patchRebuild(patched);
-    patched = patchInbound(patched);
-    patched = patchChildIndices(patched);
-    patched = `// ${MARKER}\n${patched}`;
+    if (patched === original) {
+      const reason = original.includes(POLL_MARKER) || original.includes(MARKER)
+        ? "already patched"
+        : "upstream preserves mixed payloads";
+      return { patched: false, file, reason };
+    }
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
     }

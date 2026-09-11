@@ -282,6 +282,23 @@ DANGEROUS_PATTERNS = [
     # for "c" also matched --norc/--rcfile/--restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    # Package-manager installs that escape the active project/venv have the same supply-chain
+    # boundary as a remote installer. Keep requirements/editable/explicit-target installs out:
+    # those are project-scoped dependency restoration rather than global tool installation.
+    (
+        _CMDPOS
+        + r'(?:(?:python(?:3(?:\.\d+)*)?|py)\s+-m\s+)?(?:pip(?:3(?:\.\d+)*)?|uv\s+pip)\s+install\b'
+        + r'(?![^\n]*(?:\s(?:-r|--requirement|-e|--editable|--target|--prefix|--root|--dry-run)(?:[=\s]|$)))'
+        + r'(?!\s+(?:\.[/\\]?(?:\s|$)|[/\\]))',
+        "install package outside project dependency manifest",
+    ),
+    (
+        _CMDPOS
+        + r'npm\s+(?:(?:-g|--global)\s+(?:install|i|add)\b|(?:install|i|add)\b[^\n]*(?:\s-g\b|\s--global\b))',
+        "install global npm package",
+    ),
+    (_CMDPOS + r'pipx\s+install\b', "install global pipx application"),
+    (_CMDPOS + r'uv\s+tool\s+install\b', "install global uv tool"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the

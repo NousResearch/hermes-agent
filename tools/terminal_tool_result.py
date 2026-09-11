@@ -216,6 +216,14 @@ def finalize_foreground_result(
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)
+    from tools.terminal_download_provenance import record_successful_command
+
+    record_successful_command(
+        command,
+        session_key=session_key,
+        cwd=command_cwd or "",
+        exit_code=returncode,
+    )
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
     output = _truncate_head_tail(output)

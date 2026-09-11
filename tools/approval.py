@@ -993,7 +993,8 @@ def _tirith_scan(command: str) -> dict:
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             additional_dangerous: tuple[str, str] | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
@@ -1035,6 +1036,10 @@ def check_all_command_guards(command: str, env_type: str,
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):
         warnings.append((pattern_key, description, False))
+    if additional_dangerous is not None:
+        extra_key, extra_description = additional_dangerous
+        if not is_approved(session_key, extra_key):
+            warnings.append((extra_key, extra_description, False))
     if not warnings:
         return _approved()
 

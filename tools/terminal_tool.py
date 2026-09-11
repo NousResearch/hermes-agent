@@ -144,11 +144,13 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False,
+                      additional_dangerous: tuple[str, str] | None = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access,
+                                  additional_dangerous=additional_dangerous)
 
 
 from tools.environments.base import EnvironmentConnectionError
@@ -301,6 +303,9 @@ def clear_task_env_overrides(task_id: str):
     """Drop a task's overrides, cwd record and container alias (rollout cleanup)."""
     _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
+    from tools.terminal_download_provenance import clear_session as clear_download_provenance
+
+    clear_download_provenance(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
 
@@ -834,13 +839,25 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+def _run_approval_guards(
+    command: str,
+    env_type: str,
+    config: Dict[str, Any],
+    *,
+    force: bool,
+    additional_dangerous: tuple[str, str] | None = None,
+) -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
         return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    approval = _check_all_guards(
+        command,
+        env_type,
+        has_host_access=_docker_has_host_access(config),
+        additional_dangerous=additional_dangerous,
+    )
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1207,10 +1224,30 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
+        command_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=plan.cwd,
+            session_key=session_key,
+            env_type=env_type,
+        )
+        from tools.terminal_download_provenance import downloaded_script_finding
+
+        provenance_finding = downloaded_script_finding(
+            command,
+            session_key=session_key,
+            cwd=command_cwd,
+        )
+
         _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        verdict = _run_approval_guards(
+            command,
+            env_type,
+            plan.config,
+            force=force,
+            additional_dangerous=provenance_finding,
+        )
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

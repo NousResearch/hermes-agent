@@ -112,7 +112,7 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
-**Reasoning in streams**: Reasoning-capable providers keep thinking separate from assistant output. Chat Completions emits `choices[0].delta.reasoning_content`; Responses emits a `reasoning` output item with `response.reasoning_text.delta` events. The non-streaming Responses payload also preserves reasoning in `output[]`.
+**Reasoning in streams**: Reasoning-capable providers keep thinking separate from assistant output. Chat Completions emits `choices[0].delta.reasoning_content`; Responses emits a `reasoning` output item with `response.reasoning_text.delta` events. The non-streaming Responses payload also preserves reasoning in `output[]`. Reasoning streams and output items on these endpoints are gated by `display.platforms.api_server.show_reasoning` (falling back to `display.show_reasoning`), default off. With the gate off no reasoning callback is installed and no reasoning is emitted.
 
 ### POST /v1/responses
 
@@ -253,7 +253,7 @@ Returns a machine-readable description of the API server's stable surface for ex
     "chat_completions_streaming": true,
     "responses_api": true,
     "responses_streaming": true,
-    "reasoning_streaming": true,
+    "reasoning_streaming": false,
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
@@ -268,9 +268,10 @@ Clients that render model thinking should check `features.reasoning_streaming`
 before subscribing to reasoning events. When it is `true`, consume the
 surface-specific reasoning channel (`reasoning.delta`,
 `choices[0].delta.reasoning_content`, or `response.reasoning_text.delta`)
-instead of the legacy synthetic `_thinking` tool-progress event. If the flag is
-absent or `false`, fall back to rendering assistant text without a live
-reasoning view.
+instead of the legacy synthetic `_thinking` tool-progress event. The flag
+reflects the resolved `display.platforms.api_server.show_reasoning` gate, so it
+stays `false` until an operator opts in. If the flag is absent or `false`, fall
+back to rendering assistant text without a live reasoning view.
 
 ## Browser-extension control
 

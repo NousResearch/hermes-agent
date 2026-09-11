@@ -187,33 +187,16 @@ class TestAdapterInit:
                 captured.update(kwargs)
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
-        monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {
-                "provider": "openai-codex",
-                "base_url": "https://example.test/v1",
-                "api_mode": "codex_responses",
+        _stub_agent_runtime(monkeypatch, {
+            "agent": {"reasoning_effort": "xhigh"},
+            "display": {"platforms": {"api_server": {"show_reasoning": True}}},
+            "checkpoints": {
+                "enabled": True,
+                "max_snapshots": 7,
+                "max_total_size_mb": 321,
+                "max_file_size_mb": 4,
             },
-        )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
-        monkeypatch.setattr(
-            "gateway.run._load_gateway_config",
-            lambda: {
-                "agent": {"reasoning_effort": "xhigh"},
-                "checkpoints": {
-                    "enabled": True,
-                    "max_snapshots": 7,
-                    "max_total_size_mb": 321,
-                    "max_file_size_mb": 4,
-                },
-            },
-        )
-        monkeypatch.setattr(
-            "gateway.run.GatewayRunner._load_reasoning_config",
-            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
-        )
-        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        })
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
@@ -353,6 +336,26 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+@pytest.fixture
+def reasoning_enabled(adapter, monkeypatch):
+    monkeypatch.setattr(adapter, "_reasoning_enabled", lambda: True)
+
+
+def _stub_agent_runtime(monkeypatch, config):
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1", "api_mode": "codex_responses"},
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config",
+        staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +920,7 @@ class TestModelsEndpoint:
 
 class TestCapabilitiesEndpoint:
     @pytest.mark.asyncio
-    async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
+    async def test_capabilities_advertises_plugin_safe_contract(self, adapter, reasoning_enabled):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/capabilities")
@@ -1477,7 +1480,7 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
-    async def test_batch_preserves_reasoning_output_item(self, adapter):
+    async def test_batch_preserves_reasoning_output_item(self, adapter, reasoning_enabled):
         """Non-streaming Responses aggregates turn reasoning into one item."""
         result = {
             "final_response": "answer",
@@ -3332,3 +3335,74 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestReasoningGate:
+    @pytest.mark.asyncio
+    async def test_capabilities_follow_config_yaml(self, adapter, monkeypatch, tmp_path):
+        monkeypatch.setattr("gateway.run._gateway_config_home", lambda: tmp_path)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            data = await (await cli.get("/v1/capabilities")).json()
+            assert data["features"]["reasoning_streaming"] is False
+            (tmp_path / "config.yaml").write_text(
+                "display:\n  platforms:\n    api_server:\n      show_reasoning: true\n", encoding="utf-8")
+            data = await (await cli.get("/v1/capabilities")).json()
+            assert data["features"]["reasoning_streaming"] is True
+
+    def test_create_agent_drops_callback_when_config_is_off(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        _stub_agent_runtime(monkeypatch, {"agent": {"reasoning_effort": "xhigh"}})
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        adapter._create_agent(session_id="api-session", reasoning_callback=MagicMock())
+        assert captured["reasoning_callback"] is None
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_gate_off_skips_completed_reasoning_fallback(self, adapter):
+        async def fake_run(**kwargs):
+            kwargs["stream_delta_callback"]("answer")
+            return {
+                "final_response": "answer",
+                "messages": [{"role": "assistant", "content": "answer", "reasoning_content": "secret plan"}],
+                "session_id": "gate-off-stream",
+            }, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+        app = _create_app(adapter)
+        with (
+            patch.object(adapter, "_reasoning_enabled", return_value=False),
+            patch.object(adapter, "_run_agent", side_effect=fake_run),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/responses", json={"input": "hi", "stream": True, "store": False})
+                assert resp.status == 200
+                body = await resp.text()
+        assert '"type": "reasoning"' not in body
+        assert "secret plan" not in body
+        assert "answer" in body
+
+    @pytest.mark.asyncio
+    async def test_responses_batch_gate_off_omits_reasoning_item(self, adapter):
+        result = {
+            "final_response": "answer",
+            "messages": [{"role": "assistant", "content": "answer", "reasoning_content": "secret plan"}],
+            "session_id": "gate-off-batch",
+        }
+        app = _create_app(adapter)
+        with (
+            patch.object(adapter, "_reasoning_enabled", return_value=False),
+            patch.object(adapter, "_run_agent", new=AsyncMock(return_value=(
+                result, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}))),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/responses", json={"input": "hi", "store": False})
+                assert resp.status == 200
+                payload = await resp.json()
+        assert [item["type"] for item in payload["output"]] == ["message"]
+        assert "secret plan" not in json.dumps(payload)

@@ -145,6 +145,7 @@ class _ResponsesStream:
         self.reasoning_parts: List[str] = []
         self.reasoning_item: Optional[Dict[str, Any]] = None
         self.reasoning_opened = False
+        self.reasoning_enabled = adapter._reasoning_enabled()
         self.final_response_text = ""
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -381,7 +382,7 @@ class _ResponsesStream:
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
             # Completed-message reasoning is only a compatibility fallback; live deltas win.
-            if isinstance(result, dict) and not self.reasoning_parts:
+            if self.reasoning_enabled and isinstance(result, dict) and not self.reasoning_parts:
                 turn_start = self.adapter._response_messages_turn_start_index(
                     self.conversation_history, self.user_message, result)
                 completed_reasoning = self.adapter._extract_reasoning_text(
@@ -965,7 +966,8 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": response_id, "object": "response", "status": "completed",
             "created_at": created_at, "model": body.get("model", self._model_name),
-            "output": self._extract_output_items(result, start_index=output_start_index),
+            "output": self._extract_output_items(
+                result, start_index=output_start_index, include_reasoning=self._reasoning_enabled()),
             "usage": _responses_usage_payload(usage)}
         if store:
             self._response_store.put(response_id, {
@@ -1086,12 +1088,13 @@ class OpenAICompatRoutesMixin:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
-        """Build output items for the current turn, including one aggregated reasoning item."""
+    def _extract_output_items(
+        result: Dict[str, Any], start_index: int = 0, *, include_reasoning: bool,
+    ) -> List[Dict[str, Any]]:
         from gateway.platforms.api_server import _redact_api_error_text
         items: List[Dict[str, Any]] = []
         reasoning_text = OpenAICompatRoutesMixin._extract_reasoning_text(
-            result, start_index=start_index)
+            result, start_index=start_index) if include_reasoning else ""
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]

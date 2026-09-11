@@ -67,8 +67,6 @@ _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
-    # Reasoning-capable providers stream thinking separately from assistant text.
-    "reasoning_streaming": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
@@ -2099,6 +2097,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
         return model, session_override, request_model, request_provider
 
+    def _reasoning_enabled(self) -> bool:
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+        return _resolve_gateway_display_bool(_load_gateway_config(), "api_server", "show_reasoning")
+
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, reasoning_callback=None, tool_progress_callback=None, tool_start_callback=None,
@@ -2152,7 +2154,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
-            "reasoning_callback": reasoning_callback,
+            "reasoning_callback": reasoning_callback if self._reasoning_enabled() else None,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -2262,6 +2264,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
+                "reasoning_streaming": self._reasoning_enabled(),
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {

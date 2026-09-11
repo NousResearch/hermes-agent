@@ -10,7 +10,7 @@ The curator is a background maintenance pass for **agent-created skills**. It tr
 
 It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
-By default (`prune_builtins: true`) the curator can archive **unused bundled built-in skills** (shipped with the repo) after `archive_after_days` of non-use, alongside the agent-created skills it primarily manages. Hub-installed skills (from [agentskills.io](https://agentskills.io)) are always off-limits. Set `curator.prune_builtins: false` to restore the old agent-created-only behavior, where bundled skills are never touched. The curator also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
+By default (`prune_builtins: false`) the curator leaves **bundled built-in skills** (shipped with the repo) untouched. Set `curator.prune_builtins: true` to explicitly opt in to archiving unused bundled skills after `archive_after_days` of non-use, alongside the agent-created skills it primarily manages. This removes them from the active library, and a suppression list prevents `hermes update` from re-seeding them until they are explicitly restored. Hub-installed skills (from [agentskills.io](https://agentskills.io)) are always off-limits. The curator **never auto-deletes**; archived skills remain recoverable.
 
 Tracks [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816).
 
@@ -58,7 +58,7 @@ curator:
   stale_after_days: 30
   archive_after_days: 90
   consolidate: false           # LLM umbrella-building pass — opt-in (prune-only by default)
-  prune_builtins: true         # archive unused bundled built-in skills too (hub skills always exempt)
+  prune_builtins: false        # opt-in: archived built-ins are not re-seeded by hermes update
 ```
 
 To disable entirely, set `curator.enabled: false`. To keep the always-on pruning but opt into LLM consolidation, set `curator.consolidate: true`.
@@ -317,7 +317,7 @@ The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills
 
 Skills named in any cron job's `skills:` list are protected the same way for **auto-transitions** (the curator never stales/archives them while the reference remains), even when the job is paused or disabled. Prefer an explicit pin when you also want `skill_manage delete` blocked.
 
-Only **agent-created** skills can be pinned — `hermes curator pin` refuses on bundled and hub-installed skills with an explanatory message if you try. Hub-installed skills are never subject to curator mutation. Bundled built-in skills are only touched when `curator.prune_builtins: true` (the default), and even then only archived after `archive_after_days` of non-use — never patched, consolidated, or deleted. Set `curator.prune_builtins: false` to exempt bundled skills entirely.
+Only **agent-created** skills can be pinned — `hermes curator pin` refuses on bundled and hub-installed skills with an explanatory message if you try. Hub-installed skills are never subject to curator mutation. Bundled built-in skills are only touched when you explicitly set `curator.prune_builtins: true` (default: `false`), and even then only archived after `archive_after_days` of non-use — never patched, consolidated, or deleted. Set `curator.prune_builtins: false` to exempt bundled skills entirely.
 
 A small set of **protected built-ins** can be hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX, so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. (The set is currently empty — `plan`, its original member, graduated to a built-in `/plan` command with no skill on disk.) Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
 

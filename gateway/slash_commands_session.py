@@ -109,6 +109,11 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+def _normalize_resume_options(parts: list[str]) -> list[str]:
+    """Accept mobile autocorrect's single Unicode dash for ``--all`` without rewriting titles."""
+    return ["--all" if part.lower() in {"—all", "–all"} else part for part in parts]
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -832,7 +837,7 @@ class GatewaySessionCommandsMixin:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
         sessions = await self._session_db.list_sessions_rich(
-            source=source.platform.value if source.platform else None,
+            source=None if widen else (source.platform.value if source.platform else None),
             session_key=None if widen else session_key, limit=10)
         titled = [s for s in sessions if s.get("title")][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
@@ -886,7 +891,7 @@ class GatewaySessionCommandsMixin:
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
         try:
-            parts = shlex.split(event.get_command_args().strip())
+            parts = _normalize_resume_options(shlex.split(event.get_command_args().strip()))
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
         allow_all = "--all" in parts

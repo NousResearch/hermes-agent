@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopMachineProfile } from '@/global'
+import type { DesktopMachineProfile, HermesApiRequest } from '@/global'
 import type { HermesConfigRecord } from '@/hermes'
 import { deferred } from '@/test/deferred'
 
@@ -105,6 +105,73 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('语言')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
     expect(getMachineProfile).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['en-GB', 'en'],
+    ['zh-CN', 'zh'],
+    ['zh-TW', 'zh-hant'],
+    ['ja-JP', 'ja'],
+    ['ar-SA', 'ar'],
+    ['ru-RU', 'ru'],
+    ['de-DE', 'en']
+  ])('detects %s on a fresh install through the default config client', async (osLocale, expected) => {
+    const api = vi.fn(async ({ method, path }: HermesApiRequest) => {
+      if (method === 'PUT') {
+        return { ok: true }
+      }
+
+      return path === '/api/config?include_defaults=false' ? {} : { display: { language: 'en' } }
+    })
+    const getMachineProfile = vi.fn().mockResolvedValue({ ...machineProfile, locale: osLocale })
+
+    vi.stubGlobal('hermesDesktop', { api, getMachineProfile })
+    render(
+      <I18nProvider>
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe(expected)
+    expect(getMachineProfile).toHaveBeenCalledTimes(1)
+    // Inference must not become a saved choice or change with backend defaults.
+    expect(api).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: '/api/config?include_defaults=false' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(screen.getByTestId('saving').textContent).toBe('false'))
+
+    expect(api).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        path: '/api/config?preserve_language=true',
+        method: 'PUT',
+        body: { config: { display: { language: 'en' } } }
+      })
+    )
+  })
+
+  it.each([
+    ['saved English', 'en', 'en'],
+    ['saved non-English', 'zh-TW', 'zh-hant'],
+    ['older backend with merged defaults', 'en', 'en']
+  ])('preserves %s through the default config client', async (_source, language, expected) => {
+    // An older backend ignores include_defaults and returns its merged English.
+    const api = vi.fn().mockResolvedValue({ display: { language } })
+    const getMachineProfile = vi.fn().mockResolvedValue(machineProfile)
+
+    vi.stubGlobal('hermesDesktop', { api, getMachineProfile })
+    render(
+      <I18nProvider>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe(expected)
+    expect(getMachineProfile).not.toHaveBeenCalled()
+    expect(api).toHaveBeenCalledTimes(1)
   })
 
   it('uses the native OS locale through preload without persisting an inferred choice', async () => {

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from multiprocessing import get_context
 
 import pytest
@@ -51,6 +52,47 @@ def test_duplicate_events_and_cross_connection_claim(state):
         claims = list(pool.map(claim, range(4)))
     assert sum(len(value) for value in claims) == 1
     assert queue.assessments("org")[0]["reference"] == {"skill_id": "skill"}
+
+
+@pytest.mark.parametrize("background", ["delegate", "descendant", "cron", "background_review", "side_question"])
+def test_background_cannot_register_or_claim_parent_delivery(state, monkeypatch, background):
+    from agent.delegation_context import delegated_child_context, DELEGATED_CHILD_ENV_MARKER
+    from gateway.session_context import _VAR_MAP
+    from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+
+    queue, now = state
+    register(queue)
+    queue.enqueue("org", "feed:1", {})
+    with queue.store.transaction() as db:
+        before = dict(db.execute("SELECT * FROM wisdom_agent_session").fetchone())
+    now[0] += 1
+    with ExitStack() as stack:
+        env = stack.enter_context(monkeypatch.context())
+        if background == "delegate":
+            stack.enter_context(delegated_child_context("child-id"))
+        elif background == "descendant":
+            env.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+        elif background == "cron":
+            var = _VAR_MAP["HERMES_CRON_SESSION"]
+            stack.callback(var.reset, var.set("1"))
+        else:
+            stack.callback(reset_current_write_origin, set_current_write_origin(background))
+        register(queue, busy=True)
+        register(queue, "child")
+        assert queue.claim("org", "session") == []
+        with queue.store.transaction() as db:
+            assert [dict(row) for row in db.execute("SELECT * FROM wisdom_agent_session")] == [before]
+        assert queue.assessments("org")[0]["state"] == "pending"
+    assert len(queue.claim("org", "session")) == 1
+
+
+@pytest.mark.parametrize("platform", ["subagent", "cron", "kanban", "api_server", "unknown"])
+def test_noninteractive_surface_cannot_register(state, platform):
+    queue, _ = state
+    queue.register_session("org", session_key="child", session_id="child", platform=platform,
+                           actor_id="user", private=True, available=True, user_activity=True)
+    with queue.store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM wisdom_agent_session").fetchone()[0] == 0
 
 
 def test_recent_busy_session_wins_over_idle_older_session(state):

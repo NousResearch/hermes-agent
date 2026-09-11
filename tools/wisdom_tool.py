@@ -100,6 +100,13 @@ def inbox(args: dict) -> str:
 def _private_actor():
     from gateway.session_context import get_session_env
     from hermes_wisdom.consent import ConsentActor
+    from hermes_wisdom.mediation_store import delivery_context_allowed
+
+    if not delivery_context_allowed():
+        raise ValueError(
+            "Wisdom consent and inbox access require the main user-facing conversation; "
+            "subagents and background tasks must return their findings to the parent agent"
+        )
     platform = get_session_env("HERMES_SESSION_PLATFORM")
     key = get_session_env("HERMES_SESSION_KEY")
     user = get_session_env("HERMES_SESSION_USER_ID")

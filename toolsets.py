@@ -104,6 +104,10 @@ TOOLSETS = {
         "instructions and knowledge",
         ["skills_list", "skill_view", "skill_manage", "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent"],
     ),
+    "wisdom_consent": _ts(
+        "Present Collective Wisdom consent in the main user-facing conversation",
+        ["present_wisdom_consent"],
+    ),
     # web_search belongs to `web`/`search` only. Listing it here too let
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
     # web_search from every session, because disabled toolsets are a strict

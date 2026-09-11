@@ -38,6 +38,12 @@ Local qualifications stay with their originating conversation. If no eligible
 conversation is active, activity waits. Other surfaces show the same advice
 passively; opening them does not run another assessment.
 
+The active conversation is a user-facing session, not a delegated subagent or
+background task. Delegated agents, their subprocesses, scheduled jobs, and
+review forks cannot request consent cards, register as active delivery sessions,
+or claim the parent's queued advice. They return findings to the main conversation;
+only that conversation can request the user's native confirmation control.
+
 When multiple publication events for a skill are waiting, Hermes keeps only
 the newest version eligible for automatic advice. Duplicate events do not
 produce another recommendation. Historical notices and delivery receipts stay

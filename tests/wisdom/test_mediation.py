@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock
 
@@ -215,6 +216,64 @@ def request_tool(consent, monkeypatch, tmp_path):
         }))
 
     return request
+
+
+@pytest.mark.parametrize("platform", ["telegram", "slack", "desktop", "tui", "cli"])
+@pytest.mark.parametrize("background", ["delegate", "descendant", "cron", "background_review", "side_question"])
+def test_background_consent_cannot_borrow_parent_session(consent, monkeypatch, platform, background):
+    from agent.delegation_context import delegated_child_context, DELEGATED_CHILD_ENV_MARKER
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools import wisdom_tool
+    from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+
+    instance, actor, _, _ = consent
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"enabled": True})
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: instance.service)
+    tokens = set_session_vars(
+        platform=platform, session_key=actor.session_key, session_id="parent-id",
+        user_id=actor.actor_id, chat_id=actor.chat_id, chat_type="private", cron_session="",
+    )
+    args = {"kind": "skill", "identity": "skill", "version": 1,
+            "title": "Requested skill", "explanation": "You asked to review this skill."}
+    before = instance.queue.assessments("org")
+    try:
+        with ExitStack() as stack:
+            env = stack.enter_context(monkeypatch.context())
+            if background == "delegate":
+                stack.enter_context(delegated_child_context("child-id"))
+            elif background == "descendant":
+                env.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+            elif background == "cron":
+                from gateway.session_context import _VAR_MAP
+                var = _VAR_MAP["HERMES_CRON_SESSION"]
+                stack.callback(var.reset, var.set("1"))
+            else:
+                stack.callback(reset_current_write_origin, set_current_write_origin(background))
+            result = json.loads(wisdom_tool.registry.dispatch("present_wisdom_consent", args))
+            assert "main user-facing conversation" in result["error"]
+            assert instance.queue.assessments("org") == before
+            instance.service.install_plan.assert_not_called()
+
+        # The parent's actual interactive context is restored and can still queue consent.
+        result = json.loads(wisdom_tool.registry.dispatch("present_wisdom_consent", args))
+        assert result["delivery"]["state"] == "queued"
+        instance.service.install_apply.assert_not_called()
+    finally:
+        clear_session_vars(tokens)
+
+
+@pytest.mark.parametrize("role", ["leaf", "orchestrator"])
+@pytest.mark.parametrize("bundle", ["skills", "hermes-cli"])
+def test_child_tool_selection_excludes_consent_without_removing_skill_inspection(role, bundle):
+    from model_tools import _select_tool_names
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+
+    parent = SimpleNamespace(enabled_toolsets=[bundle], disabled_toolsets=[])
+    enabled, disabled = _resolve_child_toolsets(parent, None, role)
+    assert "present_wisdom_consent" in _select_tool_names([bundle], [], quiet_mode=True)
+    child_tools = _select_tool_names(enabled, disabled, quiet_mode=True)
+    assert "present_wisdom_consent" not in child_tools
+    assert {"wisdom_inspect", "skill_view", "skill_manage"} <= child_tools
 
 
 def test_manual_request_after_not_now_queues_one_fresh_review(consent, request_tool):

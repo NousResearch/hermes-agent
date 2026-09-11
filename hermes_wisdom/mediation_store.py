@@ -25,6 +25,20 @@ SESSION_TTL = 120
 BATCH_SIZE = 8
 
 
+def delivery_context_allowed() -> bool:
+    """Background agents must not borrow their parent's interactive identity."""
+    from agent.delegation_context import is_delegated_child_process_context
+    from gateway.session_context import get_session_env
+    from tools.skill_provenance import get_current_write_origin
+
+    return not (
+        is_delegated_child_process_context()
+        or get_session_env("HERMES_CRON_SESSION")
+        or get_session_env("HERMES_SESSION_PLATFORM") in {"subagent", "cron", "kanban"}
+        or get_current_write_origin() in {"background_review", "side_question"}
+    )
+
+
 def create_schema(db: sqlite3.Connection) -> None:
     # execute, not executescript: preserve the caller's migration transaction.
     for statement in (
@@ -153,6 +167,8 @@ class MediationStore:
         address: dict[str, str] | None = None,
         activity_at: float | None = None,
     ) -> None:
+        if not delivery_context_allowed() or platform not in {"local", "telegram", "slack"}:
+            return
         self._require_org(org)
         if not session_key or not actor_id or not private:
             return
@@ -356,6 +372,8 @@ class MediationStore:
         allow_model_work: bool = True,
     ) -> list[dict[str, Any]]:
         """Elect one eligible session, then fence every row with a fresh token."""
+        if not delivery_context_allowed():
+            return []
         self._require_org(org)
         now = self.clock()
         with self.store.transaction() as db:

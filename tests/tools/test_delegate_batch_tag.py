@@ -42,6 +42,37 @@ def test_batch_ordinals_are_scoped_per_parent_conversation():
     assert format_batch_tag("deleg_a1", parent_a) == "set 1"  # stable
 
 
+def test_batch_ordinals_without_session_id_do_not_share_a_scope():
+    """Parents that never got a session_id used to share the empty-string bucket, so
+    one conversation's second wave read ``set 2`` because another agent had already
+    taken ``set 1``. Each parent object is its own scope when session_id is missing."""
+    parent_a = types.SimpleNamespace()
+    parent_b = types.SimpleNamespace()
+    assert format_batch_tag("deleg_a1", parent_a) == "set 1"
+    assert format_batch_tag("deleg_b1", parent_b) == "set 1"
+    assert format_batch_tag("deleg_a2", parent_a) == "set 2"
+    assert format_batch_tag("deleg_b1", parent_b) == "set 1"
+
+
+def test_batch_ordinal_table_is_bounded(monkeypatch):
+    """A long-lived gateway sees more conversations than cached agents. The ordinal
+    table must not grow one entry per session forever. Least-recently-used scopes
+    drop first so a live conversation keeps its ``set N``."""
+    monkeypatch.setattr(dt_progress, "_BATCH_ORDINALS_MAX_SCOPES", 3, raising=False)
+    parents = [types.SimpleNamespace(session_id=f"conv-{i}") for i in range(4)]
+    for i, parent in enumerate(parents[:3]):
+        assert format_batch_tag(f"deleg_{i}_first", parent) == "set 1"
+        assert format_batch_tag(f"deleg_{i}_second", parent) == "set 2"
+    # conv-0 is still live; touching it keeps it over conv-1.
+    assert format_batch_tag("deleg_0_first", parents[0]) == "set 1"
+    assert format_batch_tag("deleg_3_first", parents[3]) == "set 1"
+    assert len(dt_progress._BATCH_ORDINALS) == 3
+    # conv-1 was the oldest untouched scope and was dropped.
+    assert format_batch_tag("deleg_1_third", parents[1]) == "set 1"
+    # conv-0 kept the ordinals it already had.
+    assert format_batch_tag("deleg_0_second", parents[0]) == "set 2"
+
+
 @pytest.mark.parametrize(
     "deleg, idx, count, expected",
     [

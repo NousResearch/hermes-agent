@@ -200,6 +200,26 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 _BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
 _BATCH_ORDINALS_LOCK = threading.Lock()
+# Larger than the gateway agent cache. Ordinals live in this process table so a
+# conversation that is LRU-evicted and then reincarnated keeps ``set N``. A long-lived
+# gateway still cannot grow one inner dict per session forever.
+_BATCH_ORDINALS_MAX_SCOPES = 1024
+
+
+def _batch_ordinal_scope(parent_agent: Any) -> str:
+    """Conversation id when the parent has one, else a per-agent key.
+
+    Missing session_id used to collapse every such parent into ``""``, so two
+    agents on a shared backend stole each other's ``set N``. Nested children
+    still share the parent's object via ``session_ref['_parent_scope']``.
+    """
+    sid = getattr(parent_agent, "session_id", None) if parent_agent is not None else None
+    if isinstance(sid, str) and sid:
+        return sid
+    if parent_agent is not None:
+        return f"agent:{id(parent_agent)}"
+    return ""
+
 
 def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> str:
     """Short human tag for a delegation batch: the parent's first fan-out is ``set 1``, its next distinct
@@ -211,9 +231,14 @@ def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> 
     can concatenate unconditionally."""
     if not isinstance(delegation_id, str) or not delegation_id:
         return ""
-    scope = str(getattr(parent_agent, "session_id", None) or "")
+    scope = _batch_ordinal_scope(parent_agent)
     with _BATCH_ORDINALS_LOCK:
-        ordinals = _BATCH_ORDINALS.setdefault(scope, {})
+        ordinals = _BATCH_ORDINALS.pop(scope, None)
+        if ordinals is None:
+            if len(_BATCH_ORDINALS) >= _BATCH_ORDINALS_MAX_SCOPES:
+                _BATCH_ORDINALS.pop(next(iter(_BATCH_ORDINALS)), None)
+            ordinals = {}
+        _BATCH_ORDINALS[scope] = ordinals
         n = ordinals.setdefault(delegation_id, len(ordinals) + 1)
     return f"set {n}"
 

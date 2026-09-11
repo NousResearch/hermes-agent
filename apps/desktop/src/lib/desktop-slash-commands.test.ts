@@ -53,6 +53,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
+    '/wisdom': 'mixed',
     '/personality': 'options',
     '/queue': 'text',
     '/retry': null,
@@ -62,7 +63,13 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+  {
+    '/tasks': '/agents',
+    '/background': '/bg',
+    '/q': '/queue',
+    '/proactive': '/loop',
+    '/collective-wisdom-install': '/wisdom'
+  }
 )
 
 describe('desktop slash command curation', () => {
@@ -101,6 +108,15 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('surfaces the shared /wisdom command and hides its legacy install alias', () => {
+    expect(resolveDesktopCommand('/wisdom')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/wisdom')).toBe('mixed')
+    expect(isDesktopSlashSuggestion('/wisdom')).toBe(true)
+    expect(isDesktopSlashCommand('/wisdom')).toBe(true)
+    expect(isDesktopSlashSuggestion('/collective-wisdom-install')).toBe(false)
+    expect(isDesktopSlashCommand('/collective-wisdom-install')).toBe(true)
   })
 
   it('groups complete.slash rows by backend kind, not the desktop table', () => {

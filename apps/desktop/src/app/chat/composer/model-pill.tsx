@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -16,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
+import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
@@ -60,6 +62,7 @@ export function ModelPill({
   const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
 
@@ -75,6 +78,34 @@ export function ModelPill({
         }
 
         if (hasLiveMenu) {
+          const editor = document.activeElement
+          const selection = window.getSelection()
+
+          if (
+            editor instanceof HTMLElement &&
+            editor.dataset.slot === RICH_INPUT_SLOT &&
+            selection?.anchorNode &&
+            selection.focusNode &&
+            editor.contains(selection.anchorNode) &&
+            editor.contains(selection.focusNode)
+          ) {
+            const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
+
+            restoreSelection.current = () => {
+              if (
+                !editor.isConnected ||
+                isElementInHiddenPane(editor) ||
+                !editor.contains(anchorNode) ||
+                !editor.contains(focusNode)
+              ) {
+                return
+              }
+
+              editor.focus({ preventScroll: true })
+              window.getSelection()?.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset)
+            }
+          }
+
           setOpen(prev => !prev)
         } else {
           setModelPickerOpen(true)
@@ -178,7 +209,22 @@ export function ModelPill({
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent
+        align="end"
+        className="w-64 p-0"
+        onCloseAutoFocus={event => {
+          if (restoreSelection.current) {
+            event.preventDefault()
+            restoreSelection.current()
+            restoreSelection.current = null
+          }
+        }}
+        onInteractOutside={() => {
+          restoreSelection.current = null
+        }}
+        side="top"
+        sideOffset={8}
+      >
         <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>

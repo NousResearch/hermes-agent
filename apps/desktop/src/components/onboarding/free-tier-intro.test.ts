@@ -62,6 +62,7 @@ describe('free-tier introduction branch table', () => {
 describe('acknowledging the introduction', () => {
   it('reports a failed ack so the ready screen stays up', async () => {
     const { ackFreeTierIntro } = await import('@/store/onboarding')
+
     const failing = async <T>(method: string): Promise<T> => {
       if (method === 'free_tier.ack_notice') {
         throw new Error('gateway away')

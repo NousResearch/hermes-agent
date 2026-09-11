@@ -373,3 +373,62 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     record.assert_not_called()
 
 
+
+
+def test_budget_exhaustion_recorded_only_for_dispatcher_owned_worker(monkeypatch):
+    """Budget-attribution regression matrix.
+
+    Budget-exhaustion recording must fire ONLY for the dispatcher-owned
+    worker agent.  In-process children running inside a worker (delegate
+    subagents, background-review forks, cron agents fired via the cronjob
+    tool) see the same HERMES_KANBAN_TASK env var but own much smaller
+    budgets; their exhaustion must NOT advance the parent task's failure
+    circuit breaker (real incidents: t_915be37e "(16/16)" archived on a
+    review-fork cap of 16; t_02f64e70 "(50/50)" archived on a delegate
+    cap of 50 — both while the parent 250/300-budget task was healthy).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    from agent import turn_finalizer as tf
+    from agent import delegation_context as dc
+
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+
+    def _run_case():
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+        agent = _LimitAgent()
+        result = _finalize(
+            agent,
+            final_response=None,
+            exit_reason="unknown",
+        )
+        assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+        return agent
+
+    # Case 1 — dispatcher-owned worker (default ContextVar state): FIRES.
+    _run_case()
+    record.assert_called_once()
+    record.reset_mock()
+
+    # Case 2 — delegated child (delegate_task subagent): does NOT fire.
+    monkeypatch.setattr(
+        dc, "is_dispatcher_owned_worker_context", lambda: False
+    )
+    _run_case()
+    record.assert_not_called()
+
+    # Case 3 — background-review fork (persistence-isolated): does NOT fire.
+    monkeypatch.setattr(
+        dc, "is_dispatcher_owned_worker_context", lambda: True
+    )
+
+    class _ReviewForkAgent(_LimitAgent):
+        _persist_disabled = True
+
+    agent = _ReviewForkAgent()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    result = _finalize(agent, final_response=None, exit_reason="unknown")
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    record.assert_not_called()

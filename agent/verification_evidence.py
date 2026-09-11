@@ -513,6 +513,15 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
+        # A full passing ``hermes verify`` proves the workspace. Partial or
+        # failed runs must not wipe another session's edit record (#103650).
+        if e.kind == "verify" and e.status == "passed" and e.scope == "full":
+            conn.execute(
+                "UPDATE verification_state"
+                " SET last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
+                " WHERE root = ? AND session_id != ?",
+                (event_id, e.root, e.session_id),
+            )
         _prune_old_events(conn, session_id=e.session_id, root=e.root)
         conn.commit()
 
@@ -556,10 +565,32 @@ def mark_workspace_edited(
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
 
+def _newest_workspace_verify(
+    conn: sqlite3.Connection, *, root: str, since: str | None
+) -> Optional[sqlite3.Row]:
+    """Latest full passing ``hermes verify`` for ``root``, optionally not older than ``since``."""
+    if since:
+        return conn.execute(
+            "SELECT * FROM verification_events"
+            " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+            " AND created_at >= ?"
+            " ORDER BY id DESC LIMIT 1",
+            (root, since),
+        ).fetchone()
+    return conn.execute(
+        "SELECT * FROM verification_events"
+        " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
+        " ORDER BY id DESC LIMIT 1",
+        (root,),
+    ).fetchone()
+
+
 def verification_status(*, session_id: str | None, cwd: str | Path | None) -> dict[str, Any]:
     """Return the best known verification state for a session/workspace.
 
-    Evidence recorded before the latest edit is reported as ``stale``.
+    Evidence recorded before the latest edit is reported as ``stale``. A
+    ``hermes verify`` event for the same ``root`` that is at least as new as
+    that edit satisfies the guard even if another session recorded it.
     """
     if not _ledger_enabled():
         return {"status": "disabled", "evidence": None}
@@ -580,13 +611,20 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
         event = None
         if state["last_event_id"] is not None:
             event = conn.execute("SELECT * FROM verification_events WHERE id = ?", (state["last_event_id"],)).fetchone()
+        last_edit_at = state["last_edit_at"]
+        stale = bool(event is not None and last_edit_at and last_edit_at > event["created_at"])
+        if event is None or stale:
+            shared = _newest_workspace_verify(conn, root=root, since=last_edit_at)
+            if shared is not None:
+                event = shared
+                stale = False
 
-    result = {
-        "evidence": None, "root": root, "session_id": sid, "changed_paths": _load_changed_paths(state["changed_paths_json"])
-    }
-    if event is None:
-        return {"status": "unverified", **result}
+        result = {
+            "evidence": None, "root": root, "session_id": sid,
+            "changed_paths": _load_changed_paths(state["changed_paths_json"]),
+        }
+        if event is None:
+            return {"status": "unverified", **result}
 
-    evidence = dict(event)
-    stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
-    return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}
+        evidence = dict(event)
+        return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}

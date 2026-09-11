@@ -15,7 +15,7 @@ import time
 import traceback
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -546,9 +546,12 @@ def _decode_redacted(encoded) -> Optional[bytes]:
         return None
 
 
-def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
+def _replay_ordered_blocks(ordered_blocks: List, tool_call_ids: Set[str]) -> List[Dict]:
     """Rebuild the exact Bedrock block sequence captured at normalization time; redacted reasoning is
-    stored base64 (JSON-safe sidecar) and undecodable entries are skipped."""
+    stored base64 (JSON-safe sidecar) and undecodable entries are skipped. A toolUse whose id is no
+    longer in ``tool_calls`` is skipped too: post-call guardrails (identical-call dedup, delegate cap)
+    drop calls after capture, and replaying one sends a toolUse with no toolResult (ValidationException
+    "Expected toolResult blocks")."""
     content_blocks: List[Dict] = []
     for block in ordered_blocks:
         if not isinstance(block, dict):
@@ -570,6 +573,8 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
                 content_blocks.append({"reasoningContent": replay})
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
+            if tu.get("toolUseId", "") not in tool_call_ids:
+                continue
             content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
     return content_blocks
 
@@ -583,10 +588,12 @@ def _parse_tool_args(args) -> Any:
 
 
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
-    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
-    otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
+    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative
+    for block order (``tool_calls`` still decides which toolUse blocks exist); otherwise redacted thinking
+    from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
     ordered_blocks = msg.get("bedrock_content_blocks")
-    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
+    tool_call_ids = {tc.get("id", "") for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict)}
+    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks, tool_call_ids)):
         return content_blocks
     redacted = [
         _decode_redacted(d.get("data") or d.get("redactedContentBase64"))

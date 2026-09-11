@@ -36,6 +36,16 @@ ROW_SPECS: list[tuple[str, int, int]] = [
 ATLAS_WIDTH = max(count for _, _, count in ROW_SPECS) * CELL_WIDTH
 ATLAS_HEIGHT = len(ROW_SPECS) * CELL_HEIGHT
 
+
+class UnsegmentableStripError(ValueError):
+    """A row strip has the defect in the art itself (merged/touching poses) — no slicing method can recover it.
+
+    Raised in strict ``components`` mode where lenient fallbacks would only
+    forgive the defect, not fix it; the orchestrator treats it as a signal to
+    skip remaining strict (paid) retries and go straight to lenient slicing.
+    """
+
+
 _ALPHA_FLOOR = 16  # alpha at/below which a pixel is "background"
 _CELL_PAD = 10  # padding kept around a fitted sprite
 _NORMALIZE_PAD = 14  # normalized cells fill like real petdex pets (~5px from the edges)
@@ -460,18 +470,30 @@ def extract_strip_frames(
     """Turn one generated row strip into *frame_count* frames.
 
     Keys out the background, then isolates padded subjects (components, then equal slots). When that fails ``components``
-    raises while ``auto`` salvages leniently. *fit* centers each frame into a cell; hatching passes ``fit=False`` so
-    :func:`normalize_cells` can register the whole pet with one shared scale.
+    raises :class:`UnsegmentableStripError` while ``auto`` salvages leniently. *fit* centers each frame into a cell;
+    hatching passes ``fit=False`` so :func:`normalize_cells` can register the whole pet with one shared scale.
     """
     strip = remove_background(_load_rgba(strip), chroma_key=chroma_key)
-    frames = _component_crops(strip, frame_count, require_padding=True) or _slot_crops(strip, frame_count, require_padding=True)
-    if frames is None:
+    try:
+        frames = _component_crops(strip, frame_count, require_padding=True) or _slot_crops(strip, frame_count, require_padding=True)
+        if frames is None:
+            if method == "components":
+                raise UnsegmentableStripError(f"could not segment {frame_count} padded sprites from strip")
+            frames = _component_crops(strip, frame_count, require_padding=False)
+        if frames is None:
+            frames = _salvage_frames(strip, frame_count)
+        _validate_extracted_frames(frames, frame_count)
+    except UnsegmentableStripError:
+        raise
+    except ValueError as exc:
+        # A strip that fails strict extraction or validation has the defect in
+        # the art itself (merged/touching poses) — lenient slicing can only
+        # forgive it, not fix it. Surface that structurally so the orchestrator
+        # can skip the remaining strict (paid) retries instead of substring-
+        # matching error text (#87739).
         if method == "components":
-            raise ValueError(f"could not segment {frame_count} padded sprites from strip")
-        frames = _component_crops(strip, frame_count, require_padding=False)
-    if frames is None:
-        frames = _salvage_frames(strip, frame_count)
-    _validate_extracted_frames(frames, frame_count)
+            raise UnsegmentableStripError(str(exc)) from exc
+        raise
     return [_fit_to_cell(f) for f in frames] if fit else frames
 
 

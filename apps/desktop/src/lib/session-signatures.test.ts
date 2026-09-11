@@ -51,6 +51,23 @@ describe('sameCronSignature', () => {
     const b = [session('a', 't', { archived: false, pinned: true })]
     expect(sameCronSignature(a, b)).toBe(true)
   })
+
+  // Read-state-only pages must swap in: opening a session clears `unread`
+  // backend-side, and the refresh page whose only delta is that flag is the
+  // one that clears the emerald dot. Gating it out froze the stale `unread:
+  // true` row, and the dot survived navigation until some content field
+  // moved too (mirror of the #76919 pin-signature fix).
+  it('is false when only the unread flag changed', () => {
+    const a = [session('a', 't', { unread: true })]
+    const b = [session('a', 't', { unread: false })]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  it('is true when the unread flag matches', () => {
+    const a = [session('a', 't', { unread: true })]
+    const b = [session('a', 't', { unread: true })]
+    expect(sameCronSignature(a, b)).toBe(true)
+  })
 })
 
 describe('sessionMessagesSignature', () => {

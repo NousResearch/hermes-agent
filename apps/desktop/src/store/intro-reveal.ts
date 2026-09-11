@@ -32,7 +32,7 @@ export function hasSeenIntroReveal(): boolean {
 }
 
 export function isIntroRevealEnabled(): boolean {
-  return isOnboardingEnabled()
+  return isOnboardingEnabled() && window.hermesDesktop?.skipIntro !== true
 }
 
 export function shouldPlayFirstRunIntro(firstRunSkipped: boolean): boolean {

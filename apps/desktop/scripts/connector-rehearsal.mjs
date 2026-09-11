@@ -2,7 +2,7 @@
 // Real desktop + real backend. Isolated identity; no copied credentials.
 // Adds a fixed Vite port and CDP (9344) so the run can be driven and read
 // from outside. When you only want to click through it yourself:
-//   D=$(mktemp -d) && env -u HERMES_SHARED_AUTH_DIR HERMES_GUEST_ONBOARDING=1 \
+//   D=$(mktemp -d) && env -u HERMES_SHARED_AUTH_DIR HERMES_GUEST_ONBOARDING=1 HERMES_SKIP_INTRO=1 \
 //     HERMES_HOME="$D/home" HERMES_DESKTOP_USER_DATA_DIR="$D/userdata" hermes desktop
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -31,7 +31,7 @@ Object.assign(env, {
   HERMES_DESKTOP_USER_DATA_DIR: path.join(sandbox, 'electron'), HERMES_DESKTOP_CWD: path.join(sandbox, 'work'),
   HERMES_DESKTOP_HERMES_ROOT: root, HERMES_DESKTOP_PYTHON: python,
   HERMES_DESKTOP_IGNORE_EXISTING: '1', HERMES_DESKTOP_APP_NAME: 'Hermes Connector Rehearsal',
-  HERMES_GUEST_ONBOARDING: '1', HERMES_DESKTOP_DEV_SERVER: url, HERMES_DESKTOP_CDP_PORT: '9344'
+  HERMES_GUEST_ONBOARDING: '1', HERMES_SKIP_INTRO: '1', HERMES_DESKTOP_DEV_SERVER: url, HERMES_DESKTOP_CDP_PORT: '9344'
 })
 const entry = path.join(desktop, 'dist/connector-rehearsal.mjs')
 fs.writeFileSync(entry, `import { app } from 'electron'\napp.setAsDefaultProtocolClient = () => false\napp.setAppPath(${JSON.stringify(desktop)})\nawait import('./electron-main.mjs')\n`)

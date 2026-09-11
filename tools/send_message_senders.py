@@ -292,7 +292,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 def _live_adapter(platform, *, lookup_failed_warning=None):
     """``(runner, adapter)`` for the in-process gateway; ``(None, None)`` standalone (cron);
     ``(runner, None)`` when the lookup fails — logged when a warning is given, never silently
-    swallowed (a silent fall-through could recreate a reconnect storm)."""
+    swallowed (a silent fall-through could recreate a reconnect storm).
+
+    Multiplex: the adapter is the ACTIVE PROFILE's (``_profile_adapters[profile]``), never a bare
+    ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
+    would post/react with the default bot's identity. A profile with no adapter for the platform
+    yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
+    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
     try:
         from gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -301,7 +307,11 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     if runner is None:
         return None, None
     try:
-        return runner, runner.adapters.get(platform)
+        resolve = getattr(runner, "_authorization_adapter", None)
+        if not callable(resolve):  # bare runner stubs without the authz mixin
+            return runner, runner.adapters.get(platform)
+        from hermes_cli.profiles import get_active_profile_name
+        return runner, resolve(platform, get_active_profile_name())
     except Exception:
         if lookup_failed_warning:
             logger.warning(lookup_failed_warning, exc_info=True)

@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
 gateway:
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Verskaffer: {provider}"
+    context:               "◆ Konteks: {context} tokens ({source})"
+    endpoint:              "◆ Eindpunt: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "verstek — stel model.context_length in config om te oorskryf"
+    ctx_source_detected:   "bespeur"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."

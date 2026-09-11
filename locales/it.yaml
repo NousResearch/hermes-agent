@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
 
 gateway:
+  session_info:
+    model:                 "◆ Modello: `{model}`"
+    provider:              "◆ Provider: {provider}"
+    context:               "◆ Contesto: {context} token ({source})"
+    endpoint:              "◆ Endpoint: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "predefinito — imposta model.context_length nella config per sovrascriverlo"
+    ctx_source_detected:   "rilevato"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
   draining:         "⏳ Attendo il completamento di {count} agente/i attivo/i prima di riavviare..."
   goal_cleared:     "✓ Obiettivo cancellato."

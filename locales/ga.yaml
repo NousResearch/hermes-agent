@@ -24,6 +24,15 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  session_info:
+    model:                 "◆ Samhail: `{model}`"
+    provider:              "◆ Soláthraí: {provider}"
+    context:               "◆ Comhthéacs: {context} comhartha ({source})"
+    endpoint:              "◆ Críochphointe: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "réamhshocrú — socraigh model.context_length sa config chun é a shárú"
+    ctx_source_detected:   "braite"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."

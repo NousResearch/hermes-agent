@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Ця команда є в безумовному списку блокування, її не можна схвалити."
 
 gateway:
+  session_info:
+    model:                 "◆ Модель: `{model}`"
+    provider:              "◆ Провайдер: {provider}"
+    context:               "◆ Контекст: {context} токенів ({source})"
+    endpoint:              "◆ Ендпоінт: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "за замовчуванням — задайте model.context_length у конфігу, щоб перевизначити"
+    ctx_source_detected:   "визначено"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Час схвалення минув (агент більше не очікує). Попросіть агента спробувати ще раз."
   draining:         "⏳ Очікування завершення {count} активних агент(ів) перед перезапуском..."
   goal_cleared:     "✓ Ціль очищено."

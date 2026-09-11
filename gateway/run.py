@@ -1751,7 +1751,9 @@ def _profile_runtime_scope(
     # pinned (first-writer-wins backend leak; #68559).
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
+    from agent.i18n import profile_language_scope
+
+    with install_and_reset_profile_terminal_scope(Path(profile_home)), profile_language_scope():
         try:
             yield
         finally:

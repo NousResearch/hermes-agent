@@ -442,15 +442,7 @@ class GatewayTurnMixin:
             should_notify = reset_reason == "suspended"
             adapter = self._adapter_for_source(source) if should_notify else None
             if adapter:
-                notice = (
-                    "◐ Session reset after being stopped. "
-                    f"Conversation history cleared.\n"
-                    f"Use /resume to browse and restore a previous session.\n"
-                )
-                with suppress(Exception):
-                    session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
-                    if session_info:
-                        notice = f"{notice}\n\n{session_info}"
+                notice = await asyncio.to_thread(self._stopped_session_notice, source)
                 await adapter.send(source.chat_id, notice, metadata=self._thread_metadata_for_source(source))
         except Exception as e:
             logger.debug("Auto-reset notification failed (non-fatal): %s", e)
@@ -2061,27 +2053,37 @@ class GatewayTurnMixin:
         with self._profile_scope_for_source(source):
             return self._format_session_info()
 
+    def _stopped_session_notice(self, source: SessionSource) -> str:
+        with self._profile_scope_for_source(source):
+            notice = t("gateway.session_info.stopped_notice")
+            with suppress(Exception):
+                info = self._format_session_info()
+                if info:
+                    notice = f"{notice}\n\n{info}"
+            return notice
+
     def _format_session_info(self) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""
         from gateway.run import _resolve_gateway_model_context
         resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
         ctx_source = {
-            "config": "config",
-            "default": "default — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
+            "config": "ctx_source_config",
+            "default": "ctx_source_default",
+        }.get(resolved.context_source, "ctx_source_detected")
+        ctx_source = t(f"gateway.session_info.{ctx_source}")
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)
         )
         lines = [
-            f"◆ Model: `{resolved.model}`",
-            f"◆ Provider: {resolved.provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            t("gateway.session_info.model", model=resolved.model),
+            t("gateway.session_info.provider", provider=resolved.provider or "openrouter"),
+            t("gateway.session_info.context", context=ctx_display, source=ctx_source),
         ]
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
-            lines.append(f"◆ Endpoint: {base_url}")
+            lines.append(t("gateway.session_info.endpoint", endpoint=base_url))
         return "\n".join(lines)
 
     async def _run_background_task(

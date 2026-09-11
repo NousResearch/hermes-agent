@@ -20,6 +20,15 @@ approval:
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
 
 gateway:
+  session_info:
+    model:                 "◆ モデル: `{model}`"
+    provider:              "◆ プロバイダー: {provider}"
+    context:               "◆ コンテキスト: {context} トークン ({source})"
+    endpoint:              "◆ エンドポイント: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "デフォルト — config の model.context_length で上書きできます"
+    ctx_source_detected:   "自動検出"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
   goal_cleared:     "✓ 目標をクリアしました。"

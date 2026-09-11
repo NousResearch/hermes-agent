@@ -20,6 +20,15 @@ approval:
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
 
 gateway:
+  session_info:
+    model:                 "◆ 模型：`{model}`"
+    provider:              "◆ 提供方：{provider}"
+    context:               "◆ 上下文：{context} tokens（{source}）"
+    endpoint:              "◆ 端点：{endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "默认值 — 可在 config 中设置 model.context_length 覆盖"
+    ctx_source_detected:   "自动检测"
+    stopped_notice: "◐ 停止后的会话已重置。对话历史已清空。\n使用 /resume 可浏览并恢复之前的会话。\n"
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
   goal_cleared:     "✓ 目标已清除。"

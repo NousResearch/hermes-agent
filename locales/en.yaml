@@ -30,6 +30,15 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Provider: {provider}"
+    context:               "◆ Context: {context} tokens ({source})"
+    endpoint:              "◆ Endpoint: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "default — set model.context_length in config to override"
+    ctx_source_detected:   "detected"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."

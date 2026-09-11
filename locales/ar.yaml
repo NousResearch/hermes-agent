@@ -25,6 +25,15 @@ approval:
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
 
 gateway:
+  session_info:
+    model:                 "◆ النموذج: `{model}`"
+    provider:              "◆ المزوّد: {provider}"
+    context:               "◆ السياق: {context} رمز ({source})"
+    endpoint:              "◆ نقطة النهاية: {endpoint}"
+    ctx_source_config:     "الإعدادات"
+    ctx_source_default:    "الافتراضي — اضبط model.context_length في الإعدادات لتغييره"
+    ctx_source_detected:   "مكتشف"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

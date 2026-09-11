@@ -26,7 +26,7 @@ functionality is covered by the `nearby` command below, with the same
 
 ## When to Use
 
-- User sends a Telegram location pin (latitude/longitude in the message) → `nearby`
+- User supplies coordinates in text → `nearby`
 - User wants coordinates for a place name → `search`
 - User has coordinates and wants the address → `reverse`
 - User asks for nearby restaurants, hospitals, pharmacies, hotels, etc. → `nearby`
@@ -141,15 +141,12 @@ python $MAPS bbox 40.75 -74.00 40.77 -73.98 restaurant --limit 20
 Finds POIs within a geographic rectangle. Use `area` first to get the
 bounding box coordinates for a named place.
 
-## Working With Telegram Location Pins
+## Working With Coordinates
 
-When a user sends a location pin, the message contains `latitude:` and
-`longitude:` fields. Extract those and pass them straight to `nearby`:
-
-```bash
-# User sent a pin at 36.17, -115.14 and asked "find cafes nearby"
-python $MAPS nearby 36.17 -115.14 cafe --radius 1500
-```
+Telegram location and live-location updates are handled silently by the gateway
+as profile-scoped telemetry. They are not agent messages and do not expose
+coordinates to this skill. If a maps request needs a starting point, ask the
+user for a place name or coordinates in text, then pass that value to `nearby`.
 
 Present results as a numbered list with names, distances, and the
 `maps_url` field so the user gets a tap-to-open link in chat. For "open
@@ -163,9 +160,8 @@ current.
 1. `nearby --near "Colosseum Rome" --category restaurant --radius 500`
    — one command, auto-geocoded
 
-**"What's near this location pin they sent?":**
-1. Extract lat/lon from the Telegram message
-2. `nearby LAT LON cafe --radius 1500`
+**"What's near these coordinates?":**
+1. `nearby LAT LON cafe --radius 1500`
 
 **"How do I walk from hotel to conference center?":**
 1. `directions "Hotel Name" --to "Conference Center" --mode walking`

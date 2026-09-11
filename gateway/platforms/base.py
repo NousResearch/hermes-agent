@@ -4162,7 +4162,8 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None) -> SessionSource:
+        auto_thread_initial_name: Optional[str] = None,
+        fail_closed_profile_resolution: bool = False) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
@@ -4182,8 +4183,12 @@ class BasePlatformAdapter(ABC):
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:
-                logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
-                               self.platform, chat_id, exc_info=True)
+                profile_route_rejected = fail_closed_profile_resolution
+                logger.warning(
+                    "Profile resolution failed for %s; %s source",
+                    self.platform,
+                    "rejecting" if fail_closed_profile_resolution else "defaulting to active profile",
+                    exc_info=True)
         source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
                                auto_thread_created=auto_thread_created,
                                auto_thread_initial_name=auto_thread_initial_name)

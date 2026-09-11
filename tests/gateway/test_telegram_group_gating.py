@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -83,11 +84,14 @@ def _make_adapter(
     adapter._forum_command_registered = set()
     adapter._active_sessions = {}
     adapter._pending_messages = {}
+    adapter.gateway_runner = None
+    adapter._owner_profile = None
     # Trigger-gating tests don't exercise the allowlist gate (added by
     # #23795 + #24468).  Force-authorize all senders so the trigger logic
     # under test runs.  Without this, every fake message hits the new
     # fail-closed auth path and gets dropped before trigger evaluation.
     adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+    adapter._authorization_check = lambda *_args, **_kwargs: True
     return adapter
 
 
@@ -630,8 +634,8 @@ def _group_location_message(
     chat_id=-100,
     from_user_id=111,
     from_user_name="Alice Example",
-    lat=37.7749,
-    lon=-122.4194,
+    lat=0.125,
+    lon=-0.25,
 ):
     return SimpleNamespace(
         message_id=50,
@@ -647,8 +651,12 @@ def _group_location_message(
             first_name=from_user_name.split()[0],
         ),
         reply_to_message=None,
-        date=None,
-        location=SimpleNamespace(latitude=lat, longitude=lon),
+        date=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        edit_date=None,
+        sender_chat=None,
+        location=SimpleNamespace(
+            latitude=lat, longitude=lon, horizontal_accuracy=3.0,
+            heading=90, speed=1.5, live_period=None),
         venue=None,
         sticker=None,
         photo=None,
@@ -699,14 +707,15 @@ def _group_voice_message(
 # ---------------------------------------------------------------------------
 
 
-def test_triggered_location_message_uses_shared_session_in_observe_mode():
+def test_triggered_location_message_is_persisted_without_a_shared_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
     async def _run():
         adapter = _make_adapter(
             require_mention=False,
             group_allowed_chats=["-100"],
             observe_unmentioned_group_messages=True,
         )
-        adapter.handle_message = AsyncMock()
         update = SimpleNamespace(
             update_id=2002,
             message=_group_location_message(),
@@ -715,10 +724,11 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 
         await adapter._handle_location_message(update, SimpleNamespace())
 
-        adapter.handle_message.assert_awaited_once()
-        event = adapter.handle_message.call_args[0][0]
-        assert event.source.user_id is None
-        assert "[Alice Example|111]" in event.text
+        adapter._message_handler.assert_not_awaited()
+        payload = json.loads(
+            (tmp_path / "location" / "latest.json").read_text(encoding="utf-8"))
+        assert payload["profile"] == "default"
+        assert payload["source"] == "telegram"
 
     asyncio.run(_run())
 

@@ -147,6 +147,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.location_ingest import persist_location_snapshot
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.wisdom_adapter import TelegramWisdomMixin
 from plugins.platforms.telegram.telegram_network import (
@@ -792,10 +793,13 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
         return decision
 
-    def _source_from_message_for_auth(self, message: Message):
+    def _source_from_message_for_auth(
+        self, message: Message, *, fail_closed_profile_resolution: bool = False,
+    ):
         """Build the SessionSource the gateway auth path expects; identity comes from ``from_user``,
         falling back to ``sender_chat`` for channel posts so an unauthorized channel can't inject."""
         from gateway.session import SessionSource
+
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
@@ -812,15 +816,81 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         thread_id_raw = getattr(message, "message_thread_id", None)
         is_topic_message = bool(getattr(message, "is_topic_message", False))
         is_forum_group = getattr(chat, "is_forum", False) is True
+        thread_id = self._effective_message_thread_id(message) if fail_closed_profile_resolution else None
         chat_type = self._normalize_chat_type(
-            getattr(chat, "type", "dm"), is_forum=thread_id_raw is not None and (is_topic_message or is_forum_group))
-        thread_id = None
-        if thread_id_raw is not None and (
-            (chat_type == "forum" and (is_topic_message or is_forum_group)) or (chat_type == "dm" and is_topic_message)):
-            thread_id = str(thread_id_raw)
-        return SessionSource(
-            platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
-            user_name=user_name, thread_id=thread_id, is_bot=is_bot)
+            getattr(chat, "type", "dm"),
+            is_forum=(is_forum_group or (thread_id is not None and is_topic_message))
+            if fail_closed_profile_resolution
+            else thread_id_raw is not None and (is_topic_message or is_forum_group),
+        )
+        if not fail_closed_profile_resolution:
+            if thread_id_raw is not None and (
+                (chat_type == "forum" and (is_topic_message or is_forum_group))
+                or (chat_type == "dm" and is_topic_message)
+            ):
+                thread_id = str(thread_id_raw)
+            return SessionSource(
+                platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type,
+                user_id=user_id, user_name=user_name, thread_id=thread_id, is_bot=is_bot)
+
+        source_kwargs = dict(
+            chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
+            user_name=user_name, thread_id=thread_id, is_bot=is_bot,
+            message_id=getattr(message, "message_id", None))
+        source_kwargs["fail_closed_profile_resolution"] = True
+        return self.build_source(**source_kwargs)
+
+    def _is_strictly_authorized_source(self, source) -> bool:
+        """Authorize a telemetry side effect without the DM pairing bypass."""
+        if (
+            getattr(source, "profile_route_rejected", False) is True
+            or not getattr(source, "user_id", None)
+            or not getattr(source, "chat_id", None)
+        ):
+            return False
+        is_group = (source.chat_type or "") in ("group", "forum", "channel")
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        adapter_allow_from = extra.get("group_allow_from" if is_group else "allow_from")
+        if adapter_allow_from is not None:
+            allowed = _coerce_allow_set(adapter_allow_from)
+            return source.user_id in allowed or "*" in allowed
+
+        if getattr(self, "_authorization_check", None) is not None:
+            decision = self._is_sender_authorized(
+                source.user_id, chat_type=source.chat_type, chat_id=source.chat_id,
+                is_bot=source.is_bot, thread_id=source.thread_id)
+            return decision is True
+
+        auth_fn = self._legacy_runner_auth_fn()
+        if auth_fn is not None:
+            try:
+                return auth_fn(source) is True
+            except Exception:
+                logger.warning("[Telegram] Strict location authorization failed", exc_info=True)
+                return False
+
+        # Bare adapter fallback. Connected gateways always inject the full runner callback above;
+        # this mirrors its explicit allowlists without treating missing policy as authorization.
+        if is_group:
+            chat_allowed = _coerce_allow_set(
+                extra.get("group_allowed_chats") or _scoped_gate_env("TELEGRAM_GROUP_ALLOWED_CHATS"))
+            if source.chat_id in chat_allowed or "*" in chat_allowed:
+                return True
+        allowed_users = _coerce_allow_set(_scoped_gate_env("TELEGRAM_ALLOWED_USERS"))
+        allowed_users |= _coerce_allow_set(_scoped_gate_env("GATEWAY_ALLOWED_USERS"))
+        if is_group:
+            allowed_users |= _coerce_allow_set(_scoped_gate_env("TELEGRAM_GROUP_ALLOWED_USERS"))
+        if source.user_id in allowed_users or "*" in allowed_users:
+            return True
+        return any(
+            _scoped_gate_env(name).lower() in {"true", "1", "yes", "on"}
+            for name in ("TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+        )
+
+    def _source_from_location_message(self, message: Message):
+        """Build a routed source and reject any ambiguous profile resolution."""
+        return self._source_from_message_for_auth(
+            message, fail_closed_profile_resolution=True)
 
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
@@ -2621,7 +2691,13 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         ``None`` for types without one."""
         if getattr(update, "message_reaction", None) is not None:
             return self._normalize_reaction_event(update)
-        if getattr(update, "edited_message", None) is not None:
+        edited = getattr(update, "edited_message", None)
+        if edited is not None and (
+            getattr(edited, "location", None) is not None
+            or getattr(edited, "venue", None) is not None
+        ):
+            return None
+        if edited is not None:
             return self._normalize_message_edited_event(update)
         return None
 
@@ -5777,14 +5853,21 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming location/venue pin messages."""
+        """Persist authorized location telemetry without creating an agent turn."""
         msg = self._effective_update_message(update)
         if not msg:
             return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+        source = self._source_from_location_message(msg)
+        if not self._is_strictly_authorized_source(source):
+            logger.warning(
+                "[Telegram] Rejected location telemetry from unauthorized source"
+            )
             return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
+        # Preserve group/topic trigger and observation gates without writing an observed transcript.
+        if not (
+            self._should_process_message(msg)
+            or self._should_observe_unmentioned_group_message(msg)
+        ):
             return
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
@@ -5794,20 +5877,51 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         lon = getattr(location, "longitude", None)
         if lat is None or lon is None:
             return
-        parts = ["[The user shared a location pin.]"]
-        if venue:
-            title = getattr(venue, "title", None)
-            address = getattr(venue, "address", None)
-            if title:
-                parts.append(f"Venue: {title}")
-            if address:
-                parts.append(f"Address: {address}")
-        parts += [
-            f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-            "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
-        event.text = "\n".join(parts)
-        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+        source_dt = getattr(msg, "edit_date", None) or getattr(msg, "date", None)
+        if not isinstance(source_dt, datetime):
+            return
+        if source_dt.tzinfo is None:
+            source_dt = source_dt.replace(tzinfo=timezone.utc)
+        source_timestamp = source_dt.astimezone(timezone.utc).isoformat()
+        profile = self._session_key_profile(source) or "default"
+        chat = getattr(msg, "chat", None)
+        user = getattr(msg, "from_user", None) or getattr(msg, "sender_chat", None)
+        live_period = getattr(location, "live_period", None)
+        payload = {
+            "accuracy_m": getattr(location, "horizontal_accuracy", None),
+            "chat_id": getattr(chat, "id", None),
+            "heading": getattr(location, "heading", None),
+            "is_live": bool(isinstance(live_period, int) and not isinstance(live_period, bool) and live_period > 0),
+            "latitude": lat,
+            "live_period": live_period,
+            "longitude": lon,
+            "message_id": getattr(msg, "message_id", None),
+            "message_thread_id": getattr(msg, "message_thread_id", None),
+            "profile": profile,
+            "source": "telegram",
+            "source_timestamp": source_timestamp,
+            "speed_mps": getattr(location, "speed", None),
+            "update_id": getattr(update, "update_id", None),
+            "updated_at": source_timestamp,
+            "user_id": getattr(user, "id", None),
+        }
+        try:
+            changed = await asyncio.to_thread(
+                persist_location_snapshot, payload, profile=profile)
+        except Exception:
+            logger.exception("[Telegram] Failed silent location ingest")
+            return
+        if changed:
+            logger.info(
+                "[Telegram] Silent location ingest (%s)",
+                "live" if payload["is_live"] else "static")
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Fail closed if location telemetry reaches the general dispatch boundary."""
+        if event.message_type == MessageType.LOCATION:
+            logger.warning("[Telegram] Suppressed location telemetry at dispatch boundary")
+            return
+        await super().handle_message(event)
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 

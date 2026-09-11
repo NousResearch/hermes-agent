@@ -28,7 +28,10 @@ def isolated_kanban_home(monkeypatch):
     for mod in list(sys.modules.keys()):
         if (mod.startswith("hermes_cli") or mod.startswith("hermes_state")
                 or mod == "hermes_constants"):
-            del sys.modules[mod]
+            # delitem, not del: monkeypatch restores the originals at teardown, so
+            # later tests (and modules that captured hermes_cli.* at import) see the
+            # live kanban_db rather than a purged-and-reimported copy.
+            monkeypatch.delitem(sys.modules, mod)
     from hermes_cli import kanban_db
     yield kanban_db, test_home
 

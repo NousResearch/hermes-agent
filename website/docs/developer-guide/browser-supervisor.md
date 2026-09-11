@@ -66,6 +66,23 @@ Subscribes on attach:
 Thread-safe state access via a snapshot lock; tool handlers (sync) read the
 frozen snapshot without awaiting.
 
+### Task-owned pages
+
+Each CDP task creates a dedicated page and reuses that target after a transport
+reconnect. Navigation and follow-up actions share the normal browser command
+path, preserving redirect checks, response metadata and snapshots. The task's
+agent-browser daemon connects through a loopback WebSocket view that exposes
+only this page in target inventories and discovery events. New tabs from other
+tasks cannot change the daemon's active page between commands. Attached child
+frames retain their own CDP sessions.
+
+The view runs on the supervisor loop, uses an unpredictable endpoint path, and
+rejects browser-origin WebSocket connections. Session teardown closes its
+listener and the owned page. If the page is replaced, the driver daemon restarts
+against the new endpoint because it caches its original CDP connection. The
+view constrains driver routing; it does not replace the general `browser_cdp`
+tool or isolate browser-wide state such as cookies.
+
 ### Lifecycle
 
 - **Start:** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — called by
@@ -189,10 +206,10 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 
 ## Testing
 
-Unit tests (`tests/tools/test_browser_supervisor.py`) use an asyncio mock CDP
-server that speaks enough of the protocol to exercise all state transitions:
-attach, enable, navigate, dialog fire, dialog dismiss, frame attach/detach,
-child target attach, session teardown. Real-backend E2E (Browserbase + local
-Chromium-family browser) is manual — exercise via `/browser connect` to a
-live Chromium-family browser and run the dialog/frame test cases described
-above.
+`tests/tools/test_browser_supervisor_page_isolation.py` checks ownership and
+driver endpoint replacement. `tests/tools/test_browser_supervisor.py` exercises
+real local Chrome, dialogs, reconnects, concurrent click/fill operations,
+snapshot references, and newly opened foreign tabs. Run the real-browser suite
+with `HERMES_E2E_BROWSER=1 scripts/run_tests.sh -m integration tests/tools/test_browser_supervisor.py`.
+Chrome and agent-browser must be installed. Browserbase and the documented
+cross-origin iframe smoke test require separate backend validation.

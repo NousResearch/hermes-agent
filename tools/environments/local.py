@@ -27,8 +27,10 @@ from tools.environments.local_env_policy import (
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
     _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
+from tools.environments.local_no_new_privs import prepare_systemd_run_escape
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from tools.terminal_tool_sudo import _count_real_sudo_invocations
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -780,8 +782,16 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        run_env = _make_run_env(self.env)
+        escape = prepare_systemd_run_escape(
+            args, run_env, self.cwd, stdin_data,
+            has_sudo=_count_real_sudo_invocations(cmd_string) > 0)
+        if escape is not None:
+            args = escape.args
+            run_env = escape.env
+            stdin_data = escape.stdin_data
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,

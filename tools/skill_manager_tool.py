@@ -506,7 +506,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if _is_background_review():
         try:
             from tools.skill_usage import archive_skill
-            ok, archive_msg = archive_skill(name)
+            ok, archive_msg = archive_skill(name, skill_dir=skill_dir)
         except Exception as e:
             return _err(f"failed to archive '{name}': {e}")
         if not ok:

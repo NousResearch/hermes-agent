@@ -150,7 +150,12 @@ export function composeSetupSoul(): string {
 /** The hidden runbook seeded into the first build's session — the work-side
  *  half of the old single-chat script: no-auth first build, the permissions
  *  note, and the live progress cards. */
-export function buildFirstTaskRunbook(task: string, answers: OnboardingAnswers, plan: HandoffPlan = 'build'): string {
+export function buildFirstTaskRunbook(
+  task: string,
+  answers: OnboardingAnswers,
+  plan: HandoffPlan = 'build',
+  pluginRoot = ''
+): string {
   const name = (answers.name ?? '').trim()
   const context = (answers.context ?? '').trim()
   const tools = (answers.connectors ?? []).filter(Boolean)
@@ -167,7 +172,7 @@ export function buildFirstTaskRunbook(task: string, answers: OnboardingAnswers, 
       : '',
     'Their next message is the go signal: really begin the work — plan briefly, then build (scaffold, research, first artifact).',
     "As you start, tell them in one short sentence: you'll ask for permissions as you go, and they can say no to anything or redirect you.",
-    ...planRunbook(plan),
+    ...planRunbook(plan, pluginRoot),
     ...connectorRunbook(tools),
     'While the work runs, place ::onboarding{step="progress" title="what you\'re doing"} as its own paragraph at the start of each status turn — the card shows the build breathing live. Keep the titles short and present-tense ("Scaffolding the project", "Wiring the reminder"). Emit each exactly like that, alone on its own line.',
     'When the first pass of the build is DONE: end that turn with ::ask{question="Does this match what you wanted?" options="Looks right|Change something|Take it further"} alone as its own paragraph, emitted EXACTLY as written. Act on their pick immediately. One unreviewed first output is how a build reads as broken; the ask is how it reads as a collaboration.',
@@ -224,9 +229,9 @@ const MACHINE_SETUP_RUNBOOK = [
  *  The catalog is reference, not a dependency: thirteen reviewed plugins in
  *  NousResearch/plugins show the shapes that work. Reading one beats inventing
  *  an API, and the agent is told to look before it writes. */
-const PLUGIN_RUNBOOK = [
+const pluginRunbook = (root: string) => [
   'THIS IS A PLUGIN JOB: the thing you are building is a piece of the Hermes app itself, and it will appear in the window the user is looking at right now. That is the whole point — do not let it become a script in a folder.',
-  'A plugin is ONE file: `~/.hermes/desktop-plugins/<name>/plugin.js`. Plain ESM, no build step, no package.json, no install. It imports from `@hermes/plugin-sdk` and calls `jsx()` from `react/jsx-runtime` directly (there is no JSX compiler in this path — writing `<div>` will not work). It default-exports `{ id, name, register(ctx) }` and `register` calls `ctx.register({ id, area, order, render })`. The runtime loads it the moment you save, and reloads it on every later save, so there is no restart to ask them for.',
+  `A plugin is ONE file: \`${root}/<name>/plugin.js\`. Plain ESM, no build step, no package.json, no install. It imports from \`@hermes/plugin-sdk\` and calls \`jsx()\` from \`react/jsx-runtime\` directly (there is no JSX compiler in this path — writing \`<div>\` will not work). It default-exports \`{ id, name, register(ctx) }\` and \`register\` calls \`ctx.register({ id, area, order, render })\`. The runtime loads it the moment you save, and reloads it on every later save, so there is no restart to ask them for.`,
   'LOOK BEFORE YOU WRITE. Read the `building-hermes-desktop-plugins` skill first — it has the SDK surface, the areas you can render into, and the traps. If the machine has a checkout of NousResearch/plugins, read a plugin close to what you are making; those thirteen are reviewed and show the real shapes (a statusbar chip, a composer action, a full pane).',
   'START SMALL AND VISIBLE. The first save should put something on screen even if it only renders a label — a chip that says the right word beats a half-written dashboard, because they SEE it work and everything after that is refinement they are watching. Build up from there in passes.',
   'Say what you are doing in one short line per pass, and tell them where to look the first time it appears ("bottom right of the status bar" / "it is in the right pane now"). A plugin that loaded silently reads as nothing having happened.',
@@ -236,7 +241,7 @@ const PLUGIN_RUNBOOK = [
 /** The plan's own instructions, or the no-auth rule when the shape is the
  *  user's own idea. One switch so a new plan cannot half-land: adding a case
  *  here is what makes `plan="…"` mean anything at the other end. */
-function planRunbook(plan: HandoffPlan): string[] {
+function planRunbook(plan: HandoffPlan, pluginRoot: string): string[] {
   switch (plan) {
     case 'machine-setup':
       return machineSetupRunbook()
@@ -244,7 +249,11 @@ function planRunbook(plan: HandoffPlan): string[] {
     case 'plugin':
       // NO_AUTH_RULE still applies: a plugin that needs an API key on its
       // first run is the same dead end as any other first build that does.
-      return [...PLUGIN_RUNBOOK, NO_AUTH_RULE]
+      if (!pluginRoot) {
+        throw new Error('The desktop plugin folder is unavailable. Retry before starting the first build.')
+      }
+
+      return [...pluginRunbook(pluginRoot), NO_AUTH_RULE]
 
     default:
       return [NO_AUTH_RULE]
@@ -266,12 +275,14 @@ function machineSetupRunbook(): string[] {
 /** Seed rows for the build session's session.create — just the hidden runbook;
  *  the visible go-signal (the task brief) is submitted as a real turn right
  *  after, which is what starts the build. */
-export function buildFirstTaskSeedMessages(
+export async function buildFirstTaskSeedMessages(
   task: string,
   answers: OnboardingAnswers,
   plan: HandoffPlan = 'build'
-): { content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[] {
-  return [{ content: buildFirstTaskRunbook(task, answers, plan), display_kind: 'hidden', role: 'user' }]
+): Promise<{ content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[]> {
+  const root = plan === 'plugin' ? await window.hermesDesktop?.desktopPluginsRoot?.() : undefined
+
+  return [{ content: buildFirstTaskRunbook(task, answers, plan, root), display_kind: 'hidden', role: 'user' }]
 }
 
 /** The hidden note whispered into the Setup chat once the build session is

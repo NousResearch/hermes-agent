@@ -8,9 +8,12 @@
  * generic thing.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { buildFirstTaskRunbook, buildFirstTaskSeedMessages, parseHandoffPlan } from './setup-profile'
+
+const pluginRoot = '/isolated/desktop-plugins'
+afterEach(() => vi.unstubAllGlobals())
 
 const ANSWERS = {
   accent: '',
@@ -42,7 +45,7 @@ describe('parseHandoffPlan', () => {
 })
 
 describe('the plugin runbook', () => {
-  const runbook = buildFirstTaskRunbook('A panel with my open tickets', ANSWERS, 'plugin')
+  const runbook = buildFirstTaskRunbook('A panel with my open tickets', ANSWERS, 'plugin', pluginRoot)
 
   it('names the one file and the no-build-step shape', () => {
     // The traps that produce a broken first plugin: a build step that does not
@@ -83,10 +86,14 @@ describe('the plugin runbook', () => {
     expect(machine).toContain('START BY LOOKING, NOT PLANNING')
   })
 
-  it('reaches the session as the seeded runbook, not just as a parsed value', () => {
-    const [seed] = buildFirstTaskSeedMessages('A panel with my open tickets', ANSWERS, 'plugin')
+  it('seeds the plugin path resolved by the running desktop', async () => {
+    const desktopPluginsRoot = vi.fn(async () => pluginRoot)
+    vi.stubGlobal('hermesDesktop', { desktopPluginsRoot })
+    const [seed] = await buildFirstTaskSeedMessages('A panel with my open tickets', ANSWERS, 'plugin')
 
     expect(seed.display_kind).toBe('hidden')
     expect(seed.content).toContain('THIS IS A PLUGIN JOB')
+    expect(seed.content).toContain(`${pluginRoot}/<name>/plugin.js`)
+    expect(desktopPluginsRoot).toHaveBeenCalledOnce()
   })
 })

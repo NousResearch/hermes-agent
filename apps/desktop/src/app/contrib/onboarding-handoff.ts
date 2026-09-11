@@ -220,7 +220,12 @@ export function useOnboardingHandoff({
 
       const storedId = $selectedStoredSessionId.get()
       $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
-      $setupSession.set({ connectionId: guideSourceConnectionId(storedId), profile: SETUP_PROFILE, runtimeId, storedId })
+      $setupSession.set({
+        connectionId: guideSourceConnectionId(storedId),
+        profile: SETUP_PROFILE,
+        runtimeId,
+        storedId
+      })
 
       // Manual title authority prevents the hidden runbook becoming the title.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
@@ -295,7 +300,12 @@ export function useOnboardingHandoff({
         return
       }
 
-      $setupSession.set({ connectionId, profile: SETUP_PROFILE, runtimeId: $activeSessionId.get() ?? '', storedId: selectedStoredId })
+      $setupSession.set({
+        connectionId,
+        profile: SETUP_PROFILE,
+        runtimeId: $activeSessionId.get() ?? '',
+        storedId: selectedStoredId
+      })
       $setupHandoff.set({ task: saved.task, brief: saved.brief, plan: saved.plan, phase: 'pending' })
     } catch (error) {
       notify({
@@ -367,11 +377,14 @@ export function useOnboardingHandoff({
                 owner.connectionId ? { connectionId: owner.connectionId, profile: owner.profile } : null
               )
 
+              const seed = await buildFirstTaskSeedMessages(
+                setupHandoff.task,
+                $onboardingAnswers.get(),
+                setupHandoff.plan
+              )
+
               const runtimeId = await runCreatePinnedTo(BUILD_PROFILE, () =>
-                createBackendSessionForSend(
-                  setupHandoff.brief,
-                  buildFirstTaskSeedMessages(setupHandoff.task, $onboardingAnswers.get(), setupHandoff.plan)
-                )
+                createBackendSessionForSend(setupHandoff.brief, seed)
               )
 
               if (!runtimeId) {

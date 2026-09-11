@@ -15,6 +15,8 @@ Runs on any host: psutil interactions go through a fake module.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import types
 from pathlib import Path
@@ -130,6 +132,18 @@ def test_register_self_writes_and_prunes_dead(tmp_path):
     me = next(e for e in entries if e["pid"] == 999)
     assert me["purpose"] == "serve"
     assert me["create_time"] == pytest.approx(50.0, abs=0.01)
+
+
+def test_register_self_writes_ledger_with_0600(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    fake = _fake_psutil({999: 50.0})
+    with patch.dict(sys.modules, {"psutil": fake}), \
+         patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "getpid", return_value=999):
+        assert pi.register_self("serve", project_root=Path("/x/install")) is True
+
+    mode = stat.S_IMODE(os.stat(ledger).st_mode)
+    assert mode == 0o600
 
 
 def test_register_self_inherits_spawn_tag_lineage(tmp_path):

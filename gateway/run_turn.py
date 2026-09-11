@@ -556,7 +556,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     fallback_model=self._refresh_fallback_model(),
                 )
                 try:
-                    return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
+                    return agent.run_conversation(
+                        user_message=enriched_prompt,
+                        task_id=task_id,
+                        message_timestamp_handling="disabled",
+                    )
                 finally:
                     self._cleanup_agent_resources(agent)
 

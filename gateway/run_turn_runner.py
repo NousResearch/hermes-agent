@@ -977,7 +977,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                result = agent.run_conversation(api_message, **kwargs)
+                result = agent.run_conversation(
+                    api_message, message_timestamp_handling="gateway_prepared", **kwargs
+                )
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

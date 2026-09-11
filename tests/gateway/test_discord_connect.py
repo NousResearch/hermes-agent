@@ -184,6 +184,37 @@ async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch, initial
 
 
 @pytest.mark.asyncio
+async def test_connect_caps_long_discord_rate_limit_waits(monkeypatch):
+    """Long REST cooldowns must surface as RateLimited instead of blocking message handling."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    captured_kwargs = {}
+
+    def fake_bot_factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        )
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    assert await adapter.connect() is True
+    assert captured_kwargs["max_ratelimit_timeout"] == 30.0
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monkeypatch):
     """Regression for #18187: calling connect() twice without disconnect() in
     between (e.g. during an in-process reconnect attempt) must close the old

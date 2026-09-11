@@ -341,3 +341,38 @@ def _load_mcp_config() -> Dict[str, dict]:
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
+
+
+def _native_mcp_server_enabled(name: str) -> Optional[bool]:
+    """Whether native ``config.yaml`` still enables *name*.
+
+    ``None`` means the file could not be read or parsed and callers must fail
+    open. This intentionally excludes portable plugin MCPs: their lifecycle is
+    owned by plugin discovery, not ``hermes mcp remove``.
+    """
+    try:
+        import yaml
+        from hermes_cli.config import get_config_path
+
+        path = get_config_path()
+        if not path.exists():
+            return False
+        with open(path, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+        if not isinstance(raw, dict):
+            return None
+        servers = raw.get("mcp_servers")
+        if servers is None:
+            return False
+        if not isinstance(servers, dict):
+            return None
+        config = servers.get(name)
+        if config is None:
+            return False
+        if not isinstance(config, dict):
+            return None
+        from tools.mcp_tool_common import _parse_boolish
+        return _parse_boolish(config.get("enabled", True), default=True)
+    except Exception as exc:
+        logger.debug("Failed to inspect native MCP config for '%s': %s", name, exc)
+        return None

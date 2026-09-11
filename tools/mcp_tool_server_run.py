@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
+from tools import mcp_tool_config as _config
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
@@ -50,6 +51,28 @@ class MCPServerRunMixin:
         self._mark_stdio_recycled(recycle_reason)
         return True
 
+    def _retire_if_removed_from_config(self) -> bool:
+        """Retire a native server removed/disabled by another Hermes process.
+
+        Config read failures fail open. Deregistration happens before ownership
+        is dropped so every profile overlay can remove the server's tools.
+        """
+        if not self._native_config_managed or _config._native_mcp_server_enabled(self.name) is not False:
+            return False
+        logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
+        self._shutdown_event.set()
+        self._fail_inflight_calls("config removal")
+        self._deregister_tools()
+        with _core._lock:
+            if _core._servers.get(self.name) is self:
+                _core._servers.pop(self.name, None)
+                _core._server_scope_keys.pop(self.name, None)
+                _core._server_tool_scopes.pop(self.name, None)
+                _core._server_connect_errors.pop(self.name, None)
+                _core._server_connecting.discard(self.name)
+                _core._parallel_safe_servers.discard(self.name)
+        return True
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Serve until a lifecycle event: ``"shutdown"`` (exits run), ``"reconnect"`` (session torn
         down, transport re-entered; event cleared first) or ``"recycle"`` (stdio idle/lifetime
@@ -64,12 +87,15 @@ class MCPServerRunMixin:
         keepalive_interval = max(
             _core._MIN_KEEPALIVE_INTERVAL,
             float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))
+        next_keepalive = time.monotonic() + keepalive_interval
         shutdown_task, reconnect_task = self._event_waiters()
         try:
             while True:
                 if self._recycle_if_due():
                     return "recycle"
-                timeout = keepalive_interval
+                timeout = max(0.0, next_keepalive - time.monotonic())
+                if self._native_config_managed:
+                    timeout = min(timeout, _core._MCP_CONFIG_POLL_INTERVAL)
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
                     timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
@@ -77,8 +103,13 @@ class MCPServerRunMixin:
                     {shutdown_task, reconnect_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
                 if done:
                     break
+                if self._retire_if_removed_from_config():
+                    return "shutdown"
                 if self._recycle_if_due():
                     return "recycle"
+                if time.monotonic() < next_keepalive:
+                    continue
+                next_keepalive = time.monotonic() + keepalive_interval
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
                 # Timeout — no lifecycle event fired. See #48069.
@@ -140,6 +171,8 @@ class MCPServerRunMixin:
         self._reconnect_event.clear()
         if await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL) == "shutdown":
             return True
+        if self._retire_if_removed_from_config():
+            return True
         logger.debug("MCP server '%s': attempting revival %s (self-probe or explicit reconnect request); "
                      "rebuilding transport.", self.name, revival_reason)
         return False
@@ -149,6 +182,7 @@ class MCPServerRunMixin:
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
+        self._native_config_managed = _config._native_mcp_server_enabled(self.name) is True
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -201,6 +235,8 @@ class MCPServerRunMixin:
         self._reconnect_retries = 0
         budget = _RetryBudget()
         while True:
+            if self._retire_if_removed_from_config():
+                break
             try:
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 if not await self._on_clean_return(await run_transport(config), budget):

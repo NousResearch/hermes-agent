@@ -110,8 +110,8 @@ declare global {
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
       // Intro reveal: the full-screen first-run brand sequence. The main
-      // renderer owns the clock; the overlay window (`?win=intro`) renders
-      // particles + type and plays sound locally.
+      // renderer owns the phase; the overlay window (`?win=intro`) owns
+      // the animation clock and plays sound locally.
       introReveal?: {
         open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
         close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>

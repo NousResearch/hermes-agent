@@ -929,16 +929,42 @@ def _cold_start_windows_gateway_after_update() -> bool:
         if _desktop_owns_gateway_lifecycle():
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
             return True
+    # The Task Scheduler runs the gateway outside any job object holding this
+    # updater (issue #84185). subprocess.Popen + CREATE_BREAKAWAY_FROM_JOB is
+    # accepted silently by CreateProcess even when the parent job denies
+    # breakaway, so the child lands inside the job and is hard-killed when the
+    # updater exits — the ✓ printed below would be a lie. Prefer the task path
+    # whenever the Scheduled Task actually exists; fall back to the direct
+    # spawn only when there is no task to trigger.
+    with _abort_on_error("Could not cold-start Windows gateway after update"):
+        started_via_task = gateway_windows._spawn_via_scheduled_task()
+    if started_via_task:
+        # Escape via Task Scheduler + honest reporting (same poll + attestation
+        # as every other _spawn_detached caller — #86687). _spawn already
+        # waited 30s for a NEW pid; _report re-confirms in the same scope so a
+        # death between the two polls fails loudly instead of printing a lie.
+        # No direct-spawn fallback here: it cannot escape the parent job, and
+        # firing it while the task-spawned process may still be alive would
+        # race for the same port (dual-gateway race).
+        with _abort_on_error("Could not attest Windows gateway cold-start"):
+            pids = gateway_windows._report_gateway_start(
+                "Windows gateway after update (via Scheduled Task)",
+                all_profiles=True,
+            )
+        if not pids:
+            raise RuntimeError("Windows gateway cold-start via Scheduled Task did not become ready")
+        return True
     with _abort_on_error("Could not cold-start Windows gateway after update"):
         pid = gateway_windows._spawn_detached()
     if not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
-    ready_pids = gateway_windows._wait_for_gateway_ready()
-    if not ready_pids:
+    # Direct-spawn fallback: gate the success line on the shared liveness poll
+    # (a job object denying breakaway kills the child before it logs — #84185).
+    pids = gateway_windows._report_gateway_start(
+        f"cold-start after update (direct spawn PID {pid})"
+    )
+    if not pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
-    print(f"\n✓ Gateway started via cold-start after update (PID: {', '.join(map(str, ready_pids))})")
-    with suppress(Exception):
-        gateway_windows._write_start_attestation(ready_pids, "cold-start after update")
     return True
 
 

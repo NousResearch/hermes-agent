@@ -133,9 +133,13 @@ class CodexAppServerClient:
 
     def close(self, timeout: float = 3.0) -> None:
         """Close stdin and wait for the subprocess to exit, escalating to kill."""
-        if self._closed:
-            return
-        self._closed = True
+        with self._pending_lock:
+            if self._closed:
+                return
+            self._closed = True
+            for pending in self._pending.values():
+                pending.put_nowait({"error": {"code": -32600, "message": "codex app-server client is closed"}})
+            self._pending.clear()
         with contextlib.suppress(Exception):
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -155,17 +159,20 @@ class CodexAppServerClient:
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:
         """Send a request and block for ``result``; raise CodexAppServerError on ``error``."""
-        rid, self._next_id = self._next_id, self._next_id + 1
         q: queue.Queue = queue.Queue(maxsize=1)
         with self._pending_lock:
+            if self._closed:
+                raise CodexAppServerError(-32600, "codex app-server client is closed")
+            rid, self._next_id = self._next_id, self._next_id + 1
             self._pending[rid] = q
-        self._send({"id": rid, "method": method, "params": params or {}})
         try:
+            self._send({"id": rid, "method": method, "params": params or {}})
             msg = q.get(timeout=timeout)
         except queue.Empty:
+            raise TimeoutError(f"codex app-server method {method!r} timed out after {timeout}s")
+        finally:
             with self._pending_lock:
                 self._pending.pop(rid, None)
-            raise TimeoutError(f"codex app-server method {method!r} timed out after {timeout}s")
         if "error" in msg:
             err = msg["error"]
             raise CodexAppServerError(code=err.get("code", -1), message=err.get("message", ""), data=err.get("data"))

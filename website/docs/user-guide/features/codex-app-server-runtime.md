@@ -197,6 +197,35 @@ model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
 ```
 
+## Session continuity and scope
+
+For sessions stored in Hermes' session database, Hermes saves a durable binding to the native Codex thread before submitting `turn/start`. The `codex_native_session` entry in the session's `model_config` records:
+
+- Hermes session ID
+- Codex thread ID
+- Resolved working directory
+- Resolved Codex home directory (`CODEX_HOME`, or Codex's default)
+
+Rebuilding the agent or reopening the database resumes that exact thread through `thread/resume`. Hermes does not reconstruct native history from its displayed transcript. A persisted conversation with prior assistant history but no binding—including sessions created before binding support—cannot start native work; use `/new` or resume a bound session. Without a session database, the binding is process-local and does not survive a restart.
+
+Hermes rejects a saved binding if its session ID, working directory, or Codex home differs from the current scope. Missing resume support, an invalid saved thread ID, or a resume response containing a different thread ID also fails explicitly. Hermes does not silently substitute a new thread. Restore the original scope to resume, or use `/new` for a separate conversation.
+
+Branching a Hermes transcript does not fork Codex's native history. Native continuation from that copied transcript is unsupported; resume the original session or start a new one. Integrations that need independent conversations must assign distinct durable Hermes sessions rather than reuse a session based on its title.
+
+The binding identifies the conversation, not the outcome of each submission. A crash after `turn/start` can leave the outcome unknown. Do not automatically replay an uncertain submission: it may already have executed commands or changed files. Inspect native history and affected resources before deciding what to submit next.
+
+Hermes closes the app-server child when it retires the agent. Closing the child does not delete native history. The binding uses existing session metadata and requires no schema migration; older Hermes versions that ignore it cannot preserve this resume contract. Stop native work before downgrading.
+
+## Image input and unsupported media
+
+Hermes passes supported image inputs to Codex as native `turn/start` input items rather than replacing them with text descriptions. Supported inputs are:
+
+- Text, including text combined with images
+- HTTP or HTTPS image URLs and `data:image/` URLs, sent as `image` items
+- Native `localImage` items with absolute paths accessible to the app-server process
+
+Relative local-image paths, malformed image inputs, and other media types return an unsupported-input error. Audio and video are not native inputs on this path. Native image support does not guarantee attachment upload, validation, or delivery on every client; the client must supply a supported input that Codex can access.
+
 ## Self-improvement loop (memory + skill nudges)
 
 Hermes' background self-improvement fires on counter thresholds:
@@ -243,6 +272,29 @@ Codex requests approval before executing commands or applying patches. These get
 - **Deny** → command is rejected; Codex continues in read-only mode.
 
 For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: /tmp/new.py, /tmp/old.py`) when codex provides the data via the corresponding `fileChange` item.
+
+Before every user turn, Hermes resolves current approval bypass and sends an explicit `turn/start` policy: `never` when bypass is active, otherwise `on-request`. Disabling bypass or a failed policy lookup restores gated policy on the same native thread; no restart or new thread is needed. Codex still owns native tool execution and sandbox enforcement. Approval and elicitation requests must carry nonempty, exact thread and turn IDs; absent or conflicting coordinates are rejected before a callback or automatic approval.
+
+## Stopping a native turn
+
+Stop distinguishes a confirmed terminal outcome from an uncertain submission. It does not treat an interrupt request or a displayed final message as proof that native execution ended.
+
+For an active turn with a known ID, Hermes sends one `turn/interrupt` request. The interrupt remote procedure call (RPC) and the wait for a terminal event share one five-second deadline from the Stop request, bounded by the remaining turn deadline. They do not receive separate five-second budgets.
+
+Hermes sets `native_terminal_acknowledged: true` only after receiving a `turn/completed` notification that satisfies both conditions:
+
+- Both the thread ID and turn ID exactly match the active turn.
+- The turn status is `completed`, `interrupted`, or `failed`.
+
+This flag confirms a terminal outcome, not necessarily successful cancellation or task success. A turn can finish before the interrupt takes effect. A matching terminal event drained while Hermes services an approval request also counts.
+
+Notifications with foreign thread or turn IDs cannot update the active transcript or acknowledge termination. Nonterminal notifications without scope IDs remain compatible, but a terminal notification missing either ID does not count as acknowledgment. Final assistant text without an exact terminal notification remains available for display but cannot establish successful completion.
+
+If the deadline expires without acknowledgment, Hermes reports an uncertain outcome and retires the app-server child. The result keeps `native_terminal_acknowledged: false`; closing a process is not a native terminal acknowledgment.
+
+If Stop arrives during startup or while `turn/start` is awaiting a response, Hermes promptly closes the child and retires the session with an unknown outcome. The retired session admits no later RPC, even if the pending operation returns afterward. This path does not claim terminal acknowledgment, and Hermes does not replay the uncertain submission automatically.
+
+After an uncertain Stop, inspect native history and any affected files or external systems before retrying. Stop cannot undo side effects that already occurred.
 
 ## Permission profiles
 
@@ -408,9 +460,27 @@ Known limitations:
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth add openai-codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.
 - **`delegate_task`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
-- **Sub-second cancellation isn't guaranteed.** Mid-stream interrupts (Ctrl+C while codex is responding) are sent via `turn/interrupt`, but if codex has already flushed the final message, you get the response anyway.
+- **Stop can leave an uncertain outcome.** Only an exact terminal notification acknowledges termination; interrupt replies and final text do not. See [Stopping a native turn](#stopping-a-native-turn) for deadlines and recovery guidance.
 
 If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/issues) with the output of `hermes logs --since 5m`. Mention `codex-runtime` in the title so it's easy to triage.
+
+## Testing native continuity and cancellation
+
+From the repository root, use the canonical test runner with a repository-local development environment (`.venv` or `venv`):
+
+```bash
+scripts/run_tests.sh -j 4 \
+  tests/agent/test_codex_native_continuity.py \
+  tests/agent/transports/test_codex_app_server_session.py \
+  tests/agent/transports/test_codex_app_server_runtime.py \
+  tests/agent/test_codex_runtime_live_events.py \
+  tests/agent/test_codex_app_server_persist.py \
+  tests/run_agent/test_codex_app_server_lifecycle.py \
+  tests/run_agent/test_codex_app_server_integration.py \
+  tests/run_agent/test_codex_app_server_compaction.py
+```
+
+The continuity tests exercise database reopen and real standard-input/output child processes with a deterministic protocol test double. They test Hermes' binding, input, scope, and cancellation contracts without vendor calls; they do not establish compatibility with every installed Codex version or end-to-end attachment delivery on every client.
 
 ## Architecture
 

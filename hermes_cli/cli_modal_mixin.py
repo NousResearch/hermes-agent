@@ -265,7 +265,7 @@ class CLIModalMixin:
             _ask()
         return result[0]
 
-    def _poll_modal_queue(self, response_queue, deadline_attr, *, refresh=1.0, paint=None):
+    def _poll_modal_queue(self, response_queue, deadline_attr, *, refresh=1.0, paint=None, cancel_check=None):
         """Block until a value lands on ``response_queue`` or ``self.<deadline_attr>`` passes
         (``None`` deadline = unlimited). Returns the value or ``_TIMED_OUT``.
 
@@ -276,8 +276,11 @@ class CLIModalMixin:
         paint = paint or self._paint_now
         last = _time.monotonic()
         while True:
+            if cancel_check is not None and cancel_check():
+                return "deny"
             try:
-                return response_queue.get(timeout=1)
+                result = response_queue.get(timeout=0.1 if cancel_check is not None else 1)
+                return "deny" if cancel_check is not None and cancel_check() else result
             except queue.Empty:
                 deadline = getattr(self, deadline_attr)
                 if deadline is not None and deadline - _time.monotonic() <= 0:
@@ -762,7 +765,8 @@ class CLIModalMixin:
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False,
+                           cancel_check=None) -> str:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
@@ -771,7 +775,12 @@ class CLIModalMixin:
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
-        with self._approval_lock:
+        while not self._approval_lock.acquire(timeout=0.1):
+            if cancel_check is not None and cancel_check():
+                return "deny"
+        try:
+            if cancel_check is not None and cancel_check():
+                return "deny"
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
             self._approval_state = {
@@ -788,7 +797,7 @@ class CLIModalMixin:
             self._ring_bell(prompt=True, context="approval", detail=command)
             self._paint_now()
 
-            result = self._poll_modal_queue(response_queue, "_approval_deadline")
+            result = self._poll_modal_queue(response_queue, "_approval_deadline", cancel_check=cancel_check)
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
@@ -799,6 +808,9 @@ class CLIModalMixin:
             self._persist_prompt_summary(
                 "⚠", "Approval", command, _APPROVAL_OUTCOME_LABELS.get(result, str(result)))
             return result
+
+        finally:
+            self._approval_lock.release()
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           allow_session: bool = True,

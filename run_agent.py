@@ -385,6 +385,13 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
+        # Warm /new, /resume and /branch retain this AIAgent, not its native
+        # process. Resolve the destination's durable binding on the next turn.
+        from agent.codex_runtime import _close_codex_session
+        _close_codex_session(self)
+        binding = getattr(self, "_codex_thread_binding", None)
+        if binding is not None and binding.get("session_id") != getattr(self, "session_id", None):
+            self._codex_thread_binding = None
         for counter in (
             "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
             "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
@@ -914,6 +921,7 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

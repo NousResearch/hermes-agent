@@ -177,6 +177,14 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
+    def check_lock(self, source: Path) -> None:
+        from pm.workspace import classify_uv_failure
+
+        result = self._run(["lock", "--check", "--python", str(self.python)],
+                           cwd=source, timeout=1800)
+        if result.returncode:
+            raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
+
     def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
              timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
              no_install_project: bool = False, locked: bool = False,
@@ -213,6 +221,36 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 
+    def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = ()) -> None:
+        from pm.workspace import classify_uv_failure
+
+        command = ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
+                   "--no-emit-project", "--no-hashes", "--no-annotate", "--no-header",
+                   "--format", "requirements-txt", "--output-file", str(out)]
+        for extra in sorted(set(extras)):
+            command += ["--extra", extra]
+        result = self._run(command, cwd=source, timeout=1800)
+        if result.returncode:
+            raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
+
+    def install_requirements(self, requirements: Sequence[str], *, wheelhouse: Path | None = None) -> None:
+        from pm.workspace import classify_uv_failure
+
+        if not requirements:
+            return
+        # A file avoids command-line length limits and shell/marker quoting.
+        with tempfile.TemporaryDirectory(prefix="pm-requirements-") as temporary:
+            requirements_file = Path(temporary) / "requirements.txt"
+            requirements_file.write_text("\n".join(requirements) + "\n", encoding="utf-8")
+            command = ["pip", "install", "--no-config", "--python", str(self.executable),
+                       "--requirements", str(requirements_file)]
+            if wheelhouse is not None:
+                command += ["--no-index", "--only-binary", ":all:",
+                            "--find-links", str(wheelhouse)]
+            result = self._run(command, cwd=self.destination.parent, timeout=1800)
+        if result.returncode:
+            raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
+
     def install_wheelhouse(self, source: Path, wheelhouse: Path, *, timeout: int = 1800) -> None:
         """Install rebuilt wheels whose hashes the bundle manifest owns, not uv.lock."""
         from pm.workspace import classify_uv_failure
@@ -230,6 +268,14 @@ class PythonEnvironment:
             if result.returncode:
                 raise classify_uv_failure(command[0], result.returncode, result.stderr or result.stdout)
         self.check()
+
+    def prune_cache(self, *, ci: bool = False) -> None:
+        command = ["cache", "prune", "--no-config"]
+        if ci:
+            command += ["--ci", "--force"]
+        result = self._run(command, cwd=Path.cwd(), timeout=1800)
+        if result.returncode:
+            raise InstallError("uv", f"cache pruning failed: {result.stderr[-600:]}")
 
     def check(self) -> None:
         result = self._run(

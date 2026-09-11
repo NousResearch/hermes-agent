@@ -294,7 +294,27 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            # Third site of the container-cwd guard (see #50636, #54447 for the
+            # sibling env-creation and per-command sites). A host/relative path
+            # here is routinely the desktop/TUI's `_register_session_cwd()`
+            # registering the session's HOST workspace on every turn — applying
+            # it raw to a live container env poisons `env.cwd`, and every
+            # subsequent command's `cd -- '<host path>'` wrapper prefix then
+            # dies with exit 126 before the real command runs. Callers read
+            # that as "file not found" / "rg missing" instead of what it is
+            # (issue #98723). The session *record* above intentionally still
+            # gets the raw host path — host-side surfaces need it and
+            # ``get_session_cwd()`` readers already guard container use.
+            env_type = os.getenv("TERMINAL_ENV", "local")
+            if _is_container_backend(env_type) and _is_unusable_container_cwd(new_cwd):
+                logger.info(
+                    "Not applying registered cwd %r to the live %s environment "
+                    "for task %s (host/relative path won't exist in the "
+                    "sandbox). Keeping %r.",
+                    new_cwd, env_type, task_id, env.cwd,
+                )
+            else:
+                env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):

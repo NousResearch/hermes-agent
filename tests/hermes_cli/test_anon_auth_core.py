@@ -92,9 +92,10 @@ def portal(monkeypatch, tmp_path):
     from hermes_cli import free_tier_bootstrap as _fb
     _fb.reset_for_tests()
     # resolve_nous_access_token memoises the last token for 5 s across the process; a token minted
-    # by an earlier test must not be served to this one.
+    # by an earlier test must not be served to this one. The memo is a dict keyed by
+    # hermes_home_key() (173105ce6f4), so an empty dict is the reset shape — None breaks .get().
     from hermes_cli import auth as auth_mod
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", None)
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
     return fake
 
 

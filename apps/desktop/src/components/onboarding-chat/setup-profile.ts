@@ -27,6 +27,7 @@ import { atom } from 'nanostores'
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
+import { CONNECTOR_LEAD_ORDER } from '@/components/onboarding-chat/options'
 import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
@@ -179,7 +180,7 @@ export function buildFirstTaskRunbook(
 ): string {
   const name = (answers.name ?? '').trim()
   const context = (answers.context ?? '').trim()
-  const tools = (answers.connectors ?? []).filter(Boolean)
+  const tools = (answers.connectors ?? []).filter(slug => CONNECTOR_LEAD_ORDER.includes(slug))
   // Machine setup needs no account anywhere; every other plan connects the
   // picked apps before it does anything else (D85).
   const connectFirst = tools.length > 0 && plan !== 'machine-setup'
@@ -219,10 +220,11 @@ function connectFirstRunbook(picks: string[]): string[] {
 
   return [
     `CONNECT FIRST. During setup the user picked these apps, given here as exact gateway slugs: ${named}. Your first action in this session, before any plan and before any other tool call, is ONE manage_connections call with action="connect" and connectors set to every one of those slugs. Do not call action="status" first; the slugs are exact and the catalog check is already done.`,
+    'If every result comes back already active, there is nothing to wait for: begin the task at once.',
     'The app opens every sign-in from that result in the user\'s browser and shows one row per app, so never paste the links. In the same turn say one short line: which apps are being connected and, in a clause each, what this task gets from each one. Then end the turn.',
     'Then call manage_connections action="wait" with the same slugs and timeout_seconds=120, and say nothing until it returns. If the wait comes back as pending because the links were minted moments ago, end your turn: the app sends a hidden note that begins with "[setup] links opened" once your turn ends and the sign-ins are open, and that note is your cue to call the same wait again. A note that arrives after you have already waited needs no reply.',
-    'The user can start early. A message from them that begins with "Start with" names the apps that are connected and the ones they skipped; treat it as the go signal and begin the task with the connected apps only.',
-    'When the wait returns with every app connected, begin the task at once. When it returns with apps still pending, stop and ask in one line: which apps did not connect, and whether they want you to continue without them or try connecting again (a fresh action="connect" mints new links). Wait for their answer.',
+    'The user can start early. A message from them that begins with "Start with" or "Start without" names the apps that are connected and the ones they skipped; treat it as the go signal and begin with the connected apps only.',
+    'When the wait returns with every app connected, begin the task at once. When it returns with apps still pending, stop and ask in one line: which apps did not connect, and whether they want you to continue without them or try connecting again (a fresh action="connect" mints new links). Wait for their answer. If they choose to continue without an app, build the version of the task that needs no account for that part and say in one line what the connection would have added.',
     'Account data comes from the connected apps first. Tools already signed in on this machine, like a logged-in gh, are fair to use when the task benefits; say so in one line when you do.',
     'Discover a connected app\'s tools with tool_search and use real results for the task; never fabricate account data. Reading is separate from sending, deleting or scheduling: ask before those. No recurring job unless that is what they asked for.',
     'Make the result something they can open: a single HTML page when the idea allows it, and at least one real reading or action through a connected app.'

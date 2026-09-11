@@ -94,7 +94,7 @@ def portal(monkeypatch, tmp_path):
     # resolve_nous_access_token memoises the last token for 5 s across the process; a token minted
     # by an earlier test must not be served to this one.
     from hermes_cli import auth as auth_mod
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", None)
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
     return fake
 
 

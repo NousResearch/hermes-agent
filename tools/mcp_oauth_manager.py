@@ -241,7 +241,6 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if (getattr(incoming, "status_code", None) in (401, 403) and self.context.is_token_valid()
                         and tokens is not None and tokens.access_token != sent_access_token):
                     self._add_auth_header(request)
-                    await inner.aclose()
                     retry_after_concurrent_auth = True
                     break
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK

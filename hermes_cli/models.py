@@ -1360,6 +1360,33 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
         return None
 
 
+def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Live deployment ids for the configured Azure Foundry resource (#27989).
+
+    Deployments are per-resource, so the static catalog is intentionally empty. Route through the
+    runtime credential resolver so the picker honours both API-key and keyless Entra ID auth (the
+    resolver hands back a callable token provider for ``auth_mode: entra_id``) and probes the same
+    resource inference will hit. None on any miss so the picker falls back to the static list.
+    """
+    try:
+        from agent.azure_identity_adapter import is_token_provider
+        from hermes_cli.azure_detect import _probe_openai_models
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+
+        runtime = _resolve_azure_foundry_runtime(requested_provider="azure-foundry", model_cfg=_get_model_config_dict())
+        base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        credential = runtime.get("api_key")
+        if not (base_url and credential):
+            return None
+        if is_token_provider(credential):
+            ok, ids = _probe_openai_models(base_url, "", token_provider=credential)
+        else:
+            ok, ids = _probe_openai_models(base_url, str(credential))
+        return ids if ok and ids else None
+    except Exception:
+        return None
+
+
 def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
     # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
@@ -1386,6 +1413,7 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
     "bedrock": _bedrock_catalog,
+    "azure-foundry": _azure_foundry_catalog,
     "opencode-free": _opencode_free_catalog}
 
 

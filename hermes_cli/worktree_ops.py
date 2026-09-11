@@ -212,19 +212,46 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     return "HEAD", "HEAD (local — could not reach remote)"
 
 
-def _ensure_worktrees_gitignored(repo_root: str) -> None:
-    """Append ``.worktrees/`` to the repo's .gitignore when missing (fail-soft)."""
-    gitignore = Path(repo_root) / ".gitignore"
+def ensure_worktrees_excluded(repo_root: str, git_out=None) -> None:
+    """Keep ``.worktrees/`` out of ``git status`` without touching a TRACKED file (#103302).
+
+    Writes to ``$GIT_COMMON_DIR/info/exclude`` — untracked, local-only, and shared by the repo
+    and every linked worktree — instead of the repo's tracked ``.gitignore``. Appending to
+    ``.gitignore`` dirtied the very checkout worktree isolation exists to leave untouched: the
+    line lands in the user's ``git status``/``git diff``, rides along in an unrelated ``git
+    commit -a``, and conflicts on rebase. ``info/exclude`` is honored identically by git.
+
+    No-op when git already ignores the directory (many repos, this one included, track the
+    entry in ``.gitignore`` themselves) — the exclude is only for repos that don't. Never
+    removes a pre-existing ``.gitignore`` entry: that would be the same tracked-file write in
+    the other direction.
+
+    *git_out* is the caller's own git runner (``args, cwd -> stripped stdout | None``) so a
+    hardened invocation stays hardened; defaults to this module's :func:`_git_out`.
+    Fail-soft — an exclude we could not write is never worth failing worktree creation over.
+    """
+    runner = git_out or _git_out
     try:
+        # Authoritative: covers .gitignore, an existing info/exclude, and core.excludesFile.
+        # A non-zero exit (not ignored, or git failed) falls through to writing our own
+        # exclude, which is harmless if redundant.
+        if runner(["check-ignore", "-q", ".worktrees/"], repo_root) is not None:
+            return
+        common_dir = runner(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo_root)
+        if not common_dir:
+            return
+        exclude = Path(common_dir) / "info" / "exclude"
         # utf-8-sig: a Notepad BOM would glue to the first line and defeat the membership check.
-        existing = gitignore.read_text(encoding="utf-8-sig", errors="replace") if gitignore.exists() else ""
-        if ".worktrees/" not in existing.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write(".worktrees/\n")
+        existing = exclude.read_text(encoding="utf-8-sig", errors="replace") if exclude.exists() else ""
+        if ".worktrees/" in existing.splitlines():
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write(".worktrees/\n")
     except Exception as e:
-        logger.debug("Could not update .gitignore: %s", e)
+        logger.debug("Could not update info/exclude: %s", e)
 
 
 def _copy_worktree_includes(repo_root: str, wt_path: Path) -> None:
@@ -339,7 +366,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         print(f"  Pick a different name, or remove it with: git worktree remove {wt_path}")
         return None
 
-    _ensure_worktrees_gitignored(repo_root)
+    ensure_worktrees_excluded(repo_root)
 
     # Resolve the base ref. By default branch from the freshly-fetched remote tip so the worktree starts
     # current with the project, not from the (possibly stale) local HEAD of the standalone clone (#10760

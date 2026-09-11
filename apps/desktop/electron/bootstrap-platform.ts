@@ -141,10 +141,101 @@ function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?
   return { store: requested, warning: null }
 }
 
+function requestedOzonePlatform(env: NodeJS.ProcessEnv, argv: readonly string[]): string | null {
+  let explicit: string | null = null
+  let hint: string | null = null
+
+  for (const arg of argv) {
+    const match = /^--ozone-platform(-hint)?=(.+)$/.exec(arg)
+
+    if (!match) {
+      continue
+    }
+
+    if (match[1]) {
+      hint = match[2].toLowerCase()
+    } else {
+      explicit = match[2].toLowerCase()
+    }
+  }
+
+  return explicit ?? hint ?? env.ELECTRON_OZONE_PLATFORM_HINT?.toLowerCase() ?? null
+}
+
+function linuxSessionIsWayland(env: NodeJS.ProcessEnv): boolean {
+  return env.XDG_SESSION_TYPE === 'wayland' || (Boolean(env.WAYLAND_DISPLAY) && !env.DISPLAY)
+}
+
+/**
+ * Merge Chromium `--disable-features` lists without dropping caller values.
+ */
+function mergeDisableFeatures(existing: string | undefined, extra: readonly string[]): string {
+  const seen = new Set<string>()
+  const out: string[] = []
+
+  for (const part of [...String(existing || '').split(','), ...extra]) {
+    const name = part.trim()
+
+    if (!name) {
+      continue
+    }
+
+    const key = name.toLowerCase()
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    out.push(name)
+  }
+
+  return out.join(',')
+}
+
+/**
+ * Chromium's Wayland ozone backend is incompatible with Vulkan. On that path
+ * the GPU process dies after ~30s (`GPU process isn't usable. Goodbye.`)
+ * even when `app.disableHardwareAcceleration()` / `HERMES_DESKTOP_DISABLE_GPU`
+ * already ran. `--disable-features=Vulkan` keeps GL acceleration and avoids
+ * the unsupported path.
+ *
+ * Returns the merged `--disable-features` value when Linux ozone will be
+ * Wayland, or null when the switch is not needed.
+ */
+function linuxWaylandVulkanDisableFeatures(
+  options: {
+    env?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    argv?: readonly string[]
+    existingDisableFeatures?: string
+  } = {}
+): string | null {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const argv = options.argv ?? []
+
+  if (platform !== 'linux') {
+    return null
+  }
+
+  const requested = requestedOzonePlatform(env, argv)
+  const ozoneIsWayland =
+    requested === 'wayland' || ((requested === null || requested === 'auto') && linuxSessionIsWayland(env))
+
+  if (!ozoneIsWayland) {
+    return null
+  }
+
+  return mergeDisableFeatures(options.existingDisableFeatures, ['Vulkan'])
+}
+
 export {
   bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
+  linuxWaylandVulkanDisableFeatures,
+  mergeDisableFeatures,
   resolveLinuxPasswordStore
 }

@@ -116,3 +116,112 @@ def test_stale_finalizer_cannot_release_replacement_generation() -> None:
     # Generation 2 is unwinding after generation 4 claimed the key.
     assert gateway._release_running_agent_state(KEY, run_generation=2) is False
     assert gateway._peek_session_state(KEY).turn.agent is replacement
+
+
+def test_moa_one_shot_restoration_generation_owned() -> None:
+    events: list[tuple] = []
+    gateway, state = _build_gateway(object(), events)
+    state.persistent.run_generation = 1
+    state.conversation.model_override = {"provider": "custom", "model": "test-model"}
+
+    # Simulate /moa command handling
+    class _MockEvent:
+        _moa_disable_after_turn = True
+        _moa_restore_override = {"provider": "custom", "model": "test-model"}
+        _moa_run_generation = None
+
+    event = _MockEvent()
+    # Turn claims generation 2
+    claimed_gen = 2
+    state.persistent.run_generation = claimed_gen
+    event._moa_run_generation = claimed_gen
+    state.conversation.model_override = {"provider": "moa", "model": "moa-model"}
+
+    # 1. Stale generation finalizer (e.g. gen 1) must NOT restore or clear MoA
+    gateway._restore_moa_one_shot(event, KEY, run_generation=1)
+    assert event._moa_disable_after_turn is True
+    assert state.conversation.model_override == {"provider": "moa", "model": "moa-model"}
+
+    # 2. Owning generation finalizer (gen 2) restores prior override
+    gateway._restore_moa_one_shot(event, KEY, run_generation=claimed_gen)
+    assert event._moa_disable_after_turn is False
+    assert state.conversation.model_override == {"provider": "custom", "model": "test-model"}
+
+
+def test_model_once_snapshot_preserved_from_stale_finalizer() -> None:
+    events: list[tuple] = []
+    gateway, state = _build_gateway(object(), events)
+    state.persistent.run_generation = 1
+    state.conversation.model_override = {"model": "once-model", "provider": "test"}
+    state.conversation.one_turn_restore = {
+        "had_override": True,
+        "override": {"model": "original-model", "provider": "test"},
+        "run_generation": 2,
+    }
+
+    # Stale finalizer for generation 1 must NOT clear one_turn_restore or restore override
+    state.persistent.run_generation = 2
+    gateway._restore_pending_one_turn_model_override(KEY, run_generation=1)
+    assert state.conversation.one_turn_restore is not None
+    assert state.conversation.model_override["model"] == "once-model"
+
+    # Owning generation 2 restores snapshot and clears one_turn_restore
+    gateway._restore_pending_one_turn_model_override(KEY, run_generation=2)
+    assert state.conversation.one_turn_restore is None
+    assert state.conversation.model_override["model"] == "original-model"
+
+
+@pytest.mark.asyncio
+async def test_turn_lease_rebind_preserves_parent_lock_domain_and_releases() -> None:
+    from gateway.turn_lease import SessionTurnLeaseRegistry
+
+    registry = SessionTurnLeaseRegistry()
+    token = await registry.acquire("parent-session", owner_key="key-1", generation=1, timeout=5)
+    assert token is not None
+    assert registry.rebind(token, "child-session") is True
+    assert token.session_id == "child-session"
+
+    # Both parent and child session IDs must be registered to the same lease
+    assert registry._leases.get("parent-session") is registry._leases.get("child-session")
+    assert registry._leases["parent-session"].holder is token
+
+    # Parent lock domain remains busy while child is held
+    import asyncio
+    waiter = asyncio.create_task(
+        registry.acquire("parent-session", owner_key="key-2", generation=1, timeout=5)
+    )
+    await asyncio.sleep(0.01)
+    assert not waiter.done()
+
+    # Release by token identity frees the lock and wakes the parent waiter
+    assert registry.release(token) is True
+    parent_token = await waiter
+    assert parent_token is not None
+    assert parent_token.owner_key == "key-2"
+    assert registry.release(parent_token) is True
+
+
+def test_displaced_turn_lease_release_by_owning_generation() -> None:
+    from gateway.turn_lease import SessionTurnLeaseRegistry
+
+    events: list[tuple] = []
+    gateway, state = _build_gateway(object(), events)
+    registry = SessionTurnLeaseRegistry()
+    gateway._turn_leases = registry
+
+    import asyncio
+    token1 = asyncio.run(registry.acquire("sess-106963", owner_key=KEY, generation=1, timeout=5))
+    assert token1 is not None
+
+    state.turn.lease_tokens[1] = token1
+    state.turn.lease_token = token1
+    state.turn.lease_generation = 1
+
+    # Unwind of generation 2 has no token
+    assert gateway._release_turn_lease(KEY, run_generation=2) is False
+    assert token1.released is False
+
+    # Owning generation 1 releases token1
+    assert gateway._release_turn_lease(KEY, run_generation=1) is True
+    assert token1.released is True
+    assert 1 not in state.turn.lease_tokens

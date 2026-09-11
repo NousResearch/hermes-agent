@@ -915,7 +915,7 @@ class GatewayInboundMixin:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
             event._moa_restore_override = _moa_state.conversation.model_override
-            event._moa_run_generation = _moa_state.persistent.run_generation
+            event._moa_run_generation = None
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
@@ -1272,6 +1272,13 @@ class GatewayInboundMixin:
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        if getattr(event, "_moa_disable_after_turn", False):
+            event._moa_run_generation = _run_generation
+        if (
+            _claim_state.conversation.one_turn_restore
+            and _claim_state.conversation.one_turn_restore.get("run_generation") is None
+        ):
+            _claim_state.conversation.one_turn_restore["run_generation"] = _run_generation
 
         try:
             try:
@@ -1321,10 +1328,16 @@ class GatewayInboundMixin:
         if not getattr(event, "_moa_disable_after_turn", False):
             return
         owner_generation = getattr(event, "_moa_run_generation", run_generation)
-        if run_generation is not None and owner_generation != run_generation:
+        if run_generation is not None and owner_generation is not None and owner_generation != run_generation:
             return
+        state = self._peek_session_state(quick_key)
+        if state is None:
+            return
+        if run_generation is not None and state.persistent.run_generation != run_generation:
+            return
+        event._moa_disable_after_turn = False
         with suppress(Exception):
-            self._session_state(quick_key).conversation.model_override = getattr(event, "_moa_restore_override", None)
+            state.conversation.model_override = getattr(event, "_moa_restore_override", None)
             self._evict_cached_agent(quick_key)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
@@ -1333,11 +1346,18 @@ class GatewayInboundMixin:
             return
         try:
             _otr_state = self._peek_session_state(session_key)
-            snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
-            if _otr_state is not None:
-                _otr_state.conversation.one_turn_restore = None
-            if snapshot and (run_generation is None or snapshot.get("run_generation") == run_generation):
-                self._restore_session_model_override(session_key, snapshot)
+            if _otr_state is None:
+                return
+            snapshot = _otr_state.conversation.one_turn_restore
+            if not snapshot:
+                return
+            snapshot_gen = snapshot.get("run_generation")
+            if run_generation is not None and snapshot_gen is not None and snapshot_gen != run_generation:
+                return
+            if run_generation is not None and _otr_state.persistent.run_generation != run_generation:
+                return
+            _otr_state.conversation.one_turn_restore = None
+            self._restore_session_model_override(session_key, snapshot)
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 

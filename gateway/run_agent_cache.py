@@ -256,12 +256,17 @@ class GatewayAgentCacheMixin:
         return True
 
     def _held_turn_lease(self, session_key: str, run_generation: int):
-        """Return ``(registry, turn)`` when ``session_key`` holds a lease token for ``run_generation``, else None."""
+        """Return ``(registry, token)`` when ``session_key`` holds a lease token for ``run_generation``, else None."""
         registry = getattr(self, "_turn_leases", None)
         state = self._peek_session_state(session_key) if session_key and registry is not None else None
-        if state is None or state.turn.lease_token is None or state.turn.lease_generation != run_generation:
+        if state is None:
             return None
-        return registry, state.turn
+        token = state.turn.lease_tokens.get(run_generation)
+        if token is None and state.turn.lease_generation == run_generation:
+            token = state.turn.lease_token
+        if token is None:
+            return None
+        return registry, token
 
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``). Keyed by (routing
@@ -270,8 +275,13 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation)
         if held is None:
             return False
-        registry, turn = held
-        token, turn.lease_token, turn.lease_generation = turn.lease_token, None, None
+        registry, token = held
+        state = self._peek_session_state(session_key)
+        if state is not None:
+            state.turn.lease_tokens.pop(run_generation, None)
+            if state.turn.lease_generation == run_generation:
+                state.turn.lease_token = None
+                state.turn.lease_generation = None
         try:
             return registry.release(token)
         except Exception:
@@ -285,9 +295,9 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation) if new_session_id else None
         if held is None:
             return False
-        registry, turn = held
+        registry, token = held
         try:
-            return registry.rebind(turn.lease_token, new_session_id)
+            return registry.rebind(token, new_session_id)
         except Exception:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False

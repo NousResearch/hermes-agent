@@ -27,6 +27,7 @@ class TurnState:
     # generation is current, so a stale unwind can never free a newer turn's lease.
     lease_token: Any = None
     lease_generation: Optional[int] = None
+    lease_tokens: Dict[int, Any] = field(default_factory=dict)
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""

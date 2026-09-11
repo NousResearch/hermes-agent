@@ -79,6 +79,7 @@ ownership for a redelivered event.
 ├── gateway_routing       — Gateway routing metadata
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
+├── passive_history_commits — Idempotency receipts + external-history watermark for passively saved turns
 ├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
 └── schema_version        — Single-row table tracking migration state
 ```
@@ -185,6 +186,73 @@ Notes:
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
 
+### Passive History Commits Table
+
+Idempotency receipts for conversation turns saved by a trusted host producer (voice ingress, and
+any future passive caller) *without* running the agent:
+
+```sql
+CREATE TABLE IF NOT EXISTS passive_history_commits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    producer TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    origin_turn_id TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    message_ids_json TEXT NOT NULL,
+    committed_at REAL NOT NULL,
+    UNIQUE(producer, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_passive_history_conversation
+    ON passive_history_commits(conversation_id, id);
+```
+
+`SessionDB.append_passive_messages()` (defined in `hermes_state_passive_history.py`) commits one
+finalized `user` or `assistant` row — or an ordered `[user, assistant]` pair — together with its
+receipt in a single write transaction. Notes:
+
+- **Identity is `(producer, event_id)`, never content.** An equal-identity/equal-payload retry
+  returns the ORIGINAL row ids with `replayed=True`, so a response lost in transit is recovered by
+  replaying the same event id. A reused id with a changed payload, origin turn or conversation owner
+  raises `PassiveHistoryConflictError`.
+- `producer` is host-assigned provenance (1–64 chars of `A-Za-z0-9._-`), **not** permission.
+  `event_id` / `origin_turn_id` allow 1–128 of the same characters. `origin_turn_id` ties the
+  utterance to the operator interaction and to any receipt of work it causes; exactly one canonical
+  owner records an utterance.
+- `payload_sha256` is SHA-256 over compact, sorted-key, `ensure_ascii=False` JSON of
+  `{"version":1,"origin_turn_id":…,"messages":[{"role":…,"content":…}]}`. Host timestamps are
+  assigned at the first insert and are deliberately **not** hashed.
+- `id` doubles as the conversation's **external-history watermark**
+  (`get_passive_history_watermark()` reads `MAX(id)` for the conversation). The next canonical turn
+  compares it with the marker it last loaded, so an already-cached idle agent refreshes its history
+  exactly when external history changed and otherwise keeps the ordinary prompt-cache path.
+  Admission resolves the same strict compression successor as insertion, including a compressed
+  branch or reset conversation whose continuation inherits its earlier origin metadata. A closed
+  orphan is not a live successor; ambiguous live continuations are refused.
+- A finalized assistant-only event can follow a completed assistant reply. During model replay,
+  sequence repair presents that new event as attributed external-assistant transcript context in a
+  user message, preserving the completed reply and its `api_content` bytes. Raw canonical rows keep
+  their original roles and text. Existing repair combines only the unanswered suffix as necessary;
+  the context projection keeps persistence markers and never inserts another canonical utterance.
+- System/tool roles, tool fields, reasoning sidecars, multimodal structures, empty content, invalid
+  Unicode and content over 64 KiB UTF-8 are rejected before anything is written. The table itself
+  holds no transcript, tool arguments or credentials.
+- Committed rows carry `display_kind = 'passive_conversation'` and a `display_metadata` of
+  `{producer, event_id, origin_turn_id, index}` only.
+- Each commit is fenced against an active turn lease (`PassiveHistoryBusyError`, `retryable=True`);
+  it never holds a lease of its own for the duration of a voice call. Compression *continuation*
+  lineage is one conversation; explicit branch/delegate/reset/tool children are separate owners and
+  need their own event identities.
+- **Row ids are historical references without cascading foreign keys.** Deleting a session or its
+  messages leaves a content-free dedupe tombstone: a later retry raises `PassiveHistoryRetiredError`
+  rather than re-inserting removed content, and recreating a deleted session id cannot revive it.
+  Tombstones are retained for the lifetime of the store (no time-based eviction).
+- Portable conversation export/import (`export_session` / import) creates a **new conversation
+  identity** and deliberately does not carry live dedupe authority; only whole-database backup and
+  `hermes sessions recover` preserve receipt ids.
+
 ### FTS5 Full-Text Search
 
 ```sql
@@ -206,7 +274,7 @@ indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact S
 
 ## Schema Version and Migrations
 
-Current schema version: **23**
+Current schema version: **31** (`SCHEMA_VERSION` in `hermes_state_common.py` is canonical)
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -230,8 +298,13 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
 | 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
 | 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
+| 31 | Additive `passive_history_commits` receipt table + `(conversation_id, id)` index for passive conversation history. `CREATE TABLE/INDEX IF NOT EXISTS` only: no backfill, no transcript rewrite, no FTS rebuild. Older code ignores the table; rollback keeps canonical messages and prior receipts, and never deletes a persisted user turn |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
+
+Drain and restart host processes when upgrading or rolling back passive-history support. Mixed
+old/new cached agents are not supported for next-turn visibility. Rollback disables the new callers
+and leaves both canonical messages and the additive receipt table intact.
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 

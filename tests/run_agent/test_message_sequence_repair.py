@@ -10,6 +10,7 @@ recovery every turn.
 """
 
 from run_agent import AIAgent
+import pytest
 
 
 def _bare_agent():
@@ -55,6 +56,17 @@ def test_repair_merges_consecutive_user_messages():
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "first\n\nsecond"
+
+
+@pytest.mark.parametrize("malformed", [None, "stray history entry"])
+@pytest.mark.parametrize("position", [0, 1])
+def test_repair_tolerates_non_dict_history(malformed, position):
+    messages = [{"role": "assistant", "content": "completed reply"}]
+    messages.insert(position, malformed)
+    original = list(messages)
+
+    assert AIAgent._repair_message_sequence(_bare_agent(), messages) == 0
+    assert messages == original
 
 
 def test_repair_preserves_user_content_when_one_side_empty():

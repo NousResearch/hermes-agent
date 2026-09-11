@@ -200,7 +200,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -374,6 +374,32 @@ CREATE TABLE IF NOT EXISTS messages (
     display_order INTEGER
 );
 
+-- Idempotency receipts for passively saved conversation turns (Talk voice ingress and any other
+-- trusted host producer). Identity is (producer, event_id) — never content — so an equal retry
+-- returns the ORIGINAL row ids and a changed payload under a reused id is a conflict.
+--
+-- The row ids are immutable HISTORICAL references, deliberately without cascading foreign keys:
+-- deleting a session or its messages must leave a content-free dedupe tombstone behind, or a retry
+-- after a retention delete would re-insert content the user removed. Retries therefore re-verify
+-- the referenced rows' provenance instead of trusting the ids (see hermes_state_passive_history).
+-- Rows are never time-evicted; one small row per saved client event is the intended bounded cost.
+--
+-- ``id`` doubles as the conversation's external-history watermark (MAX(id) per conversation_id),
+-- which the next canonical turn compares against the marker it last loaded. The table holds no
+-- transcript, tool arguments or credentials.
+CREATE TABLE IF NOT EXISTS passive_history_commits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    producer TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    origin_turn_id TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    message_ids_json TEXT NOT NULL,
+    committed_at REAL NOT NULL,
+    UNIQUE(producer, event_id)
+);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,
@@ -515,6 +541,8 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_passive_history_conversation
+    ON passive_history_commits(conversation_id, id);
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.

@@ -93,7 +93,7 @@ DEFAULT_SEND_TIMEOUT = 30.0  # WS biz request timeout
 # hang. Also bounds the reconnect / connect-failure cleanup paths that reuse _cleanup_ws(), where a graceful
 # close is unnecessary anyway (the socket is being discarded to redial).
 WS_CLOSE_TIMEOUT_S = 1.0
-NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}  # permanent errors — never reconnect
+NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4018, 4019, 4021}  # permanent errors — never reconnect (4014 conflict is recoverable after peer disconnects)
 HEARTBEAT_TIMEOUT_THRESHOLD = 2  # consecutive missed pongs before reconnect
 REPLY_HEARTBEAT_INTERVAL_S = 2.0   # RUNNING cadence
 REPLY_HEARTBEAT_TIMEOUT_S = 30.0   # auto-FINISH after this much inactivity

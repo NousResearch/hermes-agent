@@ -335,6 +335,138 @@ def _refuse_checkpoint_required_on_codex_app_server(
         )
 
 
+def init_agent(
+    agent,
+    base_url: str = None,
+    api_key: str = None,
+    provider: str = None,
+    api_mode: str = None,
+    acp_command: str = None,
+    acp_args: list[str] | None = None,
+    command: str = None,
+    args: list[str] | None = None,
+    model: str = "",
+    max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
+    enabled_toolsets: List[str] = None,
+    disabled_toolsets: List[str] = None,
+    skip_tool_search_assembly: bool = False,
+    save_trajectories: bool = False,
+    verbose_logging: bool = False,
+    quiet_mode: bool = False,
+    tool_progress_mode: str = "all",
+    ephemeral_system_prompt: str = None,
+    log_prefix_chars: int = 100,
+    log_prefix: str = "",
+    providers_allowed: List[str] = None,
+    providers_ignored: List[str] = None,
+    providers_order: List[str] = None,
+    provider_sort: str = None,
+    provider_require_parameters: bool = False,
+    provider_data_collection: str = None,
+    openrouter_min_coding_score: Optional[float] = None,
+    session_id: str = None,
+    tool_progress_callback: callable = None,
+    tool_start_callback: callable = None,
+    tool_complete_callback: callable = None,
+    thinking_callback: callable = None,
+    reasoning_callback: callable = None,
+    clarify_callback: callable = None,
+    read_terminal_callback: callable = None,
+    read_preview_callback: callable = None,
+    drive_preview_callback: callable = None,
+    read_window_below_callback: callable = None,
+    setup_mcp_callback: callable = None,
+    tour_callback: callable = None,
+    step_callback: callable = None,
+    stream_delta_callback: callable = None,
+    interim_assistant_callback: callable = None,
+    tool_gen_callback: callable = None,
+    status_callback: callable = None,
+    notice_callback: callable = None,
+    notice_clear_callback: callable = None,
+    event_callback: Optional[Callable[[str, dict], None]] = None,
+    reaction_callback: Optional[Callable[[str], None]] = None,
+    max_tokens: int = None,
+    reasoning_config: Dict[str, Any] = None,
+    service_tier: str = None,
+    request_overrides: Dict[str, Any] = None,
+    prefill_messages: List[Dict[str, Any]] = None,
+    platform: str = None,
+    user_id: str = None,
+    user_id_alt: str = None,
+    user_name: str = None,
+    chat_id: str = None,
+    chat_name: str = None,
+    chat_type: str = None,
+    thread_id: str = None,
+    gateway_session_key: str = None,
+    skip_context_files: bool = False,
+    load_soul_identity: bool = False,
+    skip_memory: bool = False,
+    skip_background_review: bool = False,
+    session_db=None,
+    parent_session_id: str = None,
+    iteration_budget: "IterationBudget" = None,
+    run_budget_seconds: Optional[float] = None,
+    fallback_model: Dict[str, Any] = None,
+    credential_pool=None,
+    checkpoints_enabled: bool = False,
+    checkpoint_max_snapshots: int = 20,
+    checkpoint_max_total_size_mb: int = 500,
+    checkpoint_max_file_size_mb: int = 10,
+    pass_session_id: bool = False,
+    requested_provider: str = None,
+):
+    """
+    Initialize the AI Agent.
+
+    Args:
+        base_url (str): Base URL for the model API (optional)
+        api_key (str): API key for authentication (optional, uses env var if not provided)
+        provider (str): Provider identifier (optional; used for telemetry/routing hints)
+        requested_provider (str): Original provider identity before runtime canonicalization
+        api_mode (str): API mode override: "chat_completions" or "codex_responses"
+        model (str): Model name to use (default: "anthropic/claude-opus-4.6")
+        max_iterations (int): Maximum number of tool calling iterations (default: 90)
+        enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
+        disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
+        save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
+        verbose_logging (bool): Enable verbose logging for debugging (default: False)
+        quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
+        ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
+        log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
+        providers_allowed (List[str]): OpenRouter providers to allow (optional)
+        providers_ignored (List[str]): OpenRouter providers to ignore (optional)
+        providers_order (List[str]): OpenRouter providers to try in order (optional)
+        provider_sort (str): Sort providers by price/throughput/latency (optional)
+        openrouter_min_coding_score (float): Coding-score floor (0.0-1.0) for the
+            openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
+            None or empty = let OpenRouter pick the strongest available coder.
+        session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
+        tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+        clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
+            Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
+        max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+        reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
+            If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+        prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
+            Useful for injecting a few-shot example or priming the model's response style.
+            Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
+            NOTE: Anthropic Sonnet 4.6+ and Opus 4.6+ reject a conversation that ends on an
+            assistant-role message (400 error).  For those models use structured outputs or
+            output_config.format instead of a trailing-assistant prefill.
+        platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
+            Used to inject platform-specific formatting hints into the system prompt.
+        skip_context_files (bool): If True, skip auto-injection of project context files
+            (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
+            into the system prompt. Use this for batch processing and data generation to avoid
+            polluting trajectories with user-specific persona or project instructions.
+        load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
+            identity even when skip_context_files=True. Project context files from the cwd
+            remain skipped.
+    """
+    _install_safe_stdio()
 def _parse_config_int(raw: Any, default: int) -> int:
     """Strict int coercion: rejects bool (YAML ``true`` → 1) and fractional floats."""
     if isinstance(raw, bool):
@@ -1060,6 +1192,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()

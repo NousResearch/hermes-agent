@@ -11,6 +11,7 @@ import {
 import {
   $setupSession,
   ensureSetupProfile,
+  guideSourceConnectionId,
   SETUP_CHAT_TITLE,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
@@ -29,14 +30,15 @@ import {
 } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { guideSourceConnectionId, type OnboardingHandoffOptions } from './onboarding-handoff'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 export interface OnboardingKickoffOptions extends Pick<
-  OnboardingHandoffOptions,
-  'createBackendSessionForSend' | 'requestGateway' | 'runCreatePinnedTo'
+  ReturnType<typeof useSessionActions>,
+  'createBackendSessionForSend' | 'resumeSession'
 > {
-  resumeSession: ReturnType<typeof useSessionActions>['resumeSession']
+  requestGateway: AmbientGatewayRequest
+  /** The caller's own requestGateway is what reads the pin. */
+  runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
 interface SetupStatus {

@@ -11,16 +11,18 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
-import { $handoffError, handoffReceiptKey, readHandoffReceipt, retrySetupHandoff } from '@/app/contrib/handoff-receipt'
-import { guideSourceConnectionId } from '@/app/contrib/onboarding-handoff'
+import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
 import {
+  $handoffError,
   $setupHandoff,
   firstTaskTitle,
+  guideSourceConnectionId,
   parseHandoffPlan,
   requestSetupHandoff,
+  retrySetupHandoff,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'

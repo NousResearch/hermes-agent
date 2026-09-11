@@ -1,26 +1,10 @@
-import { atom } from 'nanostores'
-
-import { $setupHandoff } from '@/components/onboarding-chat/setup-profile'
 import { readKey, writeJson } from '@/lib/storage'
 
 import type { HandoffReceipt } from './handoff-leg'
 
-export const $handoffError = atom<string | null>(null)
 // A failed disk write still remembers the original identity for this window.
 // Nothing is submitted until the next save verifies durable persistence.
 const unsavedReceipts = new Map<string, HandoffReceipt>()
-
-/** Only a deliberate retry lifts an error; re-rendering a directive does not. */
-export function retrySetupHandoff(): void {
-  const state = $setupHandoff.get()
-
-  if (state?.phase !== 'error') {
-    return
-  }
-
-  $handoffError.set(null)
-  $setupHandoff.set({ ...state, phase: 'pending' })
-}
 
 /** A navigation/submit receipt, never a copy of either profile's memory. */
 export function handoffReceiptKey(connection: null | string, guideStoredId: string): string {

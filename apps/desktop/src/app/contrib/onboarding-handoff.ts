@@ -7,11 +7,14 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/api/client'
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
 import { $setupCheckIn, watchFirstBuild } from '@/components/onboarding-chat/first-build'
 import {
+  $handoffError,
   $setupHandoff,
   $setupSession,
   buildFirstTaskSeedMessages,
   buildHandoffCompleteNote,
   firstTaskTitle,
+  guideSourceConnectionId,
+  retrySetupHandoff,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { declinedLookAround, showProfileSignpost } from '@/components/onboarding-chat/signpost'
@@ -19,7 +22,7 @@ import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, activateTreePane } from '@/components/pane-shell/tree/store'
 import { toChatMessages } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
@@ -29,7 +32,6 @@ import {
   $messages,
   $selectedStoredSessionId,
   forgetSessionOwnerHintsForSession,
-  getSessionOwnerHint,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -38,20 +40,8 @@ import {
 import { patchSessionTile } from '@/store/session-states'
 
 import { BUILD_PROFILE, type HandoffDeps, type HandoffReceipt, paintHandoffBrief, startHandoff } from './handoff-leg'
-import {
-  $handoffError,
-  handoffReceiptKey,
-  readHandoffReceipt,
-  retrySetupHandoff,
-  saveHandoffReceipt
-} from './handoff-receipt'
+import { handoffReceiptKey, readHandoffReceipt, saveHandoffReceipt } from './handoff-receipt'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
-
-/** A null connection is the ambient profile route. Substituting 'local'
- * would retarget a legacy remote primary onto this machine. */
-export function guideSourceConnectionId(guideStoredId: null | string | undefined): null | string {
-  return (guideStoredId && getSessionOwnerHint(guideStoredId)?.connectionId) || activeGatewayConnectionId() || null
-}
 
 export interface OnboardingHandoffOptions extends Pick<
   Parameters<typeof useSessionActions>[0],
@@ -59,7 +49,8 @@ export interface OnboardingHandoffOptions extends Pick<
 > {
   createBackendSessionForSend: ReturnType<typeof useSessionActions>['createBackendSessionForSend']
   requestGateway: AmbientGatewayRequest
-  /** Pin creation to the target profile while the guide remains selected. */
+  /** Pin creation to the target profile while the guide remains selected;
+   * the caller's own requestGateway is what reads the pin. */
   runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
@@ -252,6 +243,7 @@ export function useOnboardingHandoff({
           setupHandoff
         )
 
+        // Create's title is pending metadata on older backends.
         // Title after acceptance so naming cannot gate submission.
         const chatTitle = firstTaskTitle(receipt.task)
         await request(receipt.owner, 'session.title', { session_id: receipt.runtimeId, title: chatTitle }).catch(

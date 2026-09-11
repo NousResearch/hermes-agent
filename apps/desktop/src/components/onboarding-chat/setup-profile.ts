@@ -26,9 +26,11 @@ import { atom } from 'nanostores'
 
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
 import { PLAIN_SPEECH } from '@/store/onboarding-script'
+import { getSessionOwnerHint } from '@/store/session'
 
 /** Profile name of the onboarding guide. Prefixed so it can't collide with a
  *  profile a user actually named "setup". */
@@ -79,6 +81,19 @@ export interface SetupHandoffState {
 /** The handoff beacon: HandoffCard raises it, the wiring effect performs it.
  *  Null until the model emits the handoff directive. */
 export const $setupHandoff = atom<null | SetupHandoffState>(null)
+export const $handoffError = atom<string | null>(null)
+
+/** Only a deliberate retry lifts an error; re-rendering a directive does not. */
+export function retrySetupHandoff(): void {
+  const state = $setupHandoff.get()
+
+  if (state?.phase !== 'error') {
+    return
+  }
+
+  $handoffError.set(null)
+  $setupHandoff.set({ ...state, phase: 'pending' })
+}
 
 /** The issuing welcome chat owns the completion note, even in a background tile. */
 export interface SetupSession {
@@ -89,6 +104,12 @@ export interface SetupSession {
 }
 
 export const $setupSession = atom<null | SetupSession>(null)
+
+/** A null connection is the ambient profile route. Substituting 'local'
+ * would retarget a legacy remote primary onto this machine. */
+export function guideSourceConnectionId(guideStoredId: null | string | undefined): null | string {
+  return (guideStoredId && getSessionOwnerHint(guideStoredId)?.connectionId) || activeGatewayConnectionId() || null
+}
 
 /** The request atom suppresses remounts; only an accepted receipt suppresses relaunches. */
 export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {

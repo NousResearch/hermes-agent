@@ -103,7 +103,7 @@ export function endChatOnboardingSolo(): void {
   }
 }
 
-/** Pane minimums avoid ballooning the window to preserve the entire chat size. */
+/** Grow by what the new panes need, not by a projection that keeps the chat's size (that balloons the window). */
 interface LayoutGrowth {
   bottom?: number
   left?: number

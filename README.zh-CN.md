@@ -4,7 +4,7 @@
 
 # North Forge
 
-**North Forge 是一个通用、可定制的 AI 智能体底座**，构建在
+**North Forge 是一个你可以打造成自己的 AI 智能体**，构建在
 [Nous Research](https://nousresearch.com) 的
 [Hermes Agent](https://hermes-agent.nousresearch.com/) 引擎之上。它是
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)

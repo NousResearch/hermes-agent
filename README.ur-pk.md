@@ -6,7 +6,7 @@
 
 <div dir="rtl">
 
-**North Forge ایک عام مقصد اور قابلِ تخصیص AI ایجنٹ چیسس ہے**، جو
+**North Forge ایک AI ایجنٹ ہے جسے آپ اپنا بنا سکتے ہیں**، جو
 [Nous Research](https://nousresearch.com) کے
 [Hermes Agent](https://hermes-agent.nousresearch.com/) انجن پر بنایا گیا ہے۔ یہ
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) کا

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A generic, brandable AI-agent chassis on top of the <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> engine by Nous Research.
+  An AI agent you can make your own — your identity, your voice, your workflow — built on the <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> engine by Nous Research.
 </p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Engine%20docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Engine documentation"></a>
@@ -17,9 +17,9 @@
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**North Forge is an AI agent you can make your own.** It is [Hermes Agent](https://hermes-agent.nousresearch.com/) — the self-improving agent engine by [Nous Research](https://nousresearch.com) — carrying a North Forge identity, voice, and workflow: its own `SOUL.md`, its own conventions, nothing tied to a single industry. North Forge keeps Hermes Agent's functional engine behavior; its downstream changes are identity, presentation, and workflow only — so whatever Hermes Agent does, North Forge does.
+**North Forge is an AI agent you can make your own** — its own `SOUL.md`, its own conventions, its own voice and workflow, nothing tied to a single industry. It is built on [Hermes Agent](https://hermes-agent.nousresearch.com/), the self-improving agent engine by [Nous Research](https://nousresearch.com). North Forge keeps that engine's functional behavior; its downstream changes are identity, presentation, and workflow only — so whatever Hermes Agent does, North Forge does.
 
-The engine brings a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+From that engine North Forge inherits a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
 North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), kept rebased on upstream; it keeps Hermes Agent's functional engine behavior, and its downstream changes are identity, presentation, and workflow only. The engine — agent loop, memory, skills, model providers, terminal and messaging interfaces — is Nous Research's work, MIT-licensed. What North Forge adds is identity and workflow: this README, `SOUL.md`, packaging metadata, and the project ledger under [`logs/ledger/`](logs/ledger/). Both copyright lines are in [`LICENSE`](LICENSE). Maintained by Kenneth C. Walker Jr.; fork and identity issues → <https://github.com/kwalker7631/north-forge-agent/issues>, engine issues → the upstream project.
 
@@ -244,7 +244,7 @@ You can still bring your own keys per-tool whenever you want — the gateway is 
 
 ## CLI vs Messaging Quick Reference
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+North Forge has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
 
 | Action                         | CLI                                           | Messaging platforms                                                              |
 | ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -264,7 +264,7 @@ For the full command lists, see the [CLI guide](https://hermes-agent.nousresearc
 
 ## Documentation
 
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+North Forge keeps the engine's behavior unchanged, so the engine's documentation applies as-is. It lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
 
 | Section                                                                                             | What's Covered                                             |
 | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -288,7 +288,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ## Migrating from OpenClaw
 
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+If you're coming from OpenClaw, North Forge can automatically import your settings, memories, skills, and API keys.
 
 **During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
 

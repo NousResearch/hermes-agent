@@ -4,7 +4,7 @@
 
 # North Forge
 
-**North Forge es un chasis de agente de IA genérico y personalizable**, construido
+**North Forge es un agente de IA que puedes hacer tuyo**, construido
 sobre el motor [Hermes Agent](https://hermes-agent.nousresearch.com/) de
 [Nous Research](https://nousresearch.com). Es un *fork* de
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent),

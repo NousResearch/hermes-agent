@@ -23,6 +23,8 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
+    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test"}
+    monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
     monkeypatch.setattr(desktop.shutil, "which", lambda name: name)
     monkeypatch.setattr(desktop, "npm_command", lambda node: [node, "npm-cli.js"])
     monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
@@ -52,6 +54,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
         assert env["HERMES_BUILD_COMMIT"] == sha
         assert env["GITHUB_SHA"] == sha
         assert env["HERMES_PAYLOAD_VERSION"] == "0.1.2"
+        assert json.loads(env["HERMES_BUNDLE_ENV_JSON"]) == defaults
         if "scripts.bundles.stage" in argv:
             assert argv[argv.index("--ref") + 1] == sha
             assert "--tui" in argv and "--web" in argv

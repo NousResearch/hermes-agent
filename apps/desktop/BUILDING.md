@@ -115,6 +115,25 @@ It prints the dispatch command without changing local branches, tags, or release
 Add `--publish` to dispatch that build. This flag does not publish a release
 in commit-build mode.
 
+Use repeatable `--bundle-env NAME=VALUE` options to bake non-secret runtime
+defaults into the desktop app, for example:
+
+```sh
+python scripts/release.py --build-commit REV --remote fork --publish \
+  --bundle-env HERMES_GUEST_ONBOARDING=1 \
+  --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test
+```
+
+These defaults run before Electron initializes its paths and are inherited by
+local backend processes. Explicit runtime environment values win, including
+empty values. Do not pass secrets: the values are visible in the workflow inputs
+and packaged JavaScript. This option affects desktop bundles, not Termux.
+The suffix is appended literally; include a leading hyphen if desired.
+For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts the same defaults as
+a JSON object of strings. Defaults are not applied to the build runner itself.
+Commit archive keys still use the SHA, so use a fresh commit for different
+defaults: an existing artifact is never overwritten with different bytes.
+
 The workflow must exist on the repository's default branch. Admission requires
 a default-branch `workflow_dispatch` and repository write, maintain, or admin
 permission for both the original actor and the actor who reruns it.

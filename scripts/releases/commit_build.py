@@ -43,6 +43,8 @@ def version_at(repo: Path | None, commit: str) -> str:
 
 
 def admit(env: dict[str, str]) -> dict[str, str]:
+    from scripts.releases.bundle_env import decode
+
     commit = require_commit(env.get("BUILD_COMMIT", ""))
     if env.get("TAG") or env.get("RELEASE_PHASE") or env.get("UPLOAD_RELEASE", "false") != "false":
         raise ValueError("Commit builds cannot use tag, release-phase or upload_release")
@@ -63,6 +65,7 @@ def admit(env: dict[str, str]) -> dict[str, str]:
         if permission not in {"write", "maintain", "admin"}:
             raise ValueError("Commit builds require repository write, maintain or admin permission")
     require_pushed(commit, "origin")
+    decode(env.get("BUNDLE_ENV_JSON", ""))
     return {"sha": commit, "channel": "commit", "payload-version": version_at(None, commit)}
 
 
@@ -75,18 +78,26 @@ def resolve_revision(rev: str, remote: str, repo: Path) -> str:
     return commit
 
 
-def dispatch_command(commit: str, repository: str, branch: str) -> list[str]:
+def dispatch_command(commit: str, repository: str, branch: str,
+                     bundle_env: dict[str, str] | None = None) -> list[str]:
+    from scripts.releases.bundle_env import validate
+
     require_commit(commit)
-    return ["gh", "workflow", "run", WORKFLOW, "--ref", branch, "--repo", repository,
+    command = ["gh", "workflow", "run", WORKFLOW, "--ref", branch, "--repo", repository,
             "-f", f"build_commit={commit}", "-f", "tag=", "-f", "upload_release=false",
             "-f", "termux_only=false", "-f", "termux_upgrade_from_tag="]
+    if bundle_env:
+        command += ["-f", "bundle_env=" + json.dumps(validate(bundle_env), sort_keys=True)]
+    return command
 
 
 def cmd_build_commit(args) -> None:
     from scripts import release
     from scripts.releases import r2
+    from scripts.releases.bundle_env import parse_assignments
 
     try:
+        bundle_env = parse_assignments(args.bundle_env)
         remote = release.resolve_push_remote(args.remote)
         repository = release.remote_github_repo(remote)
         if not repository:
@@ -95,7 +106,7 @@ def cmd_build_commit(args) -> None:
         branch = release._default_branch(repository)
         if not branch:
             raise ValueError("could not resolve the repository default branch")
-        command = dispatch_command(commit, repository, branch)
+        command = dispatch_command(commit, repository, branch, bundle_env)
         page = r2.public_url_for(r2.public_base_url(), r2.commit_page_key_for(commit))
         print(f"Commit: {commit}\nR2: {r2.commit_prefix_for(commit)}\nPage: {page}\nWorkflow: {repository}@{branch}")
         print(shlex.join(command))

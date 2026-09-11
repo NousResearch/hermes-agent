@@ -543,8 +543,12 @@ class _KanbanNotification:
         # "no exception == delivered" contract.
         if getattr(_send_res, "success", True) is False:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
-        logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                     ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
+        logger.info(
+            "kanban notifier: delivered %s event %s for %s to %s/%s thread=%s message_id=%s continuations=%s board=%s",
+            ev.kind, ev.id, self.task_id, self.platform_str, sub["chat_id"], sub.get("thread_id") or "-",
+            getattr(_send_res, "message_id", None), getattr(_send_res, "continuation_message_ids", ()) or (),
+            self.board_slug,
+        )
         # Upload artifact paths from the completion payload / legacy result as
         # native files. Only on ``completed`` so retries never spam attachments.
         if ev.kind == "completed":

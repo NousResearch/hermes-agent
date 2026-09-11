@@ -2064,6 +2064,15 @@ class MatrixAdapter(BasePlatformAdapter):
             if synthetic:
                 thread_id = event_id
         display_name = await self._get_display_name(room_id, sender)
+        # Key an in-thread (non-DM) message with chat_type="thread" so a human
+        # reply resumes the SAME session the seed created. Handoff/cron seeds
+        # (and Telegram/Discord/Slack) key the first-class "thread" lane; without
+        # this Matrix keys "group" and the reply lands in a different session,
+        # silently dropping the seeded context. DM threads keep "dm", which the
+        # seed already matches; build_session_key drops user_id for threads, so
+        # chat_type is the only remaining divergent slot.
+        if thread_id and not is_dm:
+            chat_type = "thread"
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,

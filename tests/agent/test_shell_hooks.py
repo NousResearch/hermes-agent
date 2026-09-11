@@ -664,6 +664,23 @@ class TestEvaluateResult:
         )
         assert r is None
 
+    def test_crash_empty_stdout_fail_closed_blocks(self):
+        """A hook that crashes (traceback on stderr, exit!=0, empty stdout) must
+        block under fail_closed — the worst failure mode is failing open when the
+        gate itself breaks."""
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stdout="", stderr="Traceback (most recent call last): ...\nZeroDivisionError"),
+        )
+        assert r == {"action": "block", "message": "hook /tmp/h.sh failed closed: exited 1 with no output"}
+
+    def test_crash_empty_stdout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(returncode=1, stdout="", stderr="Traceback (most recent call last): ...\nZeroDivisionError"),
+        )
+        assert r is None
+
     def test_fail_closed_on_non_blocking_event_still_fails_open(self):
         """Defense in depth: even if a spec sneaks past parsing with
         fail_closed on a non-blocking event, runtime fails open."""

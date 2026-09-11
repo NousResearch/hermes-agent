@@ -27,7 +27,13 @@ async function waitFor(selector: string, timeoutMs = 6000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    if (document.querySelector(selector)) {
+    const visible = [...document.querySelectorAll(selector)].some(node => {
+      const { width, height } = node.getBoundingClientRect()
+
+      return width > 0 && height > 0 && !node.closest('[data-pane-hidden]')
+    })
+
+    if (visible) {
       return true
     }
 
@@ -39,10 +45,11 @@ async function waitFor(selector: string, timeoutMs = 6000): Promise<boolean> {
 
 /** Run the handoff tour. Never throws, never blocks the handoff. */
 export async function showHandoffTour(): Promise<void> {
-  if (!(await waitFor(RAIL)) || !(await waitFor(SESSIONS, 1500))) {
+  if (!(await waitFor(RAIL))) {
     return
   }
 
+  const sessionsVisible = await waitFor(SESSIONS, 1500)
   const copy = (key: string) => translateNow(`handoffTour.${key}`)
   // Imported here, not at the top: this module is reachable from the boot path
   // through the handoff hook, and driver.js plus its stylesheet are exactly
@@ -51,7 +58,9 @@ export async function showHandoffTour(): Promise<void> {
 
   await startTour([
     { accent: true, selector: RAIL, side: 'right', text: copy('profileText'), title: copy('profileTitle') },
-    { selector: SESSIONS, side: 'right', text: copy('sessionsText'), title: copy('sessionsTitle') },
+    ...(sessionsVisible
+      ? [{ selector: SESSIONS, side: 'right' as const, text: copy('sessionsText'), title: copy('sessionsTitle') }]
+      : []),
     { accent: true, selector: RAIL, side: 'right', text: copy('stayText'), title: copy('stayTitle') }
   ])
 }

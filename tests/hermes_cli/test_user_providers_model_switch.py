@@ -614,3 +614,46 @@ def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     for row in providers:
         if row["slug"] != "openrouter" and not row.get("is_current"):
             assert custom not in row.get("models", []), f"leaked into {row['slug']}"
+
+
+# =============================================================================
+# Regression: malformed providers: must not crash the switch
+# =============================================================================
+
+@pytest.mark.parametrize(
+    "malformed_user_providers",
+    ["anthropic", {"anthropic": "sk-x"}],
+    ids=["providers-is-a-string", "provider-entry-is-a-string"],
+)
+def test_malformed_user_providers_fails_cleanly(malformed_user_providers):
+    """``providers:`` is an open dict in the schema, so config can hold a scalar.
+
+    A scalar used to reach ``.get()`` unguarded and raise
+    ``AttributeError: 'str' object has no attribute 'get'`` out of the switch --
+    fatal on the gateway, where /model runs inside a message handler. The
+    substring form is the sneaky one: ``"anthropic" in "anthropic"`` is True, so
+    the ``target_provider in user_providers`` pre-check waves a string through.
+    A malformed section must degrade to a normal failed switch, like every other
+    consumer of ``providers:`` already does.
+    """
+    from unittest.mock import patch
+
+    base_url = "https://api.anthropic.com"
+    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=_REJECTED_VALIDATION), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={"api_key": "***", "base_url": base_url, "api_mode": "anthropic_messages"}):
+        result = switch_model(
+            raw_input="claude-opus-5",
+            current_provider="anthropic",
+            current_model="old-model",
+            current_base_url=base_url,
+            user_providers=malformed_user_providers,
+            custom_providers=[],
+        )
+
+    assert result.success is False

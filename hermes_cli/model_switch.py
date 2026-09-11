@@ -954,11 +954,16 @@ def _config_declares_model(
     new_model: str, target_provider: str, base_url: str, user_providers, custom_providers) -> bool:
     """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
-    slug alias or by base_url."""
-    if user_providers:
+    slug alias or by base_url.
+
+    ``providers`` is an open dict in the schema, so a malformed config can hand us a string
+    (``providers: anthropic``) or a string-valued entry (``providers: {anthropic: sk-x}``);
+    every other consumer already guards with ``isinstance`` and degrades, so do the same here
+    rather than raising AttributeError out of a model switch."""
+    if isinstance(user_providers, dict):
         from hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)
-        if cfg is not None and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
+        if isinstance(cfg, dict) and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
             return True
     for entry in _custom_entries(custom_providers):
         if (target_provider.lower() in _entry_aliases(entry) or entry.get("base_url", "") == base_url) and (
@@ -1373,7 +1378,7 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     else:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
-            if st.user_providers and st.target_provider in st.user_providers else None)
+            if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers else None)
     try:
         validation = validate_requested_model(
             st.new_model, st.target_provider, api_key=st.api_key, base_url=st.base_url,

@@ -36,6 +36,22 @@ class CustomProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
+
+        supports_reasoning = ctx.get("supports_reasoning")
+        model = ctx.get("model")
+        provider = ctx.get("provider") or "custom"
+        if model and supports_reasoning is not False:
+            try:
+                from agent.models_dev import _explicit_model_override
+                ov = _explicit_model_override(provider, model)
+                if ov and ov.get("supports_reasoning") is False:
+                    supports_reasoning = False
+            except Exception:
+                pass
+
+        if supports_reasoning is False:
+            return extra_body, top_level
+
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,

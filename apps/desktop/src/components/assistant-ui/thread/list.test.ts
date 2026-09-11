@@ -8,6 +8,8 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  renderBudgetToRevealGroup,
+  renderBudgetToRevealWeightedGroup,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
   shouldClampTranscriptBudget,
@@ -20,6 +22,27 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('renderBudgetToRevealGroup', () => {
+  it('sums newest-first paint weight through the durable target id', () => {
+    const groups: MessageGroup[] = [
+      { id: 'u1', index: 0, kind: 'standalone', weight: 10 },
+      { id: 'u2', index: 1, kind: 'standalone', weight: 20 },
+      { id: 'u3', index: 2, kind: 'standalone', weight: 5 }
+    ]
+
+    expect(renderBudgetToRevealGroup(groups, 'u3')).toBe(5)
+    expect(renderBudgetToRevealGroup(groups, 'u2')).toBe(25)
+    expect(renderBudgetToRevealGroup(groups, 'u1')).toBe(35)
+    expect(renderBudgetToRevealGroup(groups, 'missing')).toBeNull()
+  })
+
+  it('uses the runtime weight signature for a heavy hidden target', () => {
+    const groups = buildGroups(['0:u1:user', '1:a1:assistant', '2:u2:user', '3:a2:assistant'].join('\n'))
+
+    expect(renderBudgetToRevealWeightedGroup(groups, '80,70,30,20', 'u1')).toBe(200)
+  })
 })
 
 describe('subscribeToThreadForeground', () => {

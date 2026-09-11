@@ -11,7 +11,8 @@ import {
   selectTranscriptWindow,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
-  TRANSCRIPT_WINDOW_SLACK
+  TRANSCRIPT_WINDOW_SLACK,
+  transcriptWindowPagesToReveal
 } from './transcript-window'
 
 const message = (id: string, chars: number, branchGroupId?: string): ChatMessage => ({
@@ -94,6 +95,15 @@ describe('selectTranscriptWindow', () => {
     // Paging terminates at the full transcript — never a dead end.
     expect(window.windowed).toBe(false)
     expect(window.messages).toHaveLength(messages.length)
+  })
+
+  it('computes the page that materializes a durable target without incremental retries', () => {
+    const messages = transcript(100, RENDER_WEIGHT_CHARS * 40)
+
+    expect(transcriptWindowPagesToReveal(messages, 'm-99')).toBe(1)
+    expect(transcriptWindowPagesToReveal(messages, 'm-50')).toBe(2)
+    expect(transcriptWindowPagesToReveal(messages, 'm-0')).toBe(4)
+    expect(transcriptWindowPagesToReveal(messages, 'missing')).toBeNull()
   })
 
   it('never cuts inside a branch group, so branches keep their fork point', () => {

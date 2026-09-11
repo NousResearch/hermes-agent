@@ -1,10 +1,20 @@
 import { createContext, type ReactNode, useContext } from 'react'
 
+import type { TimelineEntry } from './timeline-data'
+
 export interface TranscriptWindowValue {
   /** Store holds older messages the runtime window has not materialized. */
   olderAvailable: boolean
   /** Pull one more page of older messages out of the session store. */
   expandWindow: () => void
+  /** Full set of loaded user prompts, including prompts outside the runtime window. */
+  timelineEntries?: readonly TimelineEntry[]
+  /** Runtime/session identity that scopes DOM reveal requests to one pane. */
+  revealScope?: string
+  /** Cancel an abandoned targeted store-window expansion. */
+  cancelReveal?: () => void
+  /** Materialize a hidden prompt before the timeline scrolls to it. */
+  revealMessage?: (messageId: string) => void
 }
 
 const TranscriptWindowContext = createContext<TranscriptWindowValue>({

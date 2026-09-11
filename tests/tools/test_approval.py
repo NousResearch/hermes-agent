@@ -824,6 +824,61 @@ class TestWebhookApprovalExclusion:
         result = check_all_command_guards("ls -la /tmp", "local")
         assert result["approved"] is True
 
+    def test_webhook_dangerous_command_denies_despite_gateway_ask_marker(self, monkeypatch):
+        """A gateway process sets HERMES_EXEC_ASK=1 once at boot (start_gateway); a
+        webhook session in that process must still deny instantly.
+
+        Regression: the process-global ask hint kept ``is_ask`` true, which
+        skipped the unattended branch (``not is_cli and not is_gateway and
+        not is_ask``) and routed the flagged command to a pending approval
+        nobody could answer — the session dead-waited ``approvals.timeout``
+        (~300 s) and failed closed, the exact #37284 dead-end for the ask path.
+        Guardian ESCALATE must not re-open the interactive wait either.
+        """
+        import tools.approval as approval_mod
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "webhook")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-webhook-session")
+
+        with mock_patch.object(
+            approval_smart, "_smart_approve", return_value="escalate"
+        ) as smart_approve:
+            result = check_all_command_guards(
+                "sudo systemctl restart nginx", "local"
+            )
+
+        assert result["approved"] is False
+        assert "unattended platform" in result["message"]
+        assert "approvals.unattended_mode" in result["message"]
+        assert "test-webhook-session" not in approval_mod._pending
+        smart_approve.assert_not_called()
+
+    def test_webhook_unattended_approve_overrides_gateway_ask_marker(self, monkeypatch):
+        """approvals.unattended_mode: approve still auto-approves when the gateway's
+        process-global HERMES_EXEC_ASK marker is set (the ask hint must not mask
+        the operator's explicit opt-in for listener-less sessions)."""
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "webhook")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-webhook-session")
+        monkeypatch.setattr(
+            approval_context, "_get_unattended_approval_mode", lambda: "approve"
+        )
+
+        result = check_all_command_guards("sudo systemctl restart nginx", "local")
+        assert result["approved"] is True
+
     def test_api_server_dangerous_command_denies_by_default(self, monkeypatch):
         """api_server sessions get the same instant deny (#87509)."""
         from tools.approval import check_all_command_guards

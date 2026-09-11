@@ -787,12 +787,24 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 def _presence(approval_callback=None) -> tuple:
     """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context. Single-query
     (-q) exports HERMES_INTERACTIVE=1 but nobody answers prompts, and HERMES_EXEC_ASK has no
-    human either — both are cleared so single_query_mode actually takes effect."""
+    human either — both are cleared so single_query_mode actually takes effect.
+
+    HERMES_EXEC_ASK is a process-global hint the gateway sets once at boot
+    (``start_gateway``), so it reads "an ask surface exists" for EVERY session in
+    that process. Listener-less unattended platforms (webhook, msgraph_webhook,
+    api_server) have nobody behind that hint: honoring it there routes a flagged
+    command to a pending approval that waits ``approvals.timeout`` and fails
+    closed anyway — the exact dead-wait #37284 removed for the gateway branch.
+    Clearing ``is_ask`` lets the unattended deny/approve mode resolve instantly,
+    matching the ``is_gateway`` exclusion in ``_is_gateway_approval_context``
+    and the unconditional unattended check in ``check_execute_code_guard``."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     if _is_single_query_approval_context():
         is_cli = is_gateway = is_ask = False
+    if _is_unattended_platform_approval_context():
+        is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
 

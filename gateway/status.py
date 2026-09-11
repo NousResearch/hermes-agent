@@ -305,20 +305,24 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+def _normalized_command_tokens(command: str | None) -> list[str]:
+    """Split a process command line and normalize tokens for identity checks."""
+    if not command:
+        return []
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    return [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
     Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
     quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
     argv since ``_apply_profile_override`` removes them before argparse."""
-    if not command:
-        return None
-    try:
-        raw_tokens = shlex.split(command, posix=False)
-    except ValueError:
-        raw_tokens = command.split()
-    # Strip surrounding quotes, normalize slashes + case per token.
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    tokens = _normalized_command_tokens(command)
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
@@ -385,19 +389,26 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
     onto ANOTHER profile's live gateway. Named profiles carry ``-p``/``--profile <name>`` or
     ``HERMES_HOME=`` on argv; the default gateway runs bare. Separators normalized."""
-    command_lc = command.lower().replace("\\", "/")
+    tokens = _normalized_command_tokens(command)
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/")
+    selected_profiles: list[str] = []
+    explicit_homes: list[str] = []
+    for index, token in enumerate(tokens):
+        if token in ("--profile", "-p") and index + 1 < len(tokens):
+            selected_profiles.append(tokens[index + 1].strip("\"'"))
+        elif token.startswith(("--profile=", "-p=")):
+            selected_profiles.append(token.split("=", 1)[1].strip("\"'"))
+        elif token.startswith("hermes_home="):
+            explicit_homes.append(token.split("=", 1)[1].strip("\"'").rstrip("/"))
     if profile_name is not None and profile_name != "default":
         profile_lc = profile_name.lower()
-        return any(needle in command_lc for needle in (
-            f"--profile {profile_lc}", f"-p {profile_lc}", f"hermes_home={home_lc}"
-        ))
+        return profile_lc in selected_profiles or home_lc.rstrip("/") in explicit_homes
     # Default profile: accept unless argv names another profile or a conflicting explicit
     # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
-    if "--profile " in command_lc or " -p " in command_lc:
+    if selected_profiles:
         return False
-    return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
+    return not explicit_homes or home_lc.rstrip("/") in explicit_homes
 
 
 def _record_matches_live_gateway_pid(
@@ -981,14 +992,29 @@ def get_runtime_status_running_pid(
         return None
     if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
         return None
-    pid = _live_pid_from_record(payload)
-    if pid is None:
+    pid = _pid_from_record(payload)
+    if pid is None or not _pid_exists(pid):
         return None
     # Active-profile context: the record's hermes_home must match this process so a stale record
     # cannot lend another profile's identity.
     if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
         return None
-    if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
+
+    live_cmdline = _read_process_cmdline(pid)
+    if live_cmdline:
+        profile_home = expected_home or _get_process_hermes_home()
+        if not looks_like_gateway_runtime_command_line(live_cmdline):
+            return None
+        if not _command_line_belongs_to_profile(live_cmdline, profile_home):
+            return None
+        return pid
+
+    # If the OS cannot expose argv, retain the exact start-time guard before trusting the record.
+    # Destructive paths always keep their own exact guard; this exception is liveness-only and
+    # requires a readable live command line above to override a stale writer fingerprint.
+    if _start_times_conflict(payload.get("start_time"), _get_process_start_time(pid)):
+        return None
+    if not _record_looks_like_gateway(payload):
         return None
     return pid
 

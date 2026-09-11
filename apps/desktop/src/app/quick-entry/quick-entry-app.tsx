@@ -56,6 +56,10 @@ export function QuickEntryApp() {
     })
 
     const offState = api?.onState(payload => {
+      // Echo the adopted payload back so main stops retrying its replay (see
+      // electron/quick-entry-state-relay.ts); optional-chained because an
+      // older preload may not expose it yet.
+      api?.ackState?.(payload)
       dispatch({
         connected: payload?.connected === true,
         sessions: Array.isArray(payload?.sessions) ? payload.sessions : [],

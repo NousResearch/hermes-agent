@@ -14,6 +14,9 @@
  * `globalShortcut`.
  */
 
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
 // Default matches the muscle memory of the apps this ports from (Claude
 // Desktop's quick entry / ChatGPT's Quick Chat sit on a Cmd+Shift chord).
 const DEFAULT_QUICK_ENTRY_SHORTCUT = 'CommandOrControl+Shift+Space'
@@ -299,16 +302,85 @@ export interface GlobalShortcutLike {
 
 /**
  * What Settings shows. `registered` is the ground truth (we asked the OS);
- * `error` distinguishes "you turned it off" from "another app owns that chord",
- * which is the failure this feature must never swallow.
+ * `error` distinguishes "you turned it off" from "another app owns that chord"
+ * from "this desktop session cannot host global shortcuts at all", which are
+ * the failures this feature must never swallow.
  */
 export interface QuickEntryRegistration {
   error: null | QuickEntryRegistrationError
   registered: boolean
   shortcut: string
+  /** Probe reason when `error` is `'unavailable'`; absent otherwise. */
+  detail?: string
 }
 
-export type QuickEntryRegistrationError = 'invalid' | 'taken'
+export type QuickEntryRegistrationError = 'invalid' | 'taken' | 'unavailable'
+
+/**
+ * Result of asking the session whether the GlobalShortcuts portal is actually
+ * serviceable. `detail` carries a short human-readable reason for logs.
+ */
+export interface GlobalShortcutsPortalProbeResult {
+  available: boolean
+  detail?: string
+}
+
+/** Async probe shape (injected for testing). */
+export type GlobalShortcutsPortalProbe = () => Promise<GlobalShortcutsPortalProbeResult>
+
+const PORTAL_DBUS_TIMEOUT_MS = 1_500
+
+/**
+ * Ask the session bus whether `org.freedesktop.portal.GlobalShortcuts` — the
+ * interface Electron's Linux/Wayland globalShortcut path goes through — is
+ * reachable. `busctl --user` is the primary tool with `dbus-send` as the
+ * fallback; a successful DBus Peer.Ping against the portal's bus name proves
+ * the portal process is up and owning that name. Anything else (tools missing,
+ * portal name unowned, session bus dead, timeout) means registration attempts
+ * will fail for reasons that are NOT another application holding the chord.
+ */
+export const probeGlobalShortcutsPortalViaCli: GlobalShortcutsPortalProbe = async () => {
+  const attempts: Array<{ args: string[]; command: string }> = [
+    {
+      args: [
+        '--user',
+        'call',
+        'org.freedesktop.portal.Desktop',
+        '/org/freedesktop/portal/desktop',
+        'org.freedesktop.DBus.Peer',
+        'Ping'
+      ],
+      command: 'busctl'
+    },
+    {
+      args: [
+        '--session',
+        '--dest=org.freedesktop.portal.Desktop',
+        '--type=method_call',
+        '--print-reply',
+        '/org/freedesktop/portal/desktop',
+        'org.freedesktop.DBus.Peer.Ping'
+      ],
+      command: 'dbus-send'
+    }
+  ]
+
+  const failures: string[] = []
+
+  for (const attempt of attempts) {
+    try {
+      await promisify(execFile)(attempt.command, attempt.args, { timeout: PORTAL_DBUS_TIMEOUT_MS })
+
+      return { available: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      failures.push(`${attempt.command}: ${message.split('\n')[0]?.slice(0, 160) || 'failed'}`)
+    }
+  }
+
+  return { available: false, detail: failures.join(' | ') }
+}
 
 export interface QuickEntryShortcutController {
   /** Registration state as of the last apply. */
@@ -316,7 +388,25 @@ export interface QuickEntryShortcutController {
   /** Release the shortcut (quit / feature off). Idempotent. */
   dispose(): void
   /** Re-register to match `settings`. Returns the resulting state. */
-  apply(settings: QuickEntrySettings): QuickEntryRegistration
+  apply(settings: QuickEntrySettings): Promise<QuickEntryRegistration>
+}
+
+/**
+ * Platforms whose globalShortcut registration can fail because the desktop
+ * session's shortcut service is missing or unreachable rather than because
+ * another application owns the chord: Linux/Wayland routes the chord through
+ * the GlobalShortcuts portal, and remote/secure Windows sessions can refuse
+ * RegisterHotKey without a real conflict. On those, a failed registration
+ * must be probed before blaming a conflict. macOS registration goes through
+ * Carbon APIs with no such session service, so it keeps the plain 'taken'
+ * report.
+ */
+function sessionCanRefuseShortcutsWithoutConflict(): boolean {
+  try {
+    return process.platform === 'linux' || process.platform === 'win32'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -326,10 +416,18 @@ export interface QuickEntryShortcutController {
  *
  * Disabled settings never touch `register()` at all: a user who turned Quick
  * Entry off must not have their chord silently held hostage.
+ *
+ * When a registration attempt fails, a Linux/Wayland session is probed for the
+ * GlobalShortcuts portal (the path Electron's globalShortcut goes through
+ * there) before blaming another application: on KDE/GNOME Wayland a dead or
+ * unreachable portal fails every chord, and "already taken" sends users
+ * chasing conflicts that do not exist (#95132). The probe is injectable so
+ * tests stay hermetic.
  */
 export function createQuickEntryShortcut(
   globalShortcut: GlobalShortcutLike,
-  onTrigger: () => void
+  onTrigger: () => void,
+  probePortal: GlobalShortcutsPortalProbe = probeGlobalShortcutsPortalViaCli
 ): QuickEntryShortcutController {
   let active: null | string = null
   let state: QuickEntryRegistration = { error: null, registered: false, shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT }
@@ -346,8 +444,16 @@ export function createQuickEntryShortcut(
     }
   }
 
+  const tryRegister = (accelerator: string): boolean => {
+    try {
+      return globalShortcut.register(accelerator, onTrigger)
+    } catch {
+      return false
+    }
+  }
+
   return {
-    apply(settings) {
+    async apply(settings) {
       const parsed = parseQuickEntryShortcut(settings.shortcut)
       const shortcut = parsed.ok ? parsed.accelerator : settings.shortcut
 
@@ -365,21 +471,56 @@ export function createQuickEntryShortcut(
         return state
       }
 
-      // `isRegistered` catches the common conflict before we ask, and
-      // `register()` returning false catches the rest (another process owns it
-      // OS-wide). Both land in the same surfaced 'taken' state.
-      let ok = false
+      if (!parsed.accelerator) {
+        state = { error: 'invalid', registered: false, shortcut }
 
-      try {
-        ok = globalShortcut.isRegistered(parsed.accelerator)
-          ? false
-          : globalShortcut.register(parsed.accelerator, onTrigger)
-      } catch {
-        ok = false
+        return state
       }
 
-      active = ok ? parsed.accelerator : null
-      state = { error: ok ? null : 'taken', registered: ok, shortcut: parsed.accelerator }
+      // A chord the OS reports as already held is DIRECT evidence of a
+      // conflict — no probe needed, report 'taken'.
+      if (globalShortcut.isRegistered(parsed.accelerator)) {
+        active = null
+        state = { error: 'taken', registered: false, shortcut: parsed.accelerator }
+
+        return state
+      }
+
+      if (tryRegister(parsed.accelerator)) {
+        active = parsed.accelerator
+        state = { error: null, registered: true, shortcut: parsed.accelerator }
+
+        return state
+      }
+
+      // Ambiguous failure: `register()` refused or threw without saying who
+      // owns the chord. On Linux/Wayland that is usually the session's
+      // GlobalShortcuts portal being unreachable — not a conflict — so probe
+      // before reporting 'taken' (#95132). A probe that throws defaults to
+      // the historical 'taken' report.
+      let error: QuickEntryRegistrationError = 'taken'
+      let detail: undefined | string
+
+      if (sessionCanRefuseShortcutsWithoutConflict()) {
+        try {
+          const probe = await probePortal()
+
+          if (!probe.available) {
+            error = 'unavailable'
+            detail = probe.detail
+          }
+        } catch {
+          // Probe failures keep the historical 'taken' report.
+        }
+      }
+
+      active = null
+
+      if (detail) {
+        state = { error, registered: false, shortcut: parsed.accelerator, detail }
+      } else {
+        state = { error, registered: false, shortcut: parsed.accelerator }
+      }
 
       return state
     },

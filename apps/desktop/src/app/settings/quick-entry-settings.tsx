@@ -53,9 +53,11 @@ export function QuickEntrySettings() {
         ? q.takenBy
         : state.error === 'invalid'
           ? q.invalidShortcut
-          : state.enabled && state.registered
-            ? q.active
-            : null
+          : state.error === 'unavailable'
+            ? q.sessionUnavailable
+            : state.enabled && state.registered
+              ? q.active
+              : null
 
   return (
     <>

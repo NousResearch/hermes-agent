@@ -175,15 +175,16 @@ export function advanceTranscriptWindow(
 export const MAX_SESSION_WINDOWS = 12
 
 /**
- * A window state plus the exact message array it was computed from.
- * The array identity is load-bearing: when a session is re-entered with the
- * IDENTICAL transcript (the warm-switch path of #95595), the stored window —
- * including the exact `window.messages` slice reference — is reused as-is.
- * The reference reuse is what stops `useRuntimeMessageRepository` from
- * rebuilding (and every row from re-rendering) on a warm switch.
+ * A window state plus a weak identity reference to the exact message array it
+ * was computed from.
+ *
+ * Weakness is load-bearing: the authoritative session-state cache may release
+ * a cold transcript while this memo remains mounted. A strong source-array
+ * reference here would keep every message outside the bounded window alive.
+ * While the store still owns the same array, identity reuse remains O(1).
  */
 export interface SessionWindowMemo {
-  messages: readonly ChatMessage[]
+  messagesRef: WeakRef<readonly ChatMessage[]>
   state: TranscriptWindowState
 }
 
@@ -196,16 +197,16 @@ export interface SessionWindowMemo {
  * re-highlight per row) even though nothing had changed. This keeps one memo
  * per session:
  *
- * - Re-entering a session with the same transcript array returns the cached
- *   windowed slice BY REFERENCE — the runtime repository and every message
- *   row stay mounted, so the switch is O(1).
+ * - Re-entering a session whose live store still owns the same transcript
+ *   array returns the cached windowed slice BY REFERENCE — the runtime
+ *   repository and every message row stay mounted, so the switch is O(1).
  * - Re-entering with a changed transcript keeps the sticky cut (anchor still
  *   present, tail within budget + slack) instead of re-walking from scratch.
  * - The anchor vanishing (compression rewrite) or a pages change falls
  *   through to `advanceTranscriptWindow`'s existing fresh-walk behaviour.
  *
- * The map is bounded (oldest session evicted) so an unbounded session list
- * cannot grow it without limit.
+ * The map is bounded (oldest session evicted), and each full source transcript
+ * is referenced weakly so the map cannot defeat cold-session state eviction.
  */
 export function advanceSessionTranscriptWindow(
   memos: Map<string, SessionWindowMemo>,
@@ -215,15 +216,15 @@ export function advanceSessionTranscriptWindow(
 ): TranscriptWindowState {
   const memo = memos.get(sessionKey)
 
-  // Warm re-visit with the identical transcript and page count: reuse the
+  // Warm re-visit with the identical live transcript and page count: reuse the
   // cached state wholesale, preserving the windowed slice reference.
-  if (memo && memo.messages === messages && memo.state.pages === pages) {
+  if (memo && memo.messagesRef.deref() === messages && memo.state.pages === pages) {
     return memo.state
   }
 
   const state = advanceTranscriptWindow(memo?.state ?? null, messages, pages)
 
-  memos.set(sessionKey, { messages, state })
+  memos.set(sessionKey, { messagesRef: new WeakRef(messages), state })
 
   if (memos.size > MAX_SESSION_WINDOWS) {
     const oldest = memos.keys().next().value as string

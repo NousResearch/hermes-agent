@@ -856,3 +856,29 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Scalar written over a schema-declared dict section
+# ---------------------------------------------------------------------------
+
+class TestDictSectionScalarGuard:
+    """`providers:` and friends are open dicts: nothing downstream validates their shape."""
+
+    def test_scalar_refused_for_absent_dict_section(self, _isolated_hermes_home):
+        """A dict section the user file does not have yet must still refuse a scalar.
+
+        The pre-existing guard compared against the user's own config, so the refusal only
+        fired once the section already existed as a mapping. On a fresh config `providers`
+        is absent, so `hermes config set providers anthropic` wrote the string and exited 0 —
+        after which every consumer isinstance-guards it away and the setting is silently inert.
+        """
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("providers", "anthropic")
+        assert exc.value.code == 1
+        assert "providers" not in _read_config(_isolated_hermes_home)
+
+    def test_force_still_writes_the_scalar(self, _isolated_hermes_home):
+        """--force stays the documented escape hatch."""
+        set_config_value("providers", "anthropic", force=True)
+        assert "providers" in _read_config(_isolated_hermes_home)

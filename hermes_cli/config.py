@@ -3329,12 +3329,37 @@ def _exit_if_key_managed(key: str, action: str) -> None:
         sys.exit(1)
 
 
+def _declares_dict_section(key: str) -> bool:
+    """Whether the schema declares *key* as a mapping the user populates.
+
+    ``_OPEN_DICT_TOP_LEVEL_KEYS`` members accept arbitrary child keys, so nothing downstream
+    validates their shape — consumers just ``isinstance``-guard and degrade. That makes a scalar
+    written there silently inert. Restricted to keys whose ``DEFAULT_CONFIG`` node is a dict, so
+    list-shaped members (``command_allowlist``) and members absent from the defaults keep their
+    existing behaviour."""
+    return key in _OPEN_DICT_TOP_LEVEL_KEYS and isinstance(DEFAULT_CONFIG.get(key), dict)
+
+
 def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> str:
     """Refuse (or with ``force`` allow) a single-segment key overwriting a mapping with a scalar.
     Bare ``model`` is a documented shorthand — redirected to ``model.default`` so siblings survive.
     Returns the (possibly redirected) key."""
     existing = user_config.get(key)
-    if "." in key or not isinstance(existing, dict):
+    if "." in key:
+        return key
+    if not isinstance(existing, dict):
+        # An ABSENT dict section is the dangerous case: there is no mapping to compare against,
+        # so the scalar sails through, persists, and every consumer then ignores it. Judge by the
+        # schema instead of by what the user file happens to hold today.
+        if not force and _declares_dict_section(key) and not isinstance(value, (dict, list)):
+            print("\n".join([
+                f"✗ Cannot set '{key}' to a scalar — the schema declares '{key}' as a "
+                f"configuration section.",
+                "  Use a dotted path to set a specific leaf key:",
+                f"    hermes config set {key}.<sub-key> <value>",
+                "  Or use --force to write the scalar anyway:",
+                f"    hermes config set --force {key} {value!r}"]), file=sys.stderr)
+            sys.exit(1)
         return key
     if key == "model":
         if force:

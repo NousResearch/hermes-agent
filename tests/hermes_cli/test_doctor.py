@@ -1763,11 +1763,13 @@ class TestStagedRuntimeVenv:
         assert "runs outside it" in out
         assert "active in this process" not in out
 
-    def test_staged_and_active_names_both_facts(self, monkeypatch, capsys):
-        staged = Path("/payload/venv")
+    def test_staged_and_active_names_both_facts(self, monkeypatch, capsys, tmp_path):
+        from hermes_cli.runtime_paths import site_packages
+
+        staged = tmp_path / "venv"
+        site_packages(staged).mkdir(parents=True)
         monkeypatch.setattr(doctor_platform, "_staged_venv_dir", lambda: staged)
-        monkeypatch.setattr(doctor_platform.sys, "prefix", str(staged))
-        monkeypatch.setattr(doctor_platform.sys, "base_prefix", "/usr")
+        monkeypatch.syspath_prepend(str(site_packages(staged)))
 
         doctor_platform._check_python_environment(False)
 

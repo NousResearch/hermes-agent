@@ -9,7 +9,7 @@ import type { WisdomMuteCopy, WisdomSyncCopy } from '@hermes/shared'
 
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'de'
 
 export interface WisdomTranslations {
   syncRecovery?: WisdomSyncCopy

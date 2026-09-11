@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 SOURCE = "modelark-proxy"
 LABEL = "modelark subscription"
 ARK_HOST = "ark.ap-southeast.bytepluses.com"
-PRICING_VERSION = "modelark-subscription-proxy-2026-09"
+PRICING_VERSION = "modelark-subscription-proxy-2026-09b"
 SOURCE_URL = ("ModelArk Coding Plan (flat subscription): notional DeepSeek list price for cap accounting "
               "only, not invoiced")
 # Ark model id -> DeepSeek family key in the bundled "deepseek" snapshot.
@@ -33,6 +33,11 @@ PROXY = {
     "deepseek-v4-flash-260425": "deepseek-v4-flash",
     "deepseek-v4-pro-ga-260813": "deepseek-v4-pro",
     "deepseek-v4-pro-260425": "deepseek-v4-pro",
+    # The Coding Plan answers with the SERVED name ("deepseek-v4-flash"), and auxiliary accounting
+    # prices on response.model — so title/compression calls arrive under the bare name. Found on the
+    # wire 2026-09-11: 4 title_generation rows recorded $0 until these were added.
+    "deepseek-v4-flash": "deepseek-v4-flash",
+    "deepseek-v4-pro": "deepseek-v4-pro",
 }
 PROVIDER_KEYS = ("custom", "modelark", "custom:modelark")
 

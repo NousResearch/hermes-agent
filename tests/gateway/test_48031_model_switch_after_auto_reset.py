@@ -24,6 +24,8 @@ import ast
 import inspect
 
 from gateway import run_turn as gateway_run_turn
+from gateway import run_turn_exec as gateway_run_turn_exec
+from gateway import run_turn_hmwa as gateway_run_turn_hmwa
 from gateway import slash_commands_model as gateway_slash
 
 
@@ -47,7 +49,8 @@ def test_run_consumes_was_auto_reset_in_cleanup_block():
     `session_entry.was_auto_reset = False` so the cleanup (which pops the
     session model/reasoning overrides) cannot re-fire on the next message and
     wipe an override stored between turns (#48031)."""
-    tree = ast.parse(inspect.getsource(gateway_run_turn))
+    tree = ast.parse("".join(inspect.getsource(m) for m in
+                            (gateway_run_turn, gateway_run_turn_hmwa, gateway_run_turn_exec)))
 
     # Find the cleanup branch: an `if <flag>:` block that clears the
     # conversation scope (post-funnel: one _clear_conversation_scope call

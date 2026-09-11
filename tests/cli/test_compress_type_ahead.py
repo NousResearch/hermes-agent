@@ -33,10 +33,9 @@ runs; the gateway already resolves the concurrent-mutation race via the
 
 from __future__ import annotations
 
-import ast
 import queue as queue_mod
 import threading
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,31 +118,21 @@ def test_type_ahead_queued_during_compress_becomes_next_prompt():
         shell._pending_input.get_nowait()
 
 
-def test_handle_enter_never_gates_on_command_running():
-    """handle_enter must not consult the busy-command flags (drop-proof routing).
+def test_handle_enter_routes_typeahead_while_command_runs():
+    """Enter routes type-ahead even while a slash command is active."""
+    cli = _make_cli()
+    cli._command_running = True
+    cli._command_blocks_input = False
+    cli._agent_running = False
+    cli._tui_multiline_shortcuts = False
+    cli._attached_images = []
+    cli._tui_enter_overlay = lambda event: False
+    cli._tui_enter_inline_command = lambda event, text, has_images: False
+    cli._inline_pastes = lambda buffer: None
+    text = "follow-up prompt drafted during compaction"
+    buffer = SimpleNamespace(text=text, cursor_position=len(text), reset=lambda **kwargs: None)
+    event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer, invalidate=lambda: None))
 
-    Enter-key routing while a slash command runs must keep flowing into
-    ``_pending_input``; read-only enforcement belongs exclusively to the
-    TextArea's ``read_only=Condition(...)``. A ``_command_running`` /
-    ``_command_blocks_input`` check inside ``handle_enter`` would let a
-    future edit silently drop type-ahead submissions during /compress.
-    """
-    cli_path = Path(__file__).resolve().parents[2] / "hermes_cli" / "cli_tui_mixin.py"
-    tree = ast.parse(cli_path.read_text(encoding="utf-8"))
+    cli._tui_handle_enter(event)
 
-    handlers = ("_tui_handle_enter", "_tui_enter_inline_command", "_tui_enter_overlay",
-                "_tui_enter_clarify_freetext", "_tui_enter_clarify_choice", "_tui_enter_while_busy")
-    targets = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in handlers]
-    assert {n.name for n in targets} == set(handlers), "Enter handlers not found in cli_tui_mixin.py"
-
-    offenders = [
-        node.attr
-        for target in targets
-        for node in ast.walk(target)
-        if isinstance(node, ast.Attribute)
-        and node.attr in {"_command_running", "_command_blocks_input"}
-    ]
-    assert not offenders, (
-        "handle_enter references busy-command state — Enter routing while a "
-        f"slash command runs risks dropping type-ahead input: {offenders}"
-    )
+    assert cli._pending_input.get_nowait() == text

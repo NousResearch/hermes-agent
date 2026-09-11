@@ -84,6 +84,32 @@ def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
     return False  # None, dict (per-model metadata), or anything else
 
 
+def _hidden_model_ids(cfg: Any) -> set[str]:
+    """Lowercase model IDs a provider entry excludes from the model pickers.
+
+    Vendors keep retired aliases in their live ``/models`` catalog long after they stop being
+    usable, and every picker row rebuilds its list from that probe (see
+    ``_models_config_is_allowlist``) — so deleting the ID from ``models`` does not hide it, the
+    next probe adds it straight back. ``hidden_models`` is the explicit, probe-proof exclusion::
+
+        custom_providers:
+          - name: deepseek
+            base_url: https://api.deepseek.com
+            hidden_models: [deepseek-v4-pro]
+
+    The hidden ID need not appear in ``models`` — retired IDs are usually gone from config
+    entirely. Shape-tolerant (list, ``{id: ...}`` mapping, or one string) and never raises on
+    malformed config.
+    """
+    if not isinstance(cfg, dict):
+        return set()
+    return {
+        model_id.strip().lower()
+        for model_id in _declared_model_ids(cfg.get("hidden_models"))
+        if model_id.strip()
+    }
+
+
 def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     """ProviderDef for a direct ``model.provider: custom`` endpoint."""
     base_url = _clean(current_base_url)

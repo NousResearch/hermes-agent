@@ -138,10 +138,30 @@ model:
   # Merged onto SDK/provider defaults with the entry's values winning.
   # Header values are treated as secrets and are never logged.
   #
+  # Per-provider model-list controls (same named providers / custom_providers
+  # entries):
+  #
+  # discover_models: false
+  #   Use only the models: you configured and skip the endpoint's /models
+  #   probe. Handy for gateways whose model listing is slow or noisy.
+  #
+  # hidden_models: [old-model-4-pro]
+  #   Keep these IDs out of every model picker (CLI /model, hermes model, TUI,
+  #   desktop, gateway inline keyboards) even when the endpoint's live /models
+  #   listing still offers them — the usual case for a retired alias a vendor
+  #   leaves in its catalog. Deleting the ID from models: is not enough: rows
+  #   are rebuilt from the live probe (see _models_config_is_allowlist), so the
+  #   ID comes straight back. Matching is case-insensitive, the hidden ID need
+  #   not appear in models:, and the model you are currently running stays
+  #   visible on its own row so you can see it and switch away. Explicitly
+  #   typing a hidden ID (/model <id>) still works — the exclusion is
+  #   picker-scoped.
+  #
   # providers:
   #   my-proxy:
   #     base_url: "https://llm.internal.example.com/v1"
   #     key_env: "MY_PROXY_API_KEY"
+  #     hidden_models: ["old-model-4-pro"]
   #     extra_headers:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"

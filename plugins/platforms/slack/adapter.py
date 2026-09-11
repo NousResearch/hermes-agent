@@ -4119,7 +4119,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "so a retry or edit can re-drive the turn", self.name, _ts)
             raise
 
-    async def _drop_bot_sender(self, event: dict) -> bool:
+    async def _drop_bot_sender(self, event: dict, *, team_id: str = "") -> bool:
         """allow_bots gate: ``none`` drops all bot posts (default), ``mentions`` those not
         @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
         without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
@@ -4142,12 +4142,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Dropping bot message under allow_bots=mentions: "
                     "no <@%s> mention in flat text or blocks", self._bot_user_id)
                 should_drop = True
-        team_id = str(event.get("team") or event.get("team_id") or "")
+        team_id = team_id or str(event.get("team") or event.get("team_id") or "")
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_self = bool(msg_user and bot_uid and msg_user == bot_uid)
         should_drop = should_drop or is_self
         if should_drop and not is_self:
-            self._remember_pending_thread_update(event)
+            self._remember_pending_thread_update(event, team_id=team_id)
         return should_drop
 
     async def _prefilter_inbound(
@@ -4184,7 +4184,7 @@ class SlackAdapter(BasePlatformAdapter):
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
             return None
-        if await self._drop_bot_sender(event):
+        if await self._drop_bot_sender(event, team_id=dedup_team_id):
             return None
         # Edits were normalized above so an @mention added by edit can wake the bot once.
         if event.get("subtype") == "message_deleted":
@@ -5853,12 +5853,12 @@ class SlackAdapter(BasePlatformAdapter):
     def _pending_thread_update_key(channel_id: str, thread_ts: str, team_id: str = "") -> str:
         return f"{team_id}:{channel_id}:{thread_ts}"
 
-    def _remember_pending_thread_update(self, event: dict) -> None:
+    def _remember_pending_thread_update(self, event: dict, *, team_id: str = "") -> None:
         """Remember a dropped external app/bot post so the next human turn recovers its delta."""
         channel_id = str(event.get("channel") or "")
         thread_ts = str(event.get("thread_ts") or "")
         update_ts = str(event.get("ts") or "")
-        team_id = str(event.get("team") or event.get("team_id") or "")
+        team_id = team_id or str(event.get("team") or event.get("team_id") or "")
         if not channel_id or not thread_ts or not update_ts or thread_ts == update_ts:
             return
         key = self._pending_thread_update_key(channel_id, thread_ts, team_id)

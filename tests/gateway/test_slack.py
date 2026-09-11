@@ -3147,8 +3147,7 @@ class TestThreadReplyHandling:
             "ts": "123.456",
             "thread_ts": "123.000",
             "channel_type": "channel",
-            "team": "T_TEAM",
-        })
+        }, {"team_id": "T_TEAM"})
 
         adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
@@ -3194,8 +3193,7 @@ class TestThreadReplyHandling:
             "ts": "123.200",
             "thread_ts": "123.000",
             "channel_type": "channel",
-            "team": "T_TEAM",
-        })
+        }, {"team_id": "T_TEAM"})
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             return_value={
                 "messages": [

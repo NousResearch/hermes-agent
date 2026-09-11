@@ -1954,6 +1954,7 @@ class GatewayTurnMixin:
                 "chat_id": source.chat_id or "",
                 "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
                 "chat_type": getattr(source, "chat_type", "") or "",
+                "profile": getattr(source, "profile", "") or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }

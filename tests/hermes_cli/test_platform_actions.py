@@ -307,6 +307,23 @@ class TestMultiplexProfileRouting:
         team_b_adapter._set_reaction.assert_awaited_once()
         default_adapter._set_reaction.assert_not_awaited()
 
+    def test_explicit_profile_routes_to_that_adapter_not_active_profile(self):
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        team_b_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={"team-b": {Platform.TELEGRAM: team_b_adapter}},
+            ),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="default"),
+        ):
+            result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x", profile="team-b"))
+        assert result["ok"] is True
+        team_b_adapter._set_reaction.assert_awaited_once()
+        default_adapter._set_reaction.assert_not_awaited()
+
     @pytest.mark.parametrize(
         "resolver",
         [

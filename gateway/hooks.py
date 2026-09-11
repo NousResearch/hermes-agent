@@ -143,6 +143,7 @@ class HookRegistry:
             "chat_id": str(context.get("chat_id") or ""),
             "thread_id": str(context.get("thread_id") or ""),
             "chat_type": str(context.get("chat_type") or ""),
+            "profile": str(context.get("profile") or ""),
             "session_id": str(context.get("session_id") or ""),
             "message": str(context.get("message") or "")[:500],
         }

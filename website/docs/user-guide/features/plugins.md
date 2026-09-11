@@ -491,6 +491,7 @@ result = await ctx.platform_actions.set_thread_title(
 )
 result = await ctx.platform_actions.set_thread_lifecycle_emoji(
     platform="discord", chat_id="123", thread_id="456", emoji="✅",
+    profile="default",  # preserve a multiplexed gateway's source-bot identity
 )
 if not result["ok"]:
     print(result["error"], result.get("detail"))

@@ -155,8 +155,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    if values:
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
 

@@ -1681,7 +1681,7 @@ _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
     ("quiet", False), ("query", None), ("image", None), ("resume", None),
     ("worktree", False), ("checkpoints", False), ("pass_session_id", False),
-    ("max_turns", None),
+    ("max_turns", None), ("reasoning", None),
 )
 
 

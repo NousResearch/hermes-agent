@@ -171,17 +171,22 @@ def _resolve_restart_drain_timeout() -> float:
 
 
 def _eager_reconcile_own_session_db() -> None:
-    """One writable open of this process's own state.db at startup.
+    """Read-only open of this process's own state.db at startup.
 
-    ``SessionDB.__init__`` runs ``_init_schema`` → ``_reconcile_columns`` with
-    open-time lock patience. Never raises: an unfixable store still gets the
-    per-poll read-probe heal in :func:`_open_session_db_at_path`.
+    When the gateway shares ``state.db``, a writable open here creates the
+    documented concurrent-FTS-rebuild corruption vector (PR #93200, issues
+    #89293 / #90950). ``_open_session_db_at_path(..., read_only=True)``
+    preserves startup bootstrap and schema heal via ONE writable open but
+    avoids a second writable ``SessionDB`` owner. Never raises: an unfixable
+    store still gets the per-poll read-probe heal inside
+    :func:`_open_session_db_at_path`.
     """
     try:
         from hermes_state import _default_db_path
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_cli.web_server_sessions import _open_session_db_at_path
+        from hermes_state_registry import release_or_close
 
-        db = acquire(Path(_default_db_path()))
+        db = _open_session_db_at_path(Path(_default_db_path()), read_only=True)
         release_or_close(db)
     except Exception as exc:
         _log.warning(

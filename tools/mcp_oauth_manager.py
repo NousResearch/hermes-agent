@@ -220,6 +220,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         inner = super().async_auth_flow(request)
         resource_lock_released = retry_after_concurrent_auth = False
         sent_access_token = None
+        primary_error: BaseException | None = None
         try:
             outgoing = await inner.__anext__()
             while True:
@@ -249,13 +250,40 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            if resource_lock_released:
-                # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
-                # flow mid-request; shield only this local bookkeeping.
+            # Bind the delegated SDK flow to the task driving this bridge.
+            # If HTTPX cancellation or explicit close arrives while the
+            # resource request is yielded, first reacquire #97458's binary
+            # semaphore so the SDK's surrounding async-with remains
+            # balanced, then close the inner generator exactly once.
+            try:
                 import anyio
+
                 with anyio.CancelScope(shield=True):
-                    await self.context.lock.acquire()
+                    if resource_lock_released:
+                        await self.context.lock.acquire()
+                        resource_lock_released = False
+                    await inner.aclose()
+            except BaseException as cleanup_error:
+                # Preserve the real OAuth failure or cancellation. Normal
+                # completion and explicit outer close have no user-visible
+                # primary error, so cleanup failure remains authoritative.
+                if primary_error is None or isinstance(primary_error, GeneratorExit):
+                    raise
+                primary_error.add_note(
+                    "MCP OAuth inner auth-flow cleanup also raised "
+                    f"{type(cleanup_error).__name__}"
+                )
+                logger.warning(
+                    "MCP OAuth '%s': inner auth-flow cleanup raised %s while "
+                    "preserving %s",
+                    self._hermes_server_name,
+                    type(cleanup_error).__name__,
+                    type(primary_error).__name__,
+                )
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()

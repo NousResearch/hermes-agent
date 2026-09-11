@@ -517,3 +517,54 @@ def test_collapse_is_deterministic():
     first = collapse_const_unions(copy.deepcopy(schema))
     second = collapse_const_unions(copy.deepcopy(schema))
     assert first == second == {"type": "string", "enum": ["b", "a"]}
+
+
+def test_list_and_object_default_values_preserved():
+    """``default`` / ``const`` hold literal instance values, not schemas.
+
+    A ``default`` of ``["read", "write"]`` must survive verbatim. Treating it
+    as a schema node walks each string element through the bare-string
+    replacement and turns the default into a list of ``{"type": "object"}``
+    dicts - silently corrupting the value the model sees for the tool.
+
+    Only container values reproduce the defect: ``_sanitize_node`` recurses
+    into dict/list values only, so a scalar ``const`` passes through either
+    way and is kept here purely as a control.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "perms": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": ["read", "write"],
+            },
+            "cfg": {
+                "type": "object",
+                "default": {"nested": ["a", "b"]},
+            },
+            "tiers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "const": ["gold", "silver"],
+            },
+            "profile": {
+                "type": "object",
+                "const": {"plan": "gold", "seats": ["a", "b"]},
+            },
+            "tier": {
+                "type": "string",
+                "const": "gold",
+            },
+        },
+        "required": ["perms"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["perms"]["default"] == ["read", "write"]
+    assert props["cfg"]["default"] == {"nested": ["a", "b"]}
+    # Container-valued ``const``: the case that actually recursed before the fix.
+    assert props["tiers"]["const"] == ["gold", "silver"]
+    assert props["profile"]["const"] == {"plan": "gold", "seats": ["a", "b"]}
+    # Scalar control - never recursed, must still be untouched.
+    assert props["tier"]["const"] == "gold"

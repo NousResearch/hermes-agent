@@ -191,6 +191,62 @@ def test_deepseek_deprecated_aliases_price_as_flash():
         ), alias
 
 
+def test_custom_gateway_vendor_prefixed_id_uses_vendor_snapshot(monkeypatch):
+    """Invariant: a ``vendor/model`` id routed through a generic OpenAI-compatible
+    gateway (``provider="custom"``) must price from that vendor's bundled snapshot.
+
+    Such gateways publish no pricing — their ``/models`` payload carries only
+    id/object/created/owned_by — so the session reports unknown cost for a model that
+    IS in _OFFICIAL_DOCS_PRICING under the vendor's own provider key. Sessions are
+    priced at run time, so an unknown here is not recovered later.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bundled snapshot should have matched; no /models fetch")
+        ),
+    )
+
+    entry = get_pricing_entry(
+        "deepseek/deepseek-v4-flash",
+        provider="custom",
+        base_url="https://gateway.example.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    vendor = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+    assert vendor is not None
+    assert entry.input_cost_per_million == vendor.input_cost_per_million
+    assert entry.output_cost_per_million == vendor.output_cost_per_million
+    assert entry.cache_read_cost_per_million == vendor.cache_read_cost_per_million
+
+
+def test_custom_gateway_unmatched_prefix_stays_unknown(monkeypatch):
+    """Guardrail: the vendor-prefix fallback must never invent pricing.
+
+    A gateway-local alias (``auto``), a flat-fee subscription id, and an opaque
+    ``custom:<uuid>/model`` id have no published per-token rate. They must stay
+    unknown rather than inherit some unrelated vendor's snapshot row.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+
+    for model in (
+        "auto",
+        "anthropic/claude-opus-4-8-subscription",
+        "custom:724f45a5-0c44-443b-a4ab-ff9a488a5a3d/agnes-1.5-flash",
+    ):
+        assert (
+            get_pricing_entry(
+                model, provider="custom", base_url="https://gateway.example.com/v1"
+            )
+            is None
+        ), model
+
+
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():

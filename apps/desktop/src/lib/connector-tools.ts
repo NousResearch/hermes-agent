@@ -24,7 +24,7 @@ export function latestConnectorPart(messages: ChatMessage[]) {
     .at(-1)
 }
 
-/** Connector names/results as presentation data, never authorization. */
+/** Connector names and statuses from the tool payload, for display only. No field here grants access. */
 export interface ConnectorRow {
   connector: string
   connected?: boolean
@@ -172,7 +172,7 @@ export function connectionRows(
   return [...rows.values()]
 }
 
-/** Token-bearing auth links are opened only by a deliberate user action. */
+/** The connect URL carries an authorization token, so only https with no embedded credentials is returned. */
 export function connectorAuthorizationUrl(value: ToolCallMessagePart['result']): string | null {
   const text = connectorText(value)
 

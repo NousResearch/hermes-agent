@@ -23,9 +23,8 @@ export interface FirstBuildConnectorState {
   toolCallId: string
   rows: FirstBuildConnectorRow[]
   started: boolean
-  /** The "[setup] links opened" note, held until the session is idle. A submit
-   *  while the model's turn runs is rejected by the gateway, and the model
-   *  usually calls wait in that same turn, so the note is a fallback cue. */
+  /** The "[setup] links opened" note, held until the session is idle. The gateway rejects a submit while the
+   *  model's turn runs, and the model usually calls wait in that same turn, so this note is only a fallback. */
   pendingNote?: string
 }
 
@@ -106,9 +105,8 @@ export async function openFirstBuildLinks(storedId: string, part: FirstBuildConn
   }
 }
 
-/** Deliver the held note once the session is idle, if the connect that minted
- *  the links is still the newest connector part. A newer part means the model
- *  already moved on (it called wait itself), and the note would only confuse it. */
+/** Delivers the held note once the session is idle, and only while the connect call that produced the links is
+ *  still the newest connector part. A newer part means the model already called wait itself. */
 export function flushFirstBuildNote(
   storedId: string,
   newestToolCallId: string | undefined,
@@ -260,7 +258,7 @@ export function watchFirstBuildRows(
   }
 }
 
-/** A true submit result means the composer owns delivery through send, steer or queue. */
+/** A true result from submit means the composer delivered the text through send, steer or queue. */
 export function startFirstBuild(storedId: string, submit: (text: string) => boolean): void {
   const state = $firstBuildConnections.get()[storedId]
   const key = `hermes.onboarding.started.v1.${storedId}`

@@ -50,8 +50,8 @@ export interface OnboardingHandoffOptions extends Pick<
 > {
   createBackendSessionForSend: ReturnType<typeof useSessionActions>['createBackendSessionForSend']
   requestGateway: AmbientGatewayRequest
-  /** Pin creation to the target profile while the guide remains selected;
-   * the caller's own requestGateway is what reads the pin. */
+  /** Pins session creation to the target profile while the guide chat is still selected.
+   * The caller's own requestGateway reads the pin. */
   runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
@@ -63,13 +63,13 @@ export function useOnboardingHandoff({
   requestGateway,
   runCreatePinnedTo
 }: OnboardingHandoffOptions) {
-  // The receipt survives failure and relaunch; only a confirmed go signal
-  // completes onboarding. Never fall back to building in the guide chat.
+  // The saved receipt survives a failed handoff and a relaunch. Onboarding completes only after the build
+  // session confirms its start.
   const setupHandoff = useStore($setupHandoff)
   const selectedStoredId = useStore($selectedStoredSessionId)
 
-  // Resume only an EXISTING receipt when the welcome chat is reopened after
-  // relaunch. Replayed directives stay inert; recovery never mints a new build.
+  // Resume an existing receipt when the welcome chat is reopened after a relaunch. Recovery reads the saved
+  // receipt only; it never creates a new build session.
   useEffect(() => {
     if (
       !isOnboardingEnabled() ||
@@ -149,8 +149,8 @@ export function useOnboardingHandoff({
         const { key: receiptKey, receipt: saved } = readGuideHandoffReceipt(setupSession.storedId)
         receipt = saved
         const owner: HandoffReceipt['owner'] = receipt?.owner ?? { connectionId, profile: BUILD_PROFILE }
-        // Save facts before session.create freezes the new agent's memory.
-        // A retry never re-creates the session or copies the guide's memory.
+        // personalize runs before session.create because the new agent's memory is fixed at creation time.
+        // A retry reuses the saved receipt; it never creates a second session or copies the guide's memory.
         receipt = await startHandoff(
           {
             read: () => receipt,
@@ -234,7 +234,7 @@ export function useOnboardingHandoff({
                 value.storedId
               )
 
-              // Background recovery must not steal focus.
+              // Recovery in the background must not change which session is active.
               if ($selectedStoredSessionId.get() === value.storedId) {
                 activeSessionIdRef.current = value.runtimeId
                 setActiveSessionId(value.runtimeId)
@@ -246,8 +246,8 @@ export function useOnboardingHandoff({
           setupHandoff
         )
 
-        // Create's title is pending metadata on older backends.
-        // Title after acceptance so naming cannot gate submission.
+        // Older backends return the title from session.create as pending metadata, so the title is set here,
+        // after acceptance. A failed session.title call then cannot stop the prompt from being submitted.
         const chatTitle = firstTaskTitle(receipt.task)
         await request(receipt.owner, 'session.title', { session_id: receipt.runtimeId, title: chatTitle }).catch(
           error => console.warn('[handoff] title could not be saved', error)
@@ -270,7 +270,7 @@ export function useOnboardingHandoff({
           activateTreePane(sessionsGroup.id, 'sessions')
         }
 
-        // This is an informational success note, never an alternate build.
+        // The note tells the guide chat that the build started. It does not start a second build.
         void requestGatewayForAgent(
           connectionId,
           setupSession.profile ?? BUILD_PROFILE,

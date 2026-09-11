@@ -29,14 +29,14 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const firstBuild = isFirstBuildSession(storedId)
 
   // One live card per offer. Every manage_connections call renders through
-  // here, but only ONE is the card the user acts on; the rest are settled
-  // tool rows. Which one: consecutive calls naming the same apps are one
-  // exchange — connect, the wait the agent parks in while the user signs in,
-  // the status it runs when the connection lands — and the FIRST of the last
-  // exchange is the card. The newest would demote the card mid-authorization
-  // into a row and mint a fresh one below it. A catalog listing (status with
-  // nothing named) after a targeted ask never starts an exchange: it is a
-  // read, not an offer.
+  // here, but only one of them is the card the user acts on; the rest render
+  // as settled tool rows. Consecutive calls naming the same apps are one
+  // exchange: connect, the wait the agent stays in while the user signs in,
+  // and the status it runs once the connection is active. The card is the
+  // first call of the last exchange. Using the newest call would turn the
+  // card into a row during authorization and create a new card below it. A
+  // catalog listing (status with nothing named) after a targeted ask never
+  // starts an exchange; it reads state and offers nothing.
   const offers = messages
     .flatMap(message => message.parts)
     .filter(
@@ -87,8 +87,8 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }
 
   const historical = liveId !== props.toolCallId
-  // A status call with no target list describes the whole catalog. That is an
-  // answer for the model, not an offer to the user: rendering it as rows put a
+  // A status call with no target list describes the whole catalog. It answers
+  // the model's question, so it renders as a tool row; as cards it would put a
   // Connect button on every app the gateway knows.
   const input = recordOf(props.args)
 
@@ -97,8 +97,8 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     (input.action ?? 'status') === 'status' &&
     !(Array.isArray(input.connectors) && input.connectors.length > 0)
 
-  // Neither kind of part owns the live offer, so neither resolves an owner or
-  // polls the gateway.
+  // Neither kind of part is the live offer, so neither resolves a session
+  // owner nor polls the gateway.
   const inert = historical || untargetedStatus
 
   const [owner, setOwner] = useState<{
@@ -145,13 +145,13 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const signature = rows.map(row => row.connector).join('|')
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
 
-  // The TUI shape, stolen: the agent parks inside manage_connections
+  // The same shape as the TUI: the agent stays inside manage_connections
   // action="wait", which blocks the turn and polls the gateway, instead of
   // deciding what "not connected" means and building around the app. Each
   // card action sends one hidden line so the agent takes the right next call.
-  // Read through a ref so the flow (memoised on identity) always nudges the
-  // live composer target, never the one it was built with. Busy is the
-  // composer's problem: a hidden request mid-turn steers or queues there.
+  // Read through a ref so the flow, memoised on identity, always submits to
+  // the current composer target rather than the one it was built with. The
+  // composer handles busy: a hidden request mid-turn steers or queues there.
   const nudgeRef = useRef((_text: string) => {})
 
   nudgeRef.current = (text: string) => {
@@ -236,7 +236,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
 interface ConnectorOfferProps {
   flow: ReturnType<typeof createConnectorFlow>
-  /** The user waved the app off. */
+  /** Called when the user declines the app with Not now. */
   onSkipped: (slug: string) => void
 }
 
@@ -271,9 +271,9 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
 
   const rows = state.rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(query.toLowerCase()))
   // A targeted ask ("connect Gmail") is one or two cards, each already a
-  // complete question. A heading, a disclaimer and a refresh control over
-  // them is a settings panel dropped into the chat. Only a real catalog — the
-  // model asked for status with nothing named — earns the chrome.
+  // complete question. A heading, a disclaimer and a refresh control over them
+  // read as a settings panel inside the chat. Only a catalog listing, which
+  // the model gets by asking for status with nothing named, shows that chrome.
   const catalog = state.rows.length > 4
 
   return (
@@ -322,8 +322,8 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
                 const wasPending = ['opening', 'waiting'].includes(row.phase)
                 flow.skip(row.connector)
 
-                // A cancel mid-authorization is not a skip: the agent may be
-                // parked in wait and will hear the timeout itself.
+                // A cancel mid-authorization is not a skip: the agent may
+                // still be in wait, which reports the timeout to it.
                 if (!wasPending) {
                   onSkipped(row.connector)
                 }

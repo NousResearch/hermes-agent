@@ -75,9 +75,8 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    # rc==1 with empty output is the portable "no such pid"; "No such process" widens that for ps
-    # builds that say so explicitly. Any other failure stays an OSError so the watchdog degrades to
-    # pid liveness instead of exiting on a healthy backend.
+    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
+    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
     if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
@@ -300,8 +299,6 @@ def _is_serve_orphaned(
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
-    except ProcessLookupError:
-        return True
     except Exception:
         return False
 

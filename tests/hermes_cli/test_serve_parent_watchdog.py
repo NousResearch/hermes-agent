@@ -183,7 +183,7 @@ def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserr
     """#80204: a probe failure must fall through to ``pid_exists`` instead of pinning the
     watchdog to "not orphaned" forever on a dead Desktop parent."""
     def broken_marker_probe(pid: int) -> str:
-        raise OSError(f"ps could not inspect PID {pid}: ps: {pid}: No such process")
+        raise OSError(f"ps could not inspect PID {pid}: process table temporarily unavailable")
 
     marker = "ps:Thu Aug 20 22:33:11 2026"
     assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: False,

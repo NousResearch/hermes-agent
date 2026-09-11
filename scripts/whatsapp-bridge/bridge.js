@@ -588,7 +588,9 @@ async function startSocket() {
           const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          // Meta AI prompts arrive on the legacy PN identity even when a LID exists.
+          // Matching both identities ingests those prompts and can trigger response loops.
+          const isSelfChat = myLid ? chatNumber === myLid : (myNumber && chatNumber === myNumber);
           emitDebugEvent({
             stage: 'self_chat_check',
             matched: !!isSelfChat,

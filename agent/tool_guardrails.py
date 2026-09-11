@@ -509,9 +509,10 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
             "search_files uses REGEX for target='content' (the default) and GLOB "
             "for target='files'. A leading '*' is invalid regex (\"nothing to "
             "repeat\") — the most common cause of this loop. To find a file/folder "
-            "BY NAME use target='files' (e.g. pattern='config'); to search file "
-            "CONTENTS use a regex like 'foo' or 'foo.*bar'. If the path is wrong, "
-            "use the 'Similar paths' in the error or run terminal with find/ls."
+            "BY NAME keep the glob and set target='files' (e.g. pattern='*.py'); "
+            "to search file CONTENTS use a regex, not a glob (e.g. 'foo' or "
+            "'foo.*bar'). If the path is wrong, use the 'Similar paths' in the "
+            "error or run terminal with find/ls."
         )
     return common + (
         "Try different arguments, a narrower query/path, an absolute path when relevant, "

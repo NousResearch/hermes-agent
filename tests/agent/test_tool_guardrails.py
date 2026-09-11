@@ -167,6 +167,7 @@ def test_search_files_failure_hint_names_target_files_and_regex():
     assert "target='files'" in second.message
     assert "REGEX" in second.message
     assert "nothing to repeat" in second.message
+    assert "pattern='*.py'" in second.message
     assert controller.halt_decision is None
 
 

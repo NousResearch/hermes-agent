@@ -48,9 +48,20 @@ def test_glob_as_regex_error_names_corrected_call():
     assert "looks like a glob" in msg
     assert "target='content'" in msg
     assert "target='files'" in msg
-    assert "search_files(pattern='config', target='files'" in msg
-    # the star is stripped from the suggested bare pattern
-    assert "pattern='*config*'" not in msg
+    # files-mode example keeps the original glob
+    assert "search_files(pattern='*config*', target='files'" in msg
+    # content example strips wrapping * only
+    assert "e.g. 'config'" in msg
+
+
+def test_glob_as_regex_error_keeps_star_dot_py_as_glob():
+    msg = _glob_as_regex_error("*.py", "content", "/tmp/repo")
+    assert "search_files(pattern='*.py', target='files', path='/tmp/repo')" in msg
+    # must NOT strip to '.py' (that is not a useful glob)
+    assert "pattern='.py'" not in msg
+    # content example must not be the leftover extension
+    assert "e.g. 'foo'" in msg
+    assert "e.g. '.py'" not in msg
 
 
 # --- search_tool pre-validation (no rg/grep invocation) ---------------------

@@ -930,22 +930,36 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 # `*` at the start of a regex is "nothing to repeat" -> rg parse error, which
 # counts as a tool failure and can trip the repeated-failure guardrail. Point
 # the agent at target='files' (glob) instead, in the message itself.
-_GLOB_AS_REGEX_HINT = (
-    "To find files/folders BY NAME use target='files' (glob): "
-    "search_files(pattern='{bare}', target='files', path='{path}'). "
-    "To search file CONTENTS use regex like '{bare}' or '{bare_dot}'."
-)
+def _content_regex_example(pattern: str) -> str:
+    """A conservative content-regex example derived from a glob.
+
+    Strips wrapping ``*`` so ``*config*`` -> ``config``. If that leaves an
+    extension (``*.py`` -> ``.py``) or nothing useful, fall back to ``foo``
+    rather than inventing ``.py.*``.
+    """
+    s = (pattern or "").strip()
+    while s.startswith("*"):
+        s = s[1:]
+    while s.endswith("*"):
+        s = s[:-1]
+    if not s or s.startswith("."):
+        return "foo"
+    return s
 
 
 def _glob_as_regex_error(pattern: str, target: str, path: str = ".") -> str:
     """Build the didactic error string for a glob pattern used in content mode.
 
     Returned as a JSON ``{"error": ...}`` via :func:`tool_error` by the caller.
-    The message is short and names the exact corrected call so the agent can
-    retry without re-deriving the regex/glob distinction.
+    The files-mode example keeps the original glob (``*.py`` stays ``*.py``).
+    The content example is a regex, not a stripped glob.
     """
-    bare = pattern.replace("*", "") or "query"
-    hint = _GLOB_AS_REGEX_HINT.format(bare=bare, path=path, bare_dot=f"{bare}.*")
+    regex_ex = _content_regex_example(pattern)
+    hint = (
+        "To find files/folders BY NAME use target='files' (glob): "
+        f"search_files(pattern={pattern!r}, target='files', path={path!r}). "
+        f"To search file CONTENTS use a regex (not a glob), e.g. {regex_ex!r}."
+    )
     return (
         f"pattern {pattern!r} looks like a glob, but target={target!r} uses "
         f"REGEX (a leading '*' is invalid: \"nothing to repeat\"). {hint}"

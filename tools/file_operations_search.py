@@ -174,19 +174,31 @@ _REGEX_REPETITION_ERROR_MARKERS = (
 )
 
 
+def _content_regex_example(pattern: str) -> str:
+    """Conservative content-regex example from a glob. Wrapping ``*`` only."""
+    s = (pattern or "").strip()
+    while s.startswith("*"):
+        s = s[1:]
+    while s.endswith("*"):
+        s = s[:-1]
+    if not s or s.startswith("."):
+        return "foo"
+    return s
+
+
 def _glob_as_regex_hint_suffix(pattern: str) -> str:
     """Didactic suffix for a content-mode regex *repetition* error.
 
     Mirrors ``tools.file_tools._glob_as_regex_error`` but lives here to avoid
-    an import cycle (file_tools imports from file_operations). Returns an empty
-    string only when ``pattern`` is empty.
+    an import cycle (file_tools imports from file_operations). The files-mode
+    example keeps the original glob (``*.py`` stays ``*.py``).
     """
-    bare = (pattern or "").replace("*", "") or "query"
+    regex_ex = _content_regex_example(pattern)
     return (
         f" {pattern!r} looks like a glob but target='content' uses REGEX. "
         "To find files/folders BY NAME use target='files' (glob): "
-        f"search_files(pattern={bare!r}, target='files'). "
-        f"To search file CONTENTS use regex like {bare!r} or {bare + '.*'!r}."
+        f"search_files(pattern={pattern!r}, target='files'). "
+        f"To search file CONTENTS use a regex (not a glob), e.g. {regex_ex!r}."
     )
 
 

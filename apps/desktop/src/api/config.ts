@@ -71,7 +71,8 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
 export function getHermesConfigRecord(profile?: ProfileScope): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...capabilityScoped(profile),
-    path: '/api/config'
+    path: '/api/config',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

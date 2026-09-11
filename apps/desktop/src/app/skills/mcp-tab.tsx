@@ -369,8 +369,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     isError: configFailed,
     error: configError,
     refetch: refetchConfig,
-    dataUpdatedAt: configUpdatedAt,
-    errorUpdatedAt: configErroredAt
+    dataUpdatedAt: configUpdatedAt
   } = useHermesConfigRecord(profile)
 
   const setConfig = hermesConfigCacheWriter(profile)
@@ -380,7 +379,6 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // data, so any persist would write A's server list into B — block mutations.
   const [profilePending, setProfilePending] = useState(false)
   const staleConfigStamp = useRef<null | number>(null)
-  const staleErrorStamp = useRef<null | number>(null)
 
   const [saving, setSaving] = useState(false)
   const [probes, setProbes] = useState<Record<string, Probe>>({})
@@ -541,6 +539,14 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // seed latch, probes, and cursor — so everything reseeds for the new profile.
   // The probe cache is already profile-keyed, so this just forces a re-probe.
   useOnProfileSwitch(() => {
+    // Explicit scopes belong to the Capabilities selector, not the foreground
+    // chat. SkillsView keys this tab by that scope and remounts it on a REAL
+    // owner change. Resetting a pinned tab here loses its draft and can leave
+    // Add/Import waiting forever for an unrelated query timestamp to change.
+    if (profile != null) {
+      return
+    }
+
     profileEpoch.current += 1
     draftSeeded.current = false
     setProbes({})
@@ -553,26 +559,19 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     // Mark stale until the config query replaces profile A's data — guards
     // sidebar mutations from persisting A's server list into B mid-refetch.
     staleConfigStamp.current = configUpdatedAt
-    staleErrorStamp.current = configErroredAt
     setProfilePending(true)
   })
 
-  // Clear once the config query settles for the new profile: dataUpdatedAt bumps
-  // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
-  // means a failed refetch surfaces the retry UI instead of leaving mutations
-  // silently no-op forever.
+  // Only a successful read may unlock writes for the new owner. React Query
+  // keeps cached data after a failed refetch: releasing on error would let A's
+  // server map be saved into B. The error pane below offers Retry while locked.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (
-      profilePending &&
-      staleConfigStamp.current !== null &&
-      (configUpdatedAt !== staleConfigStamp.current || configErroredAt !== staleErrorStamp.current)
-    ) {
+    if (profilePending && staleConfigStamp.current !== null && configUpdatedAt !== staleConfigStamp.current) {
       setProfilePending(false)
       staleConfigStamp.current = null
-      staleErrorStamp.current = null
     }
-  }, [profilePending, configUpdatedAt, configErroredAt])
+  }, [profilePending, configUpdatedAt])
 
   useDeepLinkHighlight({
     block: 'nearest',
@@ -1008,7 +1007,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
 
   // Cached data paints instantly; a spinner only ever shows on the first-ever
   // load, and a failed load gets a real retry — never a silent blank pane.
-  if (configFailed && !config) {
+  if (configFailed && (!config || profilePending)) {
     return (
       <div className="flex h-full min-h-0 flex-1 items-center justify-center p-6">
         <ErrorBanner className="max-w-sm">
@@ -1023,7 +1022,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     )
   }
 
-  if (!config) {
+  if (!config || profilePending) {
     return <PageLoader className="min-h-24" label={configLoading ? m.loading : t.skills.loading} />
   }
 

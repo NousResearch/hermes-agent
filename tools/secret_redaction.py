@@ -16,24 +16,78 @@ import re
 
 _SECRET_WORD = r"(?:TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL)"
 
-_NAME_PATTERN = re.compile(
+_NAME_KEY_SEP_PATTERN = re.compile(
     # A key is any identifier CONTAINING a secret-shaped word segment,
     # anywhere in the line — not just at the start of the (stripped) line.
-    # The earlier `^`-anchored version only matched when the secret-shaped
+    # An earlier `^`-anchored version only matched when the secret-shaped
     # name was the first token on the line, which misses the exact shape a
     # `docker inspect` env dump actually produces (`    "MCP_TOKEN=x",` —
     # the name is preceded by indentation AND a quote, never at line start)
     # as well as any secret embedded mid-line (a JSON body, a log line with
     # a prefix). A one-character negative lookbehind keeps this from
-    # matching in the middle of a longer identifier (`SOMETOKENISH` isn't
-    # falsely split), while intentionally still matching substrings like
-    # "PGPASSWORD" or "APIKEY" that have no separating underscore.
+    # matching in the middle of a longer identifier at a word boundary,
+    # while intentionally still matching substrings like "PGPASSWORD" or
+    # "APIKEY" that have no separating underscore ("SOMETOKENISH" is NOT
+    # exempted by this — it still matches, deliberately: over-redacting an
+    # identifier that merely contains a secret word is far safer than
+    # missing a real bare-word secret name).
+    #
+    # This pattern locates the key+separator only — NOT the value. How far
+    # the value extends is decided procedurally in
+    # `_redact_name_value_pairs`, based on how the value is quoted, rather
+    # than by matching up to a fixed delimiter set (space/comma/etc) here:
+    # a real secret value can legitimately contain any of those characters
+    # (a generated passphrase, a base64/URL-safe token used in a query
+    # string), and a delimiter-bounded value group truncates the redaction
+    # right there and leaks the rest of the secret in plaintext — a real
+    # regression an earlier version of this exact fix introduced.
+    r"(?P<lead_quote>[\"'])?"
     r"(?<![A-Za-z0-9_])"
     r"(?P<key>[A-Za-z0-9_.-]*" + _SECRET_WORD + r"[A-Za-z0-9_.-]*)"
-    r"(?P<sep>[\"']?\s*[:=]\s*[\"']?)"
-    r"(?P<value>[^\s,;}\]&\"']+)",
+    r"(?:[\"'])?"  # the key's OWN closing quote in `"NAME": "value"` — not captured, just skipped
+    r"(?P<sep>\s*[:=]\s*)"
+    r"(?P<value_quote>[\"'])?",
     re.IGNORECASE,
 )
+
+
+def _redact_name_value_pairs(line: str) -> str:
+    """Redact every secret-shaped ``NAME=value`` / ``"NAME": "value"``
+    occurrence in ``line``, choosing how far the value extends based on
+    how it's quoted rather than stopping at the first punctuation
+    character:
+
+    - ``"NAME": "value"`` / ``NAME: 'value'`` — value ends at the matching
+      quote that opened right after the separator.
+    - ``"NAME=value"`` (the docker-inspect env-array shape: the whole
+      ``KEY=value`` pair sits inside one JSON string) — value ends at the
+      same quote that opened right before the key, i.e. the redaction is
+      bounded to the JSON string the pair is embedded in, even if that
+      swallows harmless trailing text inside the same string.
+    - a bare ``NAME=value`` with no quoting context at all — value runs to
+      the end of the line, since there is no other reliable terminator and
+      a truncated redaction that leaks the value's tail is worse than
+      over-redacting trailing text on the same line.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _NAME_KEY_SEP_PATTERN.finditer(line):
+        if m.start() < pos:
+            continue  # already consumed by a previous match's value span
+        value_start = m.end()
+        terminator = m.group("value_quote") or m.group("lead_quote")
+        if terminator:
+            close_idx = line.find(terminator, value_start)
+            value_end = close_idx if close_idx != -1 else len(line.rstrip("\n"))
+        else:
+            value_end = len(line.rstrip("\n"))
+        if value_end <= value_start:
+            continue  # empty value (e.g. NAME="") — nothing to redact
+        out.append(line[pos:value_start])
+        out.append(REDACTED)
+        pos = value_end
+    out.append(line[pos:])
+    return "".join(out)
 
 # scheme://user:password@host or scheme://:password@host (Redis-style,
 # empty username) — redact only the credential portion, keep the
@@ -96,9 +150,7 @@ def redact_text(text: str) -> str:
 
 
 def _redact_line(line: str) -> str:
-    line = _NAME_PATTERN.sub(
-        lambda mo: f"{mo.group('key')}{mo.group('sep')}{REDACTED}", line
-    )
+    line = _redact_name_value_pairs(line)
     line = _URI_CREDENTIAL_PATTERN.sub(
         lambda mo: f"{mo.group('scheme')}{mo.group('user')}:{REDACTED}{mo.group('at')}", line
     )

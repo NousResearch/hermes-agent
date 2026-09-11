@@ -274,63 +274,83 @@ def _validate_journalctl(argv: list[str]) -> GuardResult:
     return _allow()
 
 
-_CURL_DENIED_FLAGS = {
-    "-d",
-    "--data",
-    "--data-raw",
-    "--data-binary",
-    "--data-urlencode",
-    "-F",
-    "--form",
-    "-T",
+_CURL_DENIED_LONG_FLAGS = {
+    "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii",
+    "--form", "--form-string",
     "--upload-file",
-    "-o",
     "--output",
-    "-O",
-    "--remote-name",
-    "-K",
     "--config",
+    "--remote-name", "--remote-name-all",
+    "--cookie-jar",  # writes cookies to a file — a write primitive, same class as --output
+    "--dump-header",  # writes response headers to a file — same class
+    "--json",  # implies --data + POST, curl >= 7.82 (not on this host today, but denied regardless)
+}
+
+# Single-character curl short flags mapped to their long form, for
+# per-character scanning of a clustered short-option token (see
+# `_validate_curl`'s docstring for why a whole-token `tok[:2]` check is not
+# enough).
+_CURL_DENIED_SHORT_LETTERS = {
+    "d": "--data",
+    "F": "--form",
+    "T": "--upload-file",
+    "o": "--output",
+    "O": "--remote-name",
+    "K": "--config",
+    "c": "--cookie-jar",
+    "D": "--dump-header",
 }
 
 
-def _curl_flag_and_inline_value(tok: str) -> tuple[str | None, str | None]:
-    """Split one curl argument token into (flag, attached_value).
-
-    Long options (`--data=x`) attach a value after `=`. Short options
-    (`-d@file`, `-XPOST`, `-T/etc/passwd`) attach a value directly after the
-    single flag letter, with NO separator at all — a plain `tok.split("=")`
-    (the previous implementation) never observes this and lets every denied
-    short flag through whenever its value is attached rather than
-    space-separated. Both forms are normalized to (flag, value_or_None)."""
-    if tok.startswith("--"):
-        if "=" in tok:
-            flag, value = tok.split("=", 1)
-            return flag, value
-        return tok, None
-    if tok.startswith("-") and len(tok) > 1:
-        flag = tok[:2]
-        value = tok[2:] if len(tok) > 2 else None
-        return flag, value
-    return None, None
-
-
 def _validate_curl(argv: list[str]) -> GuardResult:
+    """curl allows bundling boolean short flags together (`-sS`) and lets
+    the LAST relevant flag in a cluster consume the remainder of that same
+    token as its value — `-sSXPOST` is exactly `-s -S -X POST`. An earlier
+    version of this validator only ever looked at a token's first flag
+    character (`tok[:2]`), so any innocuous flag prefix (`-s`, `-S`, `-f`,
+    ...) hid every denied flag or `-X` placed after it in the same token —
+    `curl -sSXPOST url` and `curl -so/tmp/pwned url` both slipped through
+    fully allowed. This scans every character of a short-option cluster,
+    not just the first."""
     args = argv[1:]
     method = "GET"
     i = 0
     while i < len(args):
         tok = args[i]
-        flag, inline_value = _curl_flag_and_inline_value(tok)
-        if flag in _CURL_DENIED_FLAGS:
-            return _deny("curl", f"'{flag}' is not permitted (body-bearing/config/output-file curl option)")
-        if flag in ("-X", "--request"):
-            if inline_value:
-                method = inline_value
-            elif i + 1 < len(args):
-                method = args[i + 1]
-                i += 1
-            else:
-                return _deny("curl", "-X/--request with no value")
+        if tok.startswith("--"):
+            flag, _, value = tok.partition("=")
+            if flag in _CURL_DENIED_LONG_FLAGS:
+                return _deny("curl", f"'{flag}' is not permitted (body-bearing/config/output-file curl option)")
+            if flag == "--request":
+                if value:
+                    method = value
+                elif i + 1 < len(args):
+                    method = args[i + 1]
+                    i += 1
+                else:
+                    return _deny("curl", "--request with no value")
+        elif tok.startswith("-") and len(tok) > 1:
+            chars = tok[1:]
+            j = 0
+            while j < len(chars):
+                c = chars[j]
+                if c in _CURL_DENIED_SHORT_LETTERS:
+                    return _deny(
+                        "curl",
+                        f"'-{c}' ({_CURL_DENIED_SHORT_LETTERS[c]}) is not permitted "
+                        "(body-bearing/config/output-file curl option)",
+                    )
+                if c == "X":
+                    inline_value = chars[j + 1 :]
+                    if inline_value:
+                        method = inline_value
+                    elif i + 1 < len(args):
+                        method = args[i + 1]
+                        i += 1
+                    else:
+                        return _deny("curl", "-X with no value")
+                    break  # the rest of the cluster is -X's value, not more flags
+                j += 1
         i += 1
     if method.upper() not in ("GET", "HEAD"):
         return _deny("curl", f"method '{method}' is not GET/HEAD")

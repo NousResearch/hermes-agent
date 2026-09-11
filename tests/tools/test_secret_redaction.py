@@ -96,17 +96,66 @@ class TestNonUriNamePatternRegression:
 
     def test_secret_embedded_mid_line_in_json_body(self):
         # An http_probe response body is one JSON-encoded line; the secret
-        # is nowhere near the start of the line.
+        # sits inside the outer "body" field's own string, with no other
+        # quote between it and that field's closing quote. The redaction is
+        # bounded to the JSON string the pair is embedded in (the "body"
+        # field's closing quote) — which in this case means the harmless
+        # trailing text is swallowed too, since it shares that same string.
+        # That is the deliberate, safe direction: a redaction that consumes
+        # extra harmless text is fine; one that leaks part of a secret is
+        # not (see TestDelimiterContainingSecretValues below for why a
+        # fixed-delimiter cutoff was tried and rejected).
         body = '{"status": "ok", "body": "SESSION_TOKEN=abcdef123456 and more text after"}'
         result = redact_text(body)
         assert "abcdef123456" not in result
-        assert "and more text after" in result
+        assert "and more text after" not in result
+        assert "[REDACTED]" in result
 
     def test_json_style_quoted_key_value(self):
         line = '  "POSTGRES_PASSWORD": "hunter2value",'
         result = redact_text(line)
         assert "hunter2value" not in result
         assert "POSTGRES_PASSWORD" in result
+
+    def test_quoted_value_does_not_swallow_sibling_json_fields(self):
+        # Unlike the bare/ambiguous case above, a value with its OWN
+        # opening+closing quote pair is bounded to exactly that pair, even
+        # when the key itself was also preceded by a quote — it must not
+        # spill into unrelated sibling fields on the same line.
+        line = '{"a": "PASSWORD=secretvalue", "b": "unrelated"}'
+        result = redact_text(line)
+        assert "secretvalue" not in result
+        assert '"unrelated"' in result
+
+
+class TestDelimiterContainingSecretValues:
+    """Regression: a value pattern that stops at the first space/comma/
+    semicolon/ampersand/brace/bracket truncates any secret whose VALUE
+    itself contains one of those characters, leaking its tail. Real secrets
+    routinely do (a generated passphrase with punctuation, a token used in
+    a query string with '&amp;'). This was a real regression introduced by an
+    earlier fix for the docker-inspect leak above — fixing the anchor
+    without fixing the value boundary just relocated the bug."""
+
+    def test_ampersand_in_value_fully_redacted(self):
+        result = redact_text("POSTGRES_PASSWORD=aB3&xY9zQw7Lm2Pk5Rt8Nv")
+        assert "aB3" not in result
+        assert "xY9zQw7Lm2Pk5Rt8Nv" not in result
+
+    def test_comma_in_value_fully_redacted(self):
+        result = redact_text("ADMIN_PASSWORD=Tr0ub4dor,3xKcd-9")
+        assert "Tr0ub4dor" not in result
+        assert "3xKcd-9" not in result
+
+    def test_space_in_value_fully_redacted(self):
+        result = redact_text("ADMIN_PASSWORD=correct horse battery staple")
+        assert "correct" not in result
+        assert "horse battery staple" not in result
+
+    def test_semicolon_and_brace_in_value_fully_redacted(self):
+        assert "part1" not in redact_text("APP_SESSION_SECRET=part1;part2")
+        assert "part2" not in redact_text("APP_SESSION_SECRET=part1;part2")
+        assert "abc" not in redact_text("TOKEN={abc}")
 
     def test_benign_substring_not_falsely_flagged_by_boundary(self):
         # "SOMETOKENISH" contains "TOKEN" but isn't secret-shaped on its

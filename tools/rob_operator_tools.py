@@ -365,9 +365,21 @@ _FORBIDDEN_SQL_KEYWORDS = (
     # under a real read-only role; the rest require superuser and would be
     # refused server-side regardless).
     "setval", "nextval",
-    "lo_import", "lo_export",
-    "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
-    "dblink", "pg_sleep",
+    "lo_import", "lo_export", "lo_get", "loread", "lowrite",
+    "pg_read_file", "pg_read_binary_file", "pg_read_server_files",
+    "pg_ls_dir", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir",
+    "pg_stat_file",
+    "dblink", "dblink_connect",
+    "pg_sleep",
+    "pg_terminate_backend", "pg_cancel_backend",
+    "pg_reload_conf", "pg_rotate_logfile", "pg_switch_wal", "pg_promote",
+    "pg_stat_reset", "set_config",
+    "pg_file_write", "pg_file_unlink", "pg_file_rename",
+    # "lock" (above) requires a word boundary before it, which underscore
+    # does NOT provide in regex (`_lock` has no \b between `_` and `l`) —
+    # these advisory-lock functions need their own explicit entries.
+    "pg_advisory_lock", "pg_advisory_xact_lock",
+    "pg_advisory_unlock", "pg_advisory_unlock_all",
 )
 
 

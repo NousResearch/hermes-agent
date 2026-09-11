@@ -97,6 +97,26 @@ class TestSqlGuard:
         # keyword itself — word-boundary matching must not false-positive.
         assert t._reject_non_select("SELECT deleted_at FROM widgets") is None
 
+    def test_rejects_dangerous_function_calls(self):
+        # Function-call-based mutation/DoS/file-access hiding behind a bare
+        # SELECT — flagged in an independent review as missing from the
+        # original keyword list.
+        for query in [
+            "select pg_terminate_backend(12345)",
+            "select pg_cancel_backend(12345)",
+            "select pg_read_server_files('/etc/passwd')",
+            "select pg_reload_conf()",
+            "select pg_rotate_logfile()",
+            "select pg_switch_wal()",
+            "select pg_promote()",
+            "select set_config('log_statement', 'all', false)",
+            "select pg_file_write('/tmp/x', 'y', false)",
+            "select pg_advisory_lock(1)",
+            "select pg_advisory_xact_lock(1)",
+            "select lo_get(12345)",
+        ]:
+            assert t._reject_non_select(query) is not None, query
+
 
 # ---------------------------------------------------------------------------
 # Real functional tests (run directly on NiPoGi, no mocking)

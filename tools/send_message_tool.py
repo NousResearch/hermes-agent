@@ -625,11 +625,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
-        if entry is not None and entry.send_message_handler is not None:
+        handler = entry.send_message_handler if entry is not None else None
+        if handler is not None and args is not None:
             # Custom handler receives the full typed request once (not per chunk).
             try:
                 import inspect
-                result = entry.send_message_handler(args or {}, chat_id, platform_name, pconfig)
+                result = handler(args, chat_id, platform_name, pconfig)
                 return await result if inspect.isawaitable(result) else result
             except Exception as e:
                 return {"error": f"Plugin send_message handler failed: {e}"}

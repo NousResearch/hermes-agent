@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import _refresh_copilot_credentials, call_llm
 from agent.turn_recovery import _refresh_credentials_after_401
 from agent.turn_retry_state import TurnRetryState
 
@@ -83,6 +83,47 @@ def test_auto_routed_enterprise_copilot_403_refreshes_and_retries():
     assert get_client.call_args_list[1].args[0] == "copilot"
     assert stale_client.chat.completions.create.call_count == 1
     assert fresh_client.chat.completions.create.call_count == 1
+
+
+def test_auxiliary_copilot_refresh_evicts_rejected_persisted_token(tmp_path, monkeypatch):
+    import json
+    import time
+    import urllib.request
+
+    import hermes_cli.copilot_auth as copilot_auth
+
+    raw_token = "gho_raw"
+    fingerprint = copilot_auth._token_fingerprint(raw_token)
+    disk_path = tmp_path / copilot_auth._JWT_DISK_FILENAME
+    monkeypatch.setattr(copilot_auth, "_jwt_disk_path", lambda: disk_path)
+    monkeypatch.setattr(copilot_auth, "_jwt_cache", {})
+    monkeypatch.setattr(copilot_auth, "_exchange_failure_cache", {})
+    monkeypatch.setattr(
+        copilot_auth,
+        "resolve_copilot_token",
+        lambda: (raw_token, "test"),
+    )
+    copilot_auth._save_jwt_to_disk(
+        fingerprint,
+        "rejected-but-time-fresh",
+        time.time() + 1800,
+        "https://api.enterprise.githubcopilot.com",
+    )
+
+    fresh_token = "tid=fresh;exp=999;sku=copilot_enterprise"
+    response = MagicMock()
+    response.read.return_value = json.dumps(
+        {"token": fresh_token, "expires_at": time.time() + 1800}
+    ).encode()
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+    urlopen = MagicMock(return_value=response)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert _refresh_copilot_credentials() is True
+    urlopen.assert_called_once()
+    assert copilot_auth._jwt_cache[fingerprint][0] == fresh_token
+    assert json.loads(disk_path.read_text())[fingerprint]["api_token"] == fresh_token
 
 
 def test_non_copilot_403_is_not_treated_as_refreshable_auth_failure():

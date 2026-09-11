@@ -18,10 +18,11 @@ import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
-    McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
-    SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
-    SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
+    McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
+    SessionCapabilities, SessionConfigOptionSelect, SessionConfigSelectOption, SessionForkCapabilities,
+    SessionInfo, SessionInfoUpdate, SessionListCapabilities, SessionMode, SessionModeState,
+    SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, TextContentBlock,
+    Usage, UsageUpdate, UserMessageChunk,
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
@@ -226,6 +227,7 @@ class _TurnCallbacks:
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
+    _MODEL_CONFIG_ID = "model"
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
@@ -288,7 +290,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
 
-    def _build_model_state(self, state: SessionState) -> SessionModelState | None:
+    def _build_model_state(self, state: SessionState) -> SessionConfigOptionSelect | None:
         """Authenticated providers + models, from the shared Hermes inventory (same substrate
         as ``hermes model``/TUI/dashboard) so the selector isn't just the current curated list."""
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
@@ -303,7 +305,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not model:
             return None
         choice = encode_model_choice(provider, model)
-        return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+        return SessionConfigOptionSelect(
+            id=self._MODEL_CONFIG_ID,
+            name="Model",
+            description="Active provider and model for the session.",
+            category="model_config",
+            type="select",
+            current_value=choice,
+            options=[SessionConfigSelectOption(value=choice, name=model)],
+        )
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -572,8 +582,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
+        model_config = self._build_model_state(state)
         return {
-            "models": self._build_model_state(state),
+            "config_options": [model_config] if model_config else None,
             "modes": self._session_modes(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
@@ -929,17 +940,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 
-    async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> SetSessionModelResponse | None:
-        """Switch the model for a session (called by ACP protocol)."""
-        state = self.session_manager.get_session(session_id)
-        if state:
-            _old, requested_provider, resolved_model = self._switch_model(state, model_id, keep_endpoint=True)
-            logger.info(
-                "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
-            )
-            return SetSessionModelResponse()
-        logger.warning("Session %s: model switch requested for missing session", session_id)
-        return None
+    def _apply_model_choice(self, model_id: str, state: SessionState) -> None:
+        """Switch the model for a session. Mutates ``state`` in place."""
+        self._switch_model(state, model_id, keep_endpoint=True)
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
@@ -956,7 +959,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return SetSessionModeResponse()
 
     async def set_config_option(
-        self, config_id: str, session_id: str, value: str, **kwargs: Any
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
         """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
         state = self.session_manager.get_session(session_id)
@@ -964,13 +967,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
+        str_value = str(value)
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
-            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str_value, self._MODE_DEFAULT)
+        elif str(config_id) == self._MODEL_CONFIG_ID:
+            self._apply_model_choice(str_value, state)
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
                 options = {}
-            options[str(config_id)] = value
+            options[str(config_id)] = str_value
             state.config_options = options
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)

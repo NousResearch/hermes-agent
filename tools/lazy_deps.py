@@ -170,7 +170,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Tools ─────────────────────────────────────────────────────────────
     # ACP adapter (VS Code / Zed / JetBrains)
-    "tool.acp": ("agent-client-protocol==0.9.0",),
+    "tool.acp": ("agent-client-protocol==0.12.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",

@@ -119,14 +119,14 @@ overrides = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.9.0"
+version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/13/3b893421369767e7043cc115d6ef0df417c298b84563be3a12df0416158d/agent_client_protocol-0.9.0.tar.gz", hash = "sha256:f744c48ab9af0f0b4452e5ab5498d61bcab97c26dbe7d6feec5fd36de49be30b", size = 71853, upload-time = "2026-03-26T01:21:00.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/50/65bfb4e3e13f350a52c368cbfc4bc36a1b3b3f34a6b3f5a2e3551e1bd63b/agent_client_protocol-0.12.0.tar.gz", hash = "sha256:4d42ac680388556b038cb6dd58dbbbd1561f9e545a334c1a352cc055f98b1c79", size = 135037, upload-time = "2026-08-01T15:58:22.35Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/ed/c284543c08aa443a4ef2c8bd120be51da8433dd174c01749b5d87c333f22/agent_client_protocol-0.9.0-py3-none-any.whl", hash = "sha256:06911500b51d8cb69112544e2be01fc5e7db39ef88fecbc3848c5c6f194798ee", size = 56850, upload-time = "2026-03-26T01:20:59.252Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/c7/b84b8698879464bd8f869551bac31454bed14a3a22910f65d9693f3701bd/agent_client_protocol-0.12.0-py3-none-any.whl", hash = "sha256:233626748034896214de118f5cf5a319484ad2186705fd595219afee92237ccc", size = 92992, upload-time = "2026-08-01T15:58:21.216Z" },
 ]
 
 [[package]]
@@ -1913,7 +1913,7 @@ youtube = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.11.0,<1" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },

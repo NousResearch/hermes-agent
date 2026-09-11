@@ -5,6 +5,7 @@ import {
   isStreamableMediaPath,
   type MediaProtocolDependencies,
   mediaRequestHeaders,
+  pluginMediaEndpoint,
   remoteMediaEndpoint
 } from './media-protocol'
 
@@ -56,6 +57,13 @@ describe('media protocol helpers', () => {
     expect(endpoint.pathname).toBe('/hermes/api/files/stream')
     expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
   })
+
+  it('preserves a configured gateway path prefix and shared profile scope for plugin media', () => {
+    const endpoint = new URL(pluginMediaEndpoint('https://gateway.test/hermes/', 'studio rail', 'outputs/a b/clip', 'video'))
+
+    expect(endpoint.pathname).toBe('/hermes/api/plugins/studio%20rail/outputs/a%20b/clip')
+    expect(endpoint.searchParams.get('profile')).toBe('video')
+  })
 })
 
 describe('createMediaProtocolHandler', () => {
@@ -100,6 +108,7 @@ describe('createMediaProtocolHandler', () => {
         authMode: 'token' as const,
         baseUrl: 'https://gateway.test/hermes',
         mode: 'remote' as const,
+        sharedPrimary: true,
         token: 's e/cret'
       }))
     })
@@ -117,6 +126,7 @@ describe('createMediaProtocolHandler', () => {
     const url = new URL(rawUrl)
     expect(url.pathname).toBe('/hermes/api/files/stream')
     expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
+    expect(url.searchParams.get('profile')).toBe('reviewer')
     expect(url.searchParams.has('token')).toBe(false)
     expect(headers.get('x-hermes-session-token')).toBe('s e/cret')
     expect(headers.get('range')).toBe('bytes=0-1023')
@@ -142,6 +152,89 @@ describe('createMediaProtocolHandler', () => {
 
     expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
     expect(url.searchParams.get('profile')).toBe('research')
+  })
+
+  it('does not add a second profile scope to a profile-owned remote backend', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test/hermes',
+        mode: 'remote' as const,
+        token: 'secret'
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=reviewer')
+    )
+
+    const [rawUrl] = vi.mocked(deps.fetchRemote).mock.calls[0]
+
+    expect(new URL(rawUrl).searchParams.get('profile')).toBeNull()
+  })
+
+  it('proxies plugin media through the scoped backend without placing its token in the URL', async () => {
+    const resolveRemoteConnection = vi.fn(async (_scope: { connectionId?: string; profile?: string }) => ({
+      authMode: 'token' as const,
+      baseUrl: 'https://gateway.test/hermes',
+      mode: 'remote' as const,
+      sharedRemote: true,
+      token: 'plugin-secret'
+    }))
+
+    const deps = dependencies({
+      fetchRemote: vi.fn(async () => new Response('remote', { headers: { 'content-type': 'video/mp4' }, status: 206 })),
+      resolveRemoteConnection
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://plugin/studio-rail/outputs/clip/stream?profile=video&connectionId=mac-mini', {
+        Range: 'bytes=0-1023'
+      })
+    )
+
+    expect(response.status).toBe(206)
+    expect(resolveRemoteConnection).toHaveBeenCalledWith({ connectionId: 'mac-mini', profile: 'video' })
+    const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    const url = new URL(rawUrl)
+    expect(url.pathname).toBe('/hermes/api/plugins/studio-rail/outputs/clip/stream')
+    expect(url.searchParams.get('profile')).toBe('video')
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(headers.get('x-hermes-session-token')).toBe('plugin-secret')
+    expect(headers.get('range')).toBe('bytes=0-1023')
+  })
+
+  it('rejects successful plugin responses that are not audio or video', async () => {
+    const deps = dependencies({
+      fetchRemote: vi.fn(async () => new Response('<html>not media</html>', { headers: { 'content-type': 'text/html' } }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://plugin/studio-rail/outputs/clip/stream')
+    )
+
+    expect(response.status).toBe(415)
+  })
+
+  it('rejects malformed plugin routes before resolving a backend', async () => {
+    const deps = dependencies()
+    const handler = createMediaProtocolHandler(deps)
+
+    for (const rawUrl of [
+      'hermes-media://plugin/studio-rail/outputs/%2e%2e/stream',
+      'hermes-media://plugin/%252e%252e/outputs/clip/stream',
+      'hermes-media://plugin/studio-rail/outputs/%252e%252e/stream',
+      'hermes-media://plugin/studio-rail/outputs/%252F/stream',
+      'hermes-media://plugin/studio-rail/outputs/%255c/stream',
+      'hermes-media://plugin/studio-rail/outputs/%zz/stream',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream?unexpected=value',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream?profile=one&profile=two',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream#fragment'
+    ]) {
+      expect((await handler(request(rawUrl))).status).toBe(404)
+    }
+
+    expect(deps.resolveRemoteConnection).not.toHaveBeenCalled()
   })
 
   it('preserves explicit HEAD requests through the token-auth remote proxy', async () => {

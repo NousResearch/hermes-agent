@@ -200,14 +200,6 @@ class GatewayTurnPersistenceMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _CONTEXT_OVERFLOW_ERROR_PHRASES = (
-        "context length", "context size", "context window",
-        "maximum context", "token limit", "too many tokens",
-        "reduce the length", "exceeds the limit",
-        "request entity too large", "prompt is too long",
-        "payload too large", "input is too long",
-    )
-
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
         ``(agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure)``.
@@ -226,13 +218,8 @@ class GatewayTurnPersistenceMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        _err = str(agent_result.get("error", "")).lower()
-        # Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded".
-        is_context_overflow_failure = agent_failed_early and (
-            bool(agent_result.get("compression_exhausted"))
-            or any(p in _err for p in self._CONTEXT_OVERFLOW_ERROR_PHRASES)
-            or ("400" in _err and len(history) > 50)
-        )
+        from gateway.run_turn import is_context_overflow_failure_result
+        is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
                 "Skipping transcript persistence for context-overflow "

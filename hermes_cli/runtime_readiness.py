@@ -19,4 +19,6 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False):
     if not (callable(api_key) or api_key_text in {'aws-sdk', 'no-key-required'}
             or has_usable_secret(api_key_text) or bool(runtime.get('command'))):
         return {**result, 'ok': False, 'error': f'No usable credentials found for {provider}.'}
+    from hermes_cli.anon_auth import route_is_welcome_host
+    result['free_tier'] = provider == 'nous' and route_is_welcome_host(runtime.get('base_url'))
     return result

@@ -443,7 +443,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
-| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
+| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message, and a `{"runtime_override": {"model": ...}}` return overrides the turn's model when the name resolves. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
@@ -678,7 +678,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
-**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection. The same dict may also carry a `"runtime_override"` key to override the turn's model (see below).
 
 ```python
 # Inject context
@@ -698,6 +698,26 @@ The clean user-message `content` remains unchanged. For replay and prompt-cache 
 When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
 
 **Use cases:** Memory recall, RAG context injection, guardrails, per-turn analytics.
+
+**Runtime model override (`runtime_override`):**
+
+A callback may also return a `runtime_override` dict to run the current turn's API calls against a different **model**. This is separate from `context` injection; a callback may return either or both.
+
+```python
+return {
+    "context": "Recalled context...",
+    "runtime_override": {"model": "deepseek/deepseek-v4-pro"},
+}
+```
+
+- **Model-only** — `model` is the only supported key. `provider`, `api_mode`, `api_key`, and `base_url` are intentionally unsupported: credentials never flow through the hook return, and the endpoint/wire resolve only from the provider's existing settings, so a plugin cannot redirect the session to another network destination or wire.
+- **Resolved before it is applied** — the name is checked by the same validator the `/model` switch path uses. A name that is not positively recognized (nonsense, an uncorrectable typo, or one that cannot be verified for the active provider) is logged with a one-line warning and the override is **dropped**; the turn proceeds on the session model. A bogus model never reaches the wire and the turn never fails because of it.
+- **Conditional model-derived state** — when the override model differs from the session model in something the turn reads (context window, provider, or a capability flag such as reasoning, vision, or prompt caching), the turn re-projects the context window, compression threshold, reasoning config, and prompt-cache flags for the override model, and rebuilds the cached system prompt for the turn. Everything is restored when the turn ends. When the override changes none of those — the same model, or a different name with an identical projection — nothing is invalidated and the prompt prefix stays byte-stable.
+- **Ephemeral and turn-scoped** — the override is re-resolved every turn and the model and model-derived state are restored when the turn ends. It never mutates the session's persistent model identity and is never persisted to the session database. If the fallback chain activates, it supersedes the override for the rest of the turn.
+- **Applied before the first LLM call** — the overridden model is authoritative through request construction, `llm_request` middleware, the `pre_api_request` hook, and wire dispatch. Only the model slug and the model-derived state above change; the endpoint, credentials, and system-prompt bytes never do.
+- **`system_prompt` is never overridable** — it is runtime-owned and its cache prefix stays byte-stable; a model switch stays inside the existing provider route.
+
+Unsupported keys are logged with a one-line warning and ignored (never an error). A model switch stays inside the existing provider route and never touches credentials or the endpoint — installing a plugin grants it this power, so install only plugins you trust.
 
 **Example — memory recall:**
 

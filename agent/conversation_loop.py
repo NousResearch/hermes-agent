@@ -29,6 +29,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.runtime_override import apply_runtime_override
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
 )
@@ -1515,23 +1516,27 @@ def _run_conversation_turn(
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
-        _run_phase(assemble_api_request, agent, s)
-        _pg = _run_phase(run_preflight_gate, agent, s)
-        if _pg.action == "return":
-            return _pg.result
-        if _pg.action == "break":
-            break
-        if _pg.action == "continue":
-            continue
-        _run_phase(announce_api_call, agent, s)
+        # The turn's pre_llm_call runtime_override (if any) is authoritative through
+        # assembly, preflight, middleware and the retry loop; the pre-override model
+        # is restored when the scope exits. No override is a no-op.
+        with apply_runtime_override(agent, getattr(agent, "_runtime_override", None) or {}):
+            _run_phase(assemble_api_request, agent, s)
+            _pg = _run_phase(run_preflight_gate, agent, s)
+            if _pg.action == "return":
+                return _pg.result
+            if _pg.action == "break":
+                break
+            if _pg.action == "continue":
+                continue
+            _run_phase(announce_api_call, agent, s)
 
-        s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
-        s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
-        s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
+            s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+            s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+            s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 
-        early_result = _run_api_retry_loop(agent, s)
-        if early_result is not None:
-            return early_result
+            early_result = _run_api_retry_loop(agent, s)
+            if early_result is not None:
+                return early_result
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

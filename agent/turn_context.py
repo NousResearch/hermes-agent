@@ -24,6 +24,7 @@ from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
+from agent.runtime_override import validate_runtime_override
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
 
@@ -661,7 +662,11 @@ def _collect_pre_llm_call_context(
 ) -> str:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
-    runaway plugin can't inflate every subsequent turn's prompt."""
+    runaway plugin can't inflate every subsequent turn's prompt. A hook may also
+    return ``{"runtime_override": {"model": ...}}``; it is validated (model only)
+    and staged on ``agent._runtime_override`` for the turn."""
+    # Reset first: a turn whose hooks return no override must not inherit a stale one.
+    agent._runtime_override = {}
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -706,6 +711,17 @@ def _collect_pre_llm_call_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
+        # A hook may also override the model for this turn; merge every hook's dict,
+        # later hooks win per key, and only the validated model key survives.
+        _runtime_override: Dict[str, str] = {}
+        for r in _pre_results:
+            if not isinstance(r, dict):
+                continue
+            _ro_piece = r.get("runtime_override")
+            if _ro_piece is None:
+                continue
+            _runtime_override.update(validate_runtime_override(_ro_piece, agent))
+        agent._runtime_override = _runtime_override
         return "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)

@@ -1925,6 +1925,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            # A proactive pre_llm_call runtime_override owns only the primary attempt:
+            # the fallback route supersedes it, so retries stay on the fallback.
+            from agent.runtime_override import consume_runtime_override
+            consume_runtime_override(agent)
             return True
         except Exception as e:
             if fb_provider == "nous":

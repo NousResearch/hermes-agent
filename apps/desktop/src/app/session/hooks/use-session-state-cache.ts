@@ -9,6 +9,7 @@ import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $activeSessionId,
+  $connection,
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -132,6 +133,30 @@ export function useSessionStateCache({
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
+
+  // A runtime id is owned by the backend that minted it. Switching the active
+  // connection (local ↔ remote gateway, or one remote to another) changes
+  // which backend owns every stored session, so the cached stored→runtime
+  // bindings from the PREVIOUS backend must not survive the switch: sending a
+  // stale local runtime id to a remote gateway makes it reject the resume as
+  // "Session not found" (#93888). Wipe both warm-cache refs on connection
+  // change so the next resume resolves a fresh runtime from the new backend
+  // (the cold `session.resume` path, which correctly uses the durable stored
+  // id, repopulates them).
+  const connection = useStore($connection)
+  const connectionScopeKey = connection?.connectionId ?? connection?.mode ?? 'default'
+  const prevConnectionScopeKeyRef = useRef(connectionScopeKey)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (prevConnectionScopeKeyRef.current === connectionScopeKey) {
+      return
+    }
+
+    prevConnectionScopeKeyRef.current = connectionScopeKey
+    runtimeIdByStoredSessionIdRef.current.clear()
+    sessionStateCache.clear()
+  }, [connectionScopeKey, sessionStateCache])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

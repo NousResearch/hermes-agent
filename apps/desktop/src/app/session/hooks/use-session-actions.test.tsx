@@ -1152,10 +1152,13 @@ describe('submitTextToNewSession pin release', () => {
     let second!: Promise<{ runtimeSessionId: string; sessionId: string }>
     act(() => {
       setCurrentModel('model-owner-a')
+      setCurrentModelSource('manual')
       first = handle!.submitTextToNewSession('a', 'owner-a')
       setCurrentModel('model-owner-b')
+      setCurrentModelSource('manual')
       second = handle!.submitTextToNewSession('b', 'owner-b')
       setCurrentModel('')
+      setCurrentModelSource('')
     })
 
     await waitFor(() => expect(createCount).toBe(2))

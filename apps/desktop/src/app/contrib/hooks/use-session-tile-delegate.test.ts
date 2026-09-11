@@ -774,7 +774,12 @@ describe('useSessionTileDelegate submitToSession', () => {
     const state = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-submit' }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-submit', 'runtime-dead']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', state]]) }
-    const requestGateway = vi.fn(async (method: string) => {
+    // #92961: a known owner always routes through the profile router, even
+    // 'default', never the ambient socket — so the routed seam carries the
+    // failed submit, the recovery resume, and the retry.
+    const routed = vi.mocked(requestGatewayForProfile)
+    routed.mockReset()
+    routed.mockImplementation(async (_profile: string, method: string) => {
       if (method === 'prompt.submit') {
         return {} as never
       }
@@ -787,12 +792,12 @@ describe('useSessionTileDelegate submitToSession', () => {
     })
 
     let promptAttempts = 0
-    requestGateway.mockImplementationOnce(async () => {
+    routed.mockImplementationOnce(async () => {
       promptAttempts += 1
       throw new Error('session not found')
     })
 
-    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    renderTile(vi.fn(), { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
     const delegate = sessionTileDelegate()!
 
     const recovered = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
@@ -808,29 +813,42 @@ describe('useSessionTileDelegate submitToSession', () => {
     })
     expect(promptAttempts).toBe(1)
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-submit')).toBe('runtime-recovered')
-    expect(requestGateway).toHaveBeenNthCalledWith(
+    expect(routed).toHaveBeenNthCalledWith(
       1,
+      'default',
       'prompt.submit',
       { session_id: 'runtime-dead', text: 'Send from Quick Entry' },
-      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
     )
-    expect(requestGateway).toHaveBeenNthCalledWith(2, 'session.resume', {
-      session_id: 'stored-submit',
-      source: 'desktop',
-      omit_messages: true,
-      profile: 'default'
-    })
-    expect(requestGateway).toHaveBeenNthCalledWith(
+    expect(routed).toHaveBeenNthCalledWith(
+      2,
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-submit',
+        source: 'desktop',
+        omit_messages: true,
+        profile: 'default'
+      },
+      undefined,
+      undefined
+    )
+    expect(routed).toHaveBeenNthCalledWith(
       3,
+      'default',
       'prompt.submit',
       { session_id: 'runtime-recovered', text: 'Send from Quick Entry' },
-      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
     )
-    expect(requestGateway).toHaveBeenNthCalledWith(
+    expect(routed).toHaveBeenNthCalledWith(
       4,
+      'default',
       'prompt.submit',
       { session_id: 'runtime-recovered', text: 'Send again' },
-      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+      undefined
     )
   })
 })

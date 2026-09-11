@@ -5,7 +5,9 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
 import contextlib
+import json
 import logging
+import re
 import os
 import shlex
 import shutil
@@ -269,6 +271,25 @@ def _recover_core_update_marker_locked() -> None:
         # Shared stdlib executor: late path and pre-import early pass run exactly the same
         # reinstall. Its own stdout→stderr redirect nests harmlessly inside ours.
         _ir.run_core_install(PROJECT_ROOT)
+
+        # The shared executor cannot own this step: alignment needs the uv
+        # resolution that _install_repair deliberately stays clear of, so that
+        # importing it can never fail in the corrupted-venv state it exists to
+        # repair. That means the boundary alignment in
+        # _install_python_dependencies_with_optional_fallback is bypassed on
+        # this route, and a recovery that reinstalled from pyproject
+        # constraints alone would clear the breadcrumb with the locked
+        # versions still undone. Align here instead, before the breadcrumb
+        # goes, so the guarantee holds on the recovery route too.
+        #
+        # The pre-import early pass is deliberately not covered. It is
+        # stdlib-only and runs before uv is importable; when it completes an
+        # install, the next ordinary update realigns at the normal boundary.
+        _recovery_prefix, _recovery_env = _default_venv_install_target()
+        _align_installed_packages_with_lockfile(
+            _recovery_prefix, env=_recovery_env
+        )
+
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
     except Exception as exc:
@@ -965,6 +986,7 @@ def _install_python_dependencies_with_optional_fallback(
     try:
         _install(["install", "-e", f".[{group}]"])
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
+        _align_installed_packages_with_lockfile(install_cmd_prefix, env=env)
         return
     except subprocess.CalledProcessError:
         print(
@@ -988,8 +1010,167 @@ def _install_python_dependencies_with_optional_fallback(
     # venv, surfacing hours later as a downstream ModuleNotFoundError. Verify here instead.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
+    # Align last so verification repairs cannot re-drift packages. Both git
+    # and ZIP updates share this boundary; late recovery also aligns after
+    # its stdlib-only installer, before clearing the incomplete marker.
+    _align_installed_packages_with_lockfile(install_cmd_prefix, env=env)
 
 
+def _canonical_package_name(name: str) -> str:
+    """Normalize a distribution name per PEP 503 for cross-source comparison."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _collect_lockfile_pins(project_root: Path) -> dict[str, str]:
+    """Return {canonical name: locked version} for registry packages in uv.lock.
+
+    The dependency reinstall in ``hermes update`` resolves from pyproject.toml
+    constraints and never reads ``uv.lock``, so a lockfile-only version bump
+    (for example a ``fix(sec)`` commit that moves a transitive dependency to a
+    patched release) never reaches an existing venv: the installed version
+    still satisfies the loose pyproject constraint and the resolver keeps it.
+    The pins collected here let the update path align drifted packages with
+    the locked resolution after the reinstall.
+
+    Entries are skipped when they are not plain registry downloads (the
+    editable project itself, virtual packages, git/path/url sources) or when
+    the same name is locked at more than one version (platform-forked
+    resolutions that cannot be chosen between without evaluating environment
+    markers).
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return {}
+
+    lock_path = project_root / "uv.lock"
+    if not lock_path.is_file():
+        return {}
+    try:
+        with open(lock_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        logger.debug("lockfile alignment: failed to parse uv.lock: %s", e)
+        return {}
+
+    pins: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for entry in data.get("package", []) or []:
+        name = entry.get("name")
+        version = entry.get("version")
+        source = entry.get("source") or {}
+        if not name or not version or "registry" not in source:
+            continue
+        canonical = _canonical_package_name(str(name))
+        if canonical in pins and pins[canonical] != str(version):
+            ambiguous.add(canonical)
+        pins[canonical] = str(version)
+    for canonical in ambiguous:
+        pins.pop(canonical, None)
+    return pins
+
+
+def _list_installed_package_versions(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return {canonical name: version} for the target venv via ``pip list``."""
+    from hermes_cli.main import PROJECT_ROOT
+    try:
+        result = subprocess.run(
+            install_cmd_prefix + ["list", "--format", "json"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        listed = json.loads(result.stdout or "[]")
+    except Exception as e:
+        logger.debug("lockfile alignment: could not list installed packages: %s", e)
+        return {}
+    installed: dict[str, str] = {}
+    for item in listed:
+        name = item.get("name")
+        version = item.get("version")
+        if name and version:
+            installed[_canonical_package_name(str(name))] = str(version)
+    return installed
+
+
+def _plan_lockfile_alignment(
+    pins: dict[str, str], installed: dict[str, str]
+) -> list[str]:
+    """Return ``name==version`` specs for installed packages that drifted.
+
+    Only packages that are both present in the venv and pinned in the lock
+    are considered, so alignment never installs anything new and never
+    removes anything; optional extras the fallback installer skipped on this
+    machine stay skipped.
+    """
+    specs: list[str] = []
+    for name in sorted(pins):
+        current = installed.get(name)
+        if current is not None and current != pins[name]:
+            specs.append(f"{name}=={pins[name]}")
+    return specs
+
+
+def _align_installed_packages_with_lockfile(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Bring installed packages that drifted from ``uv.lock`` to locked versions.
+
+    Runs at the end of every successful reinstall inside
+    :func:`_install_python_dependencies_with_optional_fallback`, which is the
+    shared boundary for git and ZIP updates. Late interrupted-install recovery
+    invokes this after its stdlib-only executor. Follows the same non-fatal contract as the
+    optional-extras fallback there: any failure prints a warning and returns,
+    leaving the install as it was.
+    """
+    from hermes_cli.main import PROJECT_ROOT
+    pins = _collect_lockfile_pins(PROJECT_ROOT)
+    if not pins:
+        return
+    installed = _list_installed_package_versions(install_cmd_prefix, env=env)
+    if not installed:
+        return
+    specs = _plan_lockfile_alignment(pins, installed)
+    if not specs:
+        return
+    shown = ", ".join(specs[:6])
+    if len(specs) > 6:
+        shown += f", and {len(specs) - 6} more"
+    print(f"  → Aligning {len(specs)} installed package(s) with uv.lock: {shown}")
+    scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    try:
+        # strict_quarantine: alignment runs inside the update dependency sync,
+        # so it inherits that boundary's rule (#87331). A shim that cannot be
+        # renamed aside proves a hard venv hold, and installing pinned
+        # versions anyway stranding the venv between resolutions is the exact
+        # half-updated state the strict mode exists to prevent.
+        _run_quarantined_install(
+            install_cmd_prefix + ["install", *specs],
+            env=env,
+            scripts_dir=scripts_dir,
+            strict_quarantine=True,
+        )
+        print(f"  ✓ Locked versions restored for {len(specs)} package(s)")
+    except ShimQuarantineError:
+        # Not ours to soften into a warning: the venv is held, nothing was
+        # installed, and the sync boundary defers via the update-incomplete
+        # marker so the next run retries from a clean state.
+        raise
+    except Exception as e:
+        detail = getattr(e, "returncode", None)
+        suffix = f" (exit {detail})" if detail is not None else ""
+        print(
+            f"  ⚠ Could not align packages with uv.lock{suffix}; keeping current versions"
+        )
 def _load_console_script_names() -> list[str]:
     """Return ``[project.scripts]`` entry-point names from pyproject.toml."""
     project = _pyproject_project("console script verification: failed to read pyproject.toml: %s")

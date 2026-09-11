@@ -952,7 +952,7 @@ class SlackAdapter(BasePlatformAdapter):
         # mark only their thread for another delta check.
         self._thread_rehydration_checked: set = set()
         self._pending_thread_updates: Dict[str, str] = {}
-        self._pending_edited_thread_messages: Dict[Tuple[str, str, str, str], dict] = {}
+        self._pending_thread_full_refresh: Dict[str, str] = {}
         # Message IDs with reaction lifecycle (bounded: an exception between add and finalize would
         # leak entries).
         self._reacting_message_ids: set = set()
@@ -4068,9 +4068,16 @@ class SlackAdapter(BasePlatformAdapter):
             pending_key = self._pending_thread_update_key(channel_id, event_thread_ts, team_id)
             watermark_ts = self._get_thread_watermark(**watermark_args)
             pending_ts = self._pending_thread_updates.get(pending_key, "")
+            restart_check = rehydration_key not in self._thread_rehydration_checked
+            full_refresh_ts = self._pending_thread_full_refresh.get(pending_key, "")
+            needs_full_refresh = restart_check or (
+                full_refresh_ts
+                and self._slack_timestamp_sort_key(full_refresh_ts)
+                > self._slack_timestamp_sort_key(watermark_ts)
+            )
             needs_delta = (
                 is_mentioned
-                or rehydration_key not in self._thread_rehydration_checked
+                or restart_check
                 or (
                     pending_ts
                     and self._slack_timestamp_sort_key(pending_ts)
@@ -4078,7 +4085,9 @@ class SlackAdapter(BasePlatformAdapter):
                 )
             )
             if needs_delta:
-                if watermark_ts:
+                if needs_full_refresh or not watermark_ts:
+                    await _fetch(force_refresh=True)
+                else:
                     channel_context, watermark_to_set = await self._fetch_thread_delta(
                         channel_id=channel_id,
                         thread_ts=event_thread_ts,
@@ -4088,8 +4097,6 @@ class SlackAdapter(BasePlatformAdapter):
                         after_ts=watermark_ts,
                     )
                     recovery_complete = watermark_to_set == ts
-                else:
-                    await _fetch(force_refresh=True)
             if recovery_complete:
                 self._mark_thread_rehydration_checked(
                     channel_id, event_thread_ts, user_id, team_id)
@@ -5561,15 +5568,6 @@ class SlackAdapter(BasePlatformAdapter):
             metadata = result.get("response_metadata") or {}
             cursor = str(metadata.get("next_cursor") or "")
             if not cursor:
-                messages.extend(
-                    self._pending_edited_messages_for_delta(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        team_id=team_id,
-                        after_ts=after_ts,
-                        current_ts=current_ts,
-                    )
-                )
                 return await _format_recovered(), current_ts
         recovered_ts = max(
             (str(msg.get("ts") or "") for msg in messages if msg.get("ts")),
@@ -5626,8 +5624,7 @@ class SlackAdapter(BasePlatformAdapter):
                 continue
             is_parent = msg_ts == thread_ts
             # Skip already-consumed messages; parent still flows through for parent_text capture.
-            delta_ts = str(msg.get("_slack_changed_event_ts") or msg_ts)
-            skip_for_delta = bool(after_ts and delta_ts and delta_ts <= after_ts)
+            skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
             msg_text = self._render_message_text(msg, bot_uid=bot_uid)
@@ -5933,37 +5930,13 @@ class SlackAdapter(BasePlatformAdapter):
             self._PENDING_THREAD_UPDATES_MAX,
             lambda entry: self._pending_thread_updates.get(entry, ""),
         )
-        if event.get("_slack_changed_event_ts") and message_ts:
-            edit_key = (team_id, channel_id, thread_ts, message_ts)
-            self._pending_edited_thread_messages[edit_key] = dict(event)
+        if event.get("_slack_changed_event_ts"):
+            self._pending_thread_full_refresh[key] = update_ts
             self._evict_oldest_by_ts(
-                self._pending_edited_thread_messages,
+                self._pending_thread_full_refresh,
                 self._PENDING_THREAD_UPDATES_MAX,
-                lambda entry: self._pending_edited_thread_messages[entry].get(
-                    "_slack_changed_event_ts", ""
-                ),
+                lambda entry: self._pending_thread_full_refresh.get(entry, ""),
             )
-
-    def _pending_edited_messages_for_delta(
-        self, *, channel_id: str, thread_ts: str, team_id: str,
-        after_ts: str, current_ts: str,
-    ) -> List[dict]:
-        """Edited app posts whose edit event, not original message, falls in this delta."""
-        recovered = []
-        for (edit_team, edit_channel, edit_thread, _), message in (
-            self._pending_edited_thread_messages.items()
-        ):
-            if (edit_team, edit_channel, edit_thread) != (team_id, channel_id, thread_ts):
-                continue
-            changed_ts = str(message.get("_slack_changed_event_ts") or "")
-            if (
-                self._slack_timestamp_sort_key(changed_ts)
-                > self._slack_timestamp_sort_key(after_ts)
-                and self._slack_timestamp_sort_key(changed_ts)
-                <= self._slack_timestamp_sort_key(current_ts)
-            ):
-                recovered.append(dict(message))
-        return recovered
 
     def _thread_watermark_io(
         self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any

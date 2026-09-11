@@ -3139,6 +3139,9 @@ class TestThreadReplyHandling:
             ("T_TEAM", "U_USER"): "User",
             ("T_TEAM", "U_OTHER"): "Other",
         }
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
 
         await adapter_with_session_store._handle_slack_message({
             "text": "<@U_BOT> what changed?",
@@ -3430,6 +3433,10 @@ class TestThreadReplyHandling:
                 "edited": {"user": "U_APP", "ts": "123.400"},
             },
         })
+        # A restart loses all in-memory edit flags but must still recover the
+        # current edited thread from Slack on its first session wake.
+        adapter_with_session_store._pending_thread_full_refresh.clear()
+        adapter_with_session_store._thread_rehydration_checked.clear()
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             return_value={
                 "messages": [
@@ -3474,6 +3481,9 @@ class TestThreadReplyHandling:
         adapter_with_session_store._pending_thread_updates[
             "T_TEAM:C123:123.000"
         ] = "123.900"
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             side_effect=[
                 {

@@ -1365,12 +1365,14 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
 
     Deployments are per-resource, so the static catalog is intentionally empty. Route through the
     runtime credential resolver so the picker honours both API-key and keyless Entra ID auth (the
-    resolver hands back a callable token provider for ``auth_mode: entra_id``) and probes the same
-    resource inference will hit. None on any miss so the picker falls back to the static list.
+    resolver hands back a callable token provider for ``auth_mode: entra_id``) and targets the same
+    resource inference will hit. The resource's ``/openai/deployments`` listing is what the portal
+    shows and what inference accepts; ``/models`` (Microsoft's whole catalog on Azure hosts) is only
+    the fallback for gateways that do not expose it. None on any miss keeps the static list.
     """
     try:
         from agent.azure_identity_adapter import is_token_provider
-        from hermes_cli.azure_detect import _probe_openai_models
+        from hermes_cli.azure_detect import _probe_openai_models, probe_azure_deployments
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
 
         runtime = _resolve_azure_foundry_runtime(requested_provider="azure-foundry", model_cfg=_get_model_config_dict())
@@ -1378,10 +1380,12 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
         credential = runtime.get("api_key")
         if not (base_url and credential):
             return None
-        if is_token_provider(credential):
-            ok, ids = _probe_openai_models(base_url, "", token_provider=credential)
-        else:
-            ok, ids = _probe_openai_models(base_url, str(credential))
+        auth = {"token_provider": credential} if is_token_provider(credential) else {}
+        api_key = "" if auth else str(credential)
+        deployments = probe_azure_deployments(base_url, api_key, **auth)
+        if deployments:
+            return deployments
+        ok, ids = _probe_openai_models(base_url, api_key, **auth)
         return ids if ok and ids else None
     except Exception:
         return None

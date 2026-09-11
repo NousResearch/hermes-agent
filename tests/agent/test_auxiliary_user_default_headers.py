@@ -118,3 +118,42 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestGeminiNativeHonorsUserDefaultHeaders:
+    """The native Gemini path bypasses the OpenAI-wire header assembly, so it needs
+    its own merge of ``model.default_headers`` — otherwise a referer-restricted Google
+    key 403s ("Requests from referer <empty> are blocked") the moment a fallback routes
+    to it, exactly when the fallback is needed. (#102788)
+    """
+
+    def test_native_gemini_client_gets_user_default_headers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"Referer": "https://example.com/"},
+            },
+        })
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+            mock_client.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, _ = resolve_provider_client("gemini", "gemini-3.5-flash")
+
+        assert client is not None
+        assert mock_client.called
+        headers = mock_client.call_args.kwargs.get("default_headers") or {}
+        assert headers.get("Referer") == "https://example.com/"
+
+    def test_native_gemini_client_no_headers_without_config(self, tmp_path, monkeypatch):
+        """No ``model.default_headers`` → nothing injected (None), not an empty-dict change."""
+        monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
+        _write_config(tmp_path, {"model": {"default": "test-model"}})
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+            mock_client.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, _ = resolve_provider_client("gemini", "gemini-3.5-flash")
+
+        assert client is not None
+        assert mock_client.called
+        assert mock_client.call_args.kwargs.get("default_headers") is None

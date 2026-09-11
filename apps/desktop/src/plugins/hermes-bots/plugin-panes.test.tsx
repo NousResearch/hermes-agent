@@ -27,6 +27,7 @@ import type * as RoutingModule from './routing'
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
+  revealPane: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
   setWorkspaceScope: vi.fn()
 }))
@@ -40,6 +41,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...original.host,
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
+      revealPane: mocks.revealPane,
       setWorkspaceScope: mocks.setWorkspaceScope
     }
   }
@@ -203,6 +205,7 @@ describe('the Scheduled jobs pane', () => {
     // Glanceable, not something you sit in: it arrives as the right edge's
     // vertical tab and takes no width off the chat until the user opens it.
     expect(routines.data!.defaultCollapsed).toBe(true)
+    expect(mocks.revealPane).toHaveBeenCalledWith('hermes-bots:routines')
 
     harness.dispose()
   })

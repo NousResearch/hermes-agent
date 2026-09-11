@@ -11,7 +11,7 @@ import {
   type FirstBuildConnectorPart,
   flushFirstBuildNote,
   openFirstBuildLinks,
-  watchFirstBuildWait
+  watchFirstBuildRows
 } from '@/store/first-build-connectors'
 import { requestGatewayForAgent } from '@/store/gateway'
 
@@ -56,13 +56,15 @@ export function FirstBuildConnectorOffer({
     )
   }, [storedId, newestToolCallId, busy, pendingNote, target])
 
-  useEffect(
-    () =>
-      watchFirstBuildWait(storedId, runtimeId, { toolCallId, toolName, args, result }, (method, params) =>
-        requestGatewayForAgent(connectionId, profile, method, params, 45000)
-      ),
-    [storedId, runtimeId, toolCallId, toolName, args, result, connectionId, profile]
-  )
+  useEffect(() => {
+    if (newestToolCallId !== toolCallId) {
+      return
+    }
+
+    return watchFirstBuildRows(storedId, runtimeId, { toolCallId, toolName, args, result }, (method, params) =>
+      requestGatewayForAgent(connectionId, profile, method, params, 45000)
+    )
+  }, [storedId, runtimeId, toolCallId, toolName, args, result, connectionId, profile, newestToolCallId])
 
   return (
     <div className="my-2 grid min-w-0 max-w-lg gap-3" data-connector-offer>

@@ -9,7 +9,7 @@ import {
   connectorText,
   recordOf
 } from '@/lib/connector-tools'
-import { buildConnectionStartMessage } from '@/lib/first-build-start'
+import { buildConnectionStartMessage, canStartWithConnections } from '@/lib/first-build-start'
 import { readKey, writeKey } from '@/lib/storage'
 import type { ConnectorFlowDeps, ConnectorFlowRow } from '@/store/connector-flow'
 
@@ -126,24 +126,26 @@ export function flushFirstBuildNote(
   }
 }
 
-export function watchFirstBuildWait(
+export function watchFirstBuildRows(
   storedId: string,
   runtimeId: string,
   part: FirstBuildConnectorPart,
   request: ConnectorFlowDeps['request']
 ) {
+  const action = recordOf(part.args).action
+
   if (
     !isFirstBuildSession(storedId) ||
     part.toolName !== 'manage_connections' ||
-    recordOf(part.args).action !== 'wait'
+    (action !== 'wait' && !(action === 'connect' && canStartWithConnections({ ...part, type: 'tool-call' })))
   ) {
     return
   }
 
   const output = recordOf(part.result)
-  const polling = part.result === undefined || output.status === 'pending'
+  const polling = action === 'connect' || part.result === undefined || output.status === 'pending'
 
-  if (['connected', 'timeout', 'interrupted'].includes(String(output.status))) {
+  if (action === 'wait' && ['connected', 'timeout', 'interrupted'].includes(String(output.status))) {
     endFirstBuildConnect(storedId)
   }
 
@@ -190,6 +192,10 @@ export function watchFirstBuildWait(
   const current = () => !cancelled && $firstBuildConnections.get()[storedId]?.toolCallId === part.toolCallId
 
   const poll = async () => {
+    if (!current()) {
+      return
+    }
+
     try {
       const result = await request<{ available: boolean; connectors: ConnectorRow[] }>('connectors.list', {
         session_id: runtimeId

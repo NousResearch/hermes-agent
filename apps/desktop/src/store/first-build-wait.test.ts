@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { isFirstBuildSession, markFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { deferred } from '@/test/deferred'
 
-import { $firstBuildConnections, type FirstBuildConnectorPart, openFirstBuildLinks, watchFirstBuildWait } from './first-build-connectors'
+import { $firstBuildConnections, type FirstBuildConnectorPart, openFirstBuildLinks, watchFirstBuildRows } from './first-build-connectors'
 
 const part: FirstBuildConnectorPart = {
   toolCallId: 'wait',
@@ -17,10 +17,39 @@ afterEach(() => {
   $firstBuildConnections.set({})
 })
 
+it('reconciles an initiated connect before a wait exists and retires its poll for a newer part', async () => {
+  vi.useFakeTimers()
+  markFirstBuildSession('build')
+  const connect: FirstBuildConnectorPart = {
+    toolCallId: 'connect',
+    toolName: 'manage_connections',
+    args: { action: 'connect', connectors: ['gmail'] },
+    result: { results: [{ connector: 'gmail', status: 'initiated', connect_url: 'https://connect.example/gmail' }] }
+  }
+  const request = vi.fn().mockResolvedValue({
+    available: true, connectors: [{ connector: 'gmail', enabled: true, connected: false }]
+  })
+  await openFirstBuildLinks('build', connect, {})
+  const stop = watchFirstBuildRows('build', 'runtime', connect, request)
+  await vi.advanceTimersByTimeAsync(0)
+  expect($firstBuildConnections.get().build.rows[0].phase).toBe('waiting')
+  request.mockResolvedValue({ available: true, connectors: [{ connector: 'gmail', connected: true }] })
+  await vi.advanceTimersByTimeAsync(2000)
+  expect($firstBuildConnections.get().build.rows[0].phase).toBe('connected')
+  expect($firstBuildConnections.get().build.rows[0].connectUrl).toBe('https://connect.example/gmail')
+
+  const stopWait = watchFirstBuildRows('build', 'runtime', part, request)
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(request).toHaveBeenCalledTimes(4)
+  expect($firstBuildConnections.get().build.toolCallId).toBe(part.toolCallId)
+  stop?.()
+  stopWait?.()
+})
+
 it.each(['connected', 'timeout', 'interrupted'])('ends first-build connections after a settled %s wait', async status => {
   markFirstBuildSession('build')
   const request = vi.fn()
-  watchFirstBuildWait('build', 'runtime', {
+  watchFirstBuildRows('build', 'runtime', {
     ...part,
     result: { status, connectors: [{ connector: 'gmail', connected: true }], pending: ['notion'] }
   }, request)
@@ -50,7 +79,7 @@ it('polls through a pending bounce, reconciles unavailable apps, and stops when 
     ]
   })
 
-  const stop = watchFirstBuildWait('build', 'runtime', part, request)
+  const stop = watchFirstBuildRows('build', 'runtime', part, request)
   await vi.advanceTimersByTimeAsync(0)
   expect(request).toHaveBeenCalledWith('connectors.list', { session_id: 'runtime' })
   expect($firstBuildConnections.get().build.rows.map(row => [row.phase, row.error])).toEqual([
@@ -60,7 +89,7 @@ it('polls through a pending bounce, reconciles unavailable apps, and stops when 
   ])
   stop?.()
 
-  const stopBounce = watchFirstBuildWait(
+  const stopBounce = watchFirstBuildRows(
     'build',
     'runtime',
     {
@@ -85,9 +114,9 @@ it.each([{ connector: 'gmail', connected: true, enabled: true }, 'gmail'])(
   markFirstBuildSession('build')
   const pending = deferred<unknown>()
   const request = vi.fn().mockReturnValue(pending.promise)
-  const stop = watchFirstBuildWait('build', 'runtime', part, request)
+  const stop = watchFirstBuildRows('build', 'runtime', part, request)
   stop?.()
-  watchFirstBuildWait(
+  watchFirstBuildRows(
     'build',
     'runtime',
     {
@@ -108,7 +137,7 @@ it.each([{ connector: 'gmail', connected: true, enabled: true }, 'gmail'])(
   await vi.advanceTimersByTimeAsync(0)
   expect($firstBuildConnections.get().build.rows.map(row => row.phase)).toEqual(['connected', 'timeout', 'timeout'])
 
-  watchFirstBuildWait(
+  watchFirstBuildRows(
     'build',
     'runtime',
     {

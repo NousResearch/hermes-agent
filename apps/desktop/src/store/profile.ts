@@ -532,9 +532,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     const descriptor = $connection.get()
 
     return Boolean(
-      descriptor &&
-        descriptor.sharedPrimary === true &&
-        normalizeProfileKey(descriptor.profile) === target
+      descriptor && descriptor.sharedPrimary === true && normalizeProfileKey(descriptor.profile) === target
     )
   }
 

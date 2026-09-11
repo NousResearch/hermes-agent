@@ -17,7 +17,11 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
-import { $chatOnboardingSolo, $chatOnboardingThreadIds, $onboardingGreeting } from '@/components/onboarding-chat/assembly'
+import {
+  $chatOnboardingSolo,
+  $chatOnboardingThreadIds,
+  $onboardingGreeting
+} from '@/components/onboarding-chat/assembly'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
@@ -177,10 +181,7 @@ let greetingRevealed = false
  *  the visible slice (height grows exactly like real streaming). */
 function OnboardingGreetingRow({ text }: { text: string }) {
   const [shown, setShown] = useState(() =>
-    greetingRevealed ||
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-      ? text.length
-      : 0
+    greetingRevealed || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? text.length : 0
   )
 
   const done = shown >= text.length
@@ -219,10 +220,7 @@ function OnboardingGreetingRow({ text }: { text: string }) {
   }, [shown, text])
 
   return (
-    <div
-      className="mb-(--conversation-turn-gap) whitespace-pre-wrap leading-relaxed"
-      data-onboarding-greeting
-    >
+    <div className="mb-(--conversation-turn-gap) whitespace-pre-wrap leading-relaxed" data-onboarding-greeting>
       {text.slice(0, shown)}
       {!done && (
         <span className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.18em] animate-pulse bg-foreground/70" />
@@ -541,10 +539,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
   // below on every tick). Weights are folded in separately for the budget.
-  const { groups, onboardingThread, threadType, greetingRow } = useOnboardingTranscript(
-    structuralSignature,
-    sessionKey
-  )
+  const { groups, onboardingThread, threadType, greetingRow } = useOnboardingTranscript(structuralSignature, sessionKey)
 
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder) && !onboardingThread
 

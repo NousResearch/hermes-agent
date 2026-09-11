@@ -55,8 +55,7 @@ export interface ParsedTranscriptDirective {
 }
 
 export type TranscriptParagraphSegment =
-  | { kind: 'prose'; text: string }
-  | { kind: 'directive'; directive: ParsedTranscriptDirective }
+  { kind: 'prose'; text: string } | { kind: 'directive'; directive: ParsedTranscriptDirective }
 
 // The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
 // Length caps bound the attr scan on adversarial input.

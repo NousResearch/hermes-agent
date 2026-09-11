@@ -677,7 +677,8 @@ function MarkdownTextSurface({
         // right rail; every other language falls back to the Shiki-highlighted
         // code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
-          const artifact = disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
+          const artifact =
+            disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
 
           if (artifact) {
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />

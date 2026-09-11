@@ -1561,18 +1561,19 @@ export const en: Translations = {
   skills: {
     collective: {
       notificationPreferences: {
-        title: "Notification settings",
-        scope: "Your proactive notifications across clients in this organization. Manual browsing and sharing remain available.",
-        on: "Notifications on",
-        muted: "Notifications muted",
-        day: "1 day",
-        week: "1 week",
-        month: "30 days",
-        forever: "Indefinitely",
-        pending: "Your choice is saved locally and waiting to sync.",
-        failed: "Sync failed. Refresh settings before choosing again.",
-        conflict: "Your preference changed on another client. Refresh to review it.",
-        expired: "This choice expired. Refresh settings to try again.",
+        title: 'Notification settings',
+        scope:
+          'Your proactive notifications across clients in this organization. Manual browsing and sharing remain available.',
+        on: 'Notifications on',
+        muted: 'Notifications muted',
+        day: '1 day',
+        week: '1 week',
+        month: '30 days',
+        forever: 'Indefinitely',
+        pending: 'Your choice is saved locally and waiting to sync.',
+        failed: 'Sync failed. Refresh settings before choosing again.',
+        conflict: 'Your preference changed on another client. Refresh to review it.',
+        expired: 'This choice expired. Refresh settings to try again.'
       },
       title: 'Collective Wisdom',
       loading: 'Loading Collective Wisdom…',
@@ -1645,8 +1646,10 @@ export const en: Translations = {
       readEvery: 'Read every file. Approval is bound to the exact three hashes below.',
       publishToTeam: 'Publish to team',
       submitForApproval: 'Submit for approval',
-      publishLocalNotice: 'Confirming uploads this exact package and publishes it to your team after the required checks.',
-      submitLocalNotice: 'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
+      publishLocalNotice:
+        'Confirming uploads this exact package and publishes it to your team after the required checks.',
+      submitLocalNotice:
+        'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
       reloadReview: 'Reload review',
       editReview:
         'Edit the description, SKILL.md, or declarative manifest here. Saving creates a new private revision, reruns scans, and returns new hashes; it does not rewrite your local source skill.',
@@ -1672,7 +1675,8 @@ export const en: Translations = {
       share: 'Share',
       reviewPreviousPage: 'Previous review page',
       reviewNextPage: 'Next review page',
-      sharePreparationNotice: 'Share prepares a local handoff package. You will review it and approve separately before anything is uploaded or published.',
+      sharePreparationNotice:
+        'Share prepares a local handoff package. You will review it and approve separately before anything is uploaded or published.',
       muteNotificationsSoon: 'Mute notifications (coming soon)',
       unmuteNotificationsSoon: 'Unmute notifications (coming soon)',
       openCollective: 'Open Collective',

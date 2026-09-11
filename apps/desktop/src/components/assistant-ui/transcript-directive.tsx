@@ -134,7 +134,12 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
   return (
     <>
       {entries.map(entry => (
-        <DirectiveEntry contribution={entry.match} key={entry.key} parsed={entry.parsed} streaming={streaming ?? false} />
+        <DirectiveEntry
+          contribution={entry.match}
+          key={entry.key}
+          parsed={entry.parsed}
+          streaming={streaming ?? false}
+        />
       ))}
     </>
   )

@@ -196,11 +196,13 @@ describe('WisdomCandidateCard', () => {
     fireEvent.change(await screen.findByLabelText('Edit SKILL.md'), { target: { value: '# Edited' } })
     expect(screen.getByRole('button', { name: 'Submit for approval' })).toHaveProperty('disabled', true)
     saveWisdomPreparedDraft.mockResolvedValue(prepared())
+
     const updated = {
       ...exactReview('saved', '# Edited'),
       draft: { ...exactReview('saved').draft, state: 'prepared' },
       publication_mode: 'moderated'
     }
+
     reviewWisdomPublication.mockResolvedValue(updated)
     fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
     await waitFor(() => expect(saveWisdomPreparedDraft).toHaveBeenCalledTimes(1))

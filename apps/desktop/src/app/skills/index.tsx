@@ -319,8 +319,10 @@ export function SkillsView({
     refetchInterval: 15_000,
     retry: false
   })
+
   // Identity changes on every scope visit, including A -> B -> A.
   const wisdomScope = useMemo(() => ({ key: scopeKey }), [scopeKey])
+
   const [acceptedWisdomResult, setAcceptedWisdomResult] = useState<null | {
     scope: typeof wisdomScope
     updatedAt: number
@@ -357,11 +359,13 @@ export function SkillsView({
     wisdomEntitlement.data?.entitled === true &&
     typeof entitlementExpiresAt === 'number' &&
     entitlementExpiresAt * 1000 > entitlementClock
+
   const wisdomEntitled =
     acceptedWisdomResult?.scope === wisdomScope &&
     acceptedWisdomResult.updatedAt === wisdomEntitlement.dataUpdatedAt &&
     !wisdomEntitlement.isError &&
     freshWisdomEntitlement
+
   const wisdomDenied = wisdomEntitlement.isError || (wisdomEntitlement.isSuccess && !freshWisdomEntitlement)
 
   useEffect(() => {

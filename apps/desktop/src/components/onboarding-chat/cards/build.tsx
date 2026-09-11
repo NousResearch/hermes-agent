@@ -186,6 +186,7 @@ export function ProgressCard({ attrs, locked }: CardProps) {
   const messages = useStore(view.$messages)
   const messageId = useAuiState(state => state.message.id)
   const title = (attrs.title ?? '').trim() || 'Working on it'
+
   const steps = useMemo(() => {
     const index = messages.findIndex(message => message.id === messageId)
     const previous = index < 0 ? [] : messages.slice(0, index)

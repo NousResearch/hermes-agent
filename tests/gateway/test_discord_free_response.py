@@ -228,28 +228,35 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
-async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
-    """Quote-replies should stay in-channel instead of trying to create a thread."""
+async def test_discord_reply_message_auto_threads_when_channel_is_eligible(adapter, monkeypatch):
+    """Quote-replies should use the same auto-thread routing as new messages."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    adapter._auto_create_thread = AsyncMock()
+    parent = FakeTextChannel(channel_id=123)
+    thread = FakeThread(channel_id=999, parent=parent)
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
 
     message = make_message(
-        channel=FakeTextChannel(channel_id=123),
+        channel=parent,
         content="reply without mention",
         msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.reference = SimpleNamespace(
+        message_id=456,
+        resolved=SimpleNamespace(id=456, content="the message being replied to"),
     )
 
     await adapter._handle_message(message)
 
-    adapter._auto_create_thread.assert_not_awaited()
+    adapter._auto_create_thread.assert_awaited_once_with(message)
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "reply without mention"
-    assert event.source.chat_id == "123"
-    assert event.source.chat_type == "group"
+    assert event.source.chat_id == "999"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
 
 
 @pytest.mark.asyncio

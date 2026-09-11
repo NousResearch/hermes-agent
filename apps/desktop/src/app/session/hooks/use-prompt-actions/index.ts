@@ -138,16 +138,17 @@ export async function uploadComposerAttachment(
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
-  // id would double the disk/IPC cost of every recovered attach. For images,
-  // the chip's previewUrl already holds the full file as a base64 data URL,
-  // so passing it avoids re-reading the same bytes off disk at submit.
+  // id would double the disk/IPC cost of every recovered attach. Images are
+  // always read fresh from disk here: the chip's cached `previewUrl` is
+  // dropped once a thumbnail exists, so it cannot be trusted to hold the
+  // full-resolution bytes the model needs.
   let imagePayload: Awaited<ReturnType<typeof readImageForRemoteAttach>> | null = null
   let fileDataUrl: null | string = null
 
   if (uploadBytes) {
     try {
       if (attachment.kind === 'image') {
-        imagePayload = await readImageForRemoteAttach(path, attachment.previewUrl)
+        imagePayload = await readImageForRemoteAttach(path)
       } else {
         fileDataUrl = await readFileDataUrlForAttach(path)
       }

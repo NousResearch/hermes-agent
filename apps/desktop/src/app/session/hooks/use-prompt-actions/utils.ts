@@ -421,24 +421,14 @@ export function imageFilenameFromPath(filePath: string): string {
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
 //
-// `cachedDataUrl` is the attachment's `previewUrl` when the composer already
-// read the file for the chip thumbnail — that preview is the FULL file as a
-// base64 data URL (attachmentPreviewDataUrl → readFileDataUrl), not a
-// downscaled copy, so reusing it skips a second disk read + IPC round-trip of
-// the same bytes at submit. Only a `;base64,` data URL qualifies; anything
-// else falls through to the disk read.
+// Always re-reads from disk rather than trusting `attachment.previewUrl` as a
+// cache: once a thumbnail is generated, `attachImagePath` keeps only the
+// bounded (≤512px) `thumbnailUrl` and drops `previewUrl` — so a cached
+// `previewUrl` is never guaranteed to be the full-resolution bytes the model
+// needs, and trusting it here would risk silently uploading a downscaled copy.
 export async function readImageForRemoteAttach(
-  filePath: string,
-  cachedDataUrl?: string
+  filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
-  if (cachedDataUrl?.includes(';base64,')) {
-    const cached = base64FromDataUrl(cachedDataUrl)
-
-    if (cached) {
-      return { contentBase64: cached, filename: imageFilenameFromPath(filePath) }
-    }
-  }
-
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 

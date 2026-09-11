@@ -179,7 +179,17 @@ def _read_browser_cfg() -> dict:
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
-    return is_truthy_value(browser_cfg.get("use_gateway"), default=False)
+    """True when the browser section selects the Nous Tool Gateway — by the current ``hermes tools``
+    picker row (``cloud_provider: nous``) or the pre-picker ``use_gateway: true`` flag. Reading only
+    the legacy flag missed every picker-configured gateway, and the direct-API branch it fell into
+    holds no credentials in managed mode (#108310)."""
+    if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
+        return True
+    try:
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+    except Exception:  # pragma: no cover — helper ships with the package
+        return False
+    return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
 def get_browser_backend() -> str:
@@ -434,8 +444,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return _resolve_local_engine_cdp(env, task_id, session_name)
 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
-    # legacy provider would create a second, redundant session. The Nous-gateway variant (use_gateway: true)
-    # DOES resolve through the provider: the gateway provisions the browser server-side and returns its CDP URL.
+    # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
+    # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
+    # provisions the browser server-side and returns its CDP URL.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon

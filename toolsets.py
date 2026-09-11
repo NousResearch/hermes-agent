@@ -263,9 +263,13 @@ def _registry_call(method: str, default):
         return default
 
 
-def _registry_generation() -> Tuple[int, int]:
+def _registry_generation() -> Tuple[int, int, str]:
+    """(id, generation, scope) — scope keeps the memo from serving one multiplexed
+    profile's resolution (and its registry-only MCP tool names) to another; see #106005."""
     reg = _registry()
-    return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+    if reg is None:
+        return (0, 0, "")
+    return (id(reg), getattr(reg, "_generation", 0), reg.current_scope_key())
 
 
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
@@ -330,9 +334,9 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove - core
 
 
-# Memo keyed on (name, include_registry, id(registry), registry generation);
+# Memo keyed on (name, include_registry, id(registry), registry generation, scope);
 # engages only at the public entry (visited is None).
-_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
 def _plugin_platform_bundle(name: str) -> List[str]:

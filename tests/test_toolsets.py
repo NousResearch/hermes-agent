@@ -327,6 +327,7 @@ class TestResolveToolsetMemo:
 
         registry_id = id(registry)
         generation = registry._generation
+        scope = registry.current_scope_key()
 
         first = resolve_toolset("hermes-cli")
         second = resolve_toolset("hermes-cli")
@@ -337,7 +338,7 @@ class TestResolveToolsetMemo:
             f"got {get_toolset_calls['n']} calls"
         )
         assert (
-            "hermes-cli", True, registry_id, generation
+            "hermes-cli", True, registry_id, generation, scope
         ) in toolsets_mod._resolve_toolset_memo
 
     def test_generation_bump_invalidates_memo(self, monkeypatch):
@@ -372,4 +373,36 @@ class TestResolveToolsetMemo:
         second = resolve_toolset("hermes-cli", include_registry=False)
         assert first == second
         assert first  # non-empty sanity
+
+    def test_scope_change_invalidates_memo(self, monkeypatch):
+        """Two multiplex profiles resolving the same registry-only toolset must not
+        share a cache entry (#106005 Bug 2): the memo key omitted the registry
+        scope, so a profile B resolve after profile A's could return A's tool
+        names even though B's own tools were registered under B's own scope."""
+        from tools.registry import registry
+
+        toolsets_mod._resolve_toolset_memo.clear()
+        registry.register(
+            name="__probe_scope_a_tool__", toolset="__probe_mcp_toolset__",
+            schema=_make_schema("__probe_scope_a_tool__"), handler=_dummy_handler,
+            scope="__probe_scope_a__",
+        )
+        registry.register(
+            name="__probe_scope_b_tool__", toolset="__probe_mcp_toolset__",
+            schema=_make_schema("__probe_scope_b_tool__"), handler=_dummy_handler,
+            scope="__probe_scope_b__",
+        )
+        try:
+            monkeypatch.setattr(ToolRegistry, "current_scope_key", staticmethod(lambda: "__probe_scope_a__"))
+            assert resolve_toolset("__probe_mcp_toolset__") == ["__probe_scope_a_tool__"]
+
+            monkeypatch.setattr(ToolRegistry, "current_scope_key", staticmethod(lambda: "__probe_scope_b__"))
+            b_view = resolve_toolset("__probe_mcp_toolset__")
+            assert b_view == ["__probe_scope_b_tool__"], (
+                f"profile B resolved profile A's memoized tool names: got {b_view}"
+            )
+        finally:
+            registry.deregister("__probe_scope_a_tool__", scope="__probe_scope_a__")
+            registry.deregister("__probe_scope_b_tool__", scope="__probe_scope_b__")
+            toolsets_mod._resolve_toolset_memo.clear()
 

@@ -39,7 +39,6 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
-    _OPENROUTER_VARIANT_SUFFIXES,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -60,7 +59,6 @@ from hermes_cli.models_local import (
     _ollama_probe_cache_key,
     _root_for_ollama_native_api,
     fetch_ollama_cloud_models)
-from hermes_constants import OPENROUTER_VARIANT_SUFFIXES, openrouter_variant_base
 
 logger = logging.getLogger(__name__)
 
@@ -837,13 +835,6 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
         name_lower == model.lower()
         for provider in providers
         for model in _provider_catalog_names(provider))
-
-
-# Canonical suffix set lives in ``hermes_constants`` so the metadata layer can
-# share it without importing the CLI. Re-exported here under the historical
-# private names used by ``validate_requested_model``.
-_OPENROUTER_VARIANT_SUFFIXES = OPENROUTER_VARIANT_SUFFIXES
-_openrouter_variant_base = openrouter_variant_base
 
 
 def _resolve_static_model_alias(

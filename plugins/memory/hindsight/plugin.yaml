@@ -4,5 +4,3 @@ description: "Hindsight — long-term memory with knowledge graph, entity resolu
 pip_dependencies:
   - "hindsight-client>=0.6.1"
 requires_env: []
-provides_hooks:
-  - on_session_end

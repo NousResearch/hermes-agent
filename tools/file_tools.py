@@ -654,6 +654,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return tool_error(str(e))
 
 
+from tools.approval_protected import protected_edit_scope
+
+
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
 def _resolve_or_none(filepath: str, task_id: str) -> str | None:
@@ -756,6 +759,7 @@ def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: st
     )
 
 
+@protected_edit_scope("write")
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -841,6 +845,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
     return paths, content_paths
 
 
+@protected_edit_scope("patch")
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,

@@ -754,9 +754,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
 
+        let submitAttempts = 0
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          // Resume/busy retries are not a fresh deliberate human action.
+          ...(submitAttempts++ === 0 && targetId === liveSessionId &&
+            !options?.fromQueue && !options?.displayKind && !options?.displayText &&
+            options?.inputProvenance && { input_provenance: options.inputProvenance }),
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.

@@ -71,6 +71,20 @@ describe('useSessionTileDelegate resumeTile', () => {
     setSessions([])
   })
 
+  it('submits tile-delegate text without claiming human composer provenance', async () => {
+    const requestGateway = vi.fn(async () => ({}))
+    renderTile(requestGateway)
+    await sessionTileDelegate()!.submitToSession('runtime-delegate-provenance', 'generated tile instruction')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'runtime-delegate-provenance',
+        text: 'generated tile instruction'
+      },
+      expect.any(Number)
+    )
+  })
+
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {
     // A tile opens a session owned by another profile. Resuming without the
     // profile lets the gateway fall back to the launch-profile DB and clone the

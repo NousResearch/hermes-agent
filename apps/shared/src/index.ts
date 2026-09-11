@@ -59,6 +59,7 @@ export {
   JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export type { ComposerInputProvenance } from './prompt-provenance'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

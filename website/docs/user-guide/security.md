@@ -62,6 +62,28 @@ The full set of keys:
 Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
 :::
 
+### Desktop task intent context (experimental)
+
+Foreground inline Desktop composer submissions can provide their original, bounded text to the independent smart reviewer. This is **intent evidence, not task-scoped consent or a capability grant**. Generated messages, hidden sends, queues, retries, rewinds, isolated compute turns, internal server clients, and delegated children do not receive this evidence. It is not reconstructed from generic `role: user` messages. The evidence expires with the turn and is revoked on cancellation, a subsequent submission, or a validated supported correction attempt; corrections revoke before dispatch even if the agent later rejects them. It creates no reusable approval.
+
+The reviewer receives the complete XML-escaped command and description, not a shell-comment-stripped approximation. Invalid or oversized review data escalates rather than being truncated. The independent model must assess the actual operation and scope, and is instructed to escalate or deny high-risk changes even when requested. Model judgment remains fallible; this is not a guarantee that every dangerous action is stopped. Existing deterministic file and terminal gates remain in effect.
+
+Protected instruction files retain their human approval gate by default. To experimentally allow independent review of a **single local** `write_file` or replacement-mode `patch`, add this to the active profile's `config.yaml`:
+
+```yaml
+security:
+  protected_instruction_files:
+    review_mode: smart
+```
+
+Remove `review_mode` (or set it to `manual`) to restore the default. This is separate from `approvals.mode`. Unsupported remote, V4A, multi-file, move and delete operations retain the human gate. Review sees the canonical target and complete before/after content at the atomic-write boundary, after replacement matching and text preparation. Missing intent, uncertainty, bounded-input failures, or detected preimage changes fall back to human approval; cancellation blocks the write.
+
+This deliberately narrow experiment requires the canonical target path to appear in the original request. That substring check does **not** establish authorization: prefix matches, negated references and actual requested operations still require independent review. A conservative filter scans the entire before and after text for security-sensitive terms. Consequently an ordinary edit to an `AGENTS.md` that already contains security instructions can still require human approval. The filter is not a complete semantic classifier, and there is no blanket allowlist to bypass it.
+
+Hermes checks the preimage again after reviewer latency and pins the canonical target. Other programs are not transactionally locked: these checks are **not an OS compare-and-swap** and do not eliminate every external filesystem race. The authenticated Desktop WebSocket uses the same trust boundary as approval responses; it is not physical-human attestation and does not protect against a compromised client already able to forge approvals.
+
+This is a partial approach related to [#96158](https://github.com/NousResearch/hermes-agent/issues/96158), not a claim of full issue closure.
+
 ### YOLO Mode
 
 YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:

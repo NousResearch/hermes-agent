@@ -2018,6 +2018,10 @@ def _(rid, params: dict) -> dict:
 def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
+    # The validated attempt supersedes old intent before the agent can publish
+    # a steer or wake workers, even if it subsequently rejects the correction.
+    from tools.approval_task import revoke_session_task
+    revoke_session_task(session)
     try:
         accepted = getattr(session["agent"], verb)(text)
     except Exception as exc:
@@ -2048,6 +2052,8 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
         if verb == "redirect" and agent is None and session.get("running"):
+            from tools.approval_task import revoke_session_task
+            revoke_session_task(session)
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})

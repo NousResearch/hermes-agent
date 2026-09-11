@@ -1079,10 +1079,17 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
+            yield_kwargs = _yield_kwargs(
+                command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                task_id=task_id, session_key=session_key,
+            )
+            # Backoff can admit new input without setting a terminal interrupt.
+            from tools.approval_task import task_revoked
+            if task_revoked():
+                return _error_json("Task ended before command execution", status="blocked")
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
+                **yield_kwargs,
             )
             break
         except Exception as e:
@@ -1217,6 +1224,9 @@ def terminal_tool(
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
+        from tools.approval_task import task_revoked
+        if task_revoked():
+            raise _Rejected(_error_json("Task ended before command execution", status="blocked"))
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,

@@ -701,6 +701,8 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
+  /** Only the actual human composer submit supplies this; all helpers default absent. */
+  inputProvenance?: import('@hermes/shared').ComposerInputProvenance
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared

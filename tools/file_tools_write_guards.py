@@ -255,6 +255,9 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
                            for p in paths) if r]
     if not reasons:
         return None
+    from tools.approval_protected import defer_protected_gate
+    if defer_protected_gate(paths, task_id):
+        return None  # Actual complete payload is reviewed at _atomic_write, not here.
     return _request_protected_instruction_approval(reasons, task_id)
 
 

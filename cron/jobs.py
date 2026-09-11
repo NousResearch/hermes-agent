@@ -87,6 +87,9 @@ _jobs_lock_state = threading.local()
 _fire_fence_locks: Dict[str, threading.RLock] = {}
 _fire_fence_locks_guard = threading.Lock()
 _fire_fence_lock_state = threading.local()
+# Who currently holds each in-process fire fence (thread name/ident + monotonic start).
+# Logged on acquire timeout so a 30s fail-closed is attributable, not just "the lock key".
+_fire_fence_holders: Dict[str, Dict[str, Any]] = {}
 
 # Upper bound on waiting for the cross-process .jobs.lock. Every cron function funnels through
 # _jobs_lock(), so blocking forever on a wedged sibling process would freeze the ticker and every
@@ -299,7 +302,22 @@ def _fire_job_lock(job_id: str):
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
     if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
-        logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
+        holder = _fire_fence_holders.get(lock_key) or {}
+        held_for = (
+            time.monotonic() - float(holder["since"])
+            if "since" in holder else -1.0
+        )
+        logger.error(
+            "Timed out waiting for local fire fence %s after %.1fs; failing closed "
+            "(holder_thread=%s holder_ident=%s held_for=%.1fs wait_thread=%s wait_ident=%s)",
+            lock_key,
+            _JOBS_LOCK_TIMEOUT_SECONDS,
+            holder.get("thread", "?"),
+            holder.get("ident", "?"),
+            held_for,
+            threading.current_thread().name,
+            threading.get_ident(),
+        )
         yield False
         return
 
@@ -310,6 +328,13 @@ def _fire_job_lock(job_id: str):
         finally:
             local_lock.release()
         return
+
+    with _fire_fence_locks_guard:
+        _fire_fence_holders[lock_key] = {
+            "thread": threading.current_thread().name,
+            "ident": threading.get_ident(),
+            "since": time.monotonic(),
+        }
 
     try:
         ensure_dirs()
@@ -339,6 +364,8 @@ def _fire_job_lock(job_id: str):
                 else:
                     lock_fd.close()
     finally:
+        with _fire_fence_locks_guard:
+            _fire_fence_holders.pop(lock_key, None)
         local_lock.release()
 
 
@@ -2592,11 +2619,20 @@ def claim_job_for_fire(
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim.
+
+    A local fire-fence timeout is not ownership loss. Delivery holds that fence across Discord
+    send; the heartbeat thread then times out at 30s and must skip this refresh rather than
+    interrupt a still-owned run. Return True so the scheduler does not set lost_ownership.
+    Owner mismatch after acquiring the fence still returns False.
+    """
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return True
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

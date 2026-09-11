@@ -242,6 +242,76 @@ def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, m
     assert jobs.claim_job_for_fire(job["id"]) is True
 
 
+def test_fire_fence_timeout_logs_holder_thread(temp_home, monkeypatch, caplog):
+    """A 30s local-fence timeout must name the holder thread, not only the lock key."""
+    import logging
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="fence-holder-log")
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.15)
+    caplog.set_level(logging.ERROR, logger="cron.jobs")
+    holder_ready = threading.Event()
+    waiter_done = threading.Event()
+    result = {}
+
+    def holder():
+        with jobs._fire_job_lock(job["id"]) as acquired:
+            assert acquired is True
+            holder_ready.set()
+            time.sleep(0.45)
+
+    def waiter():
+        assert holder_ready.wait(timeout=2)
+        with jobs._fire_job_lock(job["id"]) as acquired:
+            result["acquired"] = acquired
+        waiter_done.set()
+
+    holder_thread = threading.Thread(name="fence-holder", target=holder)
+    waiter_thread = threading.Thread(name="fence-waiter", target=waiter)
+    holder_thread.start()
+    waiter_thread.start()
+    assert waiter_done.wait(timeout=3), "waiter did not finish after fence timeout"
+    holder_thread.join(timeout=2)
+    waiter_thread.join(timeout=2)
+    assert result.get("acquired") is False
+    text = caplog.text
+    assert "holder_thread=fence-holder" in text, text
+    assert "wait_thread=fence-waiter" in text, text
+    assert "held_for=" in text, text
+
+
+def test_heartbeat_during_held_fire_fence_is_not_ownership_loss(temp_home, monkeypatch):
+    """A heartbeat that cannot acquire the local fire fence is not a stolen claim.
+
+    Delivery holds that fence across Discord/Telegram send. The 60s heartbeat
+    thread then times out at 30s, returns False, and the scheduler marks
+    last_status=error AFTER a successful deliver. Live: GitHub Pulse 434a5159ba47
+    2026-09-09/10. Fence timeout is not owner mismatch.
+    """
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="heartbeat-during-deliver")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.15)
+    holder_ready = threading.Event()
+    result = {}
+
+    def holder():
+        with jobs._fire_job_lock(job["id"]) as acquired:
+            assert acquired is True
+            holder_ready.set()
+            time.sleep(0.45)
+
+    holder_thread = threading.Thread(name="deliver-holder", target=holder)
+    holder_thread.start()
+    assert holder_ready.wait(timeout=2), "holder did not acquire the fire fence"
+    result["heartbeat"] = jobs.heartbeat_fire_claim(job["id"], expected_owner=owner)
+    holder_thread.join(timeout=2)
+    assert result["heartbeat"] is True
+    assert jobs.get_job(job["id"])["fire_claim"]["by"] == owner
+
+
 def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     """Nested same-thread callers retain the existing fire fence."""
     import cron.jobs as jobs

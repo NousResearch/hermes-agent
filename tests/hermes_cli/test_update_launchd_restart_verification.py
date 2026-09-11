@@ -114,6 +114,23 @@ class TestWaitForLaunchdGatewaySupervision:
         assert gateway_cli.wait_for_launchd_gateway_supervision(label=LABEL) is True
         assert sum(clock.slept) == pytest.approx(10.0)
 
+    def test_previous_pid_requires_fresh_runtime_state(self, monkeypatch, clock):
+        """The old supervised process is not the replacement requested by update."""
+        pids = iter([101, 202])
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda: next(pids)
+        )
+        probe = _supervision_returning(True)
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_label_supervising_process", probe
+        )
+
+        assert gateway_cli.wait_for_launchd_gateway_supervision(
+            label=LABEL, previous_pid=101
+        ) is True
+        assert clock.slept == [0.5]
+        assert probe.calls == [LABEL]
+
     def test_gives_up_at_the_deadline(self, monkeypatch, clock):
         """A job that never comes back must fail, and must fail bounded."""
         probe = _supervision_returning(False)
@@ -178,8 +195,9 @@ def _patch_launchd_env(
     monkeypatch.setattr(
         gateway_cli, "launchd_gateway_labels_for_install", lambda: [LABEL]
     )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 101)
 
-    calls = {"restart": 0, "verify": 0, "label": None}
+    calls = {"restart": 0, "verify": 0, "label": None, "previous_pid": None}
 
     def _restart():
         calls["restart"] += 1
@@ -188,9 +206,10 @@ def _patch_launchd_env(
 
     monkeypatch.setattr(gateway_cli, "launchd_restart", _restart)
 
-    def _verify(*, label=None, **_kw):
+    def _verify(*, label=None, previous_pid=None, **_kw):
         calls["verify"] += 1
         calls["label"] = label
+        calls["previous_pid"] = previous_pid
         return supervised
 
     monkeypatch.setattr(
@@ -224,6 +243,7 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert calls["restart"] == 1
         assert calls["verify"] == 1
         assert calls["label"] == LABEL
+        assert calls["previous_pid"] == 101
 
     def test_unverified_restart_is_not_reported_as_restarted(
         self, monkeypatch, capsys

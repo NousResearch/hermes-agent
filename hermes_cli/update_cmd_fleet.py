@@ -515,10 +515,12 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
     )
+    from gateway.status import get_running_pid
     current_label = get_launchd_label()
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        previous_pid = get_running_pid()
         try:
             launchd_restart()
         except subprocess.CalledProcessError as e:
@@ -549,7 +551,7 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label):
+    if wait_for_launchd_gateway_supervision(label=current_label, previous_pid=previous_pid):
         return [current_label], []
     print(
         f"  ✗ {current_label} restarted but launchd is not supervising it.\n"

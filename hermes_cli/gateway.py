@@ -4200,8 +4200,14 @@ def wait_for_launchd_gateway_supervision(
     timeout: float = LAUNCHD_SUPERVISION_VERIFY_TIMEOUT,
     label: str | None = None,
     poll_interval: float = 0.5,
+    previous_pid: int | None = None,
 ) -> bool:
-    """Poll launchd until it supervises a live gateway; True at once if the detached fallback is active.
+    """Poll launchd until it supervises the expected live gateway.
+
+    When ``previous_pid`` is provided, also require ``gateway_state.json`` to
+    identify a different live PID.  This keeps an asynchronous self-restart's
+    still-supervised old process from satisfying the post-update readiness gate.
+    True at once if the detached fallback is active.
     ``launchd_restart`` returns once the restart is *requested* (asynchronous), so it can't see a helper
     dying before bootstrap or a ``launchctl bootstrap`` that exits 0 without registering.
 
@@ -4220,7 +4226,13 @@ def wait_for_launchd_gateway_supervision(
     label = label or get_launchd_label()
     deadline = time.monotonic() + max(timeout, 0.0)
     while True:
-        if _launchctl_label_supervising_process(label):
+        runtime_ready = True
+        if previous_pid is not None:
+            from gateway.status import get_running_pid
+
+            current_pid = get_running_pid()
+            runtime_ready = current_pid is not None and current_pid != previous_pid
+        if runtime_ready and _launchctl_label_supervising_process(label):
             return True
         if time.monotonic() >= deadline:
             return False

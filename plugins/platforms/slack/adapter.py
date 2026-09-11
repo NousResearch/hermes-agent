@@ -4055,6 +4055,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         watermark_args = dict(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id)
+        complete_through_ts = (
+            latest_ts if re.fullmatch(r"\d+\.\d+", latest_ts) else ts
+        )
         watermark_to_set = ts
         recovery_complete = True
         if not has_active_thread_session:
@@ -4100,12 +4103,12 @@ class SlackAdapter(BasePlatformAdapter):
                             channel_id=channel_id,
                             thread_ts=event_thread_ts,
                             current_ts=ts,
-                            latest_ts=latest_ts,
+                            latest_ts=complete_through_ts,
                             team_id=team_id,
                         )
                     )
                     channel_context = full_context or None
-                    watermark_to_set = ts if recovery_complete else ""
+                    watermark_to_set = complete_through_ts if recovery_complete else ""
                 else:
                     channel_context, watermark_to_set = await self._fetch_thread_delta(
                         channel_id=channel_id,

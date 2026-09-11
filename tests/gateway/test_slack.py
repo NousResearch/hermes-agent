@@ -3528,8 +3528,18 @@ class TestThreadReplyHandling:
 
     @pytest.mark.asyncio
     async def test_edit_refresh_uses_edit_time_but_excludes_edited_trigger(
-        self, adapter_with_session_store
+        self, adapter_with_session_store, mock_session_store
     ):
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=True
+        )
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             return_value={
                 "messages": [
@@ -3540,19 +3550,23 @@ class TestThreadReplyHandling:
             }
         )
 
-        context, complete = await adapter_with_session_store._fetch_complete_thread_context(
+        context, _, _ = await adapter_with_session_store._hydrate_thread_context(
             channel_id="C123",
-            thread_ts="123.000",
-            current_ts="123.200",
+            event_thread_ts="123.000",
+            ts="123.200",
+            user_id="U_APP",
             latest_ts="123.500",
             team_id="T_TEAM",
+            is_thread_reply=True,
+            is_mentioned=False,
+            is_dm=False,
         )
 
-        assert complete is True
         assert "intermediate reply" in context
         assert "edited trigger" not in context
         call = adapter_with_session_store._app.client.conversations_replies.await_args.kwargs
         assert call["latest"] == "123.500"
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.500"
 
     @pytest.mark.asyncio
     async def test_failed_handler_releases_session_scoped_processed_marker(

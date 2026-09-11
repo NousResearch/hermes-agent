@@ -144,6 +144,15 @@ def _setup_ca_cert(console: Console):
     return ca_crt, ca_key
 
 
+def _effective_credential_source(proxy_cfg: dict, args: argparse.Namespace) -> str:
+    """Resolve setup flags against the persisted source without a silent downgrade."""
+    if args.from_bitwarden:
+        return "bitwarden"
+    if getattr(args, "no_bitwarden", False):
+        return "env"
+    return "bitwarden" if proxy_cfg.get("credential_source") == "bitwarden" else "env"
+
+
 def _setup_mint_tokens(console: Console, args: argparse.Namespace):
     """Discover providers, merge with existing tokens (rotating on request), print the table."""
     _step(console, 3, "Mint proxy tokens for known providers")
@@ -154,7 +163,7 @@ def _setup_mint_tokens(console: Console, args: argparse.Namespace):
         console.print(f"  [red]✗ Invalid custom credential mapping: {exc}[/red]")
         return None
     available_env_names: List[str] = []
-    if args.from_bitwarden:
+    if _effective_credential_source(proxy_cfg, args) == "bitwarden":
         available_env_names = _bitwarden_env_names(console)
         if available_env_names is None:
             return None
@@ -283,19 +292,15 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     # ``--from-bitwarden`` setup keeps bitwarden mode (the documented rotation guarantee)
     # unless the operator passes an explicit --no-bitwarden.
     existing_source = proxy_cfg.get("credential_source")
-    if args.from_bitwarden:
-        proxy_cfg["credential_source"] = "bitwarden"
-    elif getattr(args, "no_bitwarden", False):
-        proxy_cfg["credential_source"] = "env"
-        if existing_source == "bitwarden":
-            console.print("[yellow]Switched credential_source from bitwarden to env.[/yellow]")
-    elif existing_source == "bitwarden":
+    effective_source = _effective_credential_source(proxy_cfg, args)
+    proxy_cfg["credential_source"] = effective_source
+    if effective_source == "env" and existing_source == "bitwarden":
+        console.print("[yellow]Switched credential_source from bitwarden to env.[/yellow]")
+    elif effective_source == "bitwarden" and not args.from_bitwarden:
         console.print(
             "[dim]Keeping credential_source=bitwarden from existing config. "
             "Pass --no-bitwarden to switch to env-based credentials.[/dim]"
         )
-    else:
-        proxy_cfg["credential_source"] = "env"
     save_config(cfg)
     return proxy_cfg
 

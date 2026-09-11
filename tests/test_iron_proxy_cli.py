@@ -223,6 +223,41 @@ def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, mo
     assert os.environ["EBIRD_API_KEY"] == "real-ebird-secret"
 
 
+def test_flagless_setup_reuses_persisted_bitwarden_source_and_custom_token(
+    hermes_home, monkeypatch,
+):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["credential_source"] = "bitwarden"
+    cfg["proxy"]["extra_secrets"] = [{
+        "env_var": "SERVICE_SECRET",
+        "hosts": ["api.example.com"],
+        "match_headers": ["x-service-secret"],
+    }]
+    save_config(cfg)
+    existing = ip.TokenMapping(
+        "service-existing-token", "SERVICE_SECRET", ("api.example.com",),
+        ("x-service-secret",), (), False,
+    )
+    monkeypatch.setattr(ip, "load_mappings", lambda: [existing])
+    calls = []
+
+    def fake_bitwarden_env_names(console):
+        calls.append(True)
+        return ["SERVICE_SECRET"]
+
+    monkeypatch.setattr(proxy_cli, "_bitwarden_env_names", fake_bitwarden_env_names)
+
+    mappings = proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args())
+
+    assert calls == [True]
+    assert len(mappings) == 1
+    assert mappings[0].real_env_name == "SERVICE_SECRET"
+    assert mappings[0].proxy_token == "service-existing-token"
+    assert mappings[0].match_query is False
+
+
 
 
 def test_cmd_status_returns_0(hermes_home, monkeypatch):

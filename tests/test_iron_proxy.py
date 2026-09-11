@@ -66,6 +66,34 @@ def test_extra_secret_specs_reject_unbounded_or_unsafe_targets(extra_secrets, er
         ip.parse_extra_secret_specs(extra_secrets)
 
 
+@pytest.mark.parametrize("env_var", [
+    "GOOGLE_API_KEY", "HTTPS_PROXY", "HERMES_IRON_PROXY_MGMT_KEY",
+])
+def test_extra_secret_specs_reject_builtin_aliases_and_egress_control_names(env_var):
+    with pytest.raises(ValueError, match="reserved egress credential name"):
+        ip.parse_extra_secret_specs([{"env_var": env_var, "hosts": ["api.example.com"]}])
+
+
+@pytest.mark.parametrize("extra_secrets", [
+    [
+        {"env_var": "FIRST_SECRET", "hosts": ["api.example.com"]},
+        {"env_var": "SECOND_SECRET", "hosts": ["api.example.com"]},
+    ],
+    [
+        {"env_var": "FIRST_SECRET", "hosts": ["*.example.com"]},
+        {"env_var": "SECOND_SECRET", "hosts": ["api.example.com"]},
+    ],
+    [{"env_var": "SERVICE_SECRET", "hosts": ["api.openai.com"]}],
+    [
+        {"env_var": "FIRST_SECRET", "hosts": ["*.example.com"]},
+        {"env_var": "SECOND_SECRET", "hosts": ["*.api.example.com"]},
+    ],
+])
+def test_extra_secret_specs_reject_overlapping_host_scopes(extra_secrets):
+    with pytest.raises(ValueError, match="overlaps mapping"):
+        ip.parse_extra_secret_specs(extra_secrets)
+
+
 
 
 
@@ -102,6 +130,32 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     # Custom allowed_hosts wins as the base; mapping's hosts get appended.
     assert "custom-host.test" in domains
     assert "openrouter.ai" in domains  # comes from the mapping
+
+
+def test_custom_static_headers_disable_query_replacement_but_gemini_keeps_it(
+    hermes_home, tmp_path,
+):
+    custom = ip.discover_provider_mappings(
+        available_env_names=["SERVICE_SECRET"],
+        extra_specs=ip.parse_extra_secret_specs([{
+            "env_var": "SERVICE_SECRET",
+            "hosts": ["api.example.com"],
+            "match_headers": ["x-service-secret"],
+        }]),
+    )[0]
+    gemini = ip.discover_provider_mappings(available_env_names=["GEMINI_API_KEY"])[0]
+    ip.write_mappings([custom, gemini])
+    cfg = ip.build_proxy_config(
+        mappings=ip.load_mappings(),
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+    rules = cfg["transforms"][1]["config"]["secrets"]
+
+    assert {rule["source"]["var"]: rule["replace"]["match_query"] for rule in rules} == {
+        "SERVICE_SECRET": False,
+        "GEMINI_API_KEY": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +535,17 @@ def test_mappings_roundtrip_preserves_headers_and_aliases(hermes_home):
     loaded = ip.load_mappings()
     assert loaded[0].match_headers == ("x-goog-api-key",)
     assert loaded[0].alias_env_names == ("GOOGLE_API_KEY",)
+
+
+def test_custom_credential_name_is_critical_for_docker_forwarding():
+    from tools.environments.docker_egress import (
+        _critical_egress_env_names,
+        check_forward_env_collisions,
+    )
+
+    critical = _critical_egress_env_names({"SERVICE_SECRET": "opaque-token"})
+    with pytest.raises(RuntimeError, match="SERVICE_SECRET"):
+        check_forward_env_collisions(["SERVICE_SECRET"], critical, enforce=True)
 
 
 

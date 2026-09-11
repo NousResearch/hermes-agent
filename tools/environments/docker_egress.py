@@ -139,7 +139,9 @@ def _egress_enforce_on_docker(default: bool = True) -> bool:
 def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
     """Env names that would weaken or bypass enforced egress if overridden."""
     critical = set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"}
-    critical.update(k for k in env_overrides if k.endswith("_API_KEY") or k.endswith("_TOKEN"))
+    # Every override is proxy-owned, including arbitrary custom credential names such as
+    # SERVICE_SECRET. Suffix heuristics let docker_forward_env leak those real values.
+    critical.update(env_overrides)
     return critical
 
 

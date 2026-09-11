@@ -130,6 +130,16 @@ _VERSION_CACHE: Dict[str, str] = {}
 _HERMES_IRON_PROXY_NONCE_ENV = "HERMES_IRON_PROXY_NONCE"
 _proxy_nonce: Optional[str] = None
 
+# Names owned by the proxy process or Docker egress plumbing. A custom mapping under one of
+# these names could replace routing/trust configuration with an opaque credential token.
+_EGRESS_CONTROL_ENV_NAMES = frozenset({
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+    "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "HERMES_EGRESS_PROXY",
+    "_HERMES_EGRESS_NODE_OPTIONS_APPEND", _MGMT_API_KEY_ENV,
+    _HERMES_IRON_PROXY_NONCE_ENV,
+})
+
 
 @dataclass
 class ProxyStatus:
@@ -161,6 +171,7 @@ class TokenMapping:
     upstream_hosts: Tuple[str, ...]
     match_headers: Tuple[str, ...] = ("Authorization",)
     alias_env_names: Tuple[str, ...] = ()
+    match_query: bool = True
 
 
 @dataclass(frozen=True)
@@ -170,6 +181,25 @@ class CredentialMappingSpec:
     env_var: str
     hosts: Tuple[str, ...]
     match_headers: Tuple[str, ...]
+
+
+def _host_scopes_overlap(left: str, right: str) -> bool:
+    """Return whether two validated exact/wildcard DNS scopes intersect."""
+    left_wildcard, right_wildcard = left.startswith("*."), right.startswith("*.")
+    left_suffix = left[2:] if left_wildcard else left
+    right_suffix = right[2:] if right_wildcard else right
+    if not left_wildcard and not right_wildcard:
+        return left_suffix == right_suffix
+    if left_wildcard and right_wildcard:
+        return (
+            left_suffix == right_suffix
+            or left_suffix.endswith(f".{right_suffix}")
+            or right_suffix.endswith(f".{left_suffix}")
+        )
+    exact, wildcard_suffix = (
+        (right_suffix, left_suffix) if left_wildcard else (left_suffix, right_suffix)
+    )
+    return exact.endswith(f".{wildcard_suffix}")
 
 
 def _validate_extra_secret_host(value: object, *, path: str) -> str:
@@ -204,6 +234,21 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         raise ValueError("proxy.extra_secrets must be a list")
 
     builtins = set(_BEARER_PROVIDERS) | set(_HEADER_AUTH_PROVIDERS)
+    builtin_aliases = {
+        alias
+        for provider in _HEADER_AUTH_PROVIDERS.values()
+        for alias in provider.get("aliases", ())
+    }
+    reserved_env_names = builtins | builtin_aliases | set(_EGRESS_CONTROL_ENV_NAMES)
+    claimed_hosts = [
+        (env_name, host)
+        for env_name, hosts in _BEARER_PROVIDERS.items()
+        for host in hosts
+    ] + [
+        (env_name, host)
+        for env_name, provider in _HEADER_AUTH_PROVIDERS.items()
+        for host in provider["hosts"]
+    ]
     seen_env_names = set()
     specs: List[CredentialMappingSpec] = []
     for index, item in enumerate(raw):
@@ -217,8 +262,8 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         env_var = item.get("env_var")
         if not isinstance(env_var, str) or not _ENV_NAME_RE.fullmatch(env_var):
             raise ValueError(f"{path}.env_var must be an uppercase environment variable name")
-        if env_var in builtins:
-            raise ValueError(f"{path}.env_var duplicates built-in mapping {env_var}")
+        if env_var in reserved_env_names or env_var.startswith("HERMES_PROXY_TOKEN_"):
+            raise ValueError(f"{path}.env_var uses reserved egress credential name {env_var}")
         if env_var in seen_env_names:
             raise ValueError(f"{path}.env_var duplicates an earlier custom mapping")
 
@@ -229,6 +274,16 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
             _validate_extra_secret_host(host, path=f"{path}.hosts[{host_index}]")
             for host_index, host in enumerate(raw_hosts)
         ))
+        for host in hosts:
+            if conflict := next(
+                ((owner, claimed) for owner, claimed in claimed_hosts
+                 if _host_scopes_overlap(host, claimed)),
+                None,
+            ):
+                owner, claimed = conflict
+                raise ValueError(
+                    f"{path}.hosts scope {host} overlaps mapping {owner} scope {claimed}"
+                )
 
         raw_headers = item.get("match_headers", ["Authorization"])
         if not isinstance(raw_headers, list) or not raw_headers:
@@ -248,6 +303,7 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
 
         seen_env_names.add(env_var)
         specs.append(CredentialMappingSpec(env_var, hosts, tuple(headers)))
+        claimed_hosts.extend((env_var, host) for host in hosts)
     return specs
 
 
@@ -622,7 +678,7 @@ def build_proxy_config(
         "source": {"type": "env", "var": m.real_env_name},
         "replace": {
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
-            "match_query": True, "match_body": False, "require": True,
+            "match_query": m.match_query, "match_body": False, "require": True,
         },
         "rules": [{"host": h} for h in m.upstream_hosts],
     } for m in mappings]
@@ -696,6 +752,7 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
     payload = {"version": 1, "tokens": [{
         "proxy_token": m.proxy_token, "env_name": m.real_env_name, "upstream_hosts": list(m.upstream_hosts),
         "match_headers": list(m.match_headers), "alias_env_names": list(m.alias_env_names),
+        "match_query": m.match_query,
     } for m in mappings]}
     return _write_state_file_atomic(_proxy_state_dir(), "mappings.json", lambda f: json.dump(payload, f, indent=2))
 
@@ -712,8 +769,11 @@ def load_mappings() -> List[TokenMapping]:
     out: List[TokenMapping] = []
     for item in payload.get("tokens", []):
         with suppress(KeyError, TypeError):  # pre-header-auth files load with the bearer defaults they were written under
-            out.append(TokenMapping(item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
-                                    tuple(item.get("match_headers") or ("Authorization",)), tuple(item.get("alias_env_names") or ())))
+            out.append(TokenMapping(
+                item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
+                tuple(item.get("match_headers") or ("Authorization",)),
+                tuple(item.get("alias_env_names") or ()), bool(item.get("match_query", True)),
+            ))
     return out
 
 
@@ -726,12 +786,16 @@ def discover_provider_mappings(
     present -> ONE mapping on the canonical name (the subprocess-env builder mirrors aliases).
     ``available_env_names`` (Bitwarden adapter) overrides the non-empty names in the host env."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
-    specs = [(n, h, ("Authorization",), ()) for n, h in _BEARER_PROVIDERS.items()] + [
-        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ())) for n, s in _HEADER_AUTH_PROVIDERS.items()
-    ] + [(s.env_var, s.hosts, s.match_headers, ()) for s in extra_specs]
+    specs = [(n, h, ("Authorization",), (), True) for n, h in _BEARER_PROVIDERS.items()] + [
+        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ()), True)
+        for n, s in _HEADER_AUTH_PROVIDERS.items()
+    ] + [(s.env_var, s.hosts, s.match_headers, (), False) for s in extra_specs]
     return [
-        TokenMapping(mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")), env_name, hosts, headers, aliases)
-        for env_name, hosts, headers, aliases in specs
+        TokenMapping(
+            mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")),
+            env_name, hosts, headers, aliases, match_query,
+        )
+        for env_name, hosts, headers, aliases, match_query in specs
         if env_name in names or any(a in names for a in aliases)
     ]
 

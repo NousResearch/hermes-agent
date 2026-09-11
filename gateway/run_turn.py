@@ -19,6 +19,7 @@ from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
+from gateway.branding import agent_display_name
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -1315,10 +1316,13 @@ class GatewayTurnMixin:
             # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
             sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"
             await self._deliver_platform_notice(
-                source, f"📬 No home channel is set for {platform_name.title()}. "
-                f"A home channel is where Hermes delivers cron job results and cross-platform "
-                f"messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore "
-                f"to skip.",
+                source,
+                t(
+                    "gateway.home_channel.notice",
+                    platform=platform_name.title(),
+                    brand=agent_display_name(),
+                    cmd=sethome_cmd,
+                ),
             )
 
     def _hmwa_apply_message_timestamp(self, event, message_text):

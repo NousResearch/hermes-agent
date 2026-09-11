@@ -20,6 +20,20 @@ approval:
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Szia~ Még nem ismerlek!"
+    code:         "Itt a párosítási kódod: `{code}`"
+    approve_hint: "Kérd meg a bot tulajdonosát, hogy futtassa:\n`{command}`"
+    rate_limited: "Túl sok párosítási kérés érkezett most~ Kérlek, próbáld újra később!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 Nincs beállítva otthoni csatorna ehhez: {platform}. Az otthoni csatornába kézbesíti {brand} a cron feladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {cmd}, hogy ez a beszélgetés legyen az otthoni csatornád, vagy hagyd figyelmen kívül."
+
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
   goal_cleared:     "✓ A cél törölve."

@@ -20,6 +20,20 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Merhaba~ Seni henüz tanımıyorum!"
+    code:         "İşte eşleştirme kodun: `{code}`"
+    approve_hint: "Bot sahibinden şunu çalıştırmasını iste:\n`{command}`"
+    rate_limited: "Şu anda çok fazla eşleştirme isteği var~ Lütfen daha sonra tekrar dene!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 {platform} için ana kanal ayarlanmamış. Ana kanal, {brand} tarafından cron görevi sonuçlarının ve platformlar arası mesajların iletildiği yerdir.\n\nBu sohbeti ana kanal yapmak için {cmd} yaz ya da bu mesajı yok say."
+
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared:     "✓ Hedef temizlendi."

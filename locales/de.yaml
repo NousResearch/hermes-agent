@@ -20,6 +20,20 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Hallo~ Ich kenne dich noch nicht!"
+    code:         "Hier ist dein Kopplungscode: `{code}`"
+    approve_hint: "Bitte den Bot-Besitzer, Folgendes auszuführen:\n`{command}`"
+    rate_limited: "Gerade zu viele Kopplungsanfragen~ Bitte versuche es später noch einmal!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 Für {platform} ist kein Home-Kanal festgelegt. Im Home-Kanal liefert {brand} Cron-Job-Ergebnisse und plattformübergreifende Nachrichten.\n\nGib {cmd} ein, um diesen Chat zum Home-Kanal zu machen, oder ignoriere diese Nachricht."
+
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."

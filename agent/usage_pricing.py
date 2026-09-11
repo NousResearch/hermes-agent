@@ -8,13 +8,15 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
+_MODELS_DEV_NO_BASE_PROVIDERS = frozenset({"xiaomi"})
+_MODELS_DEV_DIRECT_HOSTS = frozenset({("xiaomi", "xiaomimimo.com")})
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.
 # Sub-cent cost threshold: below $0.01, render at 4 decimal places so the display is non-zero (e.g. $0.0046
@@ -439,6 +441,42 @@ def _pricing_entry_from_metadata(
     )
 
 
+
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Return models.dev pricing only for direct provider routes."""
+    if not route.provider or not route.model:
+        return None
+    try:
+        from agent.models_dev import get_model_info
+
+        origin = base_url_origin(route.base_url)
+        if (not route.base_url and route.provider not in _MODELS_DEV_NO_BASE_PROVIDERS) or (
+            route.base_url and not (
+                origin[0] == "https"
+                and origin[2] == 443
+                and any(
+                    route.provider == provider and (origin[1] == host or origin[1].endswith("." + host))
+                    for provider, host in _MODELS_DEV_DIRECT_HOSTS
+                )
+            )
+        ):
+            return None
+        model_info = get_model_info(route.provider, route.model)
+    except Exception:
+        return None
+    if model_info is None or not model_info.has_cost_data():
+        return None
+    return PricingEntry(
+        input_cost_per_million=_to_decimal(model_info.cost_input),
+        output_cost_per_million=_to_decimal(model_info.cost_output),
+        cache_read_cost_per_million=_to_decimal(model_info.cost_cache_read),
+        cache_write_cost_per_million=_to_decimal(model_info.cost_cache_write),
+        source="provider_models_api",
+        source_url="https://models.dev",
+        pricing_version="models.dev",
+        fetched_at=_UTC_NOW(),
+    )
+
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -460,7 +498,7 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return None
+    return _models_dev_pricing_entry(route)
 
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache

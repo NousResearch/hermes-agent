@@ -18,7 +18,7 @@ def plugin(monkeypatch):
     spec = importlib.util.spec_from_file_location("modelark_pricing_under_test", PLUGIN)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.install() == 12
+    assert mod.install() == 18
     return mod
 
 
@@ -38,6 +38,14 @@ def test_flash_priced_at_deepseek_list(plugin, provider):
     r = _cost("deepseek-v4-flash-ga-260731", provider, input_tokens=1_000_000, output_tokens=1_000_000)
     assert r.status == "estimated" and r.source == "modelark-proxy"
     assert r.amount_usd == flash.input_cost_per_million + flash.output_cost_per_million > 0
+
+
+@pytest.mark.parametrize("provider", ["custom", "modelark"])
+def test_served_name_from_aux_accounting_is_priced(plugin, provider):
+    """aux_accounting prices on response.model, which the Coding Plan reports as the bare served name."""
+    r = _cost("deepseek-v4-flash", provider, input_tokens=1000, output_tokens=100)
+    assert r.status == "estimated" and r.source == "modelark-proxy" and r.amount_usd > 0
+    assert _cost("deepseek-v4-pro", provider, input_tokens=1000).source == "modelark-proxy"
 
 
 def test_pro_priced_at_deepseek_list(plugin):

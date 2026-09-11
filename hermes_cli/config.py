@@ -1814,11 +1814,19 @@ _UNLIMITED_SPELLINGS = frozenset({
     "none", "null", "unlimited", "infinite", "infinity", "inf", "∞", "-1", "0"})
 
 
-def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
-    """Normalize a raw ``agent.max_turns`` value into an int iteration cap (always >= 1)."""
+def resolve_local_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Normalize an explicitly configured local work-count ceiling.
+
+    ``None``, non-positive numbers, and the documented unlimited spellings map to the
+    integer sentinel so existing iteration-budget arithmetic needs no special case.
+    Callers must handle an absent key before calling when absence has a finite legacy
+    default.  Invalid values fail closed to ``default`` rather than crashing startup.
+    """
     # bool is a subclass of int; reject explicitly so True/False don't become 1/0.
-    if raw is None or isinstance(raw, bool):
+    if isinstance(raw, bool):
         return default
+    if raw is None:
+        return TURN_LIMIT_UNLIMITED
     if isinstance(raw, (int, float)):
         n = int(raw)
     elif isinstance(raw, str):
@@ -1840,6 +1848,16 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
         return default
     return TURN_LIMIT_UNLIMITED if n <= 0 else n
+
+
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Normalize ``agent.max_turns`` while preserving the legacy absent-value default.
+
+    Existing call sites pass ``None`` both for a missing key and for YAML ``null``.  Their
+    default is already unlimited in normal operation; preserving a caller-supplied finite
+    fallback avoids changing CLI/gateway compatibility behavior.
+    """
+    return default if raw is None else resolve_local_limit(raw, default=default)
 
 
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:

@@ -1239,8 +1239,9 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
-        # Per-subagent iteration cap (own budget, independent of the parent's).
-        "max_iterations": 250,
+        # Per-subagent iteration cap (own budget, independent of the parent's). null/unlimited/0/-1
+        # disables this local ceiling; cancellation, watchdog, timeout, cost and rate limits remain.
+        "max_iterations": None,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
         # summary is sized to the parent's remaining context headroom; trimmed text spills to
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
@@ -1804,6 +1805,10 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
+        # Maximum Hermes tool calls a single execute_code cell may make. null/0/negative or
+        # "unlimited" disables this local ceiling; per-operation timeouts, cancellation, provider
+        # quotas, approvals and cost controls remain enforced.
+        "max_tool_calls": None,
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state

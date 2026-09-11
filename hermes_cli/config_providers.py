@@ -8,6 +8,8 @@ so tests patching that module still intercept the call.
 
 import logging
 import re
+import threading
+from http.cookiejar import CookieJar
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -117,7 +119,8 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    "cookie_jar"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -271,6 +274,12 @@ def _normalize_custom_provider_entry(
     elif isinstance(ssl_verify, str) and ssl_verify.strip():
         normalized["ssl_verify"] = ssl_verify.strip()
 
+    # Opt-in cookie sticky routing: persists LB Set-Cookie (e.g. nginx
+    # ``route=``) in a shared jar across per-request client rebuilds.
+    cookie_jar = entry.get("cookie_jar")
+    if isinstance(cookie_jar, bool):
+        normalized["cookie_jar"] = cookie_jar
+
     return normalized
 
 
@@ -285,7 +294,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify"):
+        "ssl_ca_cert", "ssl_verify", "cookie_jar"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -437,6 +446,53 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_ca_cert"] = tls["ssl_ca_cert"]
     if "ssl_verify" in tls:
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
+
+
+# Process-wide shared cookie jars for providers with ``cookie_jar: true`` — keyed by normalized
+# route. One jar per endpoint, created lazily and reused across every client rebuild so LB
+# sticky cookies (nginx ``route=``, Cloudflare ``__cf_bm``) survive per-request client churn.
+_SHARED_COOKIE_JARS: Dict[str, "CookieJar"] = {}
+_SHARED_COOKIE_JARS_LOCK = threading.Lock()
+
+
+def get_custom_provider_cookie_jar(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> Optional["CookieJar"]:
+    """Shared ``CookieJar`` for a route-matching entry with ``cookie_jar: true``.
+
+    The SAME jar instance is returned on every call for a given endpoint — that identity is
+    the whole mechanism: per-request clients are rebuilt constantly, the jar must not be.
+    Returns ``None`` when no matching entry opts in.
+    """
+    from http.cookiejar import CookieJar  # noqa: F401 — re-exported for typing
+
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        if not entry.get("cookie_jar"):
+            return None
+        route = normalize_route_base_url(base_url)
+        with _SHARED_COOKIE_JARS_LOCK:
+            jar = _SHARED_COOKIE_JARS.get(route)
+            if jar is None:
+                jar = CookieJar()
+                _SHARED_COOKIE_JARS[route] = jar
+            return jar
+    return None
+
+
+def apply_custom_provider_cookie_jar(
+    agent: Any,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> None:
+    """Set ``agent._shared_cookie_jar`` when the provider opts into cookie sticky.
+
+    Called from agent init so every subsequent ``_create_openai_client`` call threads the
+    same jar into its per-request ``httpx.Client`` via ``SharedCookieTransport``.  Clears
+    the attribute when the provider does not opt in (e.g. after a model/provider switch).
+    """
+    agent._shared_cookie_jar = get_custom_provider_cookie_jar(
+        base_url, custom_providers, config)
 
 
 def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:

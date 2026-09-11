@@ -893,10 +893,11 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
     try:
-        from hermes_cli.config import (
+        from hermes_cli.config import load_config
+        from hermes_cli.config_providers import (
+            apply_custom_provider_cookie_jar,
             apply_custom_provider_extra_headers_to_client_kwargs,
             apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers,
-            load_config,
         )
         _cp_entries = get_compatible_custom_providers(load_config())
         _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
@@ -904,6 +905,9 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
         # Per-provider extra_headers applied last so the most specific config level wins.
         # SECURITY: values may carry credentials — never log them.
         apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, _cp_base_url, _cp_entries)
+        # Opt-in cookie sticky routing (providers.<name>.cookie_jar: true): persist the shared
+        # cookie jar on the agent so per-request client builds thread it into their transport.
+        apply_custom_provider_cookie_jar(agent, _cp_base_url, _cp_entries)
     except Exception:
         logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 

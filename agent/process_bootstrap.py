@@ -384,7 +384,10 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
+def build_keepalive_http_client(
+    base_url: str = "", *, async_mode: bool = False, verify: Any = True,
+    cookie_jar: Any = None,
+) -> Optional[Any]:
     """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
 
     Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
@@ -399,6 +402,11 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     connection pool + SSL context. Async clients are never shared: an httpcore async pool is
     bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport.
 
+    ``cookie_jar`` (optional ``http.cookiejar.CookieJar``) opts the client into cookie-based
+    LB sticky routing: a ``SharedCookieTransport`` extract/replays ``Set-Cookie``/``Cookie``
+    through the jar, which is shared across every client rebuild (unlike the pools). Bypasses
+    the shared-transport pool — a sticky route must ride THIS process's jar-coherent sockets.
+
     See #12952, #54049.
     See #10933.
     """
@@ -407,6 +415,11 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         proxy = _get_proxy_for_base_url(base_url)
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
+        if cookie_jar is not None:
+            from agent.shared_cookie_transport import build_shared_cookie_http_client
+            return build_shared_cookie_http_client(
+                jar=cookie_jar, proxy=proxy, verify=verify, limits=limits, timeout=timeout,
+            )
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None

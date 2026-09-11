@@ -83,6 +83,33 @@ def _merge_preflight_warning(cli, result, custom_providers) -> None:
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
+def _active_credential_lines(provider: str) -> list[str]:
+    """Lines naming the pooled credential the next request for ``provider`` will use.
+
+    Reads the same source as ``hermes auth list`` (``credential_pool.load_pool(...).peek()``), so the
+    label printed is the credential the pool will actually select — not a guess from the model name.
+    ``peek()`` is a non-destructive read. Display-only: any failure yields no lines.
+    """
+    provider = (provider or "").strip().lower()
+    if not provider:
+        return []
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider)
+        entry = pool.peek()
+    except Exception:
+        return []
+    if entry is None:
+        return []
+    label = (getattr(entry, "label", "") or "").strip()
+    if not label:
+        return []
+    lines = [f"    API key: {label} (priority {entry.priority})"]
+    if len(pool.entries()) > 1:
+        lines.append(f"    Switch: hermes auth priority {provider} <label> 0")
+    return lines
+
+
 def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_context: bool) -> None:
     """Record the next-turn switch note and print the "Model switched" block.
 
@@ -101,6 +128,9 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"Adjust your self-identification accordingly.]")
     _cprint(f"  ✓ Model switched: {_display_new}")
     _cprint(f"    Provider: {result.provider_label or result.target_provider}")
+    if getattr(cli, "show_switch_credentials", True):
+        for line in _active_credential_lines(result.target_provider):
+            _cprint(line)
 
     # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).

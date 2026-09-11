@@ -407,6 +407,7 @@ def _cli_config_defaults():
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
             "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "show_switch_credentials": True,
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
@@ -2582,6 +2583,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.bell_on_complete = display.get("bell_on_complete", False)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
         self.show_reasoning = display.get("show_reasoning", True)
+        # Name the pooled credential the next request will use in the /model switch summary
+        # (display.show_switch_credentials).
+        self.show_switch_credentials = display.get("show_switch_credentials", True)
         self.reasoning_full = display.get("reasoning_full", False)
         _configure_output_history(
             enabled=display.get("persistent_output", True),

@@ -1793,6 +1793,14 @@ display:
   #   false: Hide reasoning (default)
   show_reasoning: false
 
+  # Name the pooled API key that will serve the next request, printed under the
+  # provider line of the /model switch summary. Useful when a provider holds
+  # several pooled credentials ("hermes auth priority <provider> <label> 0"):
+  # the model name alone cannot tell you which key is live.
+  #   true:  Show the credential label + priority (default)
+  #   false: Omit those lines from the switch summary
+  show_switch_credentials: true
+
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.

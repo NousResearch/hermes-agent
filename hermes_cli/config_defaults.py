@@ -785,6 +785,10 @@ DEFAULT_CONFIG = {
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
         "reasoning_full": False,
+        # Name the pooled credential (label + priority) the next request will use, right under the
+        # provider line of the /model switch summary — the label is the key actually selected, which
+        # the model name alone does not reveal when a provider has several pooled keys.
+        "show_switch_credentials": True,
         # Background self-improvement notices in chat: "off" (review still runs) | "on" (generic "💾
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.

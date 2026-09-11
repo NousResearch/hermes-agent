@@ -54,7 +54,6 @@ def test_registry_names_resolve_into_the_table():
 
 def _cli():
     c = HermesCLI.__new__(HermesCLI)
-    c._pending_resume_sessions = ["x"]
     c.session_id = "s1"
     c.config = {}
     return c
@@ -68,13 +67,11 @@ def test_dispatch_return_semantics_and_side_effects():
         m.assert_called_once_with()
         hook.assert_called_once()
         assert hook.call_args.kwargs["command"] == "yolo"
-    assert c._pending_resume_sessions is None  # non-resume command disarms it
 
     c = _cli()
     with patch.object(HermesCLI, "_handle_resume_command") as m:
         assert c.process_command("/resume 2") is True
         m.assert_called_once_with("/resume 2")
-    assert c._pending_resume_sessions == ["x"]
 
     c = _cli()
     assert c.process_command("/exit") is False
@@ -103,4 +100,3 @@ def test_wisdom_convention_handler_receives_original_arguments():
             patch("hermes_cli.plugins.fire_pre_command_hook"):
         assert c.process_command("/wisdom inspect Team-Runbook") is True
         handler.assert_called_once_with("/wisdom inspect Team-Runbook")
-    assert c._pending_resume_sessions is None

@@ -604,32 +604,10 @@ class CLISessionMixin:
                 print("(^_^)v New session started!")
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
-        """Resolve a bare numeric reply following a bare ``/resume`` prompt.
+        """Never consume ordinary chat input as a session selection.
 
-        ``/resume`` (no args) arms ``self._pending_resume_sessions``; the next input gets one
-        chance to be a bare session number. The pending state is one-shot — cleared on the
-        first input regardless of outcome, so a stray later number is never hijacked.
-        Returns True if the input was consumed (caller must not treat it as chat).
-
-        See #34584.
         """
-        from cli import _cprint
-        pending = self._pending_resume_sessions
-        if not pending:
-            return False
-        self._pending_resume_sessions = None
-        if not isinstance(text, str):
-            return False
-        # Only a pure number selects; "/resume 3", titles etc. fall through.
-        if not text.strip().isdigit():
-            return False
-        index = int(text.strip())
-        if not 1 <= index <= len(pending):
-            _cprint(f"  Resume index {index} is out of range.")
-            _cprint("  Use /resume with no arguments to see available sessions.")
-            return True
-        self._handle_resume_command(f"/resume {index}")
-        return True
+        return False
 
     def save_conversation(self, cmd: str = "/save"):
         """Handle ``/save [json|md|html] [filename] [redact]``.

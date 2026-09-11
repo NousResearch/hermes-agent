@@ -163,6 +163,69 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
+class TestResponsesItemImageAccounting:
+    """Responses ``function_call_output`` items carry tool-result images under
+    ``output`` (the converter moves chat ``content`` there); the estimator must
+    price them with the flat per-image model, never as base64 text (#108320)."""
+
+    def test_function_call_output_image_priced_flat_not_by_base64_length(self):
+        import base64
+        import os
+
+        small = "data:image/png;base64," + base64.b64encode(os.urandom(8_000)).decode()
+        large = (
+            "data:image/png;base64," + base64.b64encode(os.urandom(300_000)).decode()
+        )
+
+        def estimate(payload: str) -> int:
+            item = {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{"type": "input_image", "image_url": payload}],
+            }
+            return estimate_messages_tokens_rough([item])
+
+        small_est, large_est = estimate(small), estimate(large)
+        # Flat per-image model: both register as the learned/default image cost
+        # plus a small envelope, independent of encoded length.
+        assert 1500 <= small_est < 3_000
+        assert 1500 <= large_est < 3_000
+        assert abs(large_est - small_est) < 200
+
+    def test_function_call_output_image_matches_chat_estimate(self):
+        """The carrier key alone (``content`` vs ``output``) must not change the
+        accounting for the same image."""
+        import base64
+        import os
+
+        payload = (
+            "data:image/png;base64," + base64.b64encode(os.urandom(100_000)).decode()
+        )
+        chat = {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": payload}}],
+        }
+        responses_item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [{"type": "input_image", "image_url": payload}],
+        }
+
+        chat_est = estimate_messages_tokens_rough([chat])
+        responses_est = estimate_messages_tokens_rough([responses_item])
+
+        assert abs(chat_est - responses_est) < 200
+
+    def test_function_call_output_text_output_still_counted(self):
+        """Plain-string ``output`` (the common tool-result shape) is unaffected."""
+        item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "plain tool result " * 100,
+        }
+        est = estimate_messages_tokens_rough([item])
+        assert est >= (len(item["output"]) // 4) * 0.9
+
 
 class TestEstimateRequestTokensRough:
     def test_caches_tools_estimate(self):

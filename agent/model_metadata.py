@@ -2093,16 +2093,22 @@ def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
 
 
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+
+
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     """Count image-like content parts in a message; return their token cost."""
     if not isinstance(msg, dict):
         return 0
     content = msg.get("content")
-    count = _count_parts(content, {"image", "image_url", "input_image"})
+    count = _count_parts(content, _IMAGE_PART_TYPES)
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
         count += _count_parts(content.get("content"), {"image", "image_url"})
+    # Responses ``function_call_output`` items carry converted tool-result
+    # parts under ``output`` (the converter moves chat ``content`` there).
+    count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES)
     return count * cost_per_image
 
 
@@ -2146,11 +2152,22 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         elif k == "content" and isinstance(v, list):
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"} else part
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
                 for part in v
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "output" and isinstance(v, list):
+            # Responses ``function_call_output`` output parts: strip the image
+            # payload like the ``content`` branch above so encoded bytes are
+            # priced by the flat per-image model, never as text.
+            shadow[k] = [
+                {"type": part.get("type"), "image": "[stripped]"}
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
+                for part in v
+            ]
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

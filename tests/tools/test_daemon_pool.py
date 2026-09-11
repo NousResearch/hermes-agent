@@ -93,7 +93,27 @@ def test_submit_propagates_caller_contextvars():
         pool.shutdown(wait=True)
 
 
+def test_python314_compat_missing_initializer_attributes():
+    """Python 3.14 ThreadPoolExecutor removes _initializer / _initargs attributes.
+
+    DaemonThreadPoolExecutor._adjust_thread_count must not raise AttributeError.
+    """
+    pool = DaemonThreadPoolExecutor(max_workers=2)
+    try:
+        # Simulate Python 3.14 where ThreadPoolExecutor instance lacks _initializer and _initargs
+        if hasattr(pool, "_initializer"):
+            delattr(pool, "_initializer")
+        if hasattr(pool, "_initargs"):
+            delattr(pool, "_initargs")
+
+        res = pool.submit(lambda: 42).result(timeout=10)
+        assert res == 42
+    finally:
+        pool.shutdown(wait=True)
+
+
 def _repo_root():
     import pathlib
 
     return pathlib.Path(__file__).resolve().parents[2]
+

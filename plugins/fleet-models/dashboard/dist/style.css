@@ -53,7 +53,7 @@
 .fm-link { background: none; border: 0; color: var(--color-primary); cursor: pointer; padding: 0; font-size: 12px; }
 .fm-link--danger { color: var(--color-destructive); }
 .fm-chip { border: 1px solid var(--fm-line); background: transparent; border-radius: 999px; padding: 4px 12px; cursor: pointer; color: var(--color-muted-foreground); }
-.fm-chip.is-active { background: var(--color-foreground); color: var(--color-card); border-color: var(--color-foreground); }
+.fm-chip.is-active { background: var(--color-primary); color: var(--color-primary-foreground); border-color: var(--color-primary); font-weight: 600; }
 .fm-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 550; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--fm-line); color: var(--color-muted-foreground); white-space: nowrap; }
 .fm-badge--ok { color: var(--color-success, #16a34a); border-color: color-mix(in srgb, var(--color-success, #16a34a) 40%, transparent); background: color-mix(in srgb, var(--color-success, #16a34a) 9%, transparent); }
 .fm-badge--warn { color: var(--color-warning, #d97706); border-color: color-mix(in srgb, var(--color-warning, #d97706) 45%, transparent); background: color-mix(in srgb, var(--color-warning, #d97706) 10%, transparent); }
@@ -229,3 +229,15 @@
 .fm-link-step { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .fm-card .fm-pill { font-size: 11.5px; padding: 1px 7px; line-height: 19px; }
 .fm-card .fm-chain { gap: 4px 4px; }
+
+/* 1.0.3 */
+.fm-barlist { display: flex; flex-direction: column; gap: 7px; }
+.fm-bl-row { display: grid; grid-template-columns: minmax(90px, 160px) 1fr minmax(150px, auto); gap: 10px; align-items: center; font-size: 12px; }
+.fm-bl-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.fm-bl-track { height: 10px; border-radius: 99px; background: var(--fm-soft); overflow: hidden; }
+.fm-bl-money { display: block; height: 100%; background: var(--fm-money); border-radius: 99px; min-width: 2px; }
+.fm-bl-val { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fm-sub-txt { color: var(--fm-sub); }
+.fm-history code, .fm-root .fm-small code { font-family: var(--font-mono) !important; font-size: 11px !important; letter-spacing: 0 !important; }
+.fm-decisions li .fm-mini { align-self: start; height: 22px; }
+.fm-history .fm-mini { align-self: flex-start; }

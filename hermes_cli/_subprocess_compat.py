@@ -232,7 +232,9 @@ _GIT_CONFIG_OVERRIDES = {
 }
 
 
-def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
+def noninteractive_git_env(
+    base: "Mapping[str, str] | None" = None, *, preserve_windows_crlf: bool = False,
+) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
     Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
@@ -272,8 +274,13 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-    env["GIT_CONFIG_COUNT"] = str(len(_GIT_CONFIG_OVERRIDES))
-    for idx, (key, value) in enumerate(_GIT_CONFIG_OVERRIDES.items()):
+    overrides = _GIT_CONFIG_OVERRIDES
+    if preserve_windows_crlf:
+        # Git for Windows normally supplies this effective default through config that hardened
+        # probes deliberately ignore. Preserve normalization explicitly without consulting it.
+        overrides = {**overrides, "core.autocrlf": "true"}
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for idx, (key, value) in enumerate(overrides.items()):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env
@@ -466,8 +473,11 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(
+        argv,
+        timeout=timeout,
+        env=noninteractive_git_env(preserve_windows_crlf=IS_WINDOWS),
+    )
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
-

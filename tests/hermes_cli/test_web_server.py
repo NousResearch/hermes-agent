@@ -566,6 +566,32 @@ class TestWebServerEndpoints:
             db.close()
         assert [r["id"] for r in rows] == ["eager-stale"]
 
+    def test_startup_eager_reconcile_is_read_only_on_a_healthy_store(self, monkeypatch):
+        """A current-schema store gets NO writable open from the dashboard (#107688).
+
+        The gateway owns the writer; a second writable SessionDB from the
+        dashboard (close-time checkpoint, possible FTS rebuild) is the
+        two-writer corruption vector. Only the stale-schema heal may write.
+        """
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        SessionDB(db_path=get_hermes_home() / "state.db").close()
+
+        writable_opens = []
+        real_init = SessionDB.__init__
+
+        def spy(self, *args, **kwargs):
+            if not kwargs.get("read_only"):
+                writable_opens.append(kwargs)
+            return real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(hermes_state.SessionDB, "__init__", spy)
+        _web_server_lifecycle._eager_reconcile_own_session_db()
+
+        assert writable_opens == []
+
     def test_startup_eager_reconcile_never_raises(self, monkeypatch):
         """A store the eager reconcile cannot open must not break startup."""
         import sqlite3 as sqlite3_module

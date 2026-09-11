@@ -65,6 +65,27 @@ class TestConfigPassthrough:
         assert "CONFIG_KEY" in all_pt
         assert "SKILL_KEY" in all_pt
 
+    def test_config_cache_is_profile_scoped(self, tmp_path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        homes = [tmp_path / "profiles" / name for name in ("a", "b")]
+        for home, key in zip(homes, ("PROFILE_A_KEY", "PROFILE_B_KEY")):
+            home.mkdir(parents=True)
+            (home / "config.yaml").write_text(
+                yaml.dump({"terminal": {"env_passthrough": [key]}}), encoding="utf-8"
+            )
+
+        for home, own_key, other_key in (
+            (homes[0], "PROFILE_A_KEY", "PROFILE_B_KEY"),
+            (homes[1], "PROFILE_B_KEY", "PROFILE_A_KEY"),
+        ):
+            token = set_hermes_home_override(home)
+            try:
+                assert is_env_passthrough(own_key)
+                assert not is_env_passthrough(other_key)
+            finally:
+                reset_hermes_home_override(token)
+
 
 class TestProfileScopedResolution:
     def test_active_scope_overrides_process_fallback(self):

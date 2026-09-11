@@ -3042,6 +3042,30 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+def _restart_safe_worker_secret_scope(
+    profile_home: Path, *, trust_process_passthrough: bool
+) -> tuple[dict[str, str], frozenset[str]]:
+    """Build one worker's scope and exact passthrough projection.
+
+    The gateway process env belongs only to its launch profile. A spawned
+    worker's env is already scrubbed to its target profile, so that child may
+    retain the projected values when rebuilding its runtime scope.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tools.env_passthrough import get_all_passthrough
+
+    hydrate_profile_secret_sources(profile_home)
+    secrets = build_profile_secret_scope(profile_home)
+    passthrough_names = get_all_passthrough()
+    if trust_process_passthrough:
+        for name in passthrough_names:
+            value = os.environ.get(name)
+            if value is not None:
+                secrets.setdefault(name, value)
+    return secrets, passthrough_names
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside a managed gateway cgroup when required.
 
@@ -3065,14 +3089,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        is_multiplex_active,
-        reset_secret_scope,
-        set_secret_scope,
-    )
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
     from tools.environments.local import build_subprocess_env
+    from tools.env_passthrough import resolve_passthrough_value
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         systemd_user_bus_env,
@@ -3114,16 +3133,14 @@ def _launch_external_cron_worker(job: dict) -> bool:
         raise
 
     profile_home = _get_hermes_home().resolve()
-    hydrate_profile_secret_sources(profile_home)
-    profile_secrets = build_profile_secret_scope(profile_home)
     from hermes_constants import get_process_hermes_home
-    from tools.env_passthrough import get_all_passthrough
 
-    if profile_home == get_process_hermes_home().resolve():
-        for name in get_all_passthrough():
-            value = os.environ.get(name)
-            if value is not None:
-                profile_secrets.setdefault(name, value)
+    profile_secrets, passthrough_names = _restart_safe_worker_secret_scope(
+        profile_home,
+        trust_process_passthrough=(
+            profile_home == get_process_hermes_home().resolve()
+        ),
+    )
     secret_token = set_secret_scope(profile_secrets)
     try:
         worker_env = build_subprocess_env(
@@ -3131,6 +3148,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
         )
+        for name in passthrough_names:
+            value = resolve_passthrough_value(name)
+            if value is not None:
+                worker_env[name] = value
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
@@ -3248,14 +3269,12 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             pass
 
     from agent.secret_scope import (
-        build_profile_secret_scope,
         is_multiplex_active,
         reset_secret_scope,
         set_multiplex_active,
         set_secret_scope,
     )
     from cron.executions import adopt_claimed_execution
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -3265,8 +3284,10 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     previous_multiplex = is_multiplex_active()
     multiplex_active = bool(payload.get("multiplex_active", False))
     set_multiplex_active(multiplex_active)
-    hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    worker_secrets, _ = _restart_safe_worker_secret_scope(
+        profile_home, trust_process_passthrough=True
+    )
+    secret_token = set_secret_scope(worker_secrets)
     try:
         with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:

@@ -122,6 +122,8 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     tmp_path, monkeypatch
 ):
     import cron.scheduler as scheduler
+    from agent.secret_scope import get_secret
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
 
     payload = tmp_path / "payload.json"
     ack = tmp_path / "ready.json"
@@ -141,21 +143,30 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
             or {"id": execution_id, "status": "running"}
         )
     )
-    run = Mock(
-        side_effect=lambda *_args, **_kwargs: (
-            observed_homes.append(get_hermes_home().resolve()) or True
-        )
-    )
+    observed_tokens = []
+
+    def run(*_args, **_kwargs):
+        observed_homes.append(get_hermes_home().resolve())
+        observed_tokens.append(get_secret("SERVICE_TOKEN"))
+        return True
+
+    run = Mock(side_effect=run)
     monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
     monkeypatch.setattr(scheduler, "run_one_job", run)
+    monkeypatch.setenv("SERVICE_TOKEN", "projected-profile-token")
+    register_env_passthrough(["SERVICE_TOKEN"])
 
-    assert scheduler._run_external_worker_payload(payload, ack) is True
+    try:
+        assert scheduler._run_external_worker_payload(payload, ack) is True
+    finally:
+        clear_env_passthrough()
 
     adopted.assert_called_once_with("exec-1")
     run.assert_called_once()
     assert run.call_args.args[0]["id"] == "job-1"
     expected_home = (tmp_path / "profile").resolve()
     assert observed_homes == [expected_home, expected_home]
+    assert observed_tokens == ["projected-profile-token"]
     assert ack.exists()
     assert not payload.exists()
 
@@ -185,15 +196,15 @@ def test_external_worker_refuses_to_run_without_durable_ownership(
 
 
 @pytest.mark.parametrize(
-    ("profile_value", "is_process_profile", "expected_token"),
+    ("profile_value", "process_value", "is_process_profile", "expected_token"),
     [
-        ("target-profile-token", False, "target-profile-token"),
-        (None, False, None),
-        (None, True, "default-profile-token"),
+        ("target-profile-token", None, False, "target-profile-token"),
+        (None, "default-profile-token", False, None),
+        (None, "default-profile-token", True, "default-profile-token"),
     ],
 )
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
-    tmp_path, monkeypatch, profile_value, is_process_profile, expected_token
+    tmp_path, monkeypatch, profile_value, process_value, is_process_profile, expected_token
 ):
     import cron.scheduler as scheduler
     from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
@@ -257,7 +268,10 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     get = Mock(side_effect=lambda _execution_id: next(observed_statuses))
     monkeypatch.setattr(scheduler, "get_execution", get)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
-    monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
+    if process_value is None:
+        monkeypatch.delenv("SERVICE_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("SERVICE_TOKEN", process_value)
     from agent.secret_scope import set_multiplex_active
 
     set_multiplex_active(True)

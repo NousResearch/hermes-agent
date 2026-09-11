@@ -28,8 +28,10 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
-_config_passthrough: frozenset[str] | None = None
+# Config-based allowlists keyed by profile home. One gateway process may route
+# several profiles, so a process-wide singleton would let the launch profile's
+# names authorize a secondary profile.
+_config_passthrough: dict[str, frozenset[str]] | None = None
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -79,12 +81,18 @@ def _accepted(names, refusal_msg: str):
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
+    """Load this profile's ``tools.env_passthrough`` from config.yaml (cached). Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
     global _config_passthrough
-    if _config_passthrough is not None:
-        return _config_passthrough
+    from hermes_constants import hermes_home_key
+
+    home_key = hermes_home_key()
+    if _config_passthrough is None:
+        _config_passthrough = {}
+    cached = _config_passthrough.get(home_key)
+    if cached is not None:
+        return cached
     result: set[str] = set()
     try:
         passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
@@ -99,8 +107,9 @@ def _load_config_passthrough() -> frozenset[str]:
         )))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
-    _config_passthrough = frozenset(result)
-    return _config_passthrough
+    loaded = frozenset(result)
+    _config_passthrough[home_key] = loaded
+    return loaded
 
 
 def is_env_passthrough(var_name: str) -> bool:

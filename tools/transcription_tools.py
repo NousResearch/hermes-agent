@@ -402,10 +402,12 @@ def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 def _transcribe_prepared_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
     config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
-    to the ``pre_transcription`` hook only."""
+    to the ``pre_transcription`` hook; ``session_id`` is available to command-provider templates."""
     # Validate before provider resolution so invalid files can't trigger provider setup
     # or lazy installation; the remote-upload size cap applies to non-local only.
     error = _read_block_error(file_path) or _validate_audio_file(file_path, enforce_size_limit=False)
@@ -432,7 +434,9 @@ def _transcribe_prepared_audio(
             file_path = trimmed
             trim_cleanup_dir = os.path.dirname(trimmed)
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        return _dispatch_stt_provider(
+            file_path, provider, stt_config, model, source, session_id=session_id,
+        )
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
@@ -463,7 +467,8 @@ def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Option
 
 def _dispatch_stt_provider(
     file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
-    source: Optional[str] = None) -> Dict[str, Any]:
+    source: Optional[str] = None, session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     # Static ``stt.prompt`` is the base; hook results mutate on top (last hook to set a field wins).
     prompt = stt_config.get("prompt")
@@ -487,7 +492,8 @@ def _dispatch_stt_provider(
     command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
     if command_provider_config is not None:
         return _transcribe_command_stt(file_path, provider, command_provider_config, stt_config,
-                                       model_override=model, language_override=language, prompt=prompt)
+                                       model_override=model, language_override=language, prompt=prompt,
+                                       session_id=session_id)
     # Plugin backend: reads ``stt.<provider>`` like built-ins; the ``model`` argument overrides it.
     plugin_result = _dispatch_to_plugin_provider(
         file_path, provider, stt_config, model=model or _get_stt_section(stt_config, provider).get("model"),
@@ -516,9 +522,12 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
 
 
 def transcribe_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
-    label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook;
+    ``session_id`` is available to command-provider templates."""
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:
@@ -534,7 +543,9 @@ def transcribe_audio(
         return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
     try:
         return (_validate_audio_file(prepared_path, enforce_size_limit=False)
-                or _transcribe_prepared_audio(prepared_path, model, source))
+                or _transcribe_prepared_audio(
+                    prepared_path, model, source, session_id=session_id,
+                ))
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

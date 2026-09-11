@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
+  AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
@@ -33,6 +34,7 @@ import {
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
+  setSttLease,
   speakText,
   transcribeAudio,
   triggerCronJob
@@ -739,6 +741,27 @@ describe('Hermes REST helpers', () => {
       method: 'POST',
       path: '/api/audio/transcribe',
       timeoutMs: AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('routes STT lease acquire/release to the stt-lease endpoint with a warm-up budget', async () => {
+    api.mockResolvedValueOnce({ ok: true })
+    api.mockResolvedValueOnce({ ok: true })
+
+    await setSttLease('desktop:voice-input:abc', true)
+    await setSttLease('desktop:voice-input:abc', false)
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      body: { active: true, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      body: { active: false, lease: 'desktop:voice-input:abc' },
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
     })
   })
 

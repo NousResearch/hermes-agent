@@ -2,6 +2,7 @@ import type {
   ActionResponse,
   ActionStatusResponse,
   AudioSpeakResponse,
+  AudioSttLeaseResponse,
   AudioTranscriptionResponse,
   AudioTtsLeaseResponse,
   BackendUpdateCheckResponse,
@@ -214,6 +215,27 @@ export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLea
     method: 'POST',
     body: { active, lease },
     timeoutMs: AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS
+  })
+}
+
+// Same cold-start class as TTS: acquiring a lease pre-loads the local STT
+// model (first-use download + load), which on CPU-bound hosts can exceed the
+// transcription floor on its own (issue #105955). The desktop acquires when
+// the mic opens so the load happens while the user is still speaking.
+export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
+
+/**
+ * Tell the backend a voice-input session started (`active: true`) so it can
+ * warm the STT engine, or ended (`active: false`) to drop the lease.
+ * `lease` names the session — `desktop:voice-input:<renderer>`.
+ */
+export function setSttLease(lease: string, active: boolean): Promise<AudioSttLeaseResponse> {
+  return hermesApi<AudioSttLeaseResponse>({
+    ...profileScoped(),
+    path: '/api/audio/stt-lease',
+    method: 'POST',
+    body: { active, lease },
+    timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
   })
 }
 

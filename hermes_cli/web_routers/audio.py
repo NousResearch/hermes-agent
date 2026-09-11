@@ -22,7 +22,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest
+from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, STTLeaseRequest
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -335,6 +335,39 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         result = {"leases": None, "action": "error", "error": str(exc)}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
+
+@router.post("/api/audio/stt-lease")
+async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
+    """Desktop voice-input sessions as STT warm-up / release signals.
+
+    ``active: true`` registers a lease and pre-loads the configured local STT
+    model (first-use download + load) so the transcription request doesn't pay
+    the cold cost inside its timeout; ``active: false`` drops the lease. The
+    model stays resident after the last release — it is shared with the
+    gateway/CLI surfaces in this process, and ``stt.local.unload_after_idle_seconds``
+    still governs eviction. Blocking work runs off the event loop. Warm-up
+    failures are reported in the body, never as an HTTP error — recording must
+    start even when preload fails.
+    """
+    lease = (payload.lease or "").strip()
+    if not lease:
+        raise HTTPException(status_code=400, detail="lease is required")
+
+    def _apply():
+        from tools.stt_lease import acquire_stt_lease, release_stt_lease
+        if payload.active:
+            with _config_profile_scope(profile):
+                return acquire_stt_lease(lease)
+        return release_stt_lease(lease)
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("STT lease %s (%s) failed: %s", lease, payload.active, exc)
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 @router.websocket("/api/audio/speak-stream")
 async def speak_stream_ws(ws: "WebSocket") -> None:

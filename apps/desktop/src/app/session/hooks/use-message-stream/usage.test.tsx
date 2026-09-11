@@ -99,3 +99,78 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect($currentUsage.get()).toEqual(BASELINE)
   })
 })
+
+describe('useMessageStream per-turn message usage', () => {
+  beforeEach(() => {
+    sessionStates = new Map([[SID, { ...createClientSessionState() }]])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  function completedAssistantMessage() {
+    return stream.state(SID).messages.find(m => m.role === 'assistant' && m.completedAt !== undefined)
+  }
+
+  it('forwards exact provider usage onto the completed assistant message', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { text: 'The answer is 42.', usage: { input: 12, output: 7, total: 19 } },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const msg = completedAssistantMessage()
+    expect(msg).toBeDefined()
+    expect(msg?.usage).toEqual({ input: 12, output: 7, total: 19 })
+  })
+
+  it('records the per-turn delta when a prior session baseline exists', () => {
+    // Seed a running session-usage baseline, then open the turn with
+    // message.start (which snapshots the baseline). message.complete reports
+    // the CUMULATIVE total, so the chip receives the per-turn delta.
+    sessionStates = new Map([
+      [SID, { ...createClientSessionState(), usage: { calls: 1, input: 100, output: 50, total: 150 } }]
+    ])
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { text: 'Thinking…' },
+        session_id: SID,
+        type: 'message.start'
+      })
+    )
+
+    act(() =>
+      stream.handleEvent({
+        payload: { text: 'One more turn.', usage: { calls: 2, input: 140, output: 80, total: 220 } },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const msg = completedAssistantMessage()
+    expect(msg?.usage).toEqual({ input: 40, output: 30, total: 70 })
+  })
+
+  it('omits usage when the gateway reports none for the turn', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { text: 'No usage reported.' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const msg = completedAssistantMessage()
+    expect(msg?.usage).toBeUndefined()
+  })
+})

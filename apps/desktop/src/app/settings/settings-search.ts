@@ -19,7 +19,8 @@ export const APPEARANCE_SETTING_IDS = {
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',
   uiScale: 'appearance.ui-scale',
-  userBubble: 'appearance.user-bubble'
+  userBubble: 'appearance.user-bubble',
+  turnPerf: 'appearance.turn-perf'
 } as const
 
 export interface SettingsSearchTarget {

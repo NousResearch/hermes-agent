@@ -282,7 +282,7 @@ You can run `hermes gateway` in the background or as a systemd service for persi
 
 ## Configuration Reference
 
-Discord behavior is controlled through two files: **`~/.hermes/.env`** for credentials and env-level toggles, and **`~/.hermes/config.yaml`** for structured settings. Environment variables always take precedence over config.yaml values when both are set.
+Discord behavior is controlled through two files: **`~/.hermes/.env`** for credentials (bot token) and **`~/.hermes/config.yaml`** for structured settings. Secrets stay in `.env`. For `discord.require_mention` and `discord.free_response_channels`, the adapter reads `config.yaml` when the key is set; the matching `DISCORD_*` environment variable is the fallback. That matches [Configuration Precedence](../configuration.md#configuration-precedence) for non-secret settings.
 
 ### Environment Variables (`.env`)
 
@@ -327,7 +327,7 @@ Wiring multiple Hermes profiles to reply to one another in a shared channel — 
 
 ### Config File (`config.yaml`)
 
-The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.
+The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. For `require_mention` and `free_response_channels`, a key present under `discord:` — including defaults written on a fresh install — wins. The matching `DISCORD_*` variable is used only if that config key is unset, which is why a conflicting `.env` entry is ignored.
 
 ```yaml
 # Discord-specific settings

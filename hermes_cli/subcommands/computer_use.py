@@ -136,10 +136,10 @@ def build_computer_use_parser(subparsers) -> None:
         "install", help="Install or repair the cua-driver binary (macOS/Windows/Linux)")
     computer_use_install.add_argument(
         "--upgrade", action="store_true",
-        help="Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
+        help="Re-run the upstream installer even if Hermes already resolves "
+            "cua-driver. The upstream install.sh always pulls the latest release, "
             "so this performs an in-place upgrade.")
-    computer_use_sub.add_parser("status", help="Print whether cua-driver is installed and on PATH")
+    computer_use_sub.add_parser("status", help="Print whether Hermes resolves cua-driver and which version is installed")
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor", help="Run cua-driver `health_report` and surface the check matrix",
         description="Drive cua-driver's stable `health_report` MCP tool and render\n"

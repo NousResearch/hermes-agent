@@ -915,22 +915,25 @@ def _sync_profiles_after_update() -> None:
 
 
 def _refresh_cua_driver_after_update() -> None:
-    """cua-driver refresh, no-op unless on PATH; tied to update for a predictable cadence
-    without a per-launch GitHub API call."""
+    """Refresh an installed cua-driver on the update cadence, when the runtime resolves one."""
     refresh_cua_driver = True
     with _best_effort('Could not read updates.refresh_cua_driver: %s'):
         refresh_cua_driver = bool(_load_updates_cfg().get("refresh_cua_driver", True))
 
-    if (
-        refresh_cua_driver and sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver")
-    ):
-        from hermes_cli.tools_config import install_cua_driver
-        print()
-        print("→ Refreshing cua-driver (Computer Use)...")
-        # require_confirmed_update: install only when check-update positively reports a
-        # newer release (update must stay fast; `computer-use install --upgrade` forces).
-        # Windows defers even confirmed updates (installer may need console/UAC consent).
-        install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
+    if not refresh_cua_driver or sys.platform not in ("darwin", "win32", "linux"):
+        return
+
+    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    if not resolve_cua_driver_cmd():
+        return
+
+    from hermes_cli.tools_config import install_cua_driver
+    print()
+    print("→ Refreshing cua-driver (Computer Use)...")
+    # require_confirmed_update: install only when check-update positively reports a
+    # newer release (update must stay fast; `computer-use install --upgrade` forces).
+    # Windows defers even confirmed updates (installer may need console/UAC consent).
+    install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
 
 
 def _print_plugin_compat_notice() -> None:

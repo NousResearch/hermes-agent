@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,15 @@ def _read_mem0_json(config_path: Path) -> dict:
     return {}
 
 
+def _scoped_env(name: str) -> str:
+    """Profile-scoped read of a non-secret mem0 setting; no scope under multiplex = unset (never
+    ``os.environ``). Only the API key may fail closed — OSS mode has none to read (#99121)."""
+    try:
+        return get_secret(name, "") or ""
+    except UnscopedSecretError:
+        return ""
+
+
 def _load_config() -> dict:
     """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
@@ -80,9 +89,9 @@ def _load_config() -> dict:
     from hermes_constants import get_hermes_home
     # Identity (user/agent id), host and mode are .env values like the key: read them through the
     # profile scope too, or a secondary profile's memories land in the default profile's account.
-    config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
-              "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
-    if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+    config = {"mode": _scoped_env("MEM0_MODE") or "platform", "host": _scoped_env("MEM0_HOST"),
+              "agent_id": _scoped_env("MEM0_AGENT_ID") or "hermes", "oss": {}}
+    if user_id := _scoped_env("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
     file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})

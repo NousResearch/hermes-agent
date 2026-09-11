@@ -170,7 +170,14 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         "HINDSIGHT_API_LLM_MODEL": str(config.get("llm_model", "")),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
-    base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    # Base URL is per-profile like the key beside it (the scoped key must not go to the default's host);
+    # on the scopeless daemon worker a miss is a miss, never os.environ (same rule as the key above).
+    base_url = config.get("llm_base_url")
+    if not base_url:
+        try:
+            base_url = get_secret("HINDSIGHT_API_LLM_BASE_URL", "") or ""
+        except UnscopedSecretError:
+            base_url = ""
     if base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
     if (idle_timeout := config.get("idle_timeout")) is None:

@@ -699,6 +699,8 @@ export interface SessionMessage {
 }
 
 export interface SessionMessagesResponse {
+  /** Serving profile for unscoped reads; null for a custom HERMES_HOME. */
+  profile?: null | string
   messages: SessionMessage[]
   pagination?: {
     limit: number

@@ -1,6 +1,7 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
+import { $connection } from '@/store/session'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -10,7 +11,14 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, getApiRequestConnection, hermesApi, type ProfileScope, profileScoped } from './client'
+import {
+  capabilityScoped,
+  connectionScoped,
+  getApiRequestConnection,
+  hermesApi,
+  type ProfileScope,
+  profileScoped
+} from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
@@ -446,6 +454,19 @@ export function getLatestSessionMessages(
   profile?: ProfileScope,
   options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
+  // Key pagination by the effective request owner, not the caller's spelling
+  // (ambient, profile string, or explicit pin). Otherwise refreshes create
+  // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
+  // Capture before awaiting: the active gateway may change during the read.
+  const tailScope = { ...connectionScoped(), ...sessionScoped(profile) }
+  const ownerScope = { ...tailScope }
+
+  // Normalize only the lookup key: a local request pin would bypass Electron's
+  // legacy per-profile remote overrides. Backfill must retain the original route.
+  if (!ownerScope.connectionId && $connection.get()?.mode === 'local') {
+    ownerScope.connectionId = 'local'
+  }
+
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
@@ -463,10 +484,11 @@ export function getLatestSessionMessages(
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    recordTranscriptTail(id, page, profile)
+    const resolvedOwnerScope = { ...ownerScope, profile: ownerScope.profile || page.profile || undefined }
+    recordTranscriptTail(id, page, tailScope, resolvedOwnerScope)
 
     if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, profile)
+      recordTranscriptTail(page.session_id, page, tailScope, resolvedOwnerScope)
     }
 
     return page

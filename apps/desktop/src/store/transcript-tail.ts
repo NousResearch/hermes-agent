@@ -53,7 +53,8 @@ function normalizedScope(profile?: TranscriptProfileScope): { connectionId: stri
 
   return {
     connectionId: String(profile.connectionId || '').trim(),
-    profile: String(profile.profile || '').trim() || 'default'
+    // An omitted profile targets the serving process, not necessarily default.
+    profile: String(profile.profile || '').trim()
   }
 }
 
@@ -115,12 +116,19 @@ function setTranscriptTailEntry(key: string, state: TranscriptTailState): void {
 }
 
 /** Record the outcome of a tail hydration (`getLatestSessionMessages`). */
-export function recordTranscriptTail(storedSessionId: string, page: TailPage, profile?: TranscriptProfileScope): void {
+export function recordTranscriptTail(
+  storedSessionId: string,
+  page: TailPage,
+  profile?: TranscriptProfileScope,
+  ownerScope: TranscriptProfileScope | undefined = profile
+): void {
   if (!storedSessionId) {
     return
   }
 
-  const key = transcriptTailKey(storedSessionId, profile)
+  // Keep request routing separate from the resolved owner used for lookup:
+  // backfill must replay an ambient read even when the server names its profile.
+  const key = transcriptTailKey(storedSessionId, ownerScope)
   setTranscriptTailEntry(key, tailStateFromPage(page, profile))
 }
 

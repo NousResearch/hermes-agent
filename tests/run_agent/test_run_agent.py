@@ -4577,8 +4577,8 @@ class TestRunConversation:
         assert result["final_response"] == "Done!"
 
 
-    def test_truncated_tool_json_after_tool_batch_closes_tool_tail(self, agent):
-        """finish_reason=tool_calls + truncated args after a real tool must close tool→user."""
+    def test_repeated_truncated_tool_json_after_tool_batch_closes_tool_tail(self, agent):
+        """Repeated incomplete args after a real tool must close the tool-result tail."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         good_tc = _mock_tool_call(
@@ -4597,7 +4597,7 @@ class TestRunConversation:
         bad_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp, bad_resp, bad_resp]
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}'),
@@ -4610,7 +4610,7 @@ class TestRunConversation:
         assert result.get("partial") is True
         msgs = result.get("messages") or []
         assert msgs[-1].get("role") == "assistant"
-        assert "truncated" in (msgs[-1].get("content") or "").lower()
+        assert "incomplete" in (msgs[-1].get("content") or "").lower()
         assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
 
 

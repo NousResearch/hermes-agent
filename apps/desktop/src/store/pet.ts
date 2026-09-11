@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { $workspaceMode, $workspaceNewSessionTarget } from '@/components/pane-shell/workspace-scope'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $busy } from '@/store/session'
@@ -143,15 +144,86 @@ export const $petActivity = atom<PetActivity>({})
 export const $petActive = computed($petInfo, info => info.enabled && Boolean(info.spritesheetBase64))
 
 /**
- * Profile the pet RPCs should resolve against. Pets are per-profile — the active
- * pet (`display.pet.*`) and the installed sprites live under each profile's
- * HERMES_HOME — so every pet RPC carries this. The gateway no-ops it for the
- * launch profile (own-profile backends already resolve it) and rebinds for any
- * other profile, which is what makes per-profile pets work in app-global remote
- * mode (one backend serving every profile).
+ * Exact backend owner whose pet should be rendered. Pets are per-profile: both
+ * `display.pet.*` and installed sprites live under that profile's HERMES_HOME.
+ * Bot Mode keeps the Sessions gateway ambient, so the workspace route — not the
+ * active gateway — is authoritative while a bot chat is selected.
  */
+export interface PetOwner {
+  connectionId?: string
+  profile: string
+  targetProfile: string
+}
+
+export const $petOwner = computed(
+  [$activeGatewayProfile, $workspaceMode, $workspaceNewSessionTarget],
+  (activeGatewayProfile, workspaceMode, workspaceTarget): PetOwner => {
+    const activeProfile = normalizeProfileKey(activeGatewayProfile)
+
+    if (workspaceMode === 'bots' && workspaceTarget?.kind === 'route') {
+      const route = workspaceTarget.route
+      const connectionId = String(route?.connectionId ?? '').trim()
+      const routeProfile = String(route?.profile ?? '').trim()
+
+      if (connectionId && routeProfile) {
+        const profile = normalizeProfileKey(routeProfile)
+
+        return {
+          connectionId,
+          profile,
+          targetProfile: normalizeProfileKey(route.targetProfile || profile)
+        }
+      }
+    }
+
+    return { profile: activeProfile, targetProfile: activeProfile }
+  }
+)
+
+export function petOwner(): PetOwner {
+  return $petOwner.get()
+}
+
+/** Whether a previously rendered owner actually changed. The missing previous
+ * owner is initial hydration, not a switch — callers must preserve warm state. */
+export function petOwnerChanged(previous: PetOwner | undefined, next: PetOwner): boolean {
+  return Boolean(
+    previous &&
+      (previous.connectionId !== next.connectionId ||
+        previous.profile !== next.profile ||
+        previous.targetProfile !== next.targetProfile)
+  )
+}
+
+/** Ambient gateway state/events apply only when no exact Bot owner route exists. */
+export function petOwnerUsesAmbientGateway(owner: PetOwner): boolean {
+  return !owner.connectionId
+}
+
+/** Profile whose config + pet store should answer pet RPCs. */
 export function petProfile(): string {
-  return normalizeProfileKey($activeGatewayProfile.get())
+  return petOwner().targetProfile
+}
+
+/** Route one pet RPC through the exact Bot owner when there is one. The
+ *  target profile remains explicit in params for shared-remote backends. */
+export function requestPetForOwner<T>(
+  owner: PetOwner,
+  method: string,
+  params: Record<string, unknown>,
+  requestAmbient: (method: string, params: Record<string, unknown>) => Promise<T>,
+  requestRouted: (
+    connectionId: string,
+    profile: string,
+    method: string,
+    params: Record<string, unknown>
+  ) => Promise<T>
+): Promise<T> {
+  const routedParams = { ...params, profile: owner.targetProfile }
+
+  return owner.connectionId
+    ? requestRouted(owner.connectionId, owner.profile, method, routedParams)
+    : requestAmbient(method, routedParams)
 }
 
 /**

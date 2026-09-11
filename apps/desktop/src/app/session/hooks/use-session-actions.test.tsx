@@ -72,7 +72,12 @@ import {
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import {
+  $sessionTiles,
+  knownOwnerForSession,
+  requestForOwnedSession,
+  sessionTileOwnerRoute
+} from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -4257,6 +4262,39 @@ describe('openNewSessionTile unlisted owner (#102792)', () => {
     expect($unlistedSessionOwnerRows.get()).toHaveLength(0)
     expect($sessions.get().some(s => sessionMatchesStoredId(s, stored))).toBe(true)
     expect(knownSessionOwner(ownerLookupSessionRows(), stored)).toBe('omar')
+  })
+
+  it('resolves the ephemeral runtime id through the stub for session.control.read without hitting ambient', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // The composer banner calls with the ephemeral runtime id, not the stored
+    // id — it must see the same bare ambient profile as the stored-id rung.
+    expect(knownOwnerForSession(RUNTIME_SESSION_ID)).toBe('omar')
+
+    const ambient = vi.fn(async () => ({}) as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    await expect(
+      requestForOwnedSession(RUNTIME_SESSION_ID, ambient, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+
+    // Bare profile routes through the profile-pool door, never ambient ...
+    expect(ambient).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
+      undefined,
+      undefined
+    )
+    // ... and the draft stays out of the sidebar.
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
   })
 })
 describe('selectSidebarItem', () => {

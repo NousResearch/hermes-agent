@@ -162,6 +162,27 @@ availability off the session source the app already sends on `session.create`
 process might be a remote or cloud gateway this app merely connected to. See
 the root AGENTS.md, "Surface capability is a property of the SESSION."
 
+## Composer modes ride the turn, not the prompt
+
+A composer mode (plan / debug / …) is a property of ONE send. It reaches the
+model as a per-turn note the gateway carries through the `api_content` sidecar —
+never as text typed into the user's own `content`, and never as an env/config
+global that would leak across sends or providers.
+
+- The middleware chain is the only producer of the frame: `ComposerDraft` gains
+  `note`/`mode`, `runComposerMiddleware` runs ONCE per send, and the frame
+  travels as submit options → `prompt.submit {note, mode}` (typed, voice, and
+  queued drains all pass `onSubmit`).
+- Steers are sends too: `redirectPrompt` runs the middleware before the RPC and
+  before the session-not-found retry; `steerPrompt` (tile) runs it BEFORE the
+  optimistic append so a cancel leaves no bubble behind.
+- `'canceled'` is not a rejection: a cancel returns the draft to the composer
+  (`steerDraft` → `loadIntoComposer`) and never enqueues the raw text; a queued
+  entry is consumed only by a DELIVERED redirect (`accepted === true`) —
+  `'canceled'` is a truthy string, so a truthiness test would eat the words.
+- `mode` is display-only (the row's `display_metadata`); nothing in the frame
+  may change prompt bytes, toolsets, or the system prompt.
+
 ## Respect the person using it
 
 Design and engineering meet at intent. The user's attention and context are

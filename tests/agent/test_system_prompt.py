@@ -835,3 +835,141 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
 
+
+# ── Per-session, per-project context injection ───────────────────────────────
+# The session's project is resolved from its raw cwd against the profile's
+# projects.db; the single rendered file in `context_path:<id>` (a set of
+# @-includes, expanded like SOUL.md) is appended to the CWD context tier only —
+# never the byte-stable prefix.
+
+
+def _seed_projects_db(home, cwd, context_files):
+    """A projects.db under *home* with a project owning *cwd* and a
+    `context_path:<id>` meta key pointing at a rendered file that @-includes each
+    of *context_files* (abs paths) — the vault's provisioning shape."""
+    import os as _os
+
+    from hermes_cli import projects_db
+
+    _os.environ["HERMES_HOME"] = str(home)
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    rendered = home / "projects_ctx.md"
+    rendered.write_text("\n".join(f"@{p}" for p in context_files))
+    with projects_db.connect_closing(projects_db.projects_db_path()) as conn:
+        pid = projects_db.create_project(conn, name="proj", primary_path=str(cwd))
+        from hermes_cli.sqlite_util import write_txn
+
+        with write_txn(conn):
+            projects_db._upsert_meta_locked(conn, "context_path:" + pid, str(rendered))
+    return pid
+
+
+class TestProjectContextInjection:
+    def _build_context(self, agent, cwd):
+        # Drive the REAL cwd resolution via _SESSION_CWD (as a live session does); do NOT mock
+        # resolve_context_cwd/resolve_logical_cwd - that would hide whether a non-local (remote,
+        # non-existent-on-host) cwd actually resolves to a project. Only the non-project context
+        # base is stubbed.
+        import agent.runtime_cwd as _rc
+        tok = _rc._SESSION_CWD.set(str(cwd))
+        try:
+            with (
+                patch("agent.prompt_builder.load_soul_md", return_value=""),
+                patch("agent.prompt_builder.build_environment_hints", return_value=""),
+                patch("agent.prompt_builder.build_context_files_prompt", return_value="BASE_CONTEXT"),
+            ):
+                return build_system_prompt_parts(agent)
+        finally:
+            _rc._SESSION_CWD.reset(tok)
+
+    def test_injects_meta_listed_files_for_matching_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        # A REMOTE-style working_dir that does NOT exist on this host (the ssh case): host-validated
+        # resolution would drop it, so this proves the project lookup keys on the raw logical cwd.
+        cwd = "/home/felix/projects/xsd-parser"
+        shared = tmp_path / "shared_context.md"
+        shared.write_text("SHARED PROJECT CONTEXT")
+        overlay = tmp_path / "overlay_context.md"
+        overlay.write_text("AGENT OVERLAY CONTEXT")
+        _seed_projects_db(tmp_path / "home", cwd, [shared, overlay])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        parts = self._build_context(_make_agent(), cwd)
+
+        assert "SHARED PROJECT CONTEXT" in parts["context"]
+        assert "AGENT OVERLAY CONTEXT" in parts["context"]
+        # Routed through _context_section → carries the "## project context" header.
+        assert "## project context" in parts["context"]
+        # Cwd tier only — never the byte-stable prefix.
+        assert "SHARED PROJECT CONTEXT" not in parts["stable"]
+        assert "AGENT OVERLAY CONTEXT" not in parts["stable"]
+
+    def test_oversized_project_context_is_capped(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+        big = tmp_path / "big_context.md"
+        big.write_text("X" * 500_000)  # far above any CONTEXT_FILE_MAX_CHARS ceiling
+        _seed_projects_db(tmp_path / "home", cwd, [big])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        parts = self._build_context(_make_agent(), cwd)
+
+        assert "## project context" in parts["context"]
+        assert "[...truncated" in parts["context"]  # budget cap applied
+        assert len(parts["context"]) < 500_000
+
+    def test_no_project_match_injects_nothing_and_does_not_raise(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        shared = tmp_path / "shared_context.md"
+        shared.write_text("SHARED PROJECT CONTEXT")
+        # Project owns `other`, not `cwd`.
+        _seed_projects_db(tmp_path / "home", other, [shared])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        parts = self._build_context(_make_agent(), cwd)
+
+        assert "SHARED PROJECT CONTEXT" not in parts["context"]
+        assert parts["context"].count("BASE_CONTEXT") == 1
+
+    def test_no_db_injects_nothing_and_does_not_raise(self, monkeypatch, tmp_path):
+        # HERMES_HOME points at a dir with no projects.db yet.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty_home"))
+        (tmp_path / "empty_home").mkdir()
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+
+        parts = self._build_context(_make_agent(), cwd)
+
+        assert "BASE_CONTEXT" in parts["context"]
+
+    def test_never_mutates_the_stable_prefix(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+        shared = tmp_path / "shared_context.md"
+        shared.write_text("SHARED PROJECT CONTEXT")
+        pid = _seed_projects_db(tmp_path / "home", cwd, [shared])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        stable_with_project = self._build_context(_make_agent(), cwd)["stable"]
+
+        # Same HERMES_HOME (so the env-derived prefix is byte-identical), but now
+        # drop the project's context meta: the stable prefix must be unchanged and
+        # never carry project context.
+        from hermes_cli import projects_db
+        from hermes_cli.sqlite_util import write_txn
+
+        with projects_db.connect_closing(projects_db.projects_db_path()) as conn:
+            with write_txn(conn):
+                conn.execute("DELETE FROM project_meta WHERE key = ?", ("context_path:" + pid,))
+        stable_without_project = self._build_context(_make_agent(), cwd)["stable"]
+
+        assert stable_with_project == stable_without_project
+        assert "SHARED PROJECT CONTEXT" not in stable_with_project
+

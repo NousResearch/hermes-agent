@@ -25,7 +25,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
-from agent.runtime_cwd import resolve_context_cwd
+from agent.runtime_cwd import resolve_context_cwd, resolve_logical_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -592,9 +592,57 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     if agent.skip_context_files:
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
-    return [_pb.build_context_files_prompt(
+    parts = [_pb.build_context_files_prompt(
         cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
+    parts.extend(_project_context_parts(ctx_len))
+    return parts
+
+
+def _project_context_parts(ctx_len: Optional[int]) -> List[str]:
+    """Per-session, per-project context file for the CWD tier.
+
+    Resolves THIS session's project from its raw session cwd against the profile's projects.db and
+    reads the single rendered context file recorded in the ``context_path:<project_id>`` meta key.
+    That file is provisioned by the vault (one ``@``-include per context source, general -> specific)
+    and expanded here the same way SOUL.md is - so the customer-wide and project-specific AGENTS.md
+    compose into one section. Vault provisioning owns what path is stored and what it includes (no
+    vault-layout knowledge here). Any failure (no db, no project, no meta, unreadable file) degrades
+    to no project context; the whole thing is best-effort so prompt-cache stability is preserved.
+    Callers MUST append the result to the cwd-dependent context tier only, never the stable prefix.
+
+    Scope: keyed on the CONFIGURED logical cwd (session override / TERMINAL_CWD), with no os.getcwd()
+    fallback - a plain local CLI launched inside a registered project folder gets no project context.
+    Intended: project context follows a provisioned working_dir (the vault's remote ssh agents), not
+    an ambient launch dir.
+    """
+    try:
+        cwd = resolve_logical_cwd()  # raw, NOT host-validated: an ssh/docker project working_dir lives off-host
+        if not cwd:
+            return []
+        from hermes_cli import projects_db
+        # Read-only best-effort: do NOT let a prompt build CREATE projects.db (connect() would
+        # mkdir+schema it). Skip the sqlite open+scan entirely for the common project-less profile.
+        if not projects_db.projects_db_path().exists():
+            return []
+        with projects_db.connect_closing(projects_db.projects_db_path()) as conn:
+            project = projects_db.project_for_path(conn, str(cwd))
+            if project is None:
+                return []
+            raw = projects_db._get_meta(conn, "context_path:" + project.id)
+        if not raw:
+            return []
+        path = Path(raw)
+        content = _pb._read_context_file(path)
+        if not content:
+            return []
+        # confine=False: the rendered file @-includes absolute vault paths that live outside its own
+        # dir (same trust posture as SOUL.md - the provisioner authored what it includes).
+        content = _pb._expand_context_includes(content, path.parent, confine=False)
+        return [_pb._context_section(content, "project context", raw, path, ctx_len)]
+    except Exception as exc:
+        logger.debug("project context skipped: %s", exc)
+        return []  # any failure -> no project context (mirror the except-pass posture)
 
 
 def _join_tier(parts: List[Optional[str]]) -> str:

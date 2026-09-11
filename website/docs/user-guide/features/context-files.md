@@ -162,6 +162,30 @@ The following project context files have been loaded and should be followed:
 
 Notice that SOUL content is inserted directly, without extra wrapper text.
 
+## Composing files with `@` includes
+
+Any context file (`SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`) can pull in another file with an `@` include directive. A line whose only content is `@<path>` is replaced by the contents of that file, resolved relative to the directory of the file the directive appears in:
+
+```markdown
+# SOUL.md
+
+@identity/global.md
+@identity/role.md
+```
+
+This keeps a single identity or instruction file composed of smaller, independently-edited pieces that stay live on disk - editing an included file changes the next prompt build with no reinstall or copy step. It is the natural way to share one global identity across agents while layering a per-agent role or a per-project overlay on top.
+
+Includes nest: an included file's own `@` directives are expanded relative to *that* file's location, so a directory of building blocks can reference its siblings.
+
+Rules and safeguards:
+
+- **Whole-line only.** A directive must be a bare `@path` alone on its line (leading whitespace is allowed, but no space after the `@`). An email address or an inline `@handle` in prose is never treated as an include.
+- **Relative paths.** The path resolves against the including file's directory. Use forward slashes; subdirectories like `@sub/role.md` work.
+- **Each file is included once.** A file referenced more than once across the whole tree (a repeat, a diamond, or a cycle) is expanded on first encounter; later references collapse to an `[include skipped (already included): <path>]` marker. This also bounds the work: no include chain can amplify into an exponential blow-up, because every file is read at most once.
+- **Missing files are visible, not fatal.** A directive pointing at a file that does not exist is replaced by an `[include not found: <path>]` marker (or `[include unreadable: ...]` / `[include depth limit reached at: ...]` for the other failure modes) rather than raising or silently vanishing.
+- **Trust boundary depends on the file.** `SOUL.md` lives in the Hermes home and is operator-owned, so its includes may point anywhere on the filesystem (for example a vault checked out under a different path). The working-directory files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`) may come from an untrusted cloned repo, so their includes are **confined**: absolute paths and `..`/symlink targets that escape the file's own directory are refused with an `[include outside base dir: <path>]` marker. This prevents a hostile checked-in context file from reading host secrets into the prompt.
+- **Same scanning as the top-level file.** Included content is run through the same prompt-injection scan and size cap after expansion, so an include cannot smuggle content past those checks.
+
 ## Security: Prompt Injection Protection
 
 All context files are scanned for potential prompt injection before being included. The scanner checks for:

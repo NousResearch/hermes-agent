@@ -47,3 +47,52 @@ def test_import_missing_file_returns_1(tmp_path, monkeypatch, capsys):
     rc = sc.cmd_sessions(_args("import", path=str(tmp_path / "nope.jsonl")))
     assert rc == 1
     assert "file not found" in capsys.readouterr().out.lower()
+
+
+class _NonTtyStdin:
+    def isatty(self):
+        return False
+
+
+class _TtyStdin:
+    def isatty(self):
+        return True
+
+
+def test_confirm_prompt_refuses_non_tty_without_blocking(monkeypatch, capsys):
+    """#77566: a service-inherited pipe never EOFs — input() would block forever."""
+    import builtins
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", _NonTtyStdin())
+
+    def _must_not_block(_prompt=""):
+        raise AssertionError("input() must not be called on non-TTY stdin")
+
+    monkeypatch.setattr(builtins, "input", _must_not_block)
+    assert sc._confirm_prompt("Delete 3 session(s)? [y/N] ") is False
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_confirm_prompt_still_prompts_on_tty(monkeypatch):
+    import builtins
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", _TtyStdin())
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": "y")
+    assert sc._confirm_prompt("Delete 3 session(s)? [y/N] ") is True
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": "n")
+    assert sc._confirm_prompt("Delete 3 session(s)? [y/N] ") is False
+
+
+def test_confirm_prompt_eof_still_aborts_on_tty(monkeypatch):
+    import builtins
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", _TtyStdin())
+
+    def _raise_eof(_prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr(builtins, "input", _raise_eof)
+    assert sc._confirm_prompt("Delete 3 session(s)? [y/N] ") is False

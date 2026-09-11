@@ -2924,32 +2924,34 @@ class TestReactions:
         )
 
     @pytest.mark.asyncio
-    async def test_processing_start_dedupes_synthetic_thread_ids_in_agent_view(self, adapter):
-        """Slack's Agent messaging view (flat DM) sets thread_id == the message's own ts
-        for every top-level message, so each new turn gets a distinct-looking thread_id.
-        The dedup key must collapse these synthetic per-message thread_ids back to a
-        single per-channel conversation, or "Getting started..." fires on every turn."""
+    async def test_getting_started_sent_once_across_a_real_dm_conversation(self, adapter):
+        """End-to-end: two real turns in the same Slack DM thread (first message, then a
+        reply carrying Slack's real thread_ts) must produce exactly one "Getting started..."
+        send, using the actual MessageEvents _handle_slack_message builds -- not a hand-built
+        stand-in event. Regression coverage for #15421-style bug where the intro re-sent on
+        every turn."""
         adapter.send = AsyncMock()
-        from gateway.platforms.base import SessionSource
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.config import Platform
 
-        def make_event(ts: str) -> MessageEvent:
-            source = SessionSource(
-                platform=Platform.SLACK, chat_id="C123", chat_type="im",
-                user_id="U_USER", thread_id=ts,
-            )
-            return MessageEvent(
-                text="hi", message_type=MessageType.TEXT, source=source, message_id=ts,
-            )
+        first_raw = {
+            "text": "hey", "user": "U_USER", "channel": "D123",
+            "channel_type": "im", "ts": "1111.000001",
+        }
+        await adapter._handle_slack_message(first_raw)
+        first_event = adapter.handle_message.call_args[0][0]
+        await adapter.on_processing_start(first_event)
 
-        await adapter.on_processing_start(make_event("1111.000001"))
-        await adapter.on_processing_start(make_event("2222.000002"))
-        await adapter.on_processing_start(make_event("3333.000003"))
+        # A real Slack reply in the same DM thread carries thread_ts == the first message's ts.
+        second_raw = {
+            "text": "yo", "user": "U_USER", "channel": "D123",
+            "channel_type": "im", "ts": "2222.000002", "thread_ts": "1111.000001",
+        }
+        await adapter._handle_slack_message(second_raw)
+        second_event = adapter.handle_message.call_args[0][0]
+        await adapter.on_processing_start(second_event)
 
-        adapter.send.assert_awaited_once_with(
-            "C123", "Getting started\u2026",
-            metadata={"thread_id": "1111.000001", "_interim_send": True},
+        assert adapter.send.await_count == 1, (
+            f"Getting started... sent {adapter.send.await_count} times across a single "
+            "DM conversation, expected exactly once"
         )
 
     @pytest.mark.asyncio

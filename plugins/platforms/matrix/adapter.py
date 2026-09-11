@@ -56,11 +56,11 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, PresenceState, RoomAlias, RoomCreatePreset, RoomID, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
-    ContentURI = EventID = RoomID = UserID = str  # type: ignore[misc,assignment]
+    ContentURI = EventID = RoomAlias = RoomID = UserID = str  # type: ignore[misc,assignment]
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
@@ -848,6 +848,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
+        self._alias_resolution_cache: dict[str, str] = {}  # "#alias:server" -> "!roomid:server"
+        self._alias_resolution_cache_max = 256
         self._joined_rooms: set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -1407,10 +1409,31 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
+    async def _resolve_chat_id(self, chat_id: str) -> str:
+        """Resolve a room alias ("#name:server") to its room ID; pass room IDs through unchanged.
+
+        The send endpoints only ever accept a real room ID per the Matrix spec — an alias has to be
+        resolved via the directory API first, which mautrix's client does not do implicitly. Without
+        this, an alias reaches Continuwuity's request deserializer as-is and fails with a Rust-side
+        "leading sigil is incorrect or missing" error instead of resolving.
+        """
+        if not chat_id.startswith("#"):
+            return chat_id
+        cached = self._alias_resolution_cache.get(chat_id)
+        if cached:
+            return cached
+        info = await self._client.resolve_room_alias(RoomAlias(chat_id))
+        room_id = str(info.room_id)
+        if len(self._alias_resolution_cache) >= self._alias_resolution_cache_max:
+            self._alias_resolution_cache.pop(next(iter(self._alias_resolution_cache)))
+        self._alias_resolution_cache[chat_id] = room_id
+        return room_id
+
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
+        room_id = await self._resolve_chat_id(chat_id)
         event_id = await asyncio.wait_for(
-            self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:

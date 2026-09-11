@@ -1,25 +1,13 @@
 /**
- * The welcome chat — the profile guided onboarding runs in.
+ * The welcome chat that guided onboarding runs in, and the seed prompts for the first build session.
  *
- * It is not an anonymous session: it belongs to a persistent `hermes-setup`
- * profile, so the conversation survives onboarding and can be found again. An
- * ordinary profile with an ordinary visible chat — there is no bot surface
- * here, and nothing in this flow mints one.
+ * The chat belongs to a persistent `hermes-setup` profile, so it survives onboarding and can be found again. `setup`
+ * is the internal name throughout this module (the profile key, the atoms, the hidden `[setup]` notes); the user sees
+ * only Hermes and the title `Welcome to Hermes`.
  *
- * `setup` is the INTERNAL name throughout this module (the profile key, the
- * atoms, the hidden `[setup]` notes). It is never what the user reads: to
- * them the voice is just Hermes, and the chat is titled `Welcome to Hermes`.
- *
- * When the first task is decided it is NOT built in this chat. The model emits
- * `::onboarding{step="handoff" task="…" brief="…"}` and the renderer opens a
- * NEW session on the user's default profile, seeded with the work-side
- * runbook, and starts the build there. The welcome chat hears how it went
- * through a hidden `[setup]` note.
- *
- * This module owns the pure pieces (names, souls, seed prompts, the handoff
- * request atom). The side effects — profiles.create, session.create, the chat
- * switch — live in the wiring's handoff effect so they run with real
- * gateway/session hooks.
+ * This module holds the pure pieces: names, souls, seed prompts, and the handoff request atom. The side effects
+ * (profiles.create, session.create, the chat switch) run in the wiring's kickoff and handoff effects, which hold the
+ * gateway and session hooks.
  */
 
 import { atom } from 'nanostores'
@@ -35,32 +23,17 @@ import type { OnboardingAnswers } from '@/store/onboarding-answers'
 import { PLAIN_SPEECH } from '@/store/onboarding-script'
 import { getSessionOwnerHint } from '@/store/session'
 
-/** Profile name of the onboarding guide. Prefixed so it can't collide with a
- *  profile a user actually named "setup". */
+/** Profile name of the onboarding guide. Prefixed so it cannot collide with a profile the user named "setup". */
 export const SETUP_PROFILE = 'hermes-setup'
 
-/** Title of the welcome chat, and the row the user sees in their sessions
- *  list. Exact-title lookup is how kickoff re-finds it across relaunches, so
- *  this string is also a registry key — change the words, keep them stable. */
+/** Title of the welcome chat, and the row the user sees in the sessions list. Kickoff re-finds the chat by exact
+ *  title after a relaunch, so this string is also a lookup key. */
 export const SETUP_CHAT_TITLE = 'Welcome to Hermes'
 
 export type SetupHandoffPhase = 'done' | 'error' | 'opening' | 'pending'
 
-/** What KIND of first job this is. Two shapes we script ourselves:
- *
- *  'machine-setup' — the work is known (audit the box, then install), the user
- *  can't brief it, and the agent needs permission discipline the moment it
- *  starts touching the system.
- *
- *  'plugin' — the first build is a piece of THEIR app. A plugin is a single
- *  file the runtime hot-loads on save, so the payoff lands inside the window
- *  they are already looking at instead of somewhere on disk, and their first
- *  session ends with a surface nobody else has. Not every first task suits it
- *  (see the runbook's own test), which is why it is a plan rather than a
- *  default.
- *
- *  Everything else is 'build' — the user's own idea, in whatever shape it
- *  wants. */
+/** Which runbook planRunbook() selects for the first build session. Set from the plan attribute on the model's
+ *  handoff directive. */
 export type HandoffPlan = 'build' | 'machine-setup' | 'plugin'
 
 const HANDOFF_PLANS: readonly HandoffPlan[] = ['build', 'machine-setup', 'plugin']
@@ -77,16 +50,16 @@ export interface SetupHandoffState {
   brief: string
   phase: SetupHandoffPhase
   plan: HandoffPlan
-  /** Title of the session the build landed in, once it exists. */
   sessionTitle?: string
 }
 
-/** The handoff beacon: HandoffCard raises it, the wiring effect performs it.
- *  Null until the model emits the handoff directive. */
+/** Set by HandoffCard, or restored from a saved receipt by the wiring's recovery effect. The wiring's handoff effect
+ *  then advances phase. Null until the model emits the handoff directive. */
 export const $setupHandoff = atom<null | SetupHandoffState>(null)
 export const $handoffError = atom<string | null>(null)
 
-/** Only a deliberate retry lifts an error; re-rendering a directive does not. */
+/** Called only by the Retry control in HandoffCard and by the "Retry first build" toast, so a re-rendered handoff
+ *  directive cannot clear the error. */
 export function retrySetupHandoff(): void {
   const state = $setupHandoff.get()
 
@@ -98,7 +71,8 @@ export function retrySetupHandoff(): void {
   $setupHandoff.set({ ...state, phase: 'pending' })
 }
 
-/** The issuing welcome chat owns the completion note, even in a background tile. */
+/** Identifies the welcome chat that issued the handoff. The handoff wiring submits the completion note to this
+ *  session, not to whichever session is active when the build starts. */
 export interface SetupSession {
   connectionId: null | string
   profile: string
@@ -108,8 +82,8 @@ export interface SetupSession {
 
 export const $setupSession = atom<null | SetupSession>(null)
 
-/** A null connection is the ambient profile route. Substituting 'local'
- * would retarget a legacy remote primary onto this machine. */
+/** Returns null for the ambient profile route. Returning 'local' instead would retarget a legacy remote primary onto
+ * this machine. */
 export function guideSourceConnectionId(guideStoredId: null | string | undefined): null | string {
   return (guideStoredId && getSessionOwnerHint(guideStoredId)?.connectionId) || activeGatewayConnectionId() || null
 }
@@ -143,15 +117,13 @@ export function resetSetupHandoffForTests(): void {
   $setupSession.set(null)
 }
 
-/** Short display title for the first build's session row. */
 export function firstTaskTitle(task: string): string {
   const trimmed = task.trim()
 
   return trimmed.length > 28 ? `${trimmed.slice(0, 27).trimEnd()}…` : trimmed || 'First build'
 }
 
-/** SOUL.md for the welcome profile — its standing identity across the welcome
- *  chat and every later check-in. */
+/** SOUL.md for the welcome profile. It applies to the welcome chat and to every later check-in. */
 export function composeSetupSoul(): string {
   return [
     '# Hermes',
@@ -168,10 +140,6 @@ export function composeSetupSoul(): string {
   ].join('\n')
 }
 
-/** The hidden runbook seeded into the first build's session — the work-side
- *  half of the old single-chat script: the permissions note, the live progress
- *  cards, and, when the user picked apps during setup, the connect-first
- *  opening. With no picks the first build stays account-free. */
 export function buildFirstTaskRunbook(
   task: string,
   answers: OnboardingAnswers,
@@ -212,9 +180,8 @@ export function buildFirstTaskRunbook(
 const NO_AUTH_RULE =
   'CRITICAL: this first build must be finishable with NO external account or OAuth (no Gmail, no Slack, no Google sign-in) — connectors get wired only with their consent, and an app that is already connected may be used, one that is not may be offered. Everything else is fair game and the more visible the better: web research with the browser shown to the user as you work, scripts, computer use, a small app, a file-based tracker, a scheduled reminder, a generated page. If the idea needs an account that is not connected, build the no-auth core first and offer the connection as the next step. NEVER route around a connector: an unconnected Gmail is not a cue to install an IMAP client, ask for an app password, or find another way into the same account. The connector IS the way in; if they decline it, the app is out of this build.'
 
-/** The picks are gateway slugs the user chose during setup; connecting them is
- *  the session's first act, and the agent owns the wait (D85). The app, not the
- *  agent, opens the sign-ins and reports back with a hidden note. */
+/** The picks are gateway slugs the user chose during setup. The agent, rather than the app, waits for the connection
+ *  result, as decided in D85. */
 function connectFirstRunbook(picks: string[]): string[] {
   const named = picks.map(slug => `${slug} (${connectorTitle(slug)})`).join(', ')
 
@@ -231,12 +198,8 @@ function connectFirstRunbook(picks: string[]): string[] {
   ]
 }
 
-/** The one first job we script end to end. Setting up a machine is the task a
- *  brand-new user most wants and can least brief, so the agent does the
- *  briefing: look first, propose, then install with consent. Audit-before-plan
- *  is the load-bearing part — a plan invented before looking is how an agent
- *  ends up installing a second copy of something, or "fixing" drivers that
- *  were already fine. */
+/** The machine-setup runbook. The audit comes before the plan because a plan written before looking is how an agent
+ *  installs a second copy of something, or "fixes" drivers that were already correct. */
 const MACHINE_SETUP_RUNBOOK = [
   'THIS IS A MACHINE SETUP JOB: get this computer genuinely ready to use, end to end, with the terminal. It is the one first task that does not need an account anywhere — never send them to a sign-in to complete it.',
   'START BY LOOKING, NOT PLANNING. Before proposing anything, use the terminal to find out what is actually here: OS name and version, architecture, pending system updates, free disk, which package manager exists (Homebrew / winget / apt / dnf), and which everyday things are already installed (a browser, an editor, git, python, node, docker, and whatever tools they mentioned earlier). On an NVIDIA machine also check the GPU and driver (nvidia-smi) and whether a container runtime and CUDA toolchain are present. Report what you found in a few short lines — plainly, no tables.',
@@ -248,19 +211,7 @@ const MACHINE_SETUP_RUNBOOK = [
   'FINISH with a few lines: what changed, what you skipped and why, and what is left for them. If a reboot is needed, say so plainly.'
 ]
 
-/** The other scripted job: the first build is a piece of their own app.
- *
- *  A desktop plugin is one file — plain ESM, `jsx()` calls, no build step —
- *  that the runtime loader hot-loads the moment it is written (see
- *  contrib/runtime-loader.ts, whose whole design is "agent rewrites a plugin
- *  file, clean reload"). That is what makes this a good FIRST task rather than
- *  an ambitious one: the payoff appears inside the window the user is already
- *  looking at, seconds after the file lands, and it is theirs in a way a file
- *  on disk never is.
- *
- *  The catalog is reference, not a dependency: thirteen reviewed plugins in
- *  NousResearch/plugins show the shapes that work. Reading one beats inventing
- *  an API, and the agent is told to look before it writes. */
+/** The plugin runbook. The save-time reload it promises is implemented in src/contrib/runtime-loader.ts. */
 const pluginRunbook = (root: string) => [
   'THIS IS A PLUGIN JOB: the thing you are building is a piece of the Hermes app itself, and it will appear in the window the user is looking at right now. That is the whole point — do not let it become a script in a folder.',
   `A plugin is ONE file: \`${root}/<name>/plugin.js\`. Plain ESM, no build step, no package.json, no install. It imports from \`@hermes/plugin-sdk\` and calls \`jsx()\` from \`react/jsx-runtime\` directly (there is no JSX compiler in this path — writing \`<div>\` will not work). It default-exports \`{ id, name, register(ctx) }\` and \`register\` calls \`ctx.register({ id, area, order, render })\`. The runtime loads it the moment you save, and reloads it on every later save, so there is no restart to ask them for.`,
@@ -270,21 +221,19 @@ const pluginRunbook = (root: string) => [
   'Never ask them to restart the app, never edit anything outside their plugin folder, and never touch the Hermes install itself. If the plugin errors on load, the app toasts it and keeps running — read the error, fix the file, save again.'
 ]
 
-/** The plan's own instructions, or the no-auth rule when the shape is the
- *  user's own idea. One switch so a new plan cannot half-land: adding a case
- *  here is what makes `plan="…"` mean anything at the other end. */
+/** A new HandoffPlan takes effect only once it has a case here. */
 function planRunbook(plan: HandoffPlan, pluginRoot: string, connectFirst: boolean): string[] {
   switch (plan) {
     case 'machine-setup':
       return machineSetupRunbook()
 
     case 'plugin':
-      // Without picks NO_AUTH_RULE still applies: a plugin that needs an API
-      // key on its first run is the same dead end as any other first build.
       if (!pluginRoot) {
         throw new Error('The desktop plugin folder is unavailable. Retry before starting the first build.')
       }
 
+      // With no picks NO_AUTH_RULE still applies: a plugin that needs an API key on its first run is as
+      // unfinishable as any other first build that needs an account.
       return connectFirst ? pluginRunbook(pluginRoot) : [...pluginRunbook(pluginRoot), NO_AUTH_RULE]
 
     default:
@@ -292,10 +241,8 @@ function planRunbook(plan: HandoffPlan, pluginRoot: string, connectFirst: boolea
   }
 }
 
-/** The same runbook, opening with what the app already knows about the machine
- *  — freshness first. That fact decides whether the job is an afternoon of real
- *  work or a tour of things already handled, and the agent should not spend its
- *  first two turns discovering what one IPC already answered. */
+/** Prefixes MACHINE_SETUP_RUNBOOK with machineDescription(), so the agent does not spend its first turns finding out
+ *  what the app already reports. */
 function machineSetupRunbook(): string[] {
   const description = machineDescription()
 
@@ -304,9 +251,8 @@ function machineSetupRunbook(): string[] {
     : MACHINE_SETUP_RUNBOOK
 }
 
-/** Seed rows for the build session's session.create — just the hidden runbook;
- *  the visible go-signal (the task brief) is submitted as a real turn right
- *  after, which is what starts the build. */
+/** Seed rows for the build session's session.create: the hidden runbook only. The task brief is submitted as a real
+ *  turn right after, and that is what starts the build. */
 export async function buildFirstTaskSeedMessages(
   task: string,
   answers: OnboardingAnswers,
@@ -317,17 +263,14 @@ export async function buildFirstTaskSeedMessages(
   return [{ content: buildFirstTaskRunbook(task, answers, plan, root), display_kind: 'hidden', role: 'user' }]
 }
 
-/** The hidden note whispered into the Setup chat once the build session is
- *  live — Setup's cue to close the loop and stand down. The check-ins that
- *  follow are driven by the build's own progress (see first-build.ts), not by
- *  a schedule Setup has to remember to create. */
+/** The hidden note sent to the welcome chat once the build session is live. The check-ins after it come from the
+ *  build's own progress, in first-build.ts. */
 export function buildHandoffCompleteNote(task: string): string {
   return `[setup] handoff complete — "${task.trim()}" is now building in its own session on the default profile, and the user is watching it there. The app is showing them a short tour of the profile rail and the sessions list right now, so do not describe either. Say ONE short line and then stop: you're around if they want a hand, and this chat stays where it is. Do not ask a question, do not offer a list, do not schedule anything.`
 }
 
-// ── gateway helpers (called from the wiring's kickoff + handoff effects) ─────
-
-/** Create the guide once with the default profile’s configured providers and shared OAuth. */
+/** Creates the guide profile. The catch treats an already-existing profile as success, so kickoff can call this on
+ *  every run. */
 export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
   try {
     await request('profiles.create', {

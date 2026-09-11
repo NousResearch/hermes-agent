@@ -3013,6 +3013,8 @@ def cron_model_drift_axes(
     # A cron.model / cron.model_provider fleet default covers its axis: that axis never reads the
     # snapshot at fire time, so reporting it would be false.
     fleet = _cron_section(config) or {}
+    if fleet.get("follow_profile") is True:
+        return []
     drifted: List[str] = []
     for axis, fleet_key in (("provider", "model_provider"), ("model", "model")):
         if _model_assignment_text(fleet.get(fleet_key)) or _model_assignment_text(job.get(axis)):

@@ -42,7 +42,7 @@ def _base_job(**overrides):
 
 
 def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cron_model=None,
-         cron_model_provider=None):
+         cron_model_provider=None, follow_profile=None):
     """Drive run_job against a temp config.yaml whose ``model.default`` / ``model.provider`` are
     the CURRENT global defaults. Returns ``(success, error, agent_kwargs, resolve_kwargs)`` where
     the last two are the kwargs AIAgent / resolve_runtime_provider were called with (None when
@@ -59,6 +59,8 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
         cron_lines.append(f"  model: {cron_model}")
     if cron_model_provider is not None:
         cron_lines.append(f"  model_provider: {cron_model_provider}")
+    if follow_profile is not None:
+        cron_lines.append(f"  follow_profile: {str(follow_profile).lower()}")
     if cron_lines:
         config_yaml += "cron:\n" + "\n".join(cron_lines) + "\n"
     (tmp_path / "config.yaml").write_text(config_yaml)
@@ -220,3 +222,43 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+
+class TestFollowProfileDefaults:
+    def test_switch_round_trip_and_opt_out_preserve_job(self, tmp_path):
+        from copy import deepcopy
+        from hermes_cli.config import cron_model_drift_axes
+
+        job = _base_job(provider_snapshot="created-provider", model_snapshot="created-model")
+        before = deepcopy(job)
+        for provider, model in [("provider-a", "model-a"), ("provider-b", "model-b"),
+                                ("provider-a", "model-a")]:
+            success, error, agent, resolved = _run(
+                job, tmp_path, current_provider=provider, current_model=model,
+                follow_profile=True)
+            assert success, error
+            assert (resolved["requested"], resolved["target_model"]) == (provider, model)
+            assert agent["model"] == model
+            assert cron_model_drift_axes(job, current_provider=provider, current_model=model,
+                                         config={"cron": {"follow_profile": True}}) == []
+        assert job == before
+        success, error, agent, resolved = _run(
+            job, tmp_path, current_provider="provider-b", current_model="model-b",
+            follow_profile=False)
+        assert success, error
+        assert (resolved["requested"], agent["model"]) == ("created-provider", "created-model")
+
+    def test_explicit_overrides_still_win_in_follow_profile_mode(self, tmp_path):
+        for job, fleet, expected in [
+            (_base_job(model="role-model"), {}, ("profile-provider", "role-model")),
+            (_base_job(provider="job-provider", model="job-model"), {},
+             ("job-provider", "job-model")),
+            (_base_job(), {"cron_model": "fleet-model", "cron_model_provider": "fleet-provider"},
+             ("fleet-provider", "fleet-model")),
+        ]:
+            job.update(provider_snapshot="old-provider", model_snapshot="old-model")
+            success, error, agent, resolved = _run(
+                job, tmp_path, current_provider="profile-provider", current_model="profile-model",
+                follow_profile=True, **fleet)
+            assert success, error
+            assert (resolved["requested"], agent["model"]) == expected

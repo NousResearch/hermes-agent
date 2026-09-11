@@ -1333,14 +1333,17 @@ class _CronJobConfig:
     model: str
     model_cfg: Any
     cron_default_provider: str
+    follow_profile: bool = False
 
 
-def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
+def _snapshot_pin(job: dict, axis: str, current: str, job_id: str, *, follow_profile: bool = False) -> str:
     """The creation snapshot is an unpinned axis's effective pin: return it, logging once when it
     differs from *current* (the live global default); ``""`` for legacy jobs without one, which keep
     following the global default. A global model/provider change must never stop a cron job; a job
     keeps running on what it was created under until the operator pins it or sets a cron.* fleet
     default (#44585)."""
+    if follow_profile:
+        return ""
     snapshot = str(job.get(f"{axis}_snapshot") or "").strip()
     if snapshot and current and snapshot.lower() != current.lower():
         logger.info(
@@ -1354,9 +1357,11 @@ def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
     creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
-    ``hermes cron edit --model`` applies next tick."""
+    ``hermes cron edit --model`` applies next tick. With cron.follow_profile enabled,
+    unpinned axes bypass creation snapshots and follow this profile's current defaults."""
     model = job.get("model") or os.getenv("HERMES_MODEL") or ""
     _cron_default_provider = ""
+    follow_profile = False
     _cfg: dict = {}
     _model_cfg: Any = {}
     try:
@@ -1374,6 +1379,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             _cron_cfg_for_model = _cfg.get("cron") or {}
             _cron_default_model = ""
             if isinstance(_cron_cfg_for_model, dict):
+                follow_profile = _cron_cfg_for_model.get("follow_profile") is True
                 _cron_default_model = str(_cron_cfg_for_model.get("model") or "").strip()
                 _cron_default_provider = str(_cron_cfg_for_model.get("model_provider") or "").strip()
             if not job.get("model"):
@@ -1381,7 +1387,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     model = _cron_default_model
                 else:
                     _, _global_model = resolve_cron_model_drift_defaults(_cfg)
-                    model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
+                    model = _snapshot_pin(
+                        job, "model", _global_model, job_id, follow_profile=follow_profile
+                    ) or _global_model or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -1403,7 +1411,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
         _net_cfg = _cfg.get("network", {})
         if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
             apply_ipv4_preference(force=True)
-    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider)
+    return _CronJobConfig(_cfg, model, _model_cfg, _cron_default_provider, follow_profile)
 
 
 def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
@@ -1500,7 +1508,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")
         # None (not the config provider) keeps the legacy no-snapshot path resolving from persisted
         # config exactly as before.
-        requested = _snapshot_pin(job, "provider", global_provider, job_id) or None
+        requested = (global_provider or None) if jc.follow_profile else (
+            _snapshot_pin(job, "provider", global_provider, job_id) or None)
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.

@@ -92,7 +92,7 @@ def _validate(python: Path, env: dict[str, str]) -> str:
     try:
         checked = subprocess.run(
             [str(python), "-I", "-B", "-c",
-             "import packaging, tomli_w; from ruamel.yaml import YAML"],
+             "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
             env=env, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -160,8 +160,22 @@ def runtime_python(*, bootstrap: bool = True) -> Path:
         if not bootstrap:
             raise InstallError("pm-runtime", "not installed and lazy installs are disabled",
                                "run `hermes pm install` to prepare the independent PM runtime")
-        # This closure is deliberately stdlib-only: uv + Python, never Venv.
-        uv, env = managed_uv(explicit=True)
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path, store_root
+        from pm.registry import get_package
+        from pm.store import current_target
+
+        # Setup has already verified/extracted uv, but there are no PM facts
+        # yet. Use it to acquire PM's TLS support BEFORE downloading Python.
+        package = get_package("uv")
+        version = Lockfile(lockfile_path()).version("uv")
+        target = current_target()
+        staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
+        if staged is not None and staged.is_file():
+            uv, env = str(staged), {"UV_PYTHON": sys.executable}
+        else:
+            # Non-shell bootstrap callers (CI) already have a host interpreter.
+            uv, env = managed_uv(explicit=True)
     if uv is None:
         raise InstallError("pm-runtime", "pinned uv and Python are unavailable")
     return prepare_runtime(Path(uv), Path(env["UV_PYTHON"]), install_state_dir(project) / "pm-runtime",

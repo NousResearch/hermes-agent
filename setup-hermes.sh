@@ -82,24 +82,24 @@ else
 fi
 target="$os-$arch"
 
-# lock.json is machine-written (sorted keys, 2-space indent): read the uv
-# pin's version + this target's url/sha256 with awk — no python yet.
-pin() { # $1 = field (url | sha256)
-  awk -F '"' -v target="$target" -v field="$1" '
-    /^    "uv": \{/ { in_uv = 1 }
-    in_uv && /^    }/ { exit }
-    in_uv && /^        "/ { in_t = ($2 == target) }
-    in_t && $2 == field { print $4; exit }' "$lock"
+# The machine-written lock has one member per line. Follow object names and
+# braces, not indentation, to read pins before Python is available.
+pin() { # $1 = field (url | sha256 | version), $2 = package (default: uv)
+  awk -F '"' -v package="${2:-uv}" -v target="$target" -v field="$1" '
+    /^[[:space:]]*("[^"]+"[[:space:]]*:[[:space:]]*)?\{[[:space:]]*$/ {
+      path[++depth] = $2; next
+    }
+    /^[[:space:]]*}[[:space:]]*,?[[:space:]]*$/ {
+      delete path[depth--]; next
+    }
+    path[2] == "packages" && path[3] == package && $2 == field &&
+      ((field == "version" && depth == 3) ||
+       (depth == 5 && path[4] == "artifacts" && path[5] == target)) {
+      print $4; exit
+    }' "$lock"
 }
-uv_version="$(awk -F '"' '
-  /^    "uv": \{/ { in_uv = 1 }
-  in_uv && /^    }/ { exit }
-  in_uv && $2 == "version" { print $4; exit }' "$lock")"
-py_version="$(awk -F '"' '
-  /^    "python": \{/ { in_py = 1 }
-  in_py && /^    }/ { exit }
-  in_py && $2 == "version" { print $4; exit }' "$lock" \
-  | cut -d+ -f1 | cut -d. -f1,2)"
+uv_version="$(pin version)"
+py_version="$(pin version python | cut -d+ -f1 | cut -d. -f1,2)"
 [ -n "$uv_version" ] || { echo -e "${RED}✗${NC} no uv pin in pm/lock.json" >&2; exit 1; }
 
 store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"

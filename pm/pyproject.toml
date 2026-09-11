@@ -6,6 +6,7 @@ dependencies = [
   "packaging==26.0",
   "tomli-w==1.2.0",
   "ruamel.yaml==0.18.17",
+  "truststore==0.10.4",
 ]
 
 [tool.uv]

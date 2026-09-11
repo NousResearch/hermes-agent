@@ -190,6 +190,9 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     def operations(name):
         return [line for line in calls.read_text().splitlines() if line.split()[0] == name]
 
+    def app_syncs():
+        return [line for line in operations("sync") if "--frozen --all-packages" in line]
+
     cold = activate()
     first = selection()
     probe = json.loads(cold.stdout)
@@ -198,7 +201,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert probe["pythonpath"].split(os.pathsep)[0] == str(core)
     # Cold activation builds both PM's isolated runtime and the app environment.
     assert "Preparing the isolated PM runtime" in cold.stderr
-    assert len(operations("venv")) == len(operations("sync")) == 2
+    assert len(app_syncs()) == 1
     facts = json.loads((runtime / "facts.json").read_text())["packages"]
     assert facts["python"]["artifacts"] == [first_digest]
     assert facts["uv"]["artifacts"] == [uv_digest]
@@ -209,8 +212,14 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     untouched = _snapshot(protected)
     activate()
     assert selection() == first
-    assert len(operations("venv")) == len(operations("sync")) == 2
-    assert len([line for line in operations("python") if line.startswith("python install ")]) == 2
+    # The first warm launch rebinds PM from bootstrap Python to its managed
+    # interpreter. The application selection is unchanged; later launches reuse both.
+    assert len(app_syncs()) == 1
+    prepared = operations("sync")
+    activate()
+    assert selection() == first
+    assert operations("sync") == prepared
+    assert len([line for line in operations("python") if line.startswith("python install ")]) == 3
 
     second_digest = pin_python("second")
     activate()
@@ -218,7 +227,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert second["stamp"] != first["stamp"]
     assert second["environment"] != first["environment"]
     assert Path(first["environment"]).is_dir()
-    assert len(operations("venv")) == len(operations("sync")) == 3
+    assert len(app_syncs()) == 2
     facts = json.loads((runtime / "facts.json").read_text())["packages"]
     assert facts["python"]["artifacts"] == [second_digest]
     assert (core / "uv.lock").read_bytes() == dependency_lock
@@ -231,5 +240,5 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert "setup failed" in failed.stderr
     assert "CALLER_SURVIVED:" in failed.stdout
     assert selection() == second
-    assert len(operations("sync")) == 4
-    assert len([line for line in operations("python") if line.startswith("python install ")]) == 4
+    assert len(app_syncs()) == 3
+    assert len([line for line in operations("python") if line.startswith("python install ")]) == 5

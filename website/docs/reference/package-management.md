@@ -177,18 +177,25 @@ installation work: shell configuration, launchers, `.env`, and bundled skills.
 Run the setup script separately if you want that full installation workflow.
 
 The bootstrap uses uv to install and locate Python, then waits for uv to exit.
-PM prepares its own small, locked Python environment before reading plugin
-configuration or resolving application dependencies. Its project is deliberately
+PM uses the staged uv to prepare its own small, locked Python environment
+before downloading its managed tools, reading plugin configuration, or resolving
+application dependencies. Its project is deliberately
 independent of the application workspace: a broken application dependency must
 not prevent its dependency manager from starting. Each uv subprocess exits before
 PM runs, so it cannot hold the uv executable that PM needs to replace.
 
-PM's runtime contains `ruamel.yaml`, `packaging`, and `tomli-w`, not the application
+PM's runtime contains `ruamel.yaml`, `packaging`, `tomli-w`, and `truststore`, not the application
 dependency tree. CLI commands and application-requested installs and repairs run
 there; read-only path and installed-environment lookups remain local. PM never
 adds its dependencies to an already-running agent's imports. First-party YAML
 readers and writers use ruamel; third-party packages can still require PyYAML in
 the application environment. Failure receipts remain stdlib-only.
+
+PM's CLI and worker activate `truststore` before importing their HTTPS clients.
+This uses the platform certificate store even when bootstrap Python's compiled-in
+OpenSSL paths do not locate it. No application dependencies or certificate-path
+override are required. After the first install, PM rebuilds its small environment
+against the managed Python on the next invocation; subsequent invocations reuse it.
 
 When lazy installs are disabled, an existing PM runtime can still check whether
 the application environment is current. If PM itself is missing or outdated,

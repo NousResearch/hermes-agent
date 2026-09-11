@@ -5,8 +5,8 @@ import importlib
 import os
 from pathlib import Path
 import subprocess
-
-import venv
+import shutil
+import sys
 
 import pytest
 
@@ -18,9 +18,12 @@ from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 @pytest.fixture(scope="module")
 def isolated_python(tmp_path_factory):
+    from pm.runtime_stage import stage_runtime
+
     root = tmp_path_factory.mktemp("pm-python")
-    venv.EnvBuilder(with_pip=False).create(root)
-    python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    uv = shutil.which("uv")
+    assert uv, "the worker contract requires real uv"
+    python = stage_runtime(Path(uv), Path(sys.executable), root)
     probe = subprocess.run(
         [str(python), "-I", "-c", "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
         capture_output=True, text=True, timeout=30,

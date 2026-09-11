@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import tarfile
 import textwrap
-import venv
 
 import pytest
 
@@ -28,9 +28,12 @@ def restore_registry(monkeypatch):
 
 @pytest.fixture(scope="module")
 def worker_python(tmp_path_factory):
+    from pm.runtime_stage import stage_runtime
+
     environment = tmp_path_factory.mktemp("registry-worker-python")
-    venv.EnvBuilder(with_pip=False).create(environment)
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    uv = shutil.which("uv")
+    assert uv, "the worker contract requires real uv"
+    return stage_runtime(Path(uv), Path(sys.executable), environment)
 
 
 @pytest.mark.parametrize("operation", ["ensure", "stage_only"])

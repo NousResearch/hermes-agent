@@ -44,6 +44,9 @@ def _read_controls(messages, pause):
 
 
 def main():
+    import truststore
+
+    truststore.inject_into_ssl()
     # Capture the protocol FD before redirecting even native/subprocess stdout.
     wire = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())

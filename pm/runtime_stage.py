@@ -63,7 +63,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             if result.returncode:
                 raise InstallError("pm-runtime", f"{command[1]} exited {result.returncode}")
     checked = subprocess.run(
-        [str(executable), "-I", "-B", "-c", "import packaging, tomli_w; from ruamel.yaml import YAML"],
+        [str(executable), "-I", "-B", "-c", "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
         env=env, capture_output=True, text=True, timeout=30,
     )
     if checked.returncode:

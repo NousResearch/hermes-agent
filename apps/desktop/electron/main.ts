@@ -12335,7 +12335,7 @@ function releaseLocalBackendSlot(entry: any) {
 function assertPoolEntryStillOwned(poolKey: string, entry: any) {
   if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
     releaseLocalBackendSlot(entry)
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
+    throw new Error(`Profile backend start for "${poolKey}" was cancelled before it became ready.`)
   }
 }
 
@@ -12619,6 +12619,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   // Discover the ephemeral port the child bound to
   const port = await Promise.race([portAnnouncement, startFailed])
+  assertPoolEntryStillOwned(poolKey, entry)
 
   if (readyFile) {
     fs.unlink(readyFile, () => {})
@@ -12628,6 +12629,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   const baseUrl = `http://127.0.0.1:${port}`
   await Promise.race([waitForHermes(baseUrl, token), startFailed])
+  assertPoolEntryStillOwned(poolKey, entry)
   ready = true
 
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
@@ -12636,12 +12638,15 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     rememberLog
   })
 
+  assertPoolEntryStillOwned(poolKey, entry)
+
   entry.token = authToken
 
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
   const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+  assertPoolEntryStillOwned(poolKey, entry)
 
   if (!wsProbe.ok) {
     throw new Error(
@@ -13130,9 +13135,11 @@ async function runHermesStart() {
     })
 
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     // Discover the ephemeral port the child bound to
     const port = await Promise.race([portAnnouncement, backendStartFailed])
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (readyFile) {
       fs.unlink(readyFile, () => {})
@@ -13140,7 +13147,9 @@ async function runHermesStart() {
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
     backendStartFailure = null
 
@@ -13149,9 +13158,12 @@ async function runHermesStart() {
       rememberLog
     })
 
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
     const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (!wsProbe.ok) {
       throw new Error(

@@ -707,6 +707,41 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
   })
+
+  it('does not re-graft a billing error onto a successfully recovered reply (#87248)', () => {
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'hello', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-stream-1',
+        parts: [{ text: 'hi from fallback provider', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'hello', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'HTTP 402: You have depleted your monthly included credits',
+        id: 'assistant-stream-1',
+        parts: [{ text: 'hi from fallback provider', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+    const assistant = merged.find(message => message.id === 'assistant-stream-1')
+
+    expect(assistant?.error).toBeUndefined()
+    expect(chatMessageText(assistant!)).toBe('hi from fallback provider')
+  })
 })
 
 describe('upsertToolPart', () => {

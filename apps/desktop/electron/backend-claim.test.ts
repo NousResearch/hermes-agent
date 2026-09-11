@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events'
 import { test } from 'vitest'
 
 import {
+  backendMakingProgress,
   claimDecision,
   createBackendOutputTail,
   DEFAULT_OUTPUT_TAIL_LIMIT,
@@ -132,4 +133,53 @@ test('attach tolerates a child with missing stdio streams', () => {
 
   tail.attach({ stderr: null, stdout: null })
   assert.equal(tail.text(), '')
+})
+
+// --- output-tail activity tracking (#96177) -----------------------------------
+
+test('output tail tracks lastActivityAt from appends and attached streams', () => {
+  const tail = createBackendOutputTail(64)
+  assert.equal(tail.lastActivityAt(), 0, 'no output yet → 0')
+
+  const child = { stderr: new EventEmitter(), stdout: new EventEmitter() }
+  tail.attach(child)
+  child.stdout.emit('data', Buffer.from('booting\n'))
+
+  const stamped = tail.lastActivityAt()
+  assert.ok(stamped > 0, 'attach-driven output records activity')
+  assert.ok(Date.now() - stamped < 5_000, 'activity timestamp is recent')
+
+  tail.append('more\n')
+  assert.ok(tail.lastActivityAt() >= stamped, 'append refreshes the timestamp')
+})
+
+test('backendMakingProgress is true while the child is alive and emitting', () => {
+  let clock = 1_000_000
+  const tail = createBackendOutputTail(64, { now: () => clock })
+  const child = { exitCode: null, killed: false }
+
+  // No output yet: an alive process inside the (block-buffered) import
+  // window still reads as progress.
+  assert.equal(backendMakingProgress(child, tail, { now: () => clock }), true)
+
+  tail.append('importing feishu\n')
+  clock += 10_000
+
+  // Recent output → progress.
+  assert.equal(backendMakingProgress(child, tail, { now: () => clock }), true)
+
+  clock += 31_000
+
+  // Silence past the window → no progress.
+  assert.equal(backendMakingProgress(child, tail, { now: () => clock }), false)
+})
+
+test('backendMakingProgress is false for a dead or killed child', () => {
+  const tail = createBackendOutputTail(64)
+  const now = () => 1_000_000
+
+  assert.equal(backendMakingProgress({ exitCode: 1, killed: false }, tail, { now }), false)
+  assert.equal(backendMakingProgress({ exitCode: null, killed: true }, tail, { now }), false)
+  assert.equal(backendMakingProgress(null, tail, { now }), false)
+  assert.equal(backendMakingProgress(undefined, tail, { now }), false)
 })

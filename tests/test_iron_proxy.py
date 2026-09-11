@@ -158,6 +158,37 @@ def test_custom_static_headers_disable_query_replacement_but_gemini_keeps_it(
     }
 
 
+def test_merge_mappings_rotates_token_when_custom_authority_changes():
+    existing = ip.TokenMapping(
+        "old-token", "SERVICE_SECRET", ("api.example.com",),
+        ("x-service-secret",), (), False,
+    )
+    expanded = ip.TokenMapping(
+        "new-token", "SERVICE_SECRET", ("api.example.com", "upload.example.com"),
+        ("x-service-secret",), (), False,
+    )
+
+    merged = ip.merge_mappings(existing=[existing], discovered=[expanded])
+
+    assert merged[0].proxy_token == "new-token"
+    assert merged[0].upstream_hosts == ("api.example.com", "upload.example.com")
+
+
+def test_merge_mappings_preserves_token_for_normalized_unchanged_authority():
+    existing = ip.TokenMapping(
+        "old-token", "SERVICE_SECRET", ("upload.example.com", "api.example.com"),
+        ("X-Service-Secret", "Authorization"), (), False,
+    )
+    unchanged = ip.TokenMapping(
+        "new-token", "SERVICE_SECRET", ("api.example.com", "upload.example.com"),
+        ("authorization", "x-service-secret"), (), False,
+    )
+
+    merged = ip.merge_mappings(existing=[existing], discovered=[unchanged])
+
+    assert merged[0].proxy_token == "old-token"
+
+
 # ---------------------------------------------------------------------------
 # Default SSRF deny list (regression: docs promise cloud metadata is denied)
 # ---------------------------------------------------------------------------

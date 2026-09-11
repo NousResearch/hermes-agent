@@ -805,17 +805,40 @@ def discover_provider_mappings(
     ]
 
 
+def known_credential_env_names(*, extra_env_names: Sequence[str] = ()) -> set[str]:
+    """Return every configured credential name recognized by egress discovery."""
+    names = set(_BEARER_PROVIDERS) | set(_NON_BEARER_PROVIDERS) | set(extra_env_names)
+    for env_name, spec in _HEADER_AUTH_PROVIDERS.items():
+        names.add(env_name)
+        names.update(spec.get("aliases") or ())
+    return names
+
+
 def discover_uncovered_providers(*, available_env_names: Optional[List[str]] = None) -> List[str]:
     """Env names of recognized providers the proxy can't swap (SigV4 / SDK-minted OAuth)."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
     return [n for n in _NON_BEARER_PROVIDERS if n in names]
 
 
+def _mapping_authority(mapping: TokenMapping) -> Tuple:
+    """Normalized authority granted to one sandbox-visible capability token."""
+    return (
+        mapping.real_env_name,
+        tuple(sorted(mapping.upstream_hosts)),
+        tuple(sorted(header.lower() for header in mapping.match_headers)),
+        tuple(sorted(mapping.alias_env_names)),
+        mapping.match_query,
+    )
+
+
 def merge_mappings(*, existing: List[TokenMapping], discovered: List[TokenMapping], rotate: bool = False) -> List[TokenMapping]:
-    """Existing tokens are preserved (containers baked with them keep working), hosts/headers/aliases refresh
-    from ``discovered``; ``rotate=True`` re-mints; undiscovered providers drop."""
-    by_name = {} if rotate else {m.real_env_name: m for m in existing}
-    return [replace(d, proxy_token=by_name[d.real_env_name].proxy_token) if d.real_env_name in by_name else d for d in discovered]
+    """Preserve tokens only while their complete authority remains unchanged."""
+    by_authority = {} if rotate else {_mapping_authority(m): m for m in existing}
+    return [
+        replace(d, proxy_token=by_authority[authority].proxy_token)
+        if (authority := _mapping_authority(d)) in by_authority else d
+        for d in discovered
+    ]
 
 
 def _pidfile() -> Path:
@@ -1202,8 +1225,8 @@ def _reset_for_tests() -> None:
 __all__ = [
     "CredentialMappingSpec", "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
-    "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
-    "merge_mappings", "mint_proxy_token", "parse_extra_secret_specs", "reload_proxy", "start_proxy", "stop_proxy",
+    "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "known_credential_env_names",
+    "load_mappings", "merge_mappings", "mint_proxy_token", "parse_extra_secret_specs", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]
 

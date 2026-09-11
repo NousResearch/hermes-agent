@@ -592,9 +592,7 @@ def _load_env_file_into_environ(*, extra_env_names: Optional[List[str]] = None) 
     except Exception:  # noqa: BLE001 — best-effort convenience, never fatal
         return 0
     added = 0
-    known = set(ip._BEARER_PROVIDERS) | set(ip._HEADER_AUTH_PROVIDERS) | set(ip._NON_BEARER_PROVIDERS)
-    known.update(extra_env_names or ())
-    for name in known:
+    for name in ip.known_credential_env_names(extra_env_names=extra_env_names or ()):
         if name in os.environ and os.environ[name].strip():
             continue
         val = (file_env.get(name) or "").strip()

@@ -223,6 +223,15 @@ def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, mo
     assert os.environ["EBIRD_API_KEY"] == "real-ebird-secret"
 
 
+def test_load_env_file_backfills_header_auth_alias(hermes_home, monkeypatch):
+    (hermes_home / ".env").write_text("GOOGLE_API_KEY=google-secret\n", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    assert proxy_cli._load_env_file_into_environ() == 1
+    mappings = ip.discover_provider_mappings()
+    assert [mapping.real_env_name for mapping in mappings] == ["GEMINI_API_KEY"]
+
+
 def test_flagless_setup_reuses_persisted_bitwarden_source_and_custom_token(
     hermes_home, monkeypatch,
 ):

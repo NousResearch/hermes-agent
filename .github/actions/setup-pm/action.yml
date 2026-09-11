@@ -52,9 +52,6 @@ outputs:
   python-path:
     description: Interpreter for subsequent steps, including requested extras.
     value: ${{ steps.dependencies.outputs.python-path || steps.install.outputs.python-path }}
-  uv-path:
-    description: PM-provisioned uv executable.
-    value: ${{ steps.install.outputs.uv-path }}
   venv:
     description: Dependency environment; isolated test environment for dev, otherwise PM-selected runtime.
     value: ${{ steps.dependencies.outputs.venv }}
@@ -154,7 +151,7 @@ runs:
       if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true' && inputs.prune-python-cache == 'true' && steps.python-cache.outputs.cache-hit != 'true'
       uses: ./.github/actions/setup-pm/prune
       with:
-        uv: ${{ steps.install.outputs.uv-path }}
+        python: ${{ steps.install.outputs.python-path }}
         cache: ${{ steps.install.outputs.uv-cache-path }}
 
     - name: Require an npm dependency lock for caching
@@ -181,5 +178,5 @@ runs:
         _PM_TOOLCHAIN: ${{ inputs.toolchain }}
         _PM_EXTRAS: ${{ inputs.extras }}
       run: |
-        "$UV_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
+        "$HERMES_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
           --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$HERMES_HOME"

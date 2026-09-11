@@ -6,7 +6,7 @@ pruning mode. A metadata or dependency change can reuse compatible wheels;
 uv still resolves and installs from the frozen project lock.
 
 Bundle jobs set `save-python-cache: false` and call `save-pm-cache` after their
-build step with the `uv-path`, `uv-cache-path`, and `python-cache-key` outputs.
+build step with the `python-path`, `uv-cache-path`, and `python-cache-key` outputs.
 Both the caller and this composite use `!cancelled()` so a failed build does
 not suppress the save. Cancellation is excluded to avoid racing a dying uv
 process. A runner crash or job timeout can still prevent the save.
@@ -22,8 +22,8 @@ automatic cache path and its exact-hit smoke tests remain available.
 Smoke namespaces precede the native/dependency identity, outside production's
 restore prefix. PM Toolchain cleanup removes its run-scoped snapshots.
 
-Before saving, `uv cache prune` removes dangling entries. It does not use
-`--ci`: that option discards downloaded wheels, while bundles copy the full
+Before saving, `python -m pm.build_env --prune-cache --cache PATH` removes
+dangling entries. It does not use `--ci`: that option discards downloaded wheels, while bundles copy the full
 cache for offline dependency installation. Pruning happens after payload staging
 and packaging, and it does not change the staged payload.
 

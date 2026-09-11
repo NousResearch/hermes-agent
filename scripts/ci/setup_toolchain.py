@@ -110,6 +110,7 @@ def archive_inputs(args) -> None:
 def install(args) -> None:
     import subprocess
 
+    from pm import build_requirements_environment
     from pm.cli import _live_progress
     from pm.ensure import ensure, env_for
     from pm.lock import Facts
@@ -122,39 +123,30 @@ def install(args) -> None:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())
     target = current_target()
+    public_names = [name for name in names if name != "uv"]
     binaries = {
         name: get_package(name).binary(store_root() / facts.get(name)["entry"], target)
-        for name in names
+        for name in public_names
     }
-    environment = env_for(*names)
-    path = env_for(*names, base_env={})["PATH"].split(os.pathsep)
+    environment = env_for(*public_names)
+    path = env_for(*public_names, base_env={})["PATH"].split(os.pathsep)
     exported = {}
-    outputs = {f"{name}-path": str(binary) for name, binary in binaries.items()}
+    outputs = {f"{name}-path": str(binaries[name]) for name in public_names}
     if "python" in names:
-        tool_bin = args.home.resolve() / "bin"
-        # A writable command environment keeps callers' uv pip installs out
-        # of the verified tool store. On Windows its redirector also supplies
-        # python3.exe, which PBS does not ship.
+        # Keep third-party CI tooling out of the verified interpreter store.
+        # PM prepares the empty command environment through its normal builder.
         commands = args.home.resolve() / "python" / facts.get("python")["entry"]
         if not (commands / "pyvenv.cfg").is_file():
-            subprocess.run(
-                [str(binaries["uv"]), "venv", "--relocatable", "--python", str(binaries["python"]), str(commands)],
-                check=True, env=environment, timeout=120,
-            )
+            build_requirements_environment([], out=commands, python=binaries["python"],
+                                           env=environment, explicit=True)
         python = commands / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         python3_alias(python)
         path.insert(0, str(python.parent))
         outputs["python-path"] = str(python)
         exported.update({
             "HERMES_PYTHON": python,
-            "UV_PYTHON": binaries["python"],
-            "UV_PYTHON_DOWNLOADS": "never",
-            "UV_CACHE_DIR": uv_cache_dir(),
-            "UV_TOOL_DIR": args.home.resolve() / "uv-tools",
-            "UV_TOOL_BIN_DIR": tool_bin,
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
-        path.insert(0, str(tool_bin))
     if "npm" in names:
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
@@ -170,22 +162,10 @@ def install(args) -> None:
 def dependencies(args) -> None:
     if args.extras is None:
         return
-    import subprocess
     import tomllib
 
-    from pm.runtime import is_runtime, runtime_command, runtime_environment
-
-    if not is_runtime():
-        subprocess.run(
-            runtime_command(Path(__file__).resolve(),
-                            ["dependencies", "--home", str(args.home.resolve()),
-                             "--toolchain", args.toolchain, "--extras", json.dumps(args.extras)]),
-            env=runtime_environment(), check=True,
-        )
-        return
-
     from hermes_cli.runtime_paths import selected_venv
-    from pm.ensure import sync_venv, uv
+    from pm import build_environment, check_project_lock, sync_venv
     from pm.paths import repo_root
 
     project = repo_root()
@@ -193,18 +173,13 @@ def dependencies(args) -> None:
     unknown = set(args.extras) - metadata["project"]["optional-dependencies"].keys()
     if unknown:
         raise ValueError(f"unknown project extras: {sorted(unknown)}")
-    uv_bin, environment = uv()
-    environment.pop("UV_NO_CONFIG", None)  # keep project indexes and exclude-newer
-    # PM's frozen sync must not turn a stale project lock into a green job.
-    subprocess.run([uv_bin, "lock", "--check"], cwd=project, env=environment, check=True, timeout=1800)
+    # Frozen sync must not turn a stale project lock into a green job.
+    check_project_lock(project, explicit=True)
     if "dev" in args.extras:
         # Test-only groups must not enter PM facts or a shipped generation.
         venv = args.home.resolve() / "test-environment"
-        environment["UV_PROJECT_ENVIRONMENT"] = str(venv)
-        command = [uv_bin, "sync", "--locked", "--group", "test", "--no-install-project"]
-        for extra in args.extras:
-            command.extend(["--extra", extra])
-        subprocess.run(command, cwd=project, env=environment, check=True, timeout=1800)
+        build_environment(source=project, out=venv, extras=args.extras,
+                          groups=["test"], no_install_project=True, explicit=True)
     else:
         sync_venv(args.extras, explicit=True, plugin_dirs=[])
         venv = selected_venv(project)
@@ -214,7 +189,6 @@ def dependencies(args) -> None:
     file_commands("GITHUB_ENV", {
         "HERMES_PYTHON": python,
         "VIRTUAL_ENV": venv,
-        "UV_PROJECT_ENVIRONMENT": venv,
         "PYTHONPATH": project,
     })
     file_commands("GITHUB_OUTPUT", {"python-path": python, "venv": venv})

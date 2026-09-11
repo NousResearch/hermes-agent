@@ -54,17 +54,20 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: target_python.parent))
     monkeypatch.setattr(native, "_facts", lambda: SimpleNamespace(get=lambda _: {"entry": "python", "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"}, entries_in_use=lambda: []))
     monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: target_python))
-    monkeypatch.setattr(native, "pm_uv", lambda: (uv, dict(env)))
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(native, "_arch_guard", lambda store: [])
     monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
     monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
-    from scripts.build import python_env
-    real_build = python_env.build_python_environment
+    import pm
+    real_build = pm.build_environment
     calls = []
     witness = tmp_path / "inventory-python.json"
     fail_inventory = False
 
     def build(**kwargs):
+        assert "uv" not in kwargs
+        assert kwargs["sealed"] is True
         calls.append(kwargs)
         assert not (output / "manifest.json").exists()
         marker = json.loads((output / "pm-runtime/pm-runtime.json").read_text())
@@ -85,7 +88,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
             (package / "present.py").write_text("", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(python_env, "build_python_environment", build)
+    monkeypatch.setattr(pm, "build_environment", build)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "original"))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
     assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 0
@@ -111,7 +114,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     from pm.package import InstallError
     def fail_build(**kwargs):
         raise InstallError("venv", "injected failure")
-    monkeypatch.setattr(python_env, "build_python_environment", fail_build)
+    monkeypatch.setattr(pm, "build_environment", fail_build)
     assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
     assert not (output / "manifest.json").exists()
     assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")

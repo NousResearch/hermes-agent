@@ -68,7 +68,7 @@ if [ -z "$VENV_PYTHON" ]; then
     VENV_PYTHON="$HERMES_PYTHON"
   else
     echo "✗ No venv with pytest found. Install dev extras:" >&2
-    echo "    uv sync --extra dev --group test" >&2
+    echo "    python -m pm.build_env --source . --out .venv --extra dev --group test" >&2
     if [ -n "$SKIPPED_VENVS" ]; then
       echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
     fi

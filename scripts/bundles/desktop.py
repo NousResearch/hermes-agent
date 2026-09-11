@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -74,14 +73,11 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
         if capture(["git", "rev-parse", "HEAD"], repo) != commit:
             raise ValueError("the build checkout must be at the release tag")
     node = shutil.which("node")
-    if not node or not shutil.which("uv"):
-        raise FileNotFoundError("Node and uv are required")
-    banner = capture(["uv", "--version"], repo)
-    if not re.search(r"[a-z0-9_]+-[a-z0-9]+-[a-z][a-z0-9-]*", banner):
-        raise ValueError(f"uv must report its build triple (official uv 0.12+): {banner}")
+    if not node:
+        raise FileNotFoundError("Node is required")
     npm = npm_command(node)
     env = {**os.environ, "CI": "true", "PYTHONUTF8": "1", "GITHUB_SHA": commit,
-           "HERMES_DESKTOP_VARIANT": variant}
+           "HERMES_DESKTOP_VARIANT": variant, "HERMES_PYTHON": sys.executable}
     env["HERMES_BUNDLE_ENV_JSON"] = json.dumps(bundle_env, sort_keys=True)
     if commit_build:
         env["HERMES_PAYLOAD_VERSION"] = version

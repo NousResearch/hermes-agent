@@ -177,8 +177,7 @@ ensure_uv() {
         chmod +x "$_entry/uvx" 2>/dev/null || true
         rm -rf "$_tmp"
     fi
-    # Make the staged (or found) uv available to bare `uv` invocations.
-    export PATH="$(dirname "$UV_CMD"):$PATH"
+    # Bootstrap keeps the installer private; only UV_CMD invokes it.
     if ! "$UV_CMD" --version >/dev/null 2>&1; then
         fail "pinned uv staged but does not run on this host"
     fi

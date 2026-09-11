@@ -20,7 +20,7 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
     root = tmp_path / "build"
     repo = root / "hermes-agent"
     source = Path(__file__).resolve().parents[2]
-    shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__", ".hermes-tmp.*"))
     (repo / "hermes_cli").mkdir()
     for name in ("__init__.py", "runtime_paths.py", "runtime_state.py"):
         shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
@@ -36,10 +36,12 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
     stage = getattr(native, "stage_pm_runtime", None)
     assert callable(stage), "native payload has no isolated PM runtime stage"
     cache = tmp_path / "build-cache"
-    stage(root, Path(uv), python, repo, cache=cache)
+    monkeypatch.setattr("pm.client._request", lambda *args, **kwargs: pytest.fail("runtime staging must not bootstrap a worker"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    stage(root, python, repo, cache=cache)
     assert cache.is_dir()
     assert not (tmp_path / "home/cache/uv").exists()
-    stage(root, Path(uv), python, repo, offline=True, cache=cache)
+    stage(root, python, repo, offline=True, cache=cache)
     (root / "manifest.json").write_text(json.dumps({"repo": "hermes-agent"}))
     assert not (repo / ".venv").exists()
     moved = tmp_path / "installed elsewhere"
@@ -89,7 +91,7 @@ def test_resident_pm_bypasses_windows_redirector_after_move(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("poison", ["cwd", "global"])
 def test_pm_builder_ignores_ambient_uv_configuration(tmp_path, monkeypatch, poison):
-    from pm.runtime_stage import stage_runtime
+    from pm import stage_manager_runtime
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -102,7 +104,9 @@ def test_pm_builder_ignores_ambient_uv_configuration(tmp_path, monkeypatch, pois
     config.write_text('required-version = "<0.1"\n', encoding="utf-8")
     uv = shutil.which("uv")
     assert uv
-    executable = stage_runtime(Path(uv), Path(sys.executable), tmp_path / "runtime")
+    monkeypatch.setattr("pm.client._request", lambda *args, **kwargs: pytest.fail("runtime staging must not bootstrap a worker"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    executable = stage_manager_runtime(python=Path(sys.executable), destination=tmp_path / "runtime")
     assert executable.is_file()
 
 
@@ -135,19 +139,18 @@ def test_native_stage_builds_pm_before_application_environment(tmp_path, monkeyp
     monkeypatch.setattr(native, "_install_names", lambda names: 0)
     monkeypatch.setattr(native, "Facts", Facts)
     monkeypatch.setattr(native, "_facts", Facts)
-    monkeypatch.setattr(native, "pm_uv", lambda: ("uv", {}))
     monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(entry=lambda name: tmp_path / "tools" / name))
     monkeypatch.setattr(native, "get_package", lambda name: SimpleNamespace(binary=lambda path, target: path / "python"))
 
     cache_dir = tmp_path / "cache"
     monkeypatch.setenv("UV_CACHE_DIR", str(cache_dir))
 
-    def staged(root, uv, python, repo, *, cache):
+    def staged(root, python, repo, *, cache):
         assert cache == cache_dir
-        calls.append((root, uv, python, repo))
+        calls.append((root, python, repo))
         raise StopAfterPM
 
     monkeypatch.setattr(native, "stage_pm_runtime", staged)
     with pytest.raises(StopAfterPM):
         native._stage_native(SimpleNamespace(out=str(tmp_path), ref="HEAD"))
-    assert calls == [(tmp_path, Path("uv"), tmp_path / "tools/python/python", tmp_path / "hermes-agent")]
+    assert calls == [(tmp_path, tmp_path / "tools/python/python", tmp_path / "hermes-agent")]

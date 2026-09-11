@@ -75,7 +75,7 @@ jobs:
       - name: Install ruamel.yaml for skill extraction
         uses: ./.github/actions/retry
         with:
-          command: uv pip install --python "$HERMES_PYTHON" ruamel.yaml==0.18.17 httpx==0.28.1
+          command: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 httpx==0.28.1
 
       - name: Prepare skills index (unified multi-source catalog)
         env:

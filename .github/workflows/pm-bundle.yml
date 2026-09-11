@@ -112,8 +112,7 @@ jobs:
         if: startsWith(matrix.target.label, 'darwin-') || startsWith(matrix.target.label, 'win32-')
         shell: bash
         run: |
-          uv tool install cmake==3.31.6
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+          python -m scripts.ci.python_packages cmake==3.31.6
 
       - name: Stage the payload
         shell: bash
@@ -133,7 +132,7 @@ jobs:
         if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
         uses: ./.github/actions/save-pm-cache
         with:
-          uv: ${{ steps.pm.outputs.uv-path }}
+          python: ${{ steps.pm.outputs.python-path }}
           path: ${{ steps.pm.outputs.uv-cache-path }}
           key: ${{ steps.pm.outputs.python-cache-key }}
 

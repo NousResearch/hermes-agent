@@ -59,8 +59,7 @@ jobs:
           cache-suffix: smoke-consumers-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Install the docs tools into the command environment
         run: |
-          uv pip install --python "$HERMES_PYTHON" ascii-guard==2.3.0 ruamel.yaml==0.18.17 httpx==0.28.1
-          python3 -c 'import ruamel.yaml,httpx; print(ruamel.yaml.__version__, httpx.__version__)'
+          python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 httpx==0.28.1 -- -c 'import ruamel.yaml,httpx; print(ruamel.yaml.__version__, httpx.__version__)'
       - name: Install the locked desktop and test workspaces
         run: npm ci --workspace apps/desktop --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
       - name: Exercise the actual after-pack relocation hook

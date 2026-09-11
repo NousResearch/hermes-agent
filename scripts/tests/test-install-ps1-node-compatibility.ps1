@@ -1,4 +1,4 @@
-# PM owns Node provisioning. This verifies the installer's delegation boundary.
+# PM owns Node provisioning. Verify the pre-Python bootstrap handoff.
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installScript = Join-Path $repoRoot 'scripts\install.ps1'
@@ -23,15 +23,21 @@ try {
     Assert-True (-not (Test-Path $testRoot)) 'dot-source loads definitions without filesystem writes'
 
     $fakeUv = Join-Path $testRoot 'uv.cmd'
-    $argsFile = Join-Path $testRoot 'args.txt'
+    $fakePython = Join-Path $testRoot 'python.cmd'
+    $argsFile = Join-Path $testRoot 'uv-args.txt'
+    $pythonArgsFile = Join-Path $testRoot 'python-args.txt'
     New-Item -ItemType Directory -Force -Path (Join-Path $checkout 'pm') | Out-Null
-    @'
+    @"
 @echo off
-echo %* > "%HERMES_TEST_UV_ARGS%"
+echo %* >> "$argsFile"
+if "%~2"=="find" echo $fakePython
 exit /b 0
-'@ | Set-Content -LiteralPath $fakeUv -Encoding Ascii
-    $priorArgs = $env:HERMES_TEST_UV_ARGS
-    $env:HERMES_TEST_UV_ARGS = $argsFile
+"@ | Set-Content -LiteralPath $fakeUv -Encoding Ascii
+    @"
+@echo off
+echo %* > "$pythonArgsFile"
+exit /b 0
+"@ | Set-Content -LiteralPath $fakePython -Encoding Ascii
     function Get-Uv { return $fakeUv }
 
     $failed = $false
@@ -42,19 +48,16 @@ exit /b 0
     '{"packages":{"python":{"version":"3.13.2+test"}}}' |
         Set-Content -LiteralPath (Join-Path $checkout 'pm\lock.json') -Encoding UTF8
     Invoke-BootstrapPm
-    $recorded = Get-Content -LiteralPath $argsFile -Raw
-    Assert-True ($recorded -match '--no-project') 'uv runs without ambient project discovery'
-    Assert-True ($recorded -match '--python 3\.13(\s|$)') 'Python minor comes from the lockfile'
-    Assert-True ($recorded -match 'python -m pm\.cli install') 'PM owns the install'
+    $recorded = Get-Content -LiteralPath $argsFile
+    Assert-True ($recorded.Count -eq 2) 'uv only installs and locates bootstrap Python'
+    Assert-True ($recorded[0] -eq 'python install --no-bin 3.13') 'Python minor comes from the lockfile'
+    Assert-True ($recorded[1] -eq 'python find --managed-python --no-project 3.13') 'lookup ignores ambient project discovery'
+    Assert-True ((Get-Content -LiteralPath $pythonArgsFile -Raw).Trim() -eq '-m pm.cli install') 'Python launches PM without a uv parent'
 
     function Get-Uv { throw 'node stage attempted provisioning' }
     Stage-NodeDeps
     Write-Host 'PASS: node stage performs no separate install'
 } finally {
-    if (Get-Variable priorArgs -ErrorAction SilentlyContinue) {
-        if ($null -eq $priorArgs) { Remove-Item Env:HERMES_TEST_UV_ARGS -ErrorAction SilentlyContinue }
-        else { $env:HERMES_TEST_UV_ARGS = $priorArgs }
-    }
     if (Test-Path $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }
 if ($script:Failures) { exit 1 }

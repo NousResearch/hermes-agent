@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 
 from pm.cli import _install_names
-from pm.ensure import _store, _facts, _lockfile, uv as pm_uv
+from pm.ensure import _store, _facts, _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
@@ -65,16 +65,16 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
                 wheel.unlink()
 
 
-def stage_pm_runtime(root: Path, uv: Path, python: Path, repo: Path, *, offline: bool = False,
+def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
                      cache: Path | None = None) -> None:
     """Publish the same PM dependency graph as source installs, ready offline."""
-    from pm.runtime_stage import stage_runtime
+    from pm import stage_manager_runtime
     from scripts.bundles.payload import seal_pm_runtime
 
     destination = root / "pm-runtime"
     if destination.exists():
         shutil.rmtree(destination)
-    stage_runtime(uv, python, destination, project=repo / "pm", offline=offline, cache=cache)
+    stage_manager_runtime(python=python, destination=destination, project=repo / "pm", offline=offline, cache=cache)
     seal_pm_runtime(root, python)
 
 
@@ -157,11 +157,6 @@ def _stage_native(args) -> int:
             shutil.rmtree(entry)
 
 
-    uv_bin, env = pm_uv()
-    if uv_bin is None:
-        print("✗ venv: uv did not stage")
-        return 1
-
     python_fact = _facts().get("python")
     if python_fact is None:
         print("✗ venv: no staged interpreter to build on")
@@ -173,7 +168,7 @@ def _stage_native(args) -> int:
     if python_bin is None:
         raise FileNotFoundError("staged Python executable is missing")
     cache = Path(os.environ["UV_CACHE_DIR"])
-    stage_pm_runtime(out, Path(uv_bin), python_bin, repo_dir, cache=cache)
+    stage_pm_runtime(out, python_bin, repo_dir, cache=cache)
     print("✓ pm-runtime (independent locked dependencies)", flush=True)
 
     # Build + sync INSIDE the staged repo: the editable project install
@@ -181,8 +176,7 @@ def _stage_native(args) -> int:
     venv_dir = out / "venv"
     if venv_dir.exists():
         shutil.rmtree(venv_dir)
-    env["VIRTUAL_ENV"] = str(venv_dir)
-    env.pop("UV_NO_CONFIG", None)
+    env = dict(os.environ)
     if current_target().startswith("darwin"):
         # python-build-standalone bakes phantom toolchain paths (its build
         # dir's llvm-ar) into sysconfig; sdist builds then fail with
@@ -190,12 +184,12 @@ def _stage_native(args) -> int:
         # sdist builds at the machine's real toolchain.
         env.setdefault("AR", "/usr/bin/ar")
         env.setdefault("CC", "clang")
-    from scripts.build.python_env import build_python_environment
+    from pm import build_environment
     from pm.package import InstallError
 
     try:
-        build_python_environment(source=repo_dir, python=python_bin, uv=Path(uv_bin),
-                                 out=venv_dir, env=env, cache=cache, all_extras=True)
+        build_environment(source=repo_dir, python=python_bin, out=venv_dir,
+                          env=env, cache=cache, all_extras=True, sealed=True, explicit=True)
     except InstallError as exc:
         print(f"✗ venv: {exc}")
         return 1

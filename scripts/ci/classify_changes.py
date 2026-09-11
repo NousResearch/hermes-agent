@@ -20,7 +20,7 @@ Lanes:
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
-* ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
+* ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.

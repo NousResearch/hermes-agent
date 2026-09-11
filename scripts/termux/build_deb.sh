@@ -137,21 +137,20 @@ write_reqs_file(Path(sys.argv[2]), Path(sys.argv[3]))
 PYREQS
 # The bind mount is runner-owned: the container (any uid) can only write
 # into a dir the HOST pre-created with open perms (same as the wheelhouse).
-mkdir -p "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime"
-chmod 0777 "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime"
+ASSEMBLY="$(mktemp -d "$PAYLOAD_ABS/.environments-XXXXXX")"
+chmod 0777 "$ASSEMBLY"
 # Mount the payload at its REAL on-device path: the venv records
 # absolute paths (interpreter symlink, pyvenv.cfg) that must be correct
 # on-device from birth -- a /payload alias would bake container paths in.
 docker run --rm --platform linux/arm64 \
     --user root --network none \
+    -v "$ASSEMBLY:/data/data/com.termux/files/usr/lib/hermes-agent" \
     -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/hermes-agent/tools/python" \
     -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/hermes-agent/tools/node" \
     -v "$PAYLOAD_ABS/uv:/data/data/com.termux/files/usr/lib/hermes-agent/tools/uv" \
     -v "$PAYLOAD_ABS/runtime-libs:/data/data/com.termux/files/usr/lib/hermes-agent/runtime-libs" \
     -v "$PAYLOAD_ABS/wheelhouse:/data/data/com.termux/files/usr/lib/hermes-agent/wheelhouse" \
     -v "$PAYLOAD_ABS/.work:/data/data/com.termux/files/usr/lib/hermes-agent/.work" \
-    -v "$PAYLOAD_ABS/venv:/data/data/com.termux/files/usr/lib/hermes-agent/venv" \
-    -v "$PAYLOAD_ABS/pm-runtime:/data/data/com.termux/files/usr/lib/hermes-agent/pm-runtime" \
     -v "$PAYLOAD_ABS/app:/data/data/com.termux/files/usr/lib/hermes-agent/app:ro" \
     "$IMAGE" bash -c '
         set -euo pipefail
@@ -165,38 +164,17 @@ docker run --rm --platform linux/arm64 \
         # recorded absolute paths are correct on-device from birth.
         mkdir -p "$PREFIX" 2>/dev/null || true
         PY="$PREFIX/lib/hermes-agent/tools/python$PREFIX/bin/python3.14"
-        UV="$PREFIX/lib/hermes-agent/tools/uv$PREFIX/bin/uv"
-                # Desktop payload canon: the venv holds the DEPENDENCY tree only;
-        # the app runs from its own directory via PYTHONPATH (the wheel
-        # build is deliberately blocked in setup.py -- Hermes is not a
-        # pip-installable package by design).
-        # The payload is mounted at its ON-DEVICE path ($PREFIX/lib/
-        # hermes-agent) so every absolute path the venv records --
-        # interpreter symlink, pyvenv.cfg home -- is correct after
-        # dpkg installs the tree to exactly that location.
-        "$UV" venv --python "$PY" "$PREFIX/lib/hermes-agent/venv"
-        # The dep graph with markers intact (the installer evaluates
-        # them on bionic); documented android build misses skipped --
-        # nemo-relay is the only casualty (the relay exporter).
-        "$UV" pip install --python "$PREFIX/lib/hermes-agent/venv/bin/python" \
-            --offline --no-index --only-binary :all: --find-links "$PREFIX/lib/hermes-agent/wheelhouse" \
-            -r "$PREFIX/lib/hermes-agent/.work/resolved-reqs.txt"
-        "$UV" pip check --python "$PREFIX/lib/hermes-agent/venv/bin/python"
-
-        # PM uses the shared locked builder with the verified bionic wheelhouse.
         ROOT="$PREFIX/lib/hermes-agent"
-        "$PY" -I -B -c "
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from pm.runtime_stage import stage_runtime
-from scripts.bundles.payload import seal_pm_runtime
-root, python, uv = map(Path, sys.argv[2:])
-stage_runtime(uv, python, root / \"pm-runtime\", project=root / \"app/pm\",
-              wheelhouse=root / \"wheelhouse\", offline=True)
-seal_pm_runtime(root, python)
-" "$ROOT/app" "$ROOT" "$PY" "$UV"
+        export HERMES_RUNTIME_DIR="$ROOT/tools"
+        mkdir -p "$PREFIX/tmp"
+        HERMES_HOME="$(mktemp -d "$PREFIX/tmp/hermes-pm-XXXXXX")"
+        export HERMES_HOME
+        "$PY" "$ROOT/app/scripts/termux/build_environment.py" assemble \
+            --root "$ROOT" --python "$PY" --requirements "$ROOT/.work/resolved-reqs.txt"
     ' || fail "venv assembly failed inside the container (offline wheelhouse install)"
+# They were built at the final on-device paths, not at host scratch paths.
+mv "$ASSEMBLY/venv" "$ASSEMBLY/pm-runtime" "$PAYLOAD_ABS/"
+rm -rf "$ASSEMBLY"
 
 # The install-method stamp (code-scoped, next to hermes_cli/): the deb IS
 # the Termux apt distribution, and detect_install_method reads this marker

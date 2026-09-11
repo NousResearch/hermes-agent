@@ -187,8 +187,8 @@ WORKDIR /opt/hermes
 # download — the same code path pm.sh/pm.ps1 and the desktop payload use)
 # into the image's own runtime dir, a self-contained store baked under
 # /opt/hermes, outside the /opt/data volume so it survives the overlay.
-# The pinned uv is linked onto PATH so the `uv sync` / `uv pip install`
-# build steps below run the lockfile's uv, not a second download.
+# PM alone resolves the pinned uv for dependency preparation; build consumers
+# receive Python environments, never an installer executable.
 #
 # Full Chromium supports both headed and headless sessions. It is staged
 # here rather than by `npx playwright install`,
@@ -210,9 +210,7 @@ COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
     python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium")]'; \
-    ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
     python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
-    uv --version; \
     browser_bin="$(find /opt/hermes/tools/chromium-* -type f \( -name chrome -o -name chromium \) -print -quit)"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
@@ -221,12 +219,10 @@ RUN set -eu; \
 
 # PM is resident too: never borrow application libraries or create its worker
 # environment under /root (unreachable to the runtime UID).
-RUN python3 -c 'from pathlib import Path; from pm.runtime_stage import stage_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes"); python = Path("/usr/local/bin/python3").resolve(); stage_runtime(Path("/usr/local/bin/uv"), python, root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'
+RUN python3 -c 'from pathlib import Path; from pm import stage_manager_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes"); python = Path("/usr/local/bin/python3").resolve(); stage_manager_runtime(python=python, destination=root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'
 
-# Raw uv commands must use PM's staged interpreter, not download another
-# under /root where the unprivileged runtime user cannot traverse it.
-ENV UV_PYTHON=/usr/local/bin/python3
-ENV UV_PYTHON_DOWNLOADS=never
+# JS build helpers use the prepared interpreter without an installer parent.
+ENV HERMES_PYTHON=/usr/local/bin/python3
 # The standalone interpreter records its builder's clang toolchain;
 # native extensions must use the compiler installed in this image.
 ENV CC=gcc CXX=g++
@@ -319,9 +315,8 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-COPY scripts/build/python_env.py scripts/build/python_env.py
-RUN python3 -m scripts.build.python_env --source /opt/hermes --python /usr/local/bin/python3 \
-    --uv /usr/local/bin/uv --out /opt/hermes/.venv --no-install-project \
+RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
+    --out /opt/hermes/.venv --no-install-project --sealed \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra hindsight --extra matrix
 

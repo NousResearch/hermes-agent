@@ -36,7 +36,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wheelhouse", required=True)
     p.add_argument("--retag", required=True, help="path to retag_wheel.py")
     p.add_argument("--platform-tag", required=True)
-    p.add_argument("--uv", required=True, help="path to the staged uv binary")
     return p.parse_args()
 
 
@@ -342,7 +341,7 @@ def import_native_modules(build_set: list[str]) -> None:
         print("  imported", module, flush=True)
 
 
-def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str], uv: str) -> None:
+def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> None:
     """Offline install of every marker-admitted dep into ONE clean venv,
     shared by both gates (the full offline install runs once, not twice).
 
@@ -356,21 +355,14 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str], uv:
     """
     with tempfile.TemporaryDirectory(prefix="hermes-wheelhouse-gate-") as tmp:
         tmp = Path(tmp)
-        venv = tmp / "venv"
-        subprocess.run(
-            [uv, "venv", "--python", sys.executable, str(venv)],
-            check=True,
-        )
-        vp = venv / "bin" / "python"
+        from pm import build_requirements_environment
+
         reqs = tmp / "reqs.txt"
         write_reqs_file(resolved, reqs)
-        subprocess.run(
-            [uv, "pip", "install", "--python", str(vp),
-             "--only-binary", ":all:", "--no-index",
-             "--find-links", str(wheelhouse), "-r", str(reqs)],
-            check=True,
+        vp = build_requirements_environment(
+            reqs.read_text(encoding="utf-8").splitlines(), out=tmp / "venv",
+            python=Path(sys.executable), wheelhouse=wheelhouse, offline=True, explicit=True,
         )
-        subprocess.run([uv, "pip", "check", "--python", str(vp)], check=True)
         print("  completeness gate: offline install of the marker-admitted graph OK")
         subprocess.run(
             [str(vp), str(Path(__file__).resolve()), "--import-modules", *build_set],
@@ -388,7 +380,6 @@ def main() -> int:
         import_native_modules(sys.argv[2:])
         return 0
     args = parse_args()
-    uv = str(Path(args.uv))
     resolved = Path(args.resolved)
     build_set = [l.strip() for l in Path(args.build_set).read_text(encoding="utf-8").splitlines() if l.strip()]
     wheelhouse = Path(args.wheelhouse)
@@ -407,7 +398,7 @@ def main() -> int:
         repaired = repair_wheel(wheel, library)
         if repaired:
             print(f"  linked {repaired} native extensions to {library.name}: {wheel.name}")
-    wheelhouse_gates(resolved, wheelhouse, build_set, uv)
+    wheelhouse_gates(resolved, wheelhouse, build_set)
     print(f"wheelhouse complete: {len(list(wheelhouse.glob('*.whl')))} wheels in {wheelhouse}")
     return 0
 

@@ -19,23 +19,23 @@ name: uv.lock check
 # Failure mode this creates: if `main` has advanced since you branched
 # (e.g. someone merged a PR that added a dep to pyproject.toml + its
 # corresponding uv.lock entries), your branch's uv.lock is missing those
-# new entries.  `uv lock --check` resolves against the merged pyproject
+# new entries.  `python -m pm.build_env --source . --check-lock` resolves against the merged pyproject
 # and sees a lockfile that doesn't cover all the current deps → fails
 # with "The lockfile at uv.lock needs to be updated."
 #
-# This can be confusing: `uv lock --check` passes locally (your branch
+# This can be confusing: `python -m pm.build_env --source . --check-lock` passes locally (your branch
 # is internally consistent) but fails in CI (merged state isn't).
 #
 # Fix is to sync your branch with main and regenerate the lockfile:
 #
 #     git fetch origin main
 #     git rebase origin/main      # or merge, whatever the repo prefers
-#     uv lock                     # regenerates uv.lock against new pyproject.toml
+#     python -m pm.build_env --source . --lock-only                     # regenerates uv.lock against new pyproject.toml
 #     git add uv.lock
 #     git commit -m "chore: refresh uv.lock after rebase onto main"
 #     git push --force-with-lease # if you rebased
 #
-# If you also changed pyproject.toml in your PR, `uv lock` handles that
+# If you also changed pyproject.toml in your PR, `python -m pm.build_env --source . --lock-only` handles that
 # at the same time — one regeneration covers both your changes and the
 # drift from main.
 #
@@ -59,7 +59,7 @@ concurrency:
 
 jobs:
   check:
-    name: uv lock --check
+    name: python -m pm.build_env --source . --check-lock
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -73,7 +73,7 @@ jobs:
           cache-python: true
           prune-python-cache: true
 
-      # `uv lock --check` re-resolves the project from pyproject.toml and
+      # `python -m pm.build_env --source . --check-lock` re-resolves the project from pyproject.toml and
       # compares the result to uv.lock, exiting non-zero if they disagree.
       # No network writes, no file modifications.
       #
@@ -83,7 +83,7 @@ jobs:
       - name: Verify uv.lock is up-to-date
         id: verify
         run: |
-          # uv lock --check re-resolves against PyPI (network). Retry so a
+          # python -m pm.build_env --source . --check-lock re-resolves against PyPI (network). Retry so a
           # registry blip doesn't read as "lockfile stale". A genuinely stale
           # lockfile fails all attempts (deterministic), costing only seconds.
           #
@@ -95,12 +95,12 @@ jobs:
           # registry, versus "lockfile needs to be updated" when the lock is
           # genuinely stale. Only the second is the contributor's to fix, so
           # an unreachable registry says so instead of sending them to
-          # `uv lock` with nothing to regenerate.
+          # `python -m pm.build_env --source . --lock-only` with nothing to regenerate.
           ok=false
           net_fail=false
           delays=(5 15 45)
           for i in 1 2 3; do
-            if uv lock --check >lock-check.log 2>&1; then
+            if python -m pm.build_env --source . --check-lock >lock-check.log 2>&1; then
               ok=true
               net_fail=false
               cat lock-check.log
@@ -116,12 +116,12 @@ jobs:
               break
             fi
             [ "$i" = 3 ] && break
-            echo "::warning::uv lock --check could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
+            echo "::warning::python -m pm.build_env --source . --check-lock could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
             sleep "${delays[$((i-1))]}"
           done
           if [ "$ok" != true ] && [ "$net_fail" = true ]; then
             echo "::error title=uv.lock check could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
-            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock check could not reach PyPI","summary":"`uv lock --check` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `uv.lock` is needed."}]}]'
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock check could not reach PyPI","summary":"`python -m pm.build_env --source . --check-lock` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `uv.lock` is needed."}]}]'
             echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
             echo "review_status=${review_status}" > review-status.json
             exit 1
@@ -132,7 +132,7 @@ jobs:
 
           **If this is a PR:** this check runs against the merged state
           (your branch + current `main`), not just your branch.  If
-          `uv lock --check` passes locally, your branch is likely behind
+          `python -m pm.build_env --source . --check-lock` passes locally, your branch is likely behind
           `main` — recent changes to `pyproject.toml` on `main` aren't
           reflected in your branch's `uv.lock` yet.
 
@@ -141,13 +141,13 @@ jobs:
           ```bash
           git fetch origin main
           git rebase origin/main   # or `git merge origin/main`
-          uv lock                  # regenerate against new pyproject.toml
+          python -m pm.build_env --source . --lock-only                  # regenerate against new pyproject.toml
           git add uv.lock
           git commit -m "chore: refresh uv.lock after syncing with main"
           git push --force-with-lease  # drop --force-with-lease if you merged
           ```
 
-          **If you only changed pyproject.toml:** run `uv lock` locally
+          **If you only changed pyproject.toml:** run `python -m pm.build_env --source . --lock-only` locally
           and commit the result.
 
           This check is blocking because the Docker image build uses
@@ -155,8 +155,8 @@ jobs:
           — catching it here avoids a ~15 min failed docker run
           on `main` post-merge.
           EOF
-            echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."
-            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `uv lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nuv lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
+            echo "::error title=uv.lock out of sync::Run \`python -m pm.build_env --source . --lock-only\` locally and commit the result. If on a PR, sync with main first."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `python -m pm.build_env --source . --lock-only` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\npython -m pm.build_env --source . --lock-only\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
             echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
             echo "review_status=${review_status}" > review-status.json
             exit 1

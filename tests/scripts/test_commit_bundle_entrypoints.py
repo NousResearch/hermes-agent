@@ -25,7 +25,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("BUILD_NUMBER", "123")
     defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
     monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
-    monkeypatch.setattr(desktop.shutil, "which", lambda name: name)
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: None if name == "uv" else name)
     monkeypatch.setattr(desktop, "npm_command", lambda node: [node, "npm-cli.js"])
     monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
     from pm.store import current_target
@@ -33,8 +33,6 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     def capture(argv, cwd):
         if argv[0] == "git":
             return _git(*argv[1:], cwd=cwd)
-        if argv == ["uv", "--version"]:
-            return "uv 0.12.0 aarch64-pc-windows-msvc"
         if "process.arch" in argv:
             return target_arch
         return "26.7.0"
@@ -53,6 +51,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
         assert env.get("HERMES_PAYLOAD_TAG", "") == ""
         assert env["HERMES_BUILD_COMMIT"] == sha
         assert env["GITHUB_SHA"] == sha
+        assert env["HERMES_PYTHON"] == sys.executable
         assert env["HERMES_PAYLOAD_VERSION"] == "0.1.2"
         assert json.loads(env["HERMES_BUNDLE_ENV_JSON"]) == defaults
         if "scripts.bundles.stage" in argv:

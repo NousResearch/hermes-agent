@@ -127,10 +127,8 @@ def main() -> None:
         print("FFMPEG_MEDIA_CONVERSION_OK", flush=True)
         run([
             str(python), "-c",
-            "import pm; import subprocess; from pathlib import Path; "
-            "p,e=pm.uv(realize=False); assert p and Path(p).is_file(), p; "
-            "subprocess.run([p, '--version'],env=e,check=True); "
-            "assert not pm.check(), pm.check(); print('PM_RUNTIME_TOOLS_OK')",
+            "import pm; issues = pm.check(); "
+            "assert not issues, issues; print('PM_RUNTIME_TOOLS_OK')",
         ], env, home)
         result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, timeout=60)
         if result.returncode == 0 or "pkg upgrade hermes-agent" not in result.stdout + result.stderr:

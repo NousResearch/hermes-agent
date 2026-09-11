@@ -468,8 +468,7 @@ jobs:
         # every non-Linux target (macos universal2, win_amd64, win_arm64).
         shell: bash
         run: |
-          uv tool install cmake==3.31.6
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+          python -m scripts.ci.python_packages cmake==3.31.6
 
       - name: Build and package
         shell: bash
@@ -499,7 +498,7 @@ jobs:
         if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
         uses: ./.github/actions/save-pm-cache
         with:
-          uv: ${{ steps.pm.outputs.uv-path }}
+          python: ${{ steps.pm.outputs.python-path }}
           path: ${{ steps.pm.outputs.uv-cache-path }}
           key: ${{ steps.pm.outputs.python-cache-key }}
 
@@ -741,8 +740,7 @@ jobs:
         # CMake 3.x first on PATH so the sdist build configures.
         shell: bash
         run: |
-          uv tool install cmake==3.31.6
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+          python -m scripts.ci.python_packages cmake==3.31.6
 
       - name: Build and package
         shell: bash
@@ -776,7 +774,7 @@ jobs:
         if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
         uses: ./.github/actions/save-pm-cache
         with:
-          uv: ${{ steps.pm.outputs.uv-path }}
+          python: ${{ steps.pm.outputs.python-path }}
           path: ${{ steps.pm.outputs.uv-cache-path }}
           key: ${{ steps.pm.outputs.python-cache-key }}
 
@@ -1255,7 +1253,7 @@ jobs:
         # (feed-side); the pointer upload is the last write of the run.
         shell: bash
         run: |
-          uv run --no-project --with ruamel.yaml==0.18.17 python -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
+          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
@@ -1418,7 +1416,7 @@ jobs:
             termux-build/payload/SHA256SUMS
             termux-build/payload/.work/resolved.txt
             termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/termux-builder.Dockerfile') }}
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
           restore-keys: |
             termux-wheelhouse-
 
@@ -1453,7 +1451,7 @@ jobs:
             termux-build/payload/SHA256SUMS
             termux-build/payload/.work/resolved.txt
             termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/termux-builder.Dockerfile') }}
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
 
       - name: Assemble the .deb
         shell: bash
@@ -1819,7 +1817,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: uv run --no-project --with ruamel.yaml==0.18.17 python -m scripts.bundles.release_artifacts promote --root verified
+      - run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.bundles.release_artifacts promote --root verified
       - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
   stable-phase-result:

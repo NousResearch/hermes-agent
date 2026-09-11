@@ -13,11 +13,11 @@ build or a target-native runtime.
 
 | Layer | Owns | Examples |
 |---|---|---|
-| Dependency provider | Tools, locked dependencies, native libraries and build environments | `node-deps.mjs`, `python_env.py`, PM, Nix `importNpmLock`/uv2nix, Termux wheelhouse |
+| Dependency provider | Tools, locked dependencies, native libraries and build environments | `node-deps.mjs`, PM Python operations, Nix `importNpmLock`/uv2nix, Termux wheelhouse |
 | Product builder | Compilation or application assembly from prepared inputs | `tui.mjs`, `web.mjs`, `desktop.mjs`, `agent.py`, `../generate_icons.py` |
 | Distribution adapter | Product selection, target preparation, package layout, signing and publication | `../bundles/`, `../../Dockerfile`, `../../nix/`, `../termux/` |
 
-`node-deps.mjs` and `python_env.py` prepare dependencies. Unlike the product
+`node-deps.mjs` and `pm.build_environment` prepare dependencies. Unlike the product
 builders, they can access package registries. There is no universal installer,
 all-products dispatcher, or cross-platform Python environment.
 
@@ -150,30 +150,44 @@ has no no-argument mode. The Node product parsers expose no `--help` flag.
 ## Python dependency provider
 
 ```sh
-python -m scripts.build.python_env --source /work/source \
-  --python /work/tools/python --uv /work/tools/uv --out /work/venv \
+python -m pm.build_env --source /work/source \
+  --python /work/tools/python --out /work/venv --sealed \
   --extra all --extra messaging
 ```
 
 | Argument | Contract |
 |---|---|
-| `--source`, `--python`, `--uv`, `--out` | Required prepared source, interpreter, uv executable, and fresh environment destination |
-| `--cache` | Optional cache directory. Default: `OUT.parent/.uv-cache` |
+| `--source`, `--out` | Required prepared source and fresh environment destination |
+| `--python` | Optional build interpreter; otherwise PM selects its pinned Python |
+| `--cache` | Optional build cache directory; otherwise PM selects its cache |
+| `--group` | Repeatable build/test dependency-group selection |
+| `--sealed` | Prune build-time editable and virtualenv marker `.pth` files |
 | `--extra` | Repeatable extra selection |
 | `--all-extras` | Select all extras instead of `--extra` |
 | `--no-install-project` | Exclude the root application install, but retain workspace-member installation |
 | `--offline` | Prohibit uv network access. Required artifacts must already be available |
 
 `OUT` must not exist. Failure removes this invocation's environment, not a
-pre-existing environment. Success prints its Python executable. The Python
-function `build_python_environment` additionally requires an explicit `env`
-mapping. It returns the same executable as a `Path`.
+pre-existing environment. Success prints its Python executable. The CLI is an
+explicit build request. The Python
+function `pm.build_environment` accepts the same semantic inputs and an optional
+explicit build `env` mapping. It returns the same executable as a `Path`.
 
-The provider uses `pm.environment.PythonEnvironment` for environment creation,
-frozen workspace sync, and dependency checks. It preserves project uv policy,
-uses the supplied interpreter, and disables interpreter downloads. It does not
-discover user plugins or publish a live PM selection. Nix and Termux retain
-separate dependency providers. The uv cache remains available after this call.
+PM owns pinned installer acquisition, environment creation, frozen workspace
+sync, dependency checks, and failure cleanup. Callers never resolve or pass a uv
+executable. It preserves project policy, uses the supplied interpreter, and
+disables interpreter downloads. It does not discover user plugins or publish a
+live PM selection. Nix retains its declarative dependency provider. Termux builds
+native wheels separately, then uses PM's requirements-environment operation with
+an explicit bionic interpreter and an offline wheelhouse. The build cache remains
+available after this call.
+
+Other build adapters use the same command with `--requirements FILE` (or repeated
+`--requirement SPEC`) for a caller-owned dependency list, `--manager-runtime` for
+the independent PM graph, `--check-lock` for non-mutating CI lock validation, and
+`--export-requirements FILE` for marker-preserving frozen export. Cache teardown
+uses `python -m pm.build_env --prune-cache --cache PATH`; add `--ci` only when the
+cache will not be packaged for offline installation.
 
 Native bundle staging keeps its HOME and PM state temporary, but not its uv
 cache. `scripts.bundles.stage --cache PATH` (or `hermes pm bundle --cache PATH`)
@@ -297,7 +311,7 @@ These locations define the interfaces described here:
 | Web inputs and TypeScript check | `web.mjs:8–71` |
 | Desktop inputs and native checks | `desktop.mjs:11–69` |
 | Locked workspace union | `node-deps.mjs:31–68` |
-| Python provider | `python_env.py:21–76`, `../../pm/environment.py:50–133` |
+| Python provider | `../../pm/operations.py`, `../../pm/environment.py` |
 | Agent input fields and checks | `inputs.py:30–115` |
 | Agent assembly and outputs | `agent.py:76–168` |
 | Launcher implementation | `launchers.py`, `launcher_wrapper.py`, `mint_launchers.py` |

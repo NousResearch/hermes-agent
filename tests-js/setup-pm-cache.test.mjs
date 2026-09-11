@@ -57,16 +57,16 @@ it('all bundle consumers save on failure, after building, without discarding off
     expect(job.steps.slice(setupIndex + 1, saveIndex).some(step => step.run?.includes('bundle'))).toBe(true)
     expect(saveStep.if).toBe(`\${{ !cancelled() && steps.${setupStep.id}.outcome == 'success' }}`)
     expect(saveStep.with).toEqual({
-      uv: `\${{ steps.${setupStep.id}.outputs.uv-path }}`,
+      python: `\${{ steps.${setupStep.id}.outputs.python-path }}`,
       path: `\${{ steps.${setupStep.id}.outputs.uv-cache-path }}`,
       key: `\${{ steps.${setupStep.id}.outputs.python-cache-key }}`,
     })
   }
   const [prune, upload] = save.runs.steps
   expect(prune.if).toBe('${{ !cancelled() }}')
-  expect(prune.run).toBe('"$PM_UV" cache prune')
-  expect(prune.env.PM_UV).toBe('${{ inputs.uv }}')
-  expect(prune.env.UV_CACHE_DIR).toBe('${{ inputs.path }}')
+  expect(prune.run).toBe('"$PM_PYTHON" -m pm.build_env --prune-cache --cache "$PM_CACHE"')
+  expect(prune.env.PM_PYTHON).toBe('${{ inputs.python }}')
+  expect(prune.env.PM_CACHE).toBe('${{ inputs.path }}')
   expect(upload.if).toBe(`\${{ !cancelled() && steps.${prune.id}.outcome == 'success' }}`)
   expect(upload.uses.split('@')[0]).toBe('actions/cache/save')
   expect(upload.with).toEqual({ path: '${{ inputs.path }}', key: '${{ inputs.key }}' })

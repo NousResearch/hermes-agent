@@ -1,8 +1,8 @@
 name: Save the PM Python dependency cache
 description: Prune dangling entries and save a rolling cache after the consumer, even when it failed.
 inputs:
-  uv:
-    description: Absolute path to the PM-provisioned uv executable.
+  python:
+    description: Prepared Python used to invoke PM.
     required: true
   path:
     description: Cache directory exported by setup-pm.
@@ -20,11 +20,11 @@ runs:
       if: ${{ !cancelled() }}
       shell: bash
       env:
-        PM_UV: ${{ inputs.uv }}
-        UV_CACHE_DIR: ${{ inputs.path }}
+        PM_PYTHON: ${{ inputs.python }}
+        PM_CACHE: ${{ inputs.path }}
       # Keep downloaded wheels as well as source-built wheels. Bundles copy
       # this cache for offline installs; --ci would discard required inputs.
-      run: '"$PM_UV" cache prune'
+      run: '"$PM_PYTHON" -m pm.build_env --prune-cache --cache "$PM_CACHE"'
     - name: Save reusable Python dependencies
       if: ${{ !cancelled() && steps.prune.outcome == 'success' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -556,6 +556,9 @@ async def get_session_messages(
     projected_messages = _project_for_display(messages)
     return {
         "session_id": sid,
+        # The same stamp list rows carry, so the Desktop keys a page under the
+        # owner it already routes the session by.
+        "profile": _serving_profile(profile),
         "messages": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,

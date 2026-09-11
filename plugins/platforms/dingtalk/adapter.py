@@ -251,9 +251,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     def _extra_get(self, key: str, env_name: str = "", env_default: str = ""):
-        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var."""
+        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var.
+
+        Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist/policy."""
         value = self.config.extra.get(key) if self.config.extra else None
-        return os.getenv(env_name, env_default) if value is None and env_name else value
+        return _get_scoped_secret(env_name, env_default) if value is None and env_name else value
 
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""

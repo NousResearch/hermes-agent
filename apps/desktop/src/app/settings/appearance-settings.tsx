@@ -26,6 +26,11 @@ import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import {
+  $titlebarAppActionsSide,
+  setTitlebarAppActionsSide,
+  type TitlebarAppActionsSide
+} from '@/store/titlebar-app-actions'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
@@ -398,6 +403,7 @@ export function AppearanceSettings() {
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -487,6 +493,11 @@ export function AppearanceSettings() {
     { id: 'always', label: a.tabStripAlways },
     { id: 'never', label: a.tabStripNever }
   ] as const satisfies readonly { id: TabStripDefault; label: string }[]
+
+  const appActionsOptions = [
+    { id: 'right', label: a.appActionsRight },
+    { id: 'left', label: a.appActionsLeft }
+  ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -661,6 +672,22 @@ export function AppearanceSettings() {
             }
             description={a.tabStripDesc}
             title={a.tabStripTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTitlebarAppActionsSide(id)
+                }}
+                options={appActionsOptions}
+                value={titlebarAppActionsSide}
+              />
+            }
+            description={a.appActionsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
+            title={a.appActionsTitle}
           />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),

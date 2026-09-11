@@ -787,6 +787,15 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    if display_kind is None and not str(rid).startswith("__"):
+        session["_wisdom_user_activity"] = time.time()
+        if session.get("_wisdom_activity_tracking"):
+            try:
+                from tui_gateway.wisdom_mediation import note_activity
+
+                note_activity(session, profile_scope=_session_profile_runtime_scope)
+            except Exception:
+                logger.debug("Wisdom user activity unavailable", exc_info=True)
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation, display_kind)
     if admitted is None:
         return False

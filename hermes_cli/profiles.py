@@ -1336,6 +1336,12 @@ def _delete_profile_confirmed(
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
 
+    with contextlib.suppress(Exception):
+        from hermes_state_registry import close_all_under as _close_session_dbs_under
+        _closed = _close_session_dbs_under(profile_dir)
+        if _closed:
+            print(f"✓ Released {_closed} session database connection(s) held by this process")
+
     verify_profile_resources_released(
         profile_dir,
         profile_incarnation,

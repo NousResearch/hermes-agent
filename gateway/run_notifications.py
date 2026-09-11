@@ -823,26 +823,48 @@ class GatewayNotificationsMixin:
         error = getattr(self, "_session_db_init_error", None)
         if not error:
             return
-        from hermes_constants import get_default_hermes_root
+        # Re-check the live store before warning: a startup `database is locked` routinely clears while
+        # the adapters are still connecting, and a borrowed store handle comes back once its owner
+        # releases it. The cache's opener clears ``_session_db_init_error`` on recovery, so a stale
+        # startup failure must not be broadcast as current (#108031).
+        if getattr(self, "_session_db_handle_cache", None) is not None:
+            self._open_session_db_for_active_scope()
+            error = self._session_db_init_error
+            if not error:
+                logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
+                return
+        from hermes_constants import get_default_hermes_root, profile_cli_selector
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
-        if classify_persistence_error(error) == "corrupt":
-            # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+        cause = classify_persistence_error(error)
+        # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
+        # active_profile, which may be a different database (#105887).
+        profile_arg = profile_cli_selector()
+        if cause == "corrupt":
             db_path = _default_db_path()
             backups_dir = get_default_hermes_root() / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
-                "1. Run `hermes doctor --fix`\n"
+                f"1. Run `hermes {profile_arg}doctor --fix`\n"
                 "2. Stop the gateway, then recover with:\n"
-                f"   hermes sessions recover --source {db_path} "
+                f"   hermes {profile_arg}sessions recover --source {db_path} "
                 "--inspect-only\n"
-                "   (if it reports recoverable) hermes sessions recover "
+                f"   (if it reports recoverable) hermes {profile_arg}sessions recover "
                 f"--source {db_path} --output recovered-state.db\n"
                 "   — recovery snapshots the damaged file first; do NOT run "
                 "`sqlite3 ... \".recover\"` against the live state.db, a "
                 "vulnerable sqlite3 CLI can corrupt it further\n"
                 f"3. Restore from a backup in {backups_dir}/\n"
-                "Run `hermes doctor` for sanitized diagnostics."
+                f"Run `hermes {profile_arg}doctor` for sanitized diagnostics."
+            )
+        elif cause == "fts_index":
+            # Index-scoped corruption: the message tables are not damaged, so the recover /
+            # restore advice above would be destructive on a healthy file (#97794).
+            message = (
+                "⚠️ Session database reported a corruption error confined to the search index "
+                "(FTS5); the message tables are not damaged. Messages may not be persisted until "
+                f"it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run "
+                "recovery tools or restore a backup unless `hermes doctor` confirms damage."
             )
         else:
             message = (

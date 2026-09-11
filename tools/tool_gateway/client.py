@@ -169,15 +169,18 @@ class ConnectorClient:
             if cursor:
                 path += f"&cursor={cursor}"
             payload = self._request("GET", path, None)
-            if not isinstance(payload, dict):
-                break
+            if not isinstance(payload, dict) or "error" in payload:
+                raise ToolGatewayError("invalid connector list page", code="INVALID_RESPONSE")
             page = payload.get("items")
-            if isinstance(page, list):
-                items.extend(entry for entry in page if isinstance(entry, dict))
+            if not isinstance(page, list) or any(not isinstance(entry, dict) for entry in page):
+                raise ToolGatewayError("invalid connector list items", code="INVALID_RESPONSE")
+            items.extend(page)
             cursor = payload.get("nextCursor")
             if not cursor:
-                break
-        return items
+                return items
+            if not isinstance(cursor, str):
+                raise ToolGatewayError("invalid connector list cursor", code="INVALID_RESPONSE")
+        raise ToolGatewayError("connector list pagination incomplete", code="INVALID_RESPONSE")
 
     def execute(self, planned: Sequence[PlannedCall]) -> list[dict[str, Any]]:
         """POST v1/connectors/execute — ONE request for the whole slice.

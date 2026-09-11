@@ -605,9 +605,10 @@ class TeamsAdapter(BasePlatformAdapter):
         """Default-deny gate for approval clicks: require TEAMS_ALLOWED_USERS or an explicit
         TEAMS_ALLOW_ALL_USERS=true opt-in, else anyone who can message the bot could approve.
         Returns the user-facing denial text, or ``None`` when allowed."""
-        if os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
+        # Scoped reads: under multiplex os.environ is the DEFAULT profile's allow-all/allowlist.
+        if _get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
             return None
-        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allowed_csv = _get_scoped_secret("TEAMS_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "

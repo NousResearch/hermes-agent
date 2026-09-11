@@ -22,8 +22,8 @@ Lifecycle rules:
   generation is published while the previous generation is still tearing down.
 - A path can have SEVERAL closes admitted at once (the current generation's final release
   plus a retired generation's drain). The path barrier COUNTS them and is lifted only by
-  the last one to settle, so neither ``acquire`` nor ``close_all`` can escape while any
-  handle for that path is still inside checkpoint/WAL-unlink.
+  the last one to settle, so neither ``acquire`` nor ``close_all`` / ``close_all_under``
+  can escape while any handle for that path is still inside checkpoint/WAL-unlink.
 - Maintenance callers borrow handles with a temporary registry reference instead of
   iterating an unpinned snapshot.
 """
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
@@ -128,10 +129,20 @@ def _teardown(db: "SessionDB") -> None:
     """Close a shared instance, clearing its registry-owned flag first."""
     with contextlib.suppress(Exception):
         db._shared_registry_owned = False
+    _close_quietly(db, "Error closing shared SessionDB")
+
+
+def _close_quietly(db: "SessionDB", debug_message: str) -> None:
+    """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
+    not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
     try:
         db.close()
-    except Exception:
-        logger.debug("Error closing shared SessionDB", exc_info=True)
+    except Exception as exc:
+        from hermes_state_dbfile import RetiredGenerationCaptureError
+        if isinstance(exc, RetiredGenerationCaptureError):
+            logger.error("SessionDB for %s did not settle at close: %s", _db_path_of(db), exc)
+        else:
+            logger.debug(debug_message, exc_info=True)
 
 
 def _path_lifecycle_lock_locked(path: Path) -> threading.Lock:
@@ -356,6 +367,40 @@ def release(db: "SessionDB") -> bool:
     return True
 
 
+def _path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)
+
+
+def _teardown_swept_generations(
+    generations: List[_Generation],
+    teardown_barriers: Dict[Path, _TeardownBarrier],
+    active_teardowns: List[_TeardownBarrier],
+) -> int:
+    """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
+    by_path: Dict[Path, List[_Generation]] = {}
+    for generation in generations:
+        by_path.setdefault(generation.path, []).append(generation)
+    for path, path_generations in by_path.items():
+        with _lock:
+            lifecycle_lock = _path_lifecycle_lock_locked(path)
+        try:
+            with lifecycle_lock:
+                for generation in path_generations:
+                    _teardown(generation.db)
+        finally:
+            _finish_teardown(path, teardown_barriers[path])
+    for barrier in active_teardowns:
+        barrier.event.wait()
+    return len(generations)
+
+
 def close_all() -> int:
     """Close every shared SessionDB regardless of refcount; returns the count. For gateway
     shutdown, after all agents and cron jobs finished. Idempotent."""
@@ -369,26 +414,46 @@ def close_all() -> int:
         _retired.clear()
         for generation in generations:
             generation.retired = True
-    # Teardown outside the lock, one path at a time. Holding the lifecycle
-    # mutex across all generations for a path prevents an old retired handle
-    # and the current handle from checkpointing the same sidecars concurrently.
-    by_path: Dict[Path, List[_Generation]] = {}
-    for generation in generations:
-        by_path.setdefault(generation.path, []).append(generation)
-    for path, path_generations in by_path.items():
-        with _lock:
-            lifecycle_lock = _path_lifecycle_lock_locked(path)
-        try:
-            with lifecycle_lock:
-                for generation in path_generations:
-                    _teardown(generation.db)
-        finally:
-            _finish_teardown(path, teardown_barriers[path])
-    # A final release that removed its generation before this sweep took _lock still owns
-    # its physical close; wait for it rather than return over a running teardown.
-    for barrier in active_teardowns:
-        barrier.event.wait()
-    return len(generations)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+
+
+def close_all_under(directory: str | Path) -> int:
+    """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
+
+    Profile delete rmtree (and a same-name recreate) fails while this process still holds
+    ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
+    expected to fail afterward; a process that holds none is a no-op returning 0.
+
+    A final ``release()`` can drop the generation and admit teardown before the physical
+    close finishes. Wait for those directory-matching barriers even when no generation
+    remains, otherwise rmtree still sees the open handle.
+    """
+    try:
+        root = Path(directory).expanduser().resolve()
+    except OSError:
+        root = Path(directory).expanduser()
+    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    with _lock:
+        generations = [
+            generation
+            for generation in list(_generations.values()) + list(_retired.values())
+            if _path_is_under(generation.path, root)
+        ]
+        # Collect by directory, not by remaining generations: a last release already
+        # popped the generation and left only ``_tearing_down``.
+        active_teardowns = [
+            barrier for path, barrier in _tearing_down.items()
+            if _path_is_under(path, root)
+        ]
+        selected_paths = {generation.path for generation in generations}
+        for path in selected_paths:
+            teardown_barriers[path] = _admit_teardown_locked(path)
+        for generation in generations:
+            generation.retired = True
+            if _generations.get(generation.path) is generation:
+                _generations.pop(generation.path, None)
+            _retired.pop(id(generation.db), None)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
 def live_shared_session_dbs() -> List["SessionDB"]:
@@ -436,10 +501,7 @@ def release_or_close(db: "SessionDB") -> None:
     """Release a shared instance, or close it when it is not registry-managed. Drop-in for a
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):
-        try:
-            db.close()
-        except Exception:
-            logger.debug("release_or_close fallback close failed", exc_info=True)
+        _close_quietly(db, "release_or_close fallback close failed")
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

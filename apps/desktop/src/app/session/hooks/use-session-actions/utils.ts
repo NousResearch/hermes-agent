@@ -1,3 +1,4 @@
+import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
@@ -15,6 +16,9 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
+  getSessionOwnerHint,
+  knownSessionOwner,
+  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -34,6 +38,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
+import { sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -1828,6 +1833,17 @@ export async function resolveSessionProfile(storedSessionId: null | string): Pro
 export async function resolveSessionOwner(storedSessionId: null | string): Promise<SessionOwnerScope> {
   if (!storedSessionId) {
     return undefined
+  }
+
+  const owner = resolveSessionRpcOwner({
+    routingSessionId: storedSessionId,
+    tileOwnerRoute: sessionTileOwnerRoute,
+    sessionOwnerHint: getSessionOwnerHint,
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
+  })
+
+  if (owner) {
+    return owner
   }
 
   const row = await resolveStoredSession(storedSessionId)

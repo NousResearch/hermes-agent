@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -48,15 +49,98 @@ def _dispatcher_heartbeat_path(lock_path) -> Path:
     return Path(lock_path).with_name(_DISPATCHER_HEARTBEAT_FILENAME)
 
 
-def _touch_dispatcher_heartbeat(heartbeat_path) -> None:
-    """Record liveness: the file's mtime is the last healthy dispatcher tick."""
+# FLEET (2026-09-11): the heartbeat file also names its writer, ``host:pid:create_time``, so a
+# restarted gateway can reclaim at once when the previous owner process is gone, instead of waiting
+# out the 300 s stale window (every root restart paused dispatch ~5 min). The mtime contract is
+# unchanged: pre-flight, fleet-integrity-watch and kanban-liveness-watch read only the mtime.
+_DISPATCHER_RELEASED_PREFIX = "released:"
+_DISPATCHER_CREATE_TIME_TOLERANCE_S = 2.0
+
+
+def _dispatcher_owner_identity() -> str:
+    """``host:pid:create_time`` for THIS process (create_time is a true epoch, or 0 if unknown)."""
+    pid = os.getpid()
+    create_time = 0.0
     try:
-        heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-        heartbeat_path.touch()
+        from gateway import status as _st
+        create_time = _st.get_process_create_time_epoch(pid) or 0.0
+    except Exception:
+        create_time = 0.0
+    return f"{socket.gethostname()}:{pid}:{create_time:.3f}"
+
+
+def _write_dispatcher_heartbeat(heartbeat_path, content: str) -> None:
+    """Atomically replace the heartbeat (the file never goes absent, and its mtime becomes now)."""
+    heartbeat_path = Path(heartbeat_path)
+    heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = heartbeat_path.with_name(f"{heartbeat_path.name}.{os.getpid()}.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, heartbeat_path)
+
+
+def _touch_dispatcher_heartbeat(heartbeat_path) -> None:
+    """Record liveness: the file's mtime is the last healthy dispatcher tick; its content names the owner."""
+    try:
+        _write_dispatcher_heartbeat(heartbeat_path, _dispatcher_owner_identity())
     except OSError:
-        logger.debug(
-            "kanban dispatcher: heartbeat touch failed at %s", heartbeat_path
+        try:
+            Path(heartbeat_path).touch()
+        except OSError:
+            logger.debug(
+                "kanban dispatcher: heartbeat touch failed at %s", heartbeat_path
+            )
+
+
+def _mark_dispatcher_heartbeat_released(heartbeat_path) -> None:
+    """An owner giving up the lease (shutdown, or yielding to root) says so, so the next claimant
+    need not wait out the stale window. Best-effort: a crash skips this and liveness covers it."""
+    try:
+        _write_dispatcher_heartbeat(
+            heartbeat_path, _DISPATCHER_RELEASED_PREFIX + _dispatcher_owner_identity()
         )
+    except OSError:
+        logger.debug("kanban dispatcher: heartbeat release mark failed at %s", heartbeat_path)
+
+
+def _dispatcher_owner_gone(heartbeat_path) -> bool:
+    """True when the heartbeat's recorded owner released the lease, or is a process on THIS host
+    that no longer exists (or whose pid now belongs to a different process).
+
+    Anything unparseable, a legacy empty heartbeat, another host's owner, or any probe error
+    returns False, which falls back to the mtime rule. It fails safe toward NOT seizing.
+    """
+    try:
+        raw = Path(heartbeat_path).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return False
+    if not raw:
+        return False
+    if raw.startswith(_DISPATCHER_RELEASED_PREFIX):
+        return True
+    try:
+        host, pid_s, ct_s = raw.rsplit(":", 2)
+        pid, recorded_ct = int(pid_s), float(ct_s)
+    except (ValueError, TypeError):
+        return False
+    if host != socket.gethostname() or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass                      # exists, owned by someone else: alive
+    except OSError:
+        return False
+    if recorded_ct > 0:
+        try:
+            from gateway import status as _st
+            live_ct = _st.get_process_create_time_epoch(pid)
+        except Exception:
+            live_ct = None
+        if live_ct is not None and abs(live_ct - recorded_ct) > _DISPATCHER_CREATE_TIME_TOLERANCE_S:
+            return True           # pid reused by a different process
+    return False
 
 
 def _dispatcher_heartbeat_is_stale(heartbeat_path, *, now: Optional[float] = None) -> bool:
@@ -175,8 +259,12 @@ class GatewayKanbanWatchersMixin:
 
     def _release_kanban_dispatcher_lock(self) -> None:
         """Clear notifier-visible ownership and release the OS lease (shutdown)."""
+        was_owner = self._owns_kanban_dispatcher_lock()
         self._kanban_dispatcher_lock_handle = None
         self._release_kanban_dispatcher_lease()
+        hb = getattr(self, "_kanban_dispatcher_heartbeat_path", None)
+        if was_owner and hb is not None:
+            _mark_dispatcher_heartbeat_released(hb)
 
     def _try_claim_dispatcher_lease(self, lock_path, heartbeat_path, kanban_root) -> bool:
         """FLEET: hold the dispatcher lease for THIS tick; True when active.
@@ -190,6 +278,7 @@ class GatewayKanbanWatchersMixin:
         control (dispatch with no lock), the pre-lease fail-safe.
         """
         am_root = self._active_profile_name() == "default"
+        self._kanban_dispatcher_heartbeat_path = heartbeat_path
         try:
             handle, state = _acquire_singleton_lock(lock_path)
         except Exception:
@@ -214,11 +303,13 @@ class GatewayKanbanWatchersMixin:
                 )
                 self._kanban_dispatcher_lock_handle = None
                 self._release_kanban_dispatcher_lease()
+                _mark_dispatcher_heartbeat_released(heartbeat_path)
                 return False
             # Touch only while we remain owner, so contenders know we are alive.
             _touch_dispatcher_heartbeat(heartbeat_path)
             return True
-        owner_stale = _dispatcher_heartbeat_is_stale(heartbeat_path)
+        owner_gone = _dispatcher_owner_gone(heartbeat_path)
+        owner_stale = owner_gone or _dispatcher_heartbeat_is_stale(heartbeat_path)
         defer_to_root = _root_gateway_in_grace(kanban_root)
         if _should_seize_dispatcher(
             am_root=am_root, owner_stale=owner_stale, defer_to_root=defer_to_root,
@@ -227,7 +318,9 @@ class GatewayKanbanWatchersMixin:
             _touch_dispatcher_heartbeat(heartbeat_path)
             logger.info(
                 "kanban dispatcher: took over dispatcher lease (previous owner "
-                "heartbeat stale) at %s", lock_path,
+                "%s) at %s",
+                "process gone or released" if owner_gone else "heartbeat stale",
+                lock_path,
             )
             return True
         logger.debug(

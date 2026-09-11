@@ -1528,6 +1528,14 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         )
 
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
+    enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+    disabled_toolsets = getattr(agent, "disabled_toolsets", None)
+    if enabled_toolsets is None and disabled_toolsets is None:
+        # At the agent boundary, no filters means the fully resolved tool surface. Preserve that
+        # as an explicit unrestricted scope so execute_code can trust its advertised bridges;
+        # direct registry callers that omit scope still fail closed.
+        disabled_toolsets = []
+
     def _execute(next_args: dict) -> Any:
         import model_tools
 
@@ -1545,8 +1553,8 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 skip_tool_request_middleware=True,
                 skip_tool_execution_middleware=True,
                 tool_request_middleware_trace=list(middleware_trace),
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
             )
 
     return _SequentialDispatch(

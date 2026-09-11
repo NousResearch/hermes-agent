@@ -1,7 +1,10 @@
+import base64
 import json
+import threading
+from types import SimpleNamespace
 
 import model_tools
-from tools import code_execution_tool
+from tools import code_execution_rpc, code_execution_tool
 from tools.registry import registry
 from tools.tool_search import ToolSearchConfig
 
@@ -138,6 +141,67 @@ def test_local_execute_code_calls_deferred_tool_in_session_scope(monkeypatch):
     ]
 
 
+def test_default_agent_can_call_advertised_deferred_bridge(monkeypatch):
+    from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
+
+    probe_name = "execute_code_default_agent_deferred_probe"
+    registry.register(
+        name=probe_name,
+        toolset="plugin_execute_code_default_agent_deferred_probe",
+        schema=_probe_schema(probe_name),
+        handler=lambda _args, **_kwargs: json.dumps({"value": "default-scope"}),
+    )
+    monkeypatch.setattr(
+        "tools.tool_search.load_config",
+        lambda: ToolSearchConfig.from_raw({"enabled": "on"}),
+    )
+    monkeypatch.setattr(
+        "tools.terminal_tool._get_env_config",
+        lambda: {"env_type": "local"},
+    )
+    model_tools._clear_tool_defs_cache()
+
+    definitions = model_tools.get_tool_definitions(quiet_mode=True)
+    valid_names = {item["function"]["name"] for item in definitions}
+    assert code_execution_tool.DEFERRED_BRIDGE_TOOLS <= valid_names
+    agent = SimpleNamespace(
+        _context_engine_tool_names=set(),
+        _memory_manager=None,
+        _current_turn_id="turn-default",
+        _current_api_request_id="request-default",
+        _should_emit_quiet_tool_messages=lambda: False,
+        disabled_toolsets=None,
+        enabled_toolsets=None,
+        quiet_mode=True,
+        session_id="execute-code-default-agent-session",
+        valid_tool_names=valid_names,
+    )
+    code = (
+        "from hermes_tools import tool_call\n"
+        f"print(tool_call({probe_name!r}, {{}})['value'])\n"
+    )
+    ref = _ToolCallRef(
+        name="execute_code",
+        args={"code": code},
+        task_id="execute-code-default-agent-task",
+        call_id="call-default",
+        trace=[],
+    )
+
+    try:
+        raw = _resolve_sequential_dispatch(agent, ref, []).execute(ref.args)
+    finally:
+        from tools.code_kernel import _REGISTRY
+
+        _REGISTRY.shutdown()
+        registry.deregister(probe_name)
+        model_tools._clear_tool_defs_cache()
+
+    result = json.loads(raw)
+    assert result["status"] == "success", raw
+    assert result["output"].strip() == "default-scope"
+
+
 def test_registry_explicit_empty_scope_keeps_only_direct_helpers(monkeypatch):
     monkeypatch.setattr(
         "tools.terminal_tool._get_env_config",
@@ -268,6 +332,106 @@ def test_deferred_bridge_cannot_call_tool_outside_session_scope(monkeypatch):
     assert result["status"] == "success", raw
     assert "not available" in result["output"]
     assert calls == []
+
+
+def test_local_rpc_serializes_structured_result_as_one_json_frame():
+    result = {
+        "_multimodal": True,
+        "content": [{"type": "text", "text": "first line\nsecond line"}],
+    }
+    request = json.dumps(
+        {"token": "rpc-token", "tool": "tool_call", "args": {}}
+    ).encode() + b"\n"
+
+    class Connection:
+        def __init__(self):
+            self.reads = [request, b""]
+            self.sent = bytearray()
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _size):
+            return self.reads.pop(0)
+
+        def sendall(self, payload):
+            self.sent.extend(payload)
+
+        def close(self):
+            return None
+
+    connection = Connection()
+
+    class Server:
+        def settimeout(self, _timeout):
+            return None
+
+        def accept(self):
+            return connection, None
+
+    code_execution_rpc._rpc_server_loop(
+        Server(),
+        "task-rpc",
+        [],
+        [0],
+        1,
+        frozenset({"tool_call"}),
+        threading.Event(),
+        "rpc-token",
+        dispatch=lambda _name, _args: result,
+    )
+
+    assert connection.sent.count(b"\n") == 1
+    assert json.loads(connection.sent) == result
+
+
+def test_remote_rpc_serializes_structured_result(monkeypatch):
+    result = {
+        "_multimodal": True,
+        "content": [{"type": "text", "text": "remote result"}],
+    }
+    request = {
+        "token": "rpc-token",
+        "tool": "tool_call",
+        "args": {},
+        "seq": 7,
+    }
+    stop_event = threading.Event()
+
+    class Environment:
+        response = None
+
+        def execute(self, command, **_kwargs):
+            if command.startswith("ls -1"):
+                return {"output": "/rpc/req_000007\n"}
+            if command.startswith("cat "):
+                stop_event.set()
+                return {"output": json.dumps(request)}
+            if command.startswith("echo '"):
+                encoded = command.split("'", 2)[1]
+                self.response = base64.b64decode(encoded).decode()
+            return {"output": ""}
+
+    environment = Environment()
+    monkeypatch.setattr(
+        model_tools,
+        "handle_function_call",
+        lambda _name, _args, **_kwargs: result,
+    )
+
+    code_execution_rpc._rpc_poll_loop(
+        environment,
+        "/rpc",
+        "task-rpc",
+        [],
+        [0],
+        1,
+        frozenset({"tool_call"}),
+        stop_event,
+        "rpc-token",
+    )
+
+    assert json.loads(environment.response) == result
 
 
 def test_remote_rpc_dispatch_forwards_parent_session_scope(monkeypatch):

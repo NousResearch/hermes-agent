@@ -42,6 +42,16 @@ def _default_dispatch(task_id, session_id=None, enabled_toolsets=None, disabled_
     return dispatch
 
 
+def _serialize_rpc_result(result) -> str:
+    """Encode one result as one newline-safe JSON transport frame."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            pass
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
     """Constant-time token check; an empty server token fails closed. Compared as bytes:
     compare_digest raises TypeError on a non-ASCII str, and the token is script-supplied JSON."""
@@ -132,7 +142,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                         max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                         call_start=call_start, where="sandbox",
                     ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
-                conn.sendall((resp + "\n").encode())
+                conn.sendall((_serialize_rpc_result(resp) + "\n").encode())
     except socket.timeout:
         logger.debug("RPC listener socket timeout")
     except OSError as e:
@@ -193,7 +203,9 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                 # Write the response atomically (tmp + rename) via echo piping —
                 # Modal doesn't reliably deliver stdin_data to chained commands.
                 quoted_res_file = shlex.quote(f"{rpc_dir}/res_{request.get('seq', 0):06d}")
-                encoded_result = base64.b64encode(tool_result.encode("utf-8")).decode("ascii")
+                encoded_result = base64.b64encode(
+                    _serialize_rpc_result(tool_result).encode("utf-8")
+                ).decode("ascii")
                 env.execute(
                     f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
                     f" && mv {quoted_res_file}.tmp {quoted_res_file}",

@@ -45,6 +45,8 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,7 +218,7 @@ def _log_tick_yield_once(reason: str) -> None:
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Compact one-line failure message for chat delivery (full details stay in cron output)."""
     job_name = job.get("name") or job.get("id") or "cron job"
-    text = (error or "unknown error").strip()
+    text = redact_sensitive_text((error or "unknown error").strip(), force=True)
     lower = text.lower()
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them.

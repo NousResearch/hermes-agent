@@ -32,3 +32,37 @@ export function resolveShowEarlierAction(hiddenCount: number, olderAvailable: bo
 
   return olderAvailable ? 'window' : null
 }
+
+export const THREAD_TOP_EDGE_PX = 48
+
+export type AutoShowEarlierInput = {
+  atBottom: boolean
+  direction: 'up' | 'down' | null
+  hasOlderContent: boolean
+  loadSettled: boolean
+  restorePending: boolean
+  scrollTop: number
+}
+
+/**
+ * Page backward only after the reader deliberately reaches the transcript's
+ * top edge. This is shared by scroll and wheel listeners: a wheel at a
+ * clamped `scrollTop === 0` does not emit a scroll event.
+ */
+export function shouldAutoShowEarlier({
+  atBottom,
+  direction,
+  hasOlderContent,
+  loadSettled,
+  restorePending,
+  scrollTop
+}: AutoShowEarlierInput): boolean {
+  return (
+    loadSettled &&
+    !restorePending &&
+    !atBottom &&
+    hasOlderContent &&
+    direction === 'up' &&
+    scrollTop <= THREAD_TOP_EDGE_PX
+  )
+}

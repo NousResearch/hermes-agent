@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveShowEarlierAction } from './transcript-window'
+import { resolveShowEarlierAction, shouldAutoShowEarlier } from './transcript-window'
 
 describe('resolveShowEarlierAction', () => {
   it('spends the already-materialized DOM page first', () => {
@@ -14,5 +14,20 @@ describe('resolveShowEarlierAction', () => {
 
   it('is a no-op when neither DOM nor store has older content', () => {
     expect(resolveShowEarlierAction(0, false)).toBe(null)
+  })
+})
+
+describe('shouldAutoShowEarlier', () => {
+  it('pages older content after an upward wheel at the clamped top edge', () => {
+    expect(
+      shouldAutoShowEarlier({
+        atBottom: false,
+        direction: 'up',
+        hasOlderContent: true,
+        loadSettled: true,
+        restorePending: false,
+        scrollTop: 0
+      })
+    ).toBe(true)
   })
 })

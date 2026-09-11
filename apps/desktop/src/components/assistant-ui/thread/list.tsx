@@ -40,7 +40,7 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
-import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
+import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -953,6 +953,54 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       expandWindow()
     }
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
+
+  // A long transcript is paged by the existing `showEarlier` path when the
+  // reader reaches its top edge. Listen to `wheel` too: a wheel against a
+  // clamped scrollTop of zero does not produce a native scroll event.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    let previousScrollTop = el.scrollTop
+
+    const tryShowEarlier = (direction: 'up' | 'down') => {
+      if (
+        shouldAutoShowEarlier({
+          atBottom: isAtBottom,
+          direction,
+          hasOlderContent: resolveShowEarlierAction(hiddenCount, olderAvailable) !== null,
+          loadSettled: loadSettledRef.current,
+          restorePending: restoreFromBottomRef.current !== null,
+          scrollTop: el.scrollTop
+        })
+      ) {
+        showEarlier()
+      }
+    }
+
+    const onScroll = () => {
+      const direction = el.scrollTop < previousScrollTop ? 'up' : 'down'
+      previousScrollTop = el.scrollTop
+      tryShowEarlier(direction)
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        tryShowEarlier('up')
+      }
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [hiddenCount, isAtBottom, olderAvailable, scrollRef, showEarlier])
 
   useLayoutEffect(() => {
     const el = scrollRef.current

@@ -1,4 +1,7 @@
+from decimal import Decimal
 from types import SimpleNamespace
+
+import pytest
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
@@ -9,7 +12,6 @@ from agent.usage_pricing import (
     normalize_usage,
     resolve_billing_route,
 )
-from decimal import Decimal
 
 
 def test_astra_whole_request_price_tier_includes_cache_writes():
@@ -36,10 +38,158 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+def test_unknown_named_provider_uses_models_dev_pricing_after_snapshot_miss(monkeypatch):
+    """A known provider absent from the local snapshot can still price from models.dev."""
+    from agent.models_dev import ModelInfo
+
+    expected = ModelInfo(
+        id="mimo-v2-flash",
+        name="MiMo V2 Flash",
+        family="mimo",
+        provider_id="xiaomi",
+        cost_input=0.6,
+        cost_output=2.4,
+        cost_cache_read=0.06,
+        cost_cache_write=0.75,
+    )
+    calls = []
+
+    def fake_get_model_info(provider, model):
+        calls.append((provider, model))
+        return expected
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+
+    entry = get_pricing_entry(
+        "mimo-v2-flash",
+        provider="xiaomi",
+        base_url="https://api.xiaomimimo.com/v1",
+    )
+
+    assert calls == [("xiaomi", "mimo-v2-flash")]
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.6")
+    assert entry.output_cost_per_million == Decimal("2.4")
+    assert entry.cache_read_cost_per_million == Decimal("0.06")
+    assert entry.cache_write_cost_per_million == Decimal("0.75")
+    assert entry.source == "provider_models_api"
+    assert entry.source_url == "https://models.dev"
+
+    estimate = estimate_usage_cost(
+        "mimo-v2-flash",
+        CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+        ),
+        provider="xiaomi",
+        base_url="https://api.xiaomimimo.com/v1",
+    )
+    assert estimate.amount_usd == Decimal("3.81")
+    assert estimate.status == "estimated"
+    assert estimate.source == "provider_models_api"
 
 
+@pytest.mark.parametrize(
+    ("base_url", "uses_models_dev"),
+    [
+        ("", True),
+        ("http://api.xiaomimimo.com/v1", False),
+        ("https://api.xiaomimimo.com:8443/v1", False),
+        ("https://api.xiaomimimo.com:443/v1", True),
+        ("https://token-plan-sgp.xiaomimimo.com/v1", True),
+    ],
+)
+def test_models_dev_pricing_requires_canonical_xiaomi_origin(monkeypatch, base_url, uses_models_dev):
+    from agent.models_dev import ModelInfo
+
+    calls = []
+    expected = ModelInfo(id="mimo-v2-flash", name="MiMo V2 Flash", family="mimo", provider_id="xiaomi", cost_input=0.6)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "agent.models_dev.get_model_info", lambda *args: calls.append(args) or expected,
+    )
+
+    entry = get_pricing_entry("mimo-v2-flash", provider="xiaomi", base_url=base_url)
+
+    assert bool(entry) is uses_models_dev
+    assert calls == ([("xiaomi", "mimo-v2-flash")] if uses_models_dev else [])
 
 
+@pytest.mark.parametrize("provider", ["deepseek", "openai"])
+def test_models_dev_pricing_denies_untrusted_no_base_providers(monkeypatch, provider):
+    calls = []
+    monkeypatch.setattr("agent.models_dev.get_model_info", lambda *args: calls.append(args))
+
+    entry = get_pricing_entry("unlisted-model", provider=provider)
+
+    assert entry is None
+    assert calls == []
+
+
+def test_models_dev_pricing_denies_registry_injected_no_base_provider(monkeypatch):
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV
+
+    calls = []
+    monkeypatch.setitem(PROVIDER_TO_MODELS_DEV, "attacker", "unregistered")
+    monkeypatch.setattr("agent.models_dev.get_model_info", lambda *args: calls.append(args))
+
+    entry = get_pricing_entry("unlisted-model", provider="attacker")
+
+    assert entry is None
+    assert calls == []
+
+
+def test_generic_custom_route_does_not_guess_models_dev_provider(monkeypatch):
+    """A custom endpoint lacks trusted vendor identity, so it must stay unpriced."""
+    calls = []
+
+    def fake_get_model_info(provider, model):
+        calls.append((provider, model))
+        raise AssertionError("custom routes must not query models.dev")
+
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+
+    entry = get_pricing_entry("mimo-v2-flash", provider="custom")
+
+    assert entry is None
+    assert calls == []
+
+
+def test_registered_proxy_host_does_not_use_models_dev_pricing(monkeypatch):
+    """Provider profiles must not extend the trusted direct-host set."""
+    import agent.model_metadata as model_metadata
+
+    calls = []
+    monkeypatch.setitem(model_metadata._URL_TO_PROVIDER, "proxy.invalid", "xiaomi")
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.get_model_info",
+        lambda *args: calls.append(args),
+    )
+
+    entry = get_pricing_entry(
+        "mimo-v2-flash", provider="xiaomi", base_url="https://proxy.invalid/v1"
+    )
+    estimate = estimate_usage_cost(
+        "mimo-v2-flash",
+        CanonicalUsage(input_tokens=1_000_000),
+        provider="xiaomi",
+        base_url="https://proxy.invalid/v1",
+    )
+
+    assert entry is None
+    assert estimate.amount_usd is None
+    assert estimate.status == "unknown"
+    assert calls == []
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

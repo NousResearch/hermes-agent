@@ -147,13 +147,30 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
+# A fetch whose transport dead-stalls (HTTP/2 to GitHub on some networks, a black-holed proxy)
+# otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
+# minutes is generous for a scoped single-branch fetch and still ends in a real error.
+NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging."""
-    return subprocess.run(
-        git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", check=check,
-        **(_no_prompt_git_kwargs() if network else {}))
+    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    try:
+        return subprocess.run(
+            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", check=check,
+            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run already killed the child; the checkout stays consistent because
+        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
+        # so every caller's existing stderr path prints one clear line.
+        result = subprocess.CompletedProcess(
+            exc.cmd, 124, stdout="",
+            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+        if check:
+            raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
+        return result
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -1321,6 +1338,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
+        # (#105951); stale grafts break merge-base and push this run into the divergence path.
+        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
         # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash

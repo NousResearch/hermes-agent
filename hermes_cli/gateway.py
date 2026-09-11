@@ -1615,8 +1615,30 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         if _windows_scheduled_task_supervises(_task_name):
             return False
 
+    # launchd reports the stderr_timestamp WRAPPER as the service PID, while
+    # the process scan also sees its ``gateway run`` child. Protect the whole
+    # supervised tree: excluding only the wrapper lets a Desktop serve startup
+    # SIGTERM the real messaging gateway (#105938). Process-table uncertainty
+    # is not permission to kill; fail closed while a launchd job is loaded.
+    launchd_loaded = False
+    if is_macos():
+        launchd_snapshot = _strict_launchd_gateway_service_snapshot()
+        if launchd_snapshot is None:
+            return False
+        service_roots, launchd_loaded = launchd_snapshot
+    else:
+        try:
+            service_roots = _get_service_pids(all_profiles=True)
+        except Exception:
+            return False
+    service_tree = _supervised_service_tree_pids(service_roots)
+    if service_tree is None:
+        return False
+    if launchd_loaded and not service_roots:
+        return False
+
     from gateway.status import _pid_exists, get_process_start_time, write_planned_stop_marker
-    own = _reaper_exclusion_pids(extra_exclude)
+    own = _reaper_exclusion_pids(extra_exclude, service_pids=service_tree)
     try:
         # On Windows also drop Task Scheduler-owned candidates (the pidfile-less gap).
         orphans = [
@@ -1661,7 +1683,66 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     return reaped
 
 
-def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int]:
+def _supervised_service_tree_pids(service_roots: set[int]) -> set[int] | None:
+    """Return service roots plus all live descendants, or ``None`` when the
+    supervised tree cannot be read safely."""
+    protected = set(service_roots)
+    if not protected:
+        return protected
+    try:
+        import psutil  # type: ignore
+
+        for pid in service_roots:
+            protected.update(int(child.pid) for child in psutil.Process(pid).children(recursive=True))
+    except Exception:
+        return None
+    return protected
+
+
+def _strict_launchd_gateway_service_snapshot() -> tuple[set[int], bool] | None:
+    """Return ``(pids, any_loaded)`` for every gateway launchd label.
+
+    Unlike the status-oriented discovery helpers, this kill-safety probe keeps
+    ``unknown`` distinct from ``unloaded``. A timeout, missing launchctl, or
+    unclassified failure on ANY label/domain returns ``None`` so the reaper
+    fails closed instead of acting on a partial fleet snapshot.
+    """
+    labels = {get_launchd_label(), *launchd_gateway_labels_for_install()}
+    try:
+        fleet = subprocess.run(["launchctl", "list"], timeout=5, **_CAPTURE_TEXT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if fleet.returncode != 0:
+        return None
+    for line in fleet.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[-1].startswith("ai.hermes.gateway"):
+            labels.add(parts[-1])
+    roots: set[int] = set()
+    any_loaded = False
+    uid = os.getuid()  # windows-footgun: macOS-only caller
+    for label in labels:
+        for domain in (f"gui/{uid}", f"user/{uid}"):
+            try:
+                result = subprocess.run(
+                    ["launchctl", "print", f"{domain}/{label}"], timeout=5, **_CAPTURE_TEXT
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return None
+            if result.returncode == 0:
+                any_loaded = True
+                pid = _parse_launchd_pid_from_print_output(result.stdout)
+                if pid is None:
+                    return None
+                roots.add(pid)
+            elif result.returncode not in _LAUNCHD_JOB_UNLOADED_EXIT_CODES:
+                return None
+    return roots, any_loaded
+
+
+def _reaper_exclusion_pids(
+    extra_exclude: set | None, *, service_pids: set[int] | None = None
+) -> set[int]:
     """PIDs the orphan reaper must never kill: self, caller extras, service-managed, recorded."""
     own = {os.getpid()} | (extra_exclude or set())
     # Service-managed gateways are never orphans (on macOS supports_systemd_services() is False, so a
@@ -1676,7 +1757,7 @@ def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int]:
         # cover the whole ai.hermes.gateway* fleet — not just the current profile's label — or a sibling
         # profile's launchd gateway is misclassified as an unsupervised orphan and reaped. Same class as the
         # update-sweep fix in #74075.
-        own |= _get_service_pids(all_profiles=True)
+        own |= service_pids if service_pids is not None else _get_service_pids(all_profiles=True)
     # Exempt the recorded gateway PID and its parent chain (on Windows the Scheduled-Task bootstrap's
     # ``gateway run`` argv matches the scan; killing it takes the gateway down). Use the RAW pidfile +
     # lock records, not only the validated probe: get_running_pid returns None on any validation

@@ -125,6 +125,43 @@ def _mock_httpx_response(status_code: int, json_body: dict):
     return resp
 
 
+class TestReconnectFastPath:
+    """Cloud reconnects reuse a healthy in-process webhook server."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_reuses_healthy_webhook(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._runner = object()
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(200, {"status": "ok"})
+        )
+
+        monkeypatch.setattr(
+            "gateway.platforms.whatsapp_cloud.check_whatsapp_cloud_requirements",
+            lambda: True,
+        )
+        result = await adapter.connect(is_reconnect=True)
+
+        assert result is True
+        assert adapter._running is True
+        adapter._http_client.get.assert_awaited_once_with(
+            "http://127.0.0.1:8090/health", timeout=2.0
+        )
+
+    @pytest.mark.asyncio
+    async def test_reconnect_does_not_reuse_unhealthy_webhook(self):
+        adapter = _make_adapter()
+        adapter._runner = object()
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(503, {"status": "starting"})
+        )
+
+        assert await adapter._try_reuse_running_webhook() is False
+        assert adapter._running is True
+
+
 # ---------------------------------------------------------------------------
 # Outbound send via Graph API
 # ---------------------------------------------------------------------------
@@ -1399,4 +1436,3 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
-

@@ -536,3 +536,126 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Reconnect fast path: reuse a live bridge instead of full cold start (#80094)
+# ---------------------------------------------------------------------------
+
+class TestReconnectFastPath:
+    """Verify ``is_reconnect=True`` probes /health before npm/pidfile/port."""
+
+    @pytest.mark.asyncio
+    async def test_is_reconnect_reuses_live_bridge(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// bridge stub")
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        (session_dir / "creds.json").write_text("{}")
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter.config = MagicMock()
+        adapter._bridge_port = 19878
+        adapter._bridge_script = str(bridge)
+        adapter._session_path = session_dir
+        adapter._bridge_log_fh = None
+        adapter._bridge_process = None
+        adapter._reply_prefix = None
+        adapter._send_read_receipts = False
+        adapter._running = False
+        adapter._message_handler = None
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._fatal_error_handler = None
+        adapter._active_sessions = {}
+        adapter._pending_messages = {}
+        adapter._background_tasks = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._message_queue = asyncio.Queue()
+        adapter._http_session = None
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "status": "connected",
+            "scriptHash": "deadbeef",
+            "sendReadReceipts": False,
+        })
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
+        mock_client_cls = MagicMock(return_value=_AsyncCM(mock_session))
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._file_content_hash", return_value="deadbeef"), \
+             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()), \
+             patch("aiohttp.ClientSession", mock_client_cls), \
+             patch("subprocess.run") as mock_run, \
+             patch("subprocess.Popen") as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pid, \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port:
+            result = await adapter.connect(is_reconnect=True)
+
+        assert result is True
+        mock_run.assert_not_called()
+        mock_popen.assert_not_called()
+        mock_kill_pid.assert_not_called()
+        mock_kill_port.assert_not_called()
+        assert adapter._running is True
+
+    @pytest.mark.asyncio
+    async def test_is_reconnect_falls_through_when_bridge_not_running(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// bridge stub")
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        (session_dir / "creds.json").write_text("{}")
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter.config = MagicMock()
+        adapter._bridge_port = 19879
+        adapter._bridge_script = str(bridge)
+        adapter._session_path = session_dir
+        adapter._bridge_log_fh = None
+        adapter._bridge_process = None
+        adapter._reply_prefix = None
+        adapter._send_read_receipts = False
+        adapter._running = False
+        adapter._message_handler = None
+        adapter._fatal_error_code = None
+        adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._fatal_error_handler = None
+        adapter._active_sessions = {}
+        adapter._pending_messages = {}
+        adapter._background_tasks = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._message_queue = asyncio.Queue()
+        adapter._http_session = None
+
+        # GET /health raises (bridge not running); the call must continue to
+        # the cold path and eventually attempt a restart.
+        mock_client_cls = MagicMock(side_effect=OSError("Connection refused"))
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client_cls), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pid, \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", return_value=mock_proc):
+            result = await adapter.connect(is_reconnect=True)
+
+        assert result is False
+        mock_kill_pid.assert_called_once()
+        mock_kill_port.assert_called_once()
+        assert adapter._running is False

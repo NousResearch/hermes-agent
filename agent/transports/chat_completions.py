@@ -201,12 +201,22 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
 
 
 def _model_consumes_thought_signature(model: Any) -> bool:
-    """True for Gemini-family targets, which require tool-call ``extra_content`` (thought_signature) replay.
+    """True when the outgoing model requires ``extra_content``
+    (thought_signature) to be replayed on tool calls.
 
-    Every other strict provider rejects it, so it is stripped for non-Gemini targets.
+    Gemini 3 thinking models attach ``extra_content`` to each tool call and
+    reject subsequent requests with HTTP 400 if it is missing. Every other
+    strict provider rejects the request with 400 if ``extra_content`` *is*
+    present — and that includes Google's own **Gemma** models, which do not use
+    the Gemini-3 thinking format: replaying a Gemini thought_signature to
+    ``gemma-4-31b-it`` (e.g. a cross-model fallback from ``gemini-3-flash``)
+    returns ``400 INVALID_ARGUMENT``. So the field is kept only for genuine
+    ``gemini`` models and stripped for everything else — Gemma included, and
+    any non-Gemini model that inherited stale Gemini ``extra_content`` earlier
+    in a mixed-provider session. (#36907)
     """
     m = str(model or "").lower()
-    return "gemini" in m or "gemma" in m
+    return "gemini" in m
 
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:

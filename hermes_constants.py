@@ -206,6 +206,32 @@ def named_profile_home(path: str | Path) -> Path | None:
     return None
 
 
+def profile_name_for_home(path: str | Path | None) -> str | None:
+    """Return the canonical profile id owning *path*, or ``None`` when it is not a profile home.
+
+    The default home is the Hermes root itself, so its basename is an installation detail (``.hermes``
+    on POSIX and commonly ``hermes`` on Windows), not the profile id ``default``.
+    """
+    if path is None or not str(path).strip():
+        return None
+    current = Path(path).expanduser()
+    try:
+        default_root = get_default_hermes_root()
+        for candidate in (current, current.resolve(strict=False)):
+            if candidate == default_root or candidate == default_root.resolve(strict=False):
+                return "default"
+            named = named_profile_home(candidate)
+            if named is not None:
+                return named.name
+            # A stored profile home is authoritative: its owner already resolved it, so the
+            # <root>/profiles/<name> shape names the profile even when <root> carries no markers.
+            if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+                return candidate.name
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
 def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
@@ -743,6 +769,15 @@ def display_hermes_home() -> str:
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
+
+
+def profile_cli_selector() -> str:
+    """``-p <name> `` (trailing space) pinning copy-pasteable ``hermes ...`` guidance to the
+    active NAMED profile, else ``""``: a bare ``hermes`` follows the sticky ``active_profile``
+    file, which can name a different database than the one that failed (#105887). A custom
+    home outside the profile tree has no selector (only HERMES_HOME names it)."""
+    name = profile_name_for_home(get_hermes_home())
+    return f"-p {name} " if name and name != "default" else ""
 
 
 def secure_parent_dir(path: Path) -> None:

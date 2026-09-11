@@ -107,6 +107,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
         servers_snapshot = [_core._servers[name] for name in selected]
         selected_status = (
             set(_core._servers) | set(_core._server_scope_keys)
+            | set(_core._server_tool_scopes)
             | set(_core._server_connecting) | set(_core._server_connect_errors)
             if scope is None else {
                 name for name, owner in _core._server_scope_keys.items() if owner == scope
@@ -118,6 +119,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
         for name in selected_status:
             _core._server_connect_errors.pop(name, None)
             _core._server_scope_keys.pop(name, None)
+            _core._server_tool_scopes.pop(name, None)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),

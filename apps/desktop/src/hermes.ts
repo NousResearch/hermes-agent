@@ -28,6 +28,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/wisdom'
 
 export type {
   ActionResponse,
@@ -44,6 +45,7 @@ export type {
   AutomationBlueprint,
   AutomationBlueprintField,
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   BackendUpdateCheckResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
@@ -120,6 +122,9 @@ export type {
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
+  TelegramOnboardingApplyResponse,
+  TelegramOnboardingStartResponse,
+  TelegramOnboardingStatusResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,

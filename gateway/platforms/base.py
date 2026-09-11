@@ -734,6 +734,8 @@ _CACHE_DIR_IMPORT_DEFAULTS = {
     "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR, "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
     "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR}
 
+# Launch-time homes: fine for the static ALLOW roots below (per-profile cache roots are
+# enumerated at check time), never for the credential DENY side — see _credential_home_roots.
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -795,11 +797,24 @@ def _profile_cache_roots() -> List[Path]:
     profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
     when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
     """
+    return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _profile_dirs() -> List[Path]:
+    """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
-        profile_dirs = [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
+        return [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
     except OSError:
         return []
-    return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _credential_home_roots() -> List[Path]:
+    """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
+    (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
+    and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
+    the allow side — a denylist frozen at import covers only the launch profile, so a
+    ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn would upload it."""
+    return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
 def _kanban_root() -> Path:
@@ -858,7 +873,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
 
@@ -2213,9 +2228,9 @@ class BasePlatformAdapter(ABC):
 
     def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
                               chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
+                              thread_id: Optional[str] = None, command: Optional[str] = None) -> Optional[bool]:
         """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
+        legacy). ``is_bot``/``thread_id``/``command`` are forwarded only when set so legacy
         three-positional callbacks keep working. Only literal booleans propagate: a truthy
         non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
         if not user_id or self._authorization_check is None:
@@ -2225,6 +2240,8 @@ class BasePlatformAdapter(ABC):
             extra["is_bot"] = True
         if thread_id is not None:
             extra["thread_id"] = thread_id
+        if command is not None:
+            extra["command"] = command
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
         except Exception:
@@ -2567,11 +2584,14 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
-        (Signal)."""
+        (Signal). Returns success when at least one image was delivered — the outcome
+        the turn-level delivery tracker records; every override must return the same
+        aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
         from urllib.parse import unquote as _unquote
+        delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -2588,8 +2608,15 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                else:
+                    delivered = True
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+        if not images:
+            return SendResult(success=False, error="no images to send")
+        return SendResult(
+            success=delivered,
+            error=None if delivered else "all images failed to send")
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -3416,6 +3443,27 @@ class BasePlatformAdapter(ABC):
             task.add_done_callback(self._expected_cancelled_tasks.discard)
         return True
 
+    async def run_idle_activity(self, session_key: str, callback) -> bool:
+        """Run an internal consumer at an idle boundary without a human message.
+
+        Wisdom uses the same guard as regular turns. Real messages queue behind
+        it; stop/reset can cancel it using the ordinary session task registry.
+        """
+        if session_key in self._active_sessions:
+            return False
+        guard = asyncio.Event()
+        task = asyncio.current_task()
+        self._active_sessions[session_key] = guard
+        self._session_tasks[session_key] = task
+        try:
+            await callback()
+            return True
+        finally:
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+            if self._active_sessions.get(session_key) is guard:
+                await self._drain_pending_after_session_command(session_key, guard)
+
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
@@ -3652,8 +3700,13 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
+            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(getattr(event, "message_id", "") or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
@@ -3698,11 +3751,12 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any]) -> None:
+        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
+        record_delivery: Callable) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported."""
+        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
         from urllib.parse import quote as _quote
 
         def _as_image(path: str) -> bool:
@@ -3711,10 +3765,11 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay)
+                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
+                record_delivery)
         chat_id = event.source.chat_id
 
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> None:
+        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do."""
             ext = Path(path).suffix.lower()
@@ -3730,6 +3785,7 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+            return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
@@ -3738,41 +3794,61 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
             except Exception as err:
+                record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
-        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float) -> None:
-        """Batch-send images; a failure is logged (never raised) so other attachments still go."""
+        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
+        record_delivery: Callable) -> None:
+        """Batch-send images; a failure is logged (never raised) so other attachments still go.
+        The batch result feeds ``record_delivery`` so media-only turns report their real
+        outcome instead of FAILURE."""
         try:
-            await self.send_multiple_images(
+            result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+            record_delivery(SendResult(success=False, error=str(batch_err)))
+            return
+        record_delivery(result)
+
+    async def send_final_ledgered(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+        reply_to: Optional[str], is_ephemeral_response: bool = False,
+    ) -> "tuple[SendResult, BasePlatformAdapter]":
+        """The delivery-ledger bracket every final text goes through, on the CURRENT transport
+        (a reconnect may have replaced this adapter): record the obligation before the send,
+        send with retry, finalize from the result — so a refused final (flood control, a dead
+        transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
+        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
+        Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
+        (an ephemeral delete must go to the same transport)."""
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                    len(text_content), event.source.chat_id)
+        obligation_id = await self._record_delivery_obligation(
+            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        result = await delivery_adapter._send_with_retry(
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        return result, delivery_adapter
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Send the final text on the CURRENT transport (a reconnect may have replaced
-        this adapter), ledger-bracketed; the message-id owner owns the ephemeral delete."""
-        delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
-        _obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content,
-            reply_to=_reply_anchor_for_event(event), metadata=metadata)
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+        result, delivery_adapter = await self.send_final_ledgered(
+            event, session_key, text_content, metadata,
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
-        if _obligation_id is not None:
-            await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
-            delivery_adapter._schedule_ephemeral_delete(
-                event.source.chat_id, result.message_id, ephemeral_ttl)
+            delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -3791,18 +3867,20 @@ class BasePlatformAdapter(ABC):
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
-                                   metadata: Dict[str, Any], *, anything_sent: bool) -> None:
+                                   metadata: Dict[str, Any], *, anything_sent: bool,
+                                   record_delivery: Callable) -> None:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
-        then fail loudly if a non-empty response produced nothing deliverable."""
+        then fail loudly if a non-empty response produced nothing deliverable. Attachment
+        results feed ``record_delivery`` so the turn outcome reflects them."""
         human_delay = self._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay)
+            await self._send_image_batch(event, images, metadata, human_delay, record_delivery)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata)
+            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -3960,7 +4038,8 @@ class BasePlatformAdapter(ABC):
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered)
+                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

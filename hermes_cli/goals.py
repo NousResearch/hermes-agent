@@ -1499,7 +1499,7 @@ class GoalManager:
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
-                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-v4-flash"),
+                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             return self._pause_decision(

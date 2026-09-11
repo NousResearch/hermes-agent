@@ -17,6 +17,11 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import {
+  $chatOnboardingSolo,
+  $chatOnboardingThreadIds,
+  $onboardingGreeting
+} from '@/components/onboarding-chat/assembly'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
@@ -40,7 +45,8 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
-import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
+import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
+import { useMessagesBelow } from './use-messages-below'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -162,6 +168,67 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
+/** The greeting types once per app run. The row starts on the pre-session
+ *  draft and MOUNTS AGAIN when the seeded session replaces it (new thread key)
+ *  — replaying the animation there would read as the agent stuttering its own
+ *  opening line. */
+let greetingRevealed = false
+
+/** The pre-banked onboarding greeting, revealed like a streamed turn: a short
+ *  beat (the agent "starting"), then word-cluster typing over ~1.4s with a
+ *  caret that blinks out when done. prefers-reduced-motion renders instantly.
+ *  Reveal length is state; the full text stays in the DOM for layout only via
+ *  the visible slice (height grows exactly like real streaming). */
+function OnboardingGreetingRow({ text }: { text: string }) {
+  const [shown, setShown] = useState(() =>
+    greetingRevealed || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? text.length : 0
+  )
+
+  const done = shown >= text.length
+
+  useEffect(() => {
+    if (shown >= text.length) {
+      greetingRevealed = true
+
+      return
+    }
+
+    // Word-cluster cadence: reveal 1-3 words per tick at 60-110ms — the
+    // shape of real model streaming, not a teletype.
+    const tick = () => {
+      setShown(current => {
+        if (current >= text.length) {
+          return current
+        }
+
+        let next = current
+        const words = 1 + Math.floor(Math.random() * 3)
+
+        for (let i = 0; i < words; i += 1) {
+          const space = text.indexOf(' ', next + 1)
+
+          next = space === -1 ? text.length : space
+        }
+
+        return Math.min(next, text.length)
+      })
+    }
+
+    const start = window.setTimeout(tick, shown === 0 ? 450 : 60 + Math.random() * 50)
+
+    return () => window.clearTimeout(start)
+  }, [shown, text])
+
+  return (
+    <div className="mb-(--conversation-turn-gap) whitespace-pre-wrap leading-relaxed" data-onboarding-greeting>
+      {text.slice(0, shown)}
+      {!done && (
+        <span className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.18em] animate-pulse bg-foreground/70" />
+      )}
+    </div>
+  )
+}
+
 export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
   let frameId: number | null = null
   let framePending = false
@@ -206,6 +273,7 @@ export function subscribeToThreadForeground(shouldReanchor: () => boolean, onRea
 }
 
 interface ThreadMessageListProps {
+  afterContent?: ReactNode
   clampToComposer: boolean
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
@@ -376,6 +444,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
         'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
         virtualized && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
       )}
+      data-slot="aui_message-group"
     >
       <MessageRenderBoundary resetKey={resetKey}>
         {group.kind === 'turn' ? (
@@ -395,7 +464,53 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
   )
 })
 
+function useOnboardingTranscript(structuralSignature: string, sessionKey: string | null | undefined) {
+  const onboardingThreadIds = useStore($chatOnboardingThreadIds)
+  const onboardingGreeting = useStore($onboardingGreeting)
+  // Solo mode makes the pane the guided chat BEFORE the seeded session exists
+  // — kickoff spends seconds (a cold dev boot, minutes) on the setup profile
+  // and its backend, and the greeting must own that whole window. Without the
+  // solo arm the draft renders the vanilla wordmark hero until the ids land.
+  const onboardingSolo = useStore($chatOnboardingSolo)
+  const onboardingThread = onboardingSolo || Boolean(sessionKey && onboardingThreadIds.includes(sessionKey))
+  const bankedGreeting = onboardingThread && Boolean(onboardingGreeting)
+
+  const groups = useMemo(() => {
+    const built = buildGroups(structuralSignature)
+
+    if (!bankedGreeting) {
+      return built
+    }
+
+    // The banked greeting owns everything before the user's first visible
+    // message. The model's reply to the hidden kickoff is SUPPOSED to be an
+    // invisible ::onboarding{step="ready"} ack, but a small model narrates
+    // instead ("I'll start by understanding the current state of this
+    // task…" leaked in a live run) — so the guarantee is structural: leading
+    // assistant-only groups render as nothing, whatever they contain.
+    const firstTurn = built.findIndex(group => group.kind === 'turn')
+
+    return firstTurn === -1 ? [] : firstTurn === 0 ? built : built.slice(firstTurn)
+  }, [structuralSignature, bankedGreeting])
+
+  const threadType = onboardingThread ? 'onboarding' : undefined
+
+  // The guided chat's opening line is PRE-BANKED and rendered here, client-
+  // side, the instant the thread mounts — the model's cold first turn took up
+  // to 10s in live runs and the greeting must never wait on it. The kickoff
+  // brief tells the model exactly what was said; its first reply is an
+  // invisible ready-ack, and the conversation continues from the user's name.
+  // It TYPES itself in (OnboardingGreetingRow) so it reads as the agent
+  // speaking, not a static label — the banked line must be indistinguishable
+  // from a streamed turn.
+  const greetingRow =
+    threadType === 'onboarding' && onboardingGreeting ? <OnboardingGreetingRow text={onboardingGreeting} /> : null
+
+  return { groups, onboardingThread, threadType, greetingRow }
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
+  afterContent,
   clampToComposer,
   components,
   emptyPlaceholder,
@@ -420,11 +535,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   const { t } = useI18n()
+
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
   // below on every tick). Weights are folded in separately for the budget.
-  const groups = useMemo(() => buildGroups(structuralSignature), [structuralSignature])
-  const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
+  const { groups, onboardingThread, threadType, greetingRow } = useOnboardingTranscript(structuralSignature, sessionKey)
+
+  const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder) && !onboardingThread
 
   // use-stick-to-bottom owns scrollTop (single writer): follow while locked,
   // escape on user scroll-up, re-lock at bottom. Snap instantly, not spring — a
@@ -954,6 +1071,43 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
+  // Scroll/wheel at the top edge pages older turns through the same showEarlier
+  // path as the button. Wheel is required because browsers emit no `scroll`
+  // once scrollTop is already 0 — exactly where the reader who wants more is.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const tryShowEarlier = (wheelDeltaY?: number) => {
+      if (
+        shouldAutoShowEarlier({
+          action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+          isAtBottom,
+          loadSettled: loadSettledRef.current,
+          restorePending: restoreFromBottomRef.current != null,
+          scrollTop: el.scrollTop,
+          wheelDeltaY
+        })
+      ) {
+        showEarlier()
+      }
+    }
+
+    const onScroll = () => tryShowEarlier()
+    const onWheel = (event: WheelEvent) => tryShowEarlier(event.deltaY)
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [hiddenCount, isAtBottom, olderAvailable, scrollRef, showEarlier])
+
   useLayoutEffect(() => {
     const el = scrollRef.current
     const restoreFromBottom = restoreFromBottomRef.current
@@ -989,6 +1143,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       )),
     [visibleGroups, components, structuralSignature, tailStart]
   )
+
+  useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
 
   return (
     <div
@@ -1028,6 +1184,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           <div
             className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
             data-slot="aui_thread-content"
+            data-thread-type={threadType}
             ref={contentRef as React.RefCallback<HTMLDivElement>}
           >
             {(hiddenCount > 0 || olderAvailable) && (
@@ -1039,8 +1196,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                 {t.assistant.thread.showEarlier}
               </button>
             )}
+            {greetingRow}
             {rows}
             {loadingIndicator}
+            {afterContent}
             {clampToComposer && (
               <div
                 aria-hidden="true"

@@ -35,6 +35,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -45,8 +46,10 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .wisdom_adapter import SlackWisdomMixin
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from wisdom_adapter import SlackWisdomMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -850,7 +853,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -962,6 +965,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+        # Retain the profile that rendered each opaque control.
+        self._wisdom_callback_profiles: Dict[Tuple[str, str, str], Tuple[Optional[str], float]] = {}
+        self._WISDOM_CALLBACK_PROFILE_MAX = 2000
         # Native streaming state per chat_id: {"ts", "draft_id", "sent", "started"}.
         # ``sent`` is raw pre-mrkdwn text; the API is append-only so deltas diff against it.
         self._active_streams: Dict[str, Dict[str, Any]] = {}
@@ -1527,6 +1533,7 @@ class SlackAdapter(BasePlatformAdapter):
         for _action_id in self._CONFIRM_CHOICES:
             self._app.action(_action_id)(self._handle_slash_confirm_action)
         self._app.action("hermes_feedback")(self._handle_feedback_action)
+        self._app.action(re.compile(r"^hermes_wisdom_(?:[a-z0-9_]+)$"))(self._handle_wisdom_action)
         # Clarify buttons (tools/clarify_gateway.py); indexed action IDs because
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
@@ -2536,7 +2543,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_allow_bots(self) -> str:
         """Return normalized Slack bot-message policy."""
-        raw = self.config.extra.get("allow_bots", "") or os.getenv("SLACK_ALLOW_BOTS", "none")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
+        raw = self.config.extra.get("allow_bots", "") or _get_scoped_secret("SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -2558,7 +2566,7 @@ class SlackAdapter(BasePlatformAdapter):
         if cached is None:
             raw = self.config.extra.get("api_human_users")
             if raw is None:
-                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
+                raw = _get_scoped_secret("SLACK_API_HUMAN_USERS", "")
             parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
             cached = self._api_human_users_cache = frozenset(
                 str(p).strip() for p in parts if str(p).strip())
@@ -2657,25 +2665,25 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
-            return
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
             from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -2692,12 +2700,15 @@ class SlackAdapter(BasePlatformAdapter):
                     channel=chat_id, file_uploads=file_uploads, initial_comment=initial_comment,
                     thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
-                await super().send_multiple_images(
+                fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     @staticmethod
     async def _collect_image_uploads(

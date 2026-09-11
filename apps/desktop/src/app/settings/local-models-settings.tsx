@@ -299,12 +299,15 @@ export function LocalModelsSettings() {
   // ── Quickstart: the dummy-proof front door ──
   // Until something is servable (runtime + at least one model), the pane
   // leads with a hero that does everything in one click; the full pane
-  // stays one 'Configure…' click away. A running quickstart pins this
+  // stays one 'Let me choose' click away. A running quickstart pins this
   // view so its progress has a home even after a remount.
   const qJob = runningQuickstart ?? null
 
   const needsSetup = !status.runtime_installed || status.models.length === 0
-  const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
+  // The setup hero is reserved for an automatic recommendation. A
+  // spilled model remains visible below, but setup must not silently choose it.
+  const heroModel = catalog.find(c => c.recommended && c.fits) ?? null
+  const hasRecommendation = catalog.some(c => c.recommended)
 
   if (qJob || (needsSetup && !configure && heroModel)) {
     // Stage rail derived from the job phase: engine -> model -> finish.
@@ -551,6 +554,22 @@ export function LocalModelsSettings() {
 
       {/* ── Models ── */}
       <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>
+        {!hasRecommendation && (
+          <ListRow
+            action={
+              <Button
+                onClick={() => document.getElementById('local-model-browse')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                size="sm"
+              >
+                <Search />
+                {copy.noRecommendationAction}
+              </Button>
+            }
+            description={copy.noRecommendationDetail}
+            title={copy.noRecommendationTitle}
+          />
+        )}
+
         <div className="grid gap-1">
           {sortedCatalog.map(model => {
             const dJob = runningDownloadFor(jobs, model.id)
@@ -982,7 +1001,8 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
       icon={Search}
       title={copy.browseTitle}
     >
-      <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
+      <div id="local-model-browse">
+        <p className="text-[0.75rem] text-muted-foreground">{copy.browseHint}</p>
 
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1100,6 +1120,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
             )}
           </div>
         ))}
+        </div>
       </div>
     </SettingsSection>
   )

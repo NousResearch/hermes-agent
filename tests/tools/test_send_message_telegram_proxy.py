@@ -37,10 +37,38 @@ def _install_telegram_mock_with_request(
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
     request_mod = SimpleNamespace(HTTPXRequest=httpx_request_factory)
+
+    class InlineKeyboardButton:
+        def __init__(self, text, *, url=None, callback_data=None):
+            self.text = text
+            self.url = url
+            self.callback_data = callback_data
+
+        def to_dict(self):
+            data = {"text": self.text}
+            if self.url is not None:
+                data["url"] = self.url
+            if self.callback_data is not None:
+                data["callback_data"] = self.callback_data
+            return data
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+        def to_dict(self):
+            return {
+                "inline_keyboard": [
+                    [button.to_dict() for button in row] for row in self.inline_keyboard
+                ]
+            }
+
     # MessageEntity needed by #27865 mention-detection path.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
     telegram_mod = SimpleNamespace(
         Bot=bot_factory,
+        InlineKeyboardButton=InlineKeyboardButton,
+        InlineKeyboardMarkup=InlineKeyboardMarkup,
         MessageEntity=_MessageEntity,
         constants=constants_mod,
         request=request_mod,

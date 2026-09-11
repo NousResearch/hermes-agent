@@ -86,6 +86,15 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
+## Window glass
+
+Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
+Fade defaults to zero so the content column and text stay opaque. Native frost
+keeps its platform/appearance defaults. Explicitly saved settings take precedence;
+changing defaults must not overwrite a user's existing choices. The shared
+`apps/shared/src/translucency.ts` resolver owns these defaults for both the
+renderer and Electron's first window paint.
+
 ## Stroke & color tokens
 
 | Token | Use |
@@ -193,6 +202,28 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
+## Panel titlebars
+
+Top-edge panels extend into the native titlebar band. Their tab strips remain
+inside their own zones so tab drops, focus, and split boundaries use the same
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
+tabs and actions remain no-drag, with native-control space reserved from the
+existing traffic-light and Window Controls Overlay measurements.
+
+The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
+and the right-sidebar toggle sit on the right; haptics remain in settings.
+Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
+status dots after 400ms, without changing tab widths. Hints follow the same
+binding and hovered/focused-zone resolver as the number shortcuts.
+
+Sticky user messages mask scrolling content with the opaque chat surface,
+including the gap above them. Use `data-glass-opaque` so Glass cannot clear the
+mask; no gradient or backdrop blur.
+
 ## Feedback & empty/error/loading states
 
 - **Loading:** `Loader` (`src/components/ui/loader.tsx`) — animated math/ascii
@@ -236,6 +267,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip. File and preview links remain
+  visible at the bottom of the stack, below the queue and all status groups.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
@@ -266,6 +301,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Motion
 
+- Visible windows keep animating when another app takes focus. Hidden/minimized
+  windows and inactive panes may pause; background polling stays focus-gated.
+- Animated integer counts reuse `AnimatedInt` in `src/components/ui/diff-count.tsx`.
+  Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
@@ -301,6 +340,9 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

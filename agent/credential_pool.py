@@ -167,6 +167,8 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
     # Providers return 403 for both an edge throttle and a spending limit, so the
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
@@ -178,6 +180,7 @@ _EXTRA_KEYS = frozenset({
 _NOUS_EXTRA_STATE_KEYS = (
     "obtained_at", "expires_in", "agent_key_id",
     "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
 )
 
 # ``replace(entry, **_CLEAR_STATUS)`` returns an entry with no error state.

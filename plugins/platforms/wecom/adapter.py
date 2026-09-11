@@ -754,11 +754,12 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Reuse the live gateway adapter in-process, else connect ephemerally (WeCom allows ONE
-    WebSocket per bot — a second connection kicks the first)."""
+    WebSocket per bot — a second connection kicks the first). The live adapter is the ACTIVE
+    PROFILE's (``_live_adapter``): a bare ``runner.adapters`` hit is the default profile's bot under
+    multiplex, so a secondary profile's send would leave with the wrong identity."""
     try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-        adapter = runner.adapters.get(Platform.WECOM) if runner is not None else None
+        from tools.send_message_senders import _live_adapter
+        _, adapter = _live_adapter(Platform.WECOM)
     except Exception:
         adapter = None
     if adapter is not None:

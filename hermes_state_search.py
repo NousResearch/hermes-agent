@@ -135,6 +135,8 @@ def _search_filter_clauses(
     rewind/undo rows (active=0, compacted=0) are hidden."""
     if not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
+    # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
+    where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)
@@ -528,7 +530,13 @@ class SessionSearchMixin:
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
+                    # messages_fts_cjk* is an independent v23+ index, not part of the
+                    # demoted legacy layout: fts5's xRename renames the entire shadow
+                    # family in one step, so sweeping the cjk vtable here aborts the
+                    # loop on the next cjk shadow entry and drags _config — needed by
+                    # the vtable constructor — into the trash family (#103647).
+                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before
@@ -730,7 +738,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"
@@ -1182,7 +1192,11 @@ class SessionSearchMixin:
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 segments into one per index (``'optimize'``). Pure
         maintenance: changes neither results nor ``snippet()`` output, only layout and
-        speed; VACUUM then returns the freed pages. Returns the number optimized."""
+        speed; VACUUM then returns the freed pages. Returns the number optimized. A quarantined
+        handle never issues ``'optimize'``: it rewrites index segments in place and would compound
+        structural damage (or a split WAL generation) instead of leaving it diagnosable."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
             for tbl in self._present_fts_tables():
@@ -1202,7 +1216,8 @@ class SessionSearchMixin:
 
         Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
         rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely. See #50502.
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
         A full structural rebuild must never run concurrently in two processes sharing one state.db — that
         interleaving has structurally corrupted the database in production (PR #93200) — so this admits
         through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
@@ -1211,6 +1226,8 @@ class SessionSearchMixin:
         path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
         and at next startup.
         """
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:

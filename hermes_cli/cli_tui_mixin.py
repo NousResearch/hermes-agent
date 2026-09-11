@@ -688,6 +688,30 @@ class CLITuiMixin:
     def _get_sudo_display_fragments(self):
         if not self._sudo_state:
             return []
+        if code := self._sudo_state.get("vault_code"):
+            return self._render_sudo_style_panel(
+                f'🔐 Verification code for {code["site"]}',
+                [f'{code["site"]} is asking for a one-time code (text message, email or authenticator app).',
+                 'Type the code and press Enter; Hermes enters it into the page for you.',
+                 'Enter on an empty line skips. The model never sees the code.'])
+        if save := self._sudo_state.get("vault_save"):
+            if save["step"] == "identifier":
+                return self._render_sudo_style_panel(
+                    f'🔐 Save login for {save["site"]}',
+                    ['The agent reached a sign-in page with no saved login for this site.',
+                     'Type the email / username you sign in with (shown), then Enter.',
+                     'Enter on an empty line skips. Nothing here is shown to the model.'])
+            return self._render_sudo_style_panel(
+                f'🔐 Save login for {save["site"]}',
+                ['Now the password (hidden). It is encrypted on this machine, bound to',
+                 f'{save["origin"]}, and filled into the page without the model ever seeing it.',
+                 'Enter on an empty line skips.'])
+        if backend := self._sudo_state.get("vault_backend"):
+            return self._render_sudo_style_panel(
+                f'🔐 Unlock {backend}',
+                [f'The agent wants to sign into a site with a login saved in {backend}.',
+                 'Type your master password (hidden) to unlock it for this session.',
+                 'Enter on an empty line keeps it locked. The model never sees the password.'])
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 
@@ -713,6 +737,9 @@ class CLITuiMixin:
     def _tui_hint_text(self):
         for state_attr, deadline_attr, hint in self._TUI_MODAL_HINTS:
             if getattr(self, state_attr):
+                if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
+                                                    or self._sudo_state.get("vault_code")):
+                    hint = '  shown as you type · Enter to continue'
                 remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
                 return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
         if self._clarify_state:
@@ -743,6 +770,10 @@ class CLITuiMixin:
         if self._voice_processing:
             return "transcribing..."
         if self._sudo_state:
+            if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
+                return "type your email / username, Enter to continue · ESC to skip"
+            if self._sudo_state.get("vault_code"):
+                return "type the code, Enter to submit · ESC to skip"
             return "type password (hidden), Enter to submit · ESC to skip"
         if self._secret_state:
             return "type secret (hidden), Enter to submit · ESC to skip"
@@ -2148,7 +2179,10 @@ class CLITuiMixin:
         # Mask input with '*' while a sudo/secret prompt is active.
         input_area.control.input_processors.append(ConditionalProcessor(
             PasswordProcessor(),
-            filter=Condition(lambda: bool(cli_ref._sudo_state) or bool(cli_ref._secret_state))))
+            filter=Condition(lambda: (bool(cli_ref._sudo_state)
+                                      and (cli_ref._sudo_state.get("vault_save") or {}).get("step") != "identifier"
+                                      and not cli_ref._sudo_state.get("vault_code"))
+                             or bool(cli_ref._secret_state))))
 
         class _PlaceholderProcessor(Processor):
             """Render grayed-out placeholder text inside the input when empty."""

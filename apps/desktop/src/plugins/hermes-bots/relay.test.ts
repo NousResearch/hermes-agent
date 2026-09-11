@@ -335,9 +335,9 @@ describe('relay-route socket retention (#93594)', () => {
     expect(pins.filter(pin => pin.released)).toHaveLength(releasedCount)
   })
 
-  it('unpins everything when the peer set drops below two connections', async () => {
-    // Retention follows the relay-ELIGIBLE set: with nothing to relay,
-    // nothing stays pinned.
+  it('keeps retention for the remaining connection when routes drop to one', async () => {
+    // Same-connection relay still needs one pinned socket, so only removed
+    // connections are released.
     const pins = trackRetention()
 
     respondWith(() => ({ envelopes: [] }))
@@ -351,7 +351,10 @@ describe('relay-route socket retention (#93594)', () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
     await pushAndSettle()
 
-    expect(pins.every(pin => pin.released)).toBe(true)
+    expect(pins[0].route.connectionId).toBe('a')
+    expect(pins[1].route.connectionId).toBe('b')
+    expect(pins[0].released).toBe(false)
+    expect(pins[1].released).toBe(true)
 
     stopBotRelay()
   })
@@ -370,8 +373,8 @@ describe('relay-route socket retention (#93594)', () => {
   })
 })
 
-describe('the roster loop pushes the OTHER connections’ agents', () => {
-  it('gives each gateway a union roster that excludes its own agents', async () => {
+describe('the roster loop pushes the full union + self marker', () => {
+  it('gives each gateway the full union and its own self_connection_id', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
         return { profiles: [{ name: call.connectionId === 'a' ? 'default' : 'ops' }] }
@@ -388,13 +391,21 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
 
     expect(syncs.map(call => call.connectionId)).toEqual(['a', 'b'])
-    expect(syncs[0].params.agents).toEqual([
-      expect.objectContaining({ connection_id: 'b', handle: 'ops', profile: 'ops' })
-    ])
-    // The primary profile is published by its callable alias, never "default".
-    expect(syncs[1].params.agents).toEqual([
-      expect.objectContaining({ connection_id: 'a', handle: 'hermes', profile: 'default' })
-    ])
+    expect(syncs[0].params.self_connection_id).toBe('a')
+    expect(syncs[1].params.self_connection_id).toBe('b')
+    // full union includes both rows on both connections
+    expect(syncs[0].params.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connection_id: 'a', handle: 'hermes', profile: 'default' }),
+        expect.objectContaining({ connection_id: 'b', handle: 'ops', profile: 'ops' })
+      ])
+    )
+    expect(syncs[1].params.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connection_id: 'a', handle: 'hermes', profile: 'default' }),
+        expect.objectContaining({ connection_id: 'b', handle: 'ops', profile: 'ops' })
+      ])
+    )
 
     stopBotRelay()
   })
@@ -429,7 +440,12 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
     const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
 
-    expect(pushedToA?.params.agents).toEqual([expect.objectContaining({ profile: 'ops' })])
+    expect(pushedToA?.params.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connection_id: 'a', profile: 'default' }),
+        expect.objectContaining({ connection_id: 'b', profile: 'ops' })
+      ])
+    )
 
     stopBotRelay()
   })
@@ -451,21 +467,34 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
     const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
 
-    expect(pushedToA?.params.agents).toEqual([expect.objectContaining({ profile: 'c' })])
+    expect(pushedToA?.params.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connection_id: 'a', profile: 'a' }),
+        expect.objectContaining({ connection_id: 'c', profile: 'c' })
+      ])
+    )
 
     stopBotRelay()
   })
 
-  it('stays quiet with a single connection — there is no peer to relay to', async () => {
+  it('still syncs a single connection so same-connection relay can engage', async () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
 
-    const calls = respondWith(() => ({}))
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : {}
+    )
     const { startBotRelay, stopBotRelay } = await loadRelay()
 
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(calls).toHaveLength(0)
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+    expect(syncs).toHaveLength(1)
+    expect(syncs[0].connectionId).toBe('a')
+    expect(syncs[0].params.self_connection_id).toBe('a')
+    expect(syncs[0].params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'a', handle: 'hermes', profile: 'default' })
+    ])
 
     stopBotRelay()
   })

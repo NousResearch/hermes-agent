@@ -3,6 +3,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
@@ -547,25 +549,39 @@ def test_bot_self_messages_are_ignored_in_dm_and_group():
     assert adapter._should_process_message(self_group) is False
 
 
-def test_channel_posts_run_the_same_allowlist_gate_as_groups():
-    """Broadcast-channel posts must honour ``allowed_chats`` like groups do.
+@pytest.mark.parametrize("chat_type", ["group", "supergroup", "channel"])
+@pytest.mark.parametrize("guest_mode", [False, True])
+def test_guest_mentions_only_bypass_chat_allowlist_for_groups(chat_type, guest_mode):
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], guest_mode=guest_mode)
+    message = _channel_message("hi @hermes_bot", chat_id=-200) if chat_type == "channel" else _group_message(
+        "hi @hermes_bot", chat_id=-200)
+    message.chat.type = chat_type
+    message.entities = [_mention_entity(message.text)]
 
-    A bot that is admin in a Telegram channel receives posts via
-    ``update.channel_post``. Those must run the same routing gates as group
-    messages: dropped when the channel is outside ``allowed_chats``, allowed
-    when inside. Previously ``_is_group_chat`` excluded ``"channel"``, so a
-    channel post hit the DM early-return in ``_should_process_message`` and was
-    processed unconditionally — bypassing ``allowed_chats``, ``require_mention``
-    and ``free_response_chats`` — which let the agent auto-reply in a broadcast
-    channel it was never authorized to speak in.
-    """
-    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"])
+    # Guest access belongs to groups, never broadcast channels.
+    assert adapter._should_process_message(message) is (guest_mode and chat_type != "channel")
+    message.chat.id = -100
+    assert adapter._should_process_message(message) is True
+    message.text, message.entities = "ordinary post", []
+    assert adapter._should_process_message(message) is False
+    adapter.config.extra["require_mention"] = False
+    assert adapter._should_process_message(message) is True
+    message.chat.id = -200
+    assert adapter._should_process_message(message) is False
 
-    # Channel outside the allowlist → dropped (was wrongly processed before).
-    assert adapter._should_process_message(_channel_message("post", chat_id=-1001724887056)) is False
-    # Channel inside the allowlist → processed: the gate runs, channels are not
-    # blanket-dropped, just subject to the same allowlist as groups.
-    assert adapter._should_process_message(_channel_message("hello", chat_id=-100)) is True
+    if chat_type != "channel":
+        message.text = "hi @hermes_bot"
+        message.entities = [_mention_entity(message.text)]
+        message.chat.is_forum = True
+        message.is_topic_message = True
+        message.message_thread_id = 8
+        adapter.config.extra["allowed_topics"] = ["8"]
+        assert adapter._should_process_message(message) is guest_mode
+        message.message_thread_id = 9
+        assert adapter._should_process_message(message) is False
+        message.message_thread_id = 8
+        adapter.config.extra["ignored_threads"] = [8]
+        assert adapter._should_process_message(message) is False
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):

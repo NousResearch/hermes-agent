@@ -837,6 +837,26 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('preserves trailing text when slash.exec returns a slash-prefixed image alias', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            Promise.resolve(method === 'slash.exec' ? { type: 'alias', target: '/image latest.png' } : {})
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/capture describe this image')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.composer.attachImagePath).toHaveBeenCalledWith('latest.png describe this image')
+    })
+  })
+
   it('resolves unique local aliases through the catalog', () => {
     const ctx = buildCtx({
       local: {
@@ -1150,6 +1170,8 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
 })
 
 const buildComposer = () => ({
+  attachClipboardImage: vi.fn(),
+  attachImagePath: vi.fn(),
   enqueue: vi.fn(),
   hasSelection: false,
   openEditor: vi.fn(async () => {}),

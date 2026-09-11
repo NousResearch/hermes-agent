@@ -525,6 +525,31 @@ def _bundle_key_for(name: str):
         return None
 
 
+def _native_quick_alias(raw: str, base: str):
+    """Configured name of the ``quick_commands`` alias ``raw`` (case-insensitive fallback on ``base``)
+    when its target is a registry command; None otherwise / on failure. Built-ins win without a config
+    read; aliases onto skills, other quick commands or unknown targets stay with the slash worker."""
+    try:
+        resolve_command = _tools_mod("hermes_cli.commands").resolve_command
+        if not base or resolve_command(base) is not None:
+            return None
+        quick_commands = _load_cfg().get("quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            return None
+        name, qc = raw, quick_commands.get(raw)
+        if qc is None:
+            name, qc = next(
+                ((k, v) for k, v in sorted(quick_commands.items()) if isinstance(k, str) and k.lower() == base),
+                (raw, None))
+        if not isinstance(qc, dict) or qc.get("type") != "alias":
+            return None
+        target = qc.get("target", "")
+        target_parts = target.lstrip("/").split(maxsplit=1) if isinstance(target, str) else []
+        return name if target_parts and resolve_command(target_parts[0]) is not None else None
+    except Exception:
+        return None
+
+
 def _dispatch_bundle(rid, params, session, name, arg):
     bundle_key = _bundle_key_for(name)
     if bundle_key is None:
@@ -831,7 +856,8 @@ def _(rid, params: dict) -> dict:
     # Skill/bundle and _PENDING_INPUT_COMMANDS must NOT reach the slash worker. Plugin
     # commands also bypass it but return normal slash.exec output (TUI keeps the pager path).
     parts = cmd.lstrip("/").split(maxsplit=1)
-    base = (parts[0] if parts else "").lower()
+    raw = parts[0] if parts else ""
+    base = raw.lower()
     arg = parts[1] if len(parts) > 1 else ""
     commands = _tools_mod("hermes_cli.commands")
     command = commands.resolve_command(base)
@@ -839,6 +865,10 @@ def _(rid, params: dict) -> dict:
         if command is not None and not commands.command_available(command):
             return _err(rid, 4030, f"command unavailable: /{base}")
     sid = params.get("session_id", "")
+    # A quick alias onto a registry command belongs to the TUI's native handler (command.dispatch
+    # returns the alias directive); aliases to skills/quick/unknown targets keep the worker path.
+    if (alias := _native_quick_alias(raw, base)) is not None:
+        return _methods["command.dispatch"](rid, {"name": alias, "arg": arg, "session_id": sid})
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

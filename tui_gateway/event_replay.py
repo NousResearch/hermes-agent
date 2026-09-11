@@ -5,9 +5,9 @@ Every event frame through :func:`server.write_json` (hence ``_emit``) gets a per
 with its last seen seq and gets everything newer. Invariants: stdio TUI unaffected (``seq`` only on
 event frames; Ink ignores unknown keys); one lock guards counters + buffers, and write_json already
 serializes per-transport writes so stamping cannot reorder frames; memory bound =
-_REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX serialized bytes per session,
-_REPLAY_PROCESS_BYTES_MAX bytes across at most _REPLAY_SESSIONS_MAX sessions, oldest evicted
-FIFO. Evicted or never-retained (oversized) frames leave a truncation watermark so a
+_REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX frozen UTF-8 payload bytes per session,
+_REPLAY_PROCESS_BYTES_MAX frozen UTF-8 payload bytes across at most _REPLAY_SESSIONS_MAX sessions,
+oldest evicted FIFO. Evicted or never-retained (oversized) frames leave a truncation watermark so a
 reconnecting client refetches instead of trusting a replay with holes.
 """
 
@@ -28,13 +28,15 @@ _REPLAY_EPOCH = uuid.uuid4().hex
 _REPLAY_BUFFER_MAX = 512
 _REPLAY_SESSIONS_MAX = 64
 # A ring may legitimately hold many bounded 64 KiB tool results (512 of them ≈ 32 MiB per
-# session, ×64 sessions before any cap); bound the serialized bytes so replay memory cannot
-# scale with payload size without limit.
+# session, ×64 sessions before any cap); bound the frozen serialized payload so replay memory
+# cannot scale with mutable Python object graphs after admission.
 _REPLAY_BUFFER_BYTES_MAX = 4 * 1024 * 1024
 _REPLAY_PROCESS_BYTES_MAX = 64 * 1024 * 1024
 
 _replay_lock = threading.Lock()
-# sid -> deque of (seq, params dict, serialized bytes).
+# sid -> deque of (seq, frozen params JSON bytes without the server-owned seq, retained bytes).
+# Bytes detach the replay ring from the live event object: later caller mutation cannot grow or
+# rewrite an already-accounted cache entry.
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
 _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
@@ -47,8 +49,22 @@ def replay_epoch() -> str:
     return _REPLAY_EPOCH
 
 
+def _freeze_params(params: dict) -> bytes:
+    """Serialize one replay snapshot before the caller can mutate its object graph."""
+    return json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8", errors="surrogatepass"
+    )
+
+
+def _thaw_params(payload: bytes, seq: int) -> dict:
+    """Rebuild a client event object and restore the server-owned sequence number."""
+    event = json.loads(payload.decode("utf-8", errors="surrogatepass"))
+    event["seq"] = seq
+    return event
+
+
 def _stamp_event(obj: dict) -> None:
-    """Stamp one outgoing event frame (mutates obj in place) and record it."""
+    """Stamp one outgoing event frame (mutates obj in place) and record a frozen snapshot."""
     if obj.get("method") != "event":
         return
     params = obj.get("params")
@@ -58,10 +74,11 @@ def _stamp_event(obj: dict) -> None:
     if not sid:
         # Session-less global events (skin.changed etc.) are re-fetchable via their own RPCs.
         return
-    # Sizing stays OUTSIDE the lock (same rule as transport.write) so one large payload cannot
-    # stall other threads' frames; ``seq`` is not stamped yet, a few bytes off a MiB budget.
-    size = len(json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8", errors="surrogatepass"))
+    # Freeze OUTSIDE the lock (same rule as transport.write) so one large payload cannot stall
+    # other threads' frames. The server-owned seq is restored when replaying, so the snapshot can
+    # be serialized before sequence assignment without retaining the mutable params dict.
+    payload = _freeze_params(params)
+    size = len(payload)
     with _replay_lock:
         global _replay_total_bytes
         seq = _replay_next_seq.get(sid, 0) + 1
@@ -72,14 +89,14 @@ def _stamp_event(obj: dict) -> None:
             buf = _replay_buffers[sid] = deque()
             _replay_buffer_bytes[sid] = 0
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
-                oldest_sid, oldest_buf = _replay_buffers.popitem(last=False)
+                oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
                 _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
                 _replay_next_seq.pop(oldest_sid, None)
                 _replay_evicted_through.pop(oldest_sid, None)
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
-        buf.append((seq, params, size))
+        buf.append((seq, payload, size))
         _replay_buffer_bytes[sid] += size
         _replay_total_bytes += size
         while len(buf) > _REPLAY_BUFFER_MAX or _replay_buffer_bytes[sid] > _REPLAY_BUFFER_BYTES_MAX:
@@ -93,7 +110,9 @@ def _stamp_event(obj: dict) -> None:
                     evicted_seq, _event, evicted_size = evict_buf.popleft()
                     _replay_buffer_bytes[evict_sid] -= evicted_size
                     _replay_total_bytes -= evicted_size
-                    _replay_evicted_through[evict_sid] = max(_replay_evicted_through.get(evict_sid, 0), evicted_seq)
+                    _replay_evicted_through[evict_sid] = max(
+                        _replay_evicted_through.get(evict_sid, 0), evicted_seq
+                    )
                     break
 
 
@@ -101,11 +120,13 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
     """Recorded EVENT OBJECTS (each frame's ``params`` dict) with seq > last_seen for *sid*.
 
     Returning the full JSON-RPC envelope would make every replayed event fail the
-    client's ``event.type`` gate and be silently dropped.
+    client's ``event.type`` gate and be silently dropped. Decode after releasing the ring lock so a
+    large replay cannot block concurrent event stamping.
     """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        return [event for seq, event, _size in buf if seq > last_seen] if buf else []
+        snapshots = [(seq, payload) for seq, payload, _size in buf if seq > last_seen] if buf else []
+    return [_thaw_params(payload, seq) for seq, payload in snapshots]
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
@@ -141,4 +162,5 @@ def replay_stats() -> dict:
             "bytes": _replay_total_bytes,
             "max_per_session": _REPLAY_BUFFER_MAX,
             "max_bytes_per_session": _REPLAY_BUFFER_BYTES_MAX,
-            "max_bytes_process": _REPLAY_PROCESS_BYTES_MAX}
+            "max_bytes_process": _REPLAY_PROCESS_BYTES_MAX,
+        }

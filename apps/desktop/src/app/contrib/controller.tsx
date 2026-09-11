@@ -439,6 +439,8 @@ const DEFAULT_TREE = split(
 
 const FOCUS_TREE = split('row', [group(['sessions']), group(['workspace', 'files', 'review', 'terminal'])], [1, 4.6])
 
+const BASIC_TREE = split('row', [group(['sessions']), group(['workspace'])], [1, 4.6])
+
 const TERMINAL_TREE = split(
   'column',
   [
@@ -459,6 +461,7 @@ const QUAD_TREE = split(
 
 registry.registerMany([
   { id: 'default', area: 'layouts', title: 'Default', order: 0, data: DEFAULT_TREE },
+  { id: 'basic', area: 'layouts', title: 'Basic', order: 5, data: BASIC_TREE },
   { id: 'focus', area: 'layouts', title: 'Focus', order: 10, data: FOCUS_TREE },
   { id: 'terminal-deck', area: 'layouts', title: 'Terminal deck', order: 20, data: TERMINAL_TREE },
   { id: 'quad', area: 'layouts', title: 'Quad', order: 30, data: QUAD_TREE }

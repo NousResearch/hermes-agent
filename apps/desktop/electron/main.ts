@@ -416,6 +416,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
+import { growWindowBounds } from './window-growth'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
@@ -13731,6 +13732,25 @@ const introRevealController = createIntroRevealWindowController({
     mainWindow.focus()
   },
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
+})
+
+ipcMain.on('hermes:chat-onboarding:grow', (event, request) => {
+  if (!GUEST_ONBOARDING || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return
+  }
+
+  // Renderer CSS pixels become native DIP here, including the user's zoom.
+  const bounds = mainWindow.getBounds()
+
+  mainWindow.setBounds(
+    growWindowBounds(request, {
+      bounds,
+      frameWidth: bounds.width - mainWindow.getContentBounds().width,
+      workArea: screen.getDisplayMatching(bounds).workArea,
+      zoom: event.sender.getZoomFactor() || 1
+    }),
+    true
+  )
 })
 
 ipcMain.on('hermes:chat-onboarding:solo-boot', event => {

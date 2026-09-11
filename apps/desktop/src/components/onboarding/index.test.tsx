@@ -1,11 +1,13 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $introReveal, finishIntroReveal } from '@/store/intro-reveal'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { resetOnboardingPresenceForTests, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from '.'
+import { DesktopOnboardingOverlay, Picker } from '.'
 
 function setProviders(providers: OAuthProvider[]) {
   $desktopOnboarding.set({
@@ -26,6 +28,9 @@ const ctx: OnboardingContext = { requestGateway: async () => undefined as never 
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
+  resetOnboardingPresenceForTests()
+  $introReveal.set({ phase: 'hidden' })
 
   try {
     window.localStorage.clear()
@@ -120,4 +125,29 @@ describe('onboarding Picker', () => {
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
   })
+})
+
+
+it('keeps classic onboarding on flag-off, stands down for the story, and allows manual setup', () => {
+  vi.stubGlobal('hermesDesktop', {})
+  setProviders([makeOAuthProvider('nous', 'Nous Portal')])
+  $desktopOnboarding.set({ ...$desktopOnboarding.get(), configured: true, freeTierReady: true })
+  const requestGateway = vi.fn()
+  const overlay = () => <DesktopOnboardingOverlay enabled={false} profile="default" requestGateway={requestGateway} />
+  const view = render(overlay())
+  expect(view.container.childElementCount).toBeGreaterThan(0)
+
+  vi.stubGlobal('hermesDesktop', { guestOnboardingEnabled: true })
+  view.rerender(overlay())
+  expect(view.container.childElementCount).toBe(0)
+  act(() => $introReveal.set({ phase: 'playing' }))
+  expect(view.container.childElementCount).toBe(0)
+  act(() => {
+    finishIntroReveal()
+    setOnboardingSurfaceActive('solo-chat', true)
+  })
+  expect(view.container.childElementCount).toBe(0)
+  act(() => $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true }))
+  expect(screen.getByText('Nous Portal')).toBeTruthy()
+  expect(requestGateway).not.toHaveBeenCalled()
 })

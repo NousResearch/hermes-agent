@@ -21,8 +21,10 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
+import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -46,6 +48,7 @@ import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
@@ -153,6 +156,7 @@ import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
+import { useOnboardingHandoff } from './onboarding-handoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -173,6 +177,9 @@ const StarmapView = lazy(async () => ({ default: (await import('../starmap')).St
 // WiringActions/WiringApi contracts all live in sibling modules — this file is
 // the controller that assembles them.
 export { WiredPane } from './context'
+
+// Only the RPCs issued by session creation follow the handoff's profile pin.
+const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
 
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -304,7 +311,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The routing itself lives in createSessionRpcDispatcher (routed by the
   // session the RPC targets, owner ladder in resolveSessionRpcOwner) so the
   // exact production dispatcher is what the integration tests drive.
-  const requestGateway = useMemo(
+  const handoffCreateProfileRef = useRef<null | string>(null)
+
+  const dispatchSessionRpc = useMemo(
     () =>
       createSessionRpcDispatcher({
         ambientRequest: ambientRequestGateway,
@@ -313,6 +322,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         sessionStateByRuntimeIdRef
       }),
     [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
+  )
+
+  const requestGateway = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+      // The selected guide owns existing-session traffic, but not the new build.
+      const handoffProfile = handoffCreateProfileRef.current
+
+      if (handoffProfile !== null && HANDOFF_CREATE_LEG_METHODS.has(method)) {
+        return requestGatewayForProfile<T>(handoffProfile, method, params ?? {}, timeoutMs, signal)
+      }
+
+      return dispatchSessionRpc<T>(method, params, timeoutMs, signal)
+    },
+    [dispatchSessionRpc]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
@@ -601,6 +624,26 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       requestComposerInsert(startWorkSessionRequest.draft, { target: 'main' })
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
+
+  const runCreatePinnedTo = useCallback(async <T,>(profile: string, create: () => Promise<T>): Promise<T> => {
+    handoffCreateProfileRef.current = profile
+
+    try {
+      return await create()
+    } finally {
+      handoffCreateProfileRef.current = null
+    }
+  }, [])
+
+  const kickoffFirstChat = useOnboardingHandoff({
+    activeSessionIdRef,
+    ensureSessionState,
+    updateSessionState,
+    createBackendSessionForSend,
+    requestGateway,
+    resumeSession,
+    runCreatePinnedTo
+  })
 
   // "New project" DRAG completion: the dialog created a project that was
   // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
@@ -1183,6 +1226,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
+      {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
+      {!isAuxiliaryWindow() && (
+        <OnboardingChatGate
+          enabled={gatewayState === 'open'}
+          onKickoff={kickoffFirstChat}
+          requestGateway={ambientRequestGateway}
+        />
+      )}
       {!isAuxiliaryWindow() && (
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}

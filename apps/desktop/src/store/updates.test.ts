@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
+import { setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 
 const storage = new Map<string, string>()
 
@@ -145,6 +146,15 @@ describe('maybeNotifyUpdateAvailable', () => {
     maybeNotifyUpdateAvailable(status())
     expect(notifySpy).toHaveBeenCalledTimes(1)
     expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ icon: 'gift' })
+  })
+
+  it('defers update prompts until the onboarding surface closes', () => {
+    setOnboardingSurfaceActive('solo-chat', true)
+    maybeNotifyUpdateAvailable(status())
+    expect(notifySpy).not.toHaveBeenCalled()
+    setOnboardingSurfaceActive('solo-chat', false)
+    maybeNotifyUpdateAvailable(status())
+    expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
   it('stays quiet for new commits once the toast was closed', () => {

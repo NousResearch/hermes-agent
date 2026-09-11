@@ -9,6 +9,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { $handoffError, retrySetupHandoff } from '@/app/contrib/handoff-receipt'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
 import {
@@ -18,6 +19,7 @@ import {
   parseHandoffPlan,
   requestSetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 /** A tappable option is the user's own reply, so it goes out VISIBLE — the
@@ -94,6 +96,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
+  const error = useStore($handoffError)
 
   useEffect(() => {
     if (task && brief && !locked) {
@@ -114,11 +117,16 @@ export function HandoffCard({ attrs, locked }: CardProps) {
       <StatusDot live={!settled && !failed} />
       <span className="text-(--ui-text-secondary)">
         {failed
-          ? 'The first build could not be started.'
+          ? (error ?? 'The first build could not be started. Retry to check its session.')
           : settled
             ? `${title} was started — find it in your sessions`
             : `Opening ${title}\u2026`}
       </span>
+      {failed && (
+        <Button disabled={locked} onClick={retrySetupHandoff} size="sm" variant="text">
+          Retry first build
+        </Button>
+      )}
     </div>
   )
 }

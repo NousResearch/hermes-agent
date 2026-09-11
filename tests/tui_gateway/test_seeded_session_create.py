@@ -1,5 +1,7 @@
 """session.create with seeded messages: the seed is durable before the first prompt, and durable once."""
 
+from pathlib import Path
+
 from hermes_state import SessionDB
 from tui_gateway import server
 
@@ -111,6 +113,39 @@ def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
         assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None
         assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hi", "hello"]
         assert server._sessions[sid]["pending_title"] == "Welcome"  # still queued: the turn applies it, as for any lazy row
+    finally:
+        if sid:
+            server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_named_profile_seed_is_durable_only_in_its_own_home(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    guide = home / "profiles" / "hermes-setup"
+    guide.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = SessionDB(home / "state.db")
+    _quiet_create(monkeypatch, db)
+    sid = None
+    try:
+        result = _create({
+            "source": "desktop", "profile": "hermes-setup", "title": "Welcome to Hermes",
+            "messages": [
+                {"role": "user", "content": "Private setup runbook", "display_kind": "hidden"},
+                {"role": "assistant", "content": "Welcome to Hermes"},
+            ],
+        })
+        sid, key = result["session_id"], result["stored_session_id"]
+        assert db.get_session(key) is None
+        cold_db = SessionDB(guide / "state.db")
+        try:
+            rows = cold_db.get_messages_as_conversation(key)
+            assert [row["content"] for row in rows] == ["Private setup runbook", "Welcome to Hermes"]
+            assert rows[0]["display_kind"] == "hidden"
+            assert [row["role"] for row in result["messages"]] == ["assistant"]
+        finally:
+            cold_db.close()
     finally:
         if sid:
             server._sessions.pop(sid, None)

@@ -205,6 +205,42 @@ def _console_print(text: str) -> None:
         print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 
+_WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS = 600
+
+
+def _web_build_idle_timeout_seconds() -> int:
+    """Idle-output timeout for the web build's streamed subprocesses.
+
+    ``npm run build -w web`` runs ``tsc -b && vite build``; the incremental
+    TypeScript compiler emits nothing on stdout/stderr until the whole project
+    finishes type-checking, which on slower or memory-constrained hosts (WSL2,
+    LXCs, small VMs) can take several minutes in silence. The generic default
+    of 180s in ``_run_with_idle_timeout`` was tuned for interactively-watched
+    update runs (#33788) and kills such legitimate builds mid-``tsc``, leaving
+    the dashboard permanently stale after every ``hermes update``.
+
+    Default 600s gives a cold incremental build comfortable headroom; build
+    output beyond that silence window is very unlikely to be alive. Override
+    with ``HERMES_WEB_BUILD_IDLE_TIMEOUT`` (seconds, positive); junk values
+    fall back to the default with a warning.
+    """
+    raw = os.getenv("HERMES_WEB_BUILD_IDLE_TIMEOUT", "").strip()
+    if not raw:
+        return _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS
+    try:
+        value = int(raw)
+        if value < 1:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_WEB_BUILD_IDLE_TIMEOUT=%r; using default %s",
+            raw,
+            _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        )
+        return _WEB_BUILD_IDLE_TIMEOUT_DEFAULT_SECONDS
+
+
 def _run_with_idle_timeout(
     cmd: list[str], cwd: Path, *, idle_timeout_seconds: int = 180, indent: str = "    ",
     env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -498,8 +534,12 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
     def _build() -> subprocess.CompletedProcess:
         # Streamed + idle-killed (never capture_output on a long Vite build: it
-        # looks identical to a hang and users reboot mid-install).
-        return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        # looks identical to a hang and users reboot mid-install). The web build
+        # gets a longer idle window than the helper's generic 180s: `tsc -b` is
+        # silent for minutes on cold/slow hosts and was killed mid-typecheck.
+        return _run_with_idle_timeout(
+            [npm, "run", "build"], cwd=web_dir, env=build_env,
+            idle_timeout_seconds=_web_build_idle_timeout_seconds())
 
     r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:

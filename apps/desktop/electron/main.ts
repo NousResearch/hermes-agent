@@ -54,7 +54,12 @@ import {
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import {
+  buildDesktopBackendEnv,
+  buildDesktopBackendPath,
+  hermesManagedNodePathEntries,
+  normalizeHermesHomeRoot
+} from './backend-env'
 import {
   isReauthRequiredError,
   makeNousCloudBackendDownError,
@@ -2504,7 +2509,12 @@ function findOnPath(command) {
     return command
   }
 
-  const pathEntries = String(process.env.PATH || '')
+  const pathEntries = buildDesktopBackendPath({
+    hermesHome: HERMES_HOME,
+    venvRoot: VENV_ROOT,
+    currentPath: process.env.PATH || '',
+    platform: process.platform
+  })
     .split(path.delimiter)
     .filter(Boolean)
 

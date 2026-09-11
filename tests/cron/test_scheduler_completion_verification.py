@@ -143,6 +143,27 @@ def test_run_with_final_assistant_reply_books_complete(monkeypatch, tmp_path):
     assert reasons == ["cron_complete"]
 
 
+def test_guardrail_halt_is_a_failed_cron_run():
+    """A synthesized hard-stop message is a failure notice, not successful job output."""
+    result = {
+        "completed": True,
+        "failed": False,
+        "final_response": "I stopped retrying patch after repeated failures.",
+        "turn_exit_reason": "guardrail_halt",
+        "guardrail": {
+            "action": "halt",
+            "code": "same_tool_failure_halt",
+            "tool_name": "patch",
+            "count": 8,
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="stopped retrying patch"):
+        cron_scheduler._final_response_from_result(
+            result, "guardrail-job", "Guardrail job", _FakeCronAgent
+        )
+
+
 def test_classification_probe_failure_keeps_historical_reason(monkeypatch, tmp_path):
     """Best-effort metadata: a failing classifier must not mislabel a run."""
     _RecordingSessionDB.next_lifecycle = RuntimeError("db busy")

@@ -5045,16 +5045,26 @@ class SlackAdapter(BasePlatformAdapter):
         """Clarify prompt as Block Kit buttons: one ``hermes_clarify_choice_<idx>`` per option
         (value ``clarify_id|idx``) plus "✏️ Other…" (``hermes_clarify_other``), which flips the
         entry into text-capture mode for the gateway's text-intercept. No choices → base impl."""
+        recipient_user_id = str((metadata or {}).get("recipient_user_id") or "").strip()
+        mention = (
+            f"<@{recipient_user_id}> "
+            if not str(chat_id).startswith("D")
+            and re.fullmatch(r"[UW][A-Z0-9]+", recipient_user_id)
+            else ""
+        )
         if not choices:
             return await super().send_clarify(
-                chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id,
+                chat_id=chat_id, question=f"{mention}{question}", choices=choices, clarify_id=clarify_id,
                 session_key=session_key, metadata=metadata)
 
         def _build() -> Tuple[str, list]:
             # Escape mrkdwn control chars so the question renders literally;
             # budget against the 3000-char section cap.
             q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            body = f"❓ {q}"
+            # The explicit requester mention is part of both the Block Kit body and
+            # Slack's notification/accessibility fallback. A silent thread card can
+            # otherwise sit unnoticed until Hermes reports that it timed out.
+            body = f"{mention}❓ {q}"
             budget = 3000 - len("...")
             if len(body) > budget:
                 body = body[:budget] + "..."

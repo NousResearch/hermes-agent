@@ -1263,10 +1263,20 @@ class TurnRunner:
                 flush(timeout=3.0)
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
+        clarify_metadata = dict(ctx._status_thread_metadata or {})
+        if ctx.source.platform == Platform.SLACK:
+            # Slack thread replies do not reliably trigger a push notification for the
+            # requester. Carry the turn owner so Slack's clarify card can explicitly
+            # mention them without guessing from thread history.
+            if ctx.source.user_id:
+                clarify_metadata.setdefault("recipient_user_id", str(ctx.source.user_id))
+            if ctx.source.scope_id:
+                clarify_metadata.setdefault("recipient_team_id", str(ctx.source.scope_id))
+                clarify_metadata.setdefault("slack_team_id", str(ctx.source.scope_id))
         fut = self._schedule(
             ctx._status_adapter.send_clarify(
                 chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-                session_key=session_key, metadata=ctx._status_thread_metadata,
+                session_key=session_key, metadata=clarify_metadata,
             ),
             "Clarify send failed to schedule",
         )

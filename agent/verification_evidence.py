@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -17,6 +18,12 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
+
+from agent.verification_lock import (
+    LockTimeout,
+    LockUnavailable,
+    coordinated_lock,
+)
 
 
 _DB_LOCK = threading.Lock()
@@ -147,13 +154,22 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM file descriptors — on
     every call, deferring the close to the garbage collector, which over a long-running process can exhaust
     ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was #69567 / PR #69594).
+
+    Cross-process lock ordering (frozen by PR74986 WAL2B): the profile-scoped
+    cooperative lock is acquired BEFORE ``_connect`` opens the SQLite source
+    (which can create/touch the WAL/SHM sidecars) and held through
+    ``conn.close()`` (after which the WAL checkpoint lifecycle finishes).
+    The thread-local ``_DB_LOCK`` is acquired INSIDE the cross-process lock
+    window so the SQLite-touching region is serialized both within and
+    across processes.
     """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    with coordinated_lock("writer"):
+        conn = _connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -590,3 +606,246 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
     evidence = dict(event)
     stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
     return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}
+
+
+# ---------------------------------------------------------------------------
+# Strict read-only snapshot accessor (PR74986 strict-A contract)
+# ---------------------------------------------------------------------------
+
+_REQUIRED_READONLY_TABLES = frozenset({"verification_state", "verification_events"})
+_REQUIRED_READONLY_COLUMNS_STATE = frozenset(
+    {"session_id", "root", "last_event_id", "last_edit_at", "changed_paths_json"}
+)
+_REQUIRED_READONLY_COLUMNS_EVENTS = frozenset(
+    {
+        "id",
+        "created_at",
+        "session_id",
+        "cwd",
+        "root",
+        "command",
+        "canonical_command",
+        "kind",
+        "scope",
+        "status",
+        "exit_code",
+        "output_summary",
+    }
+)
+
+
+def _unverified_strict(*, session_id: str, root: str) -> dict[str, Any]:
+    return {
+        "status": "unverified",
+        "evidence": None,
+        "root": root,
+        "session_id": session_id,
+        "changed_paths": [],
+    }
+
+
+def _readonly_status_from_snapshot(
+    *,
+    snapshot_dir: Path,
+    session_id: str,
+    root: str,
+) -> dict[str, Any]:
+    """Query a disposable copy of the ledger and return the status payload.
+
+    Only the snapshot directory is opened via SQLite; the source ledger
+    family is never touched.
+    """
+    snap_db = snapshot_dir / "verification_evidence.db"
+    try:
+        conn = sqlite3.connect(snap_db)
+    except sqlite3.DatabaseError:
+        return _unverified_strict(session_id=session_id, root=root)
+    try:
+        conn.row_factory = sqlite3.Row
+        # Schema completeness check — any missing required table or column
+        # yields unverified without raising.
+        try:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        except sqlite3.Error:
+            return _unverified_strict(session_id=session_id, root=root)
+        if not _REQUIRED_READONLY_TABLES.issubset(tables):
+            return _unverified_strict(session_id=session_id, root=root)
+        try:
+            state_cols = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(verification_state)"
+                ).fetchall()
+            }
+            event_cols = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(verification_events)"
+                ).fetchall()
+            }
+        except sqlite3.Error:
+            return _unverified_strict(session_id=session_id, root=root)
+        if not _REQUIRED_READONLY_COLUMNS_STATE.issubset(state_cols):
+            return _unverified_strict(session_id=session_id, root=root)
+        if not _REQUIRED_READONLY_COLUMNS_EVENTS.issubset(event_cols):
+            return _unverified_strict(session_id=session_id, root=root)
+        try:
+            state = conn.execute(
+                "SELECT last_event_id, last_edit_at, changed_paths_json"
+                " FROM verification_state WHERE session_id = ? AND root = ?",
+                (session_id, root),
+            ).fetchone()
+        except sqlite3.Error:
+            return _unverified_strict(session_id=session_id, root=root)
+        if state is None:
+            return _unverified_strict(session_id=session_id, root=root)
+        event = None
+        if state["last_event_id"] is not None:
+            try:
+                event = conn.execute(
+                    "SELECT * FROM verification_events WHERE id = ?",
+                    (state["last_event_id"],),
+                ).fetchone()
+            except sqlite3.Error:
+                return _unverified_strict(session_id=session_id, root=root)
+        if event is None:
+            return {
+                "status": "unverified",
+                "evidence": None,
+                "root": root,
+                "session_id": session_id,
+                "changed_paths": _load_changed_paths(state["changed_paths_json"]),
+            }
+        evidence = dict(event)
+        stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
+        return {
+            "status": "stale" if stale else evidence["status"],
+            "evidence": evidence,
+            "root": root,
+            "session_id": session_id,
+            "changed_paths": _load_changed_paths(state["changed_paths_json"]),
+        }
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+def _raw_snapshot_copy(
+    *,
+    source_db: Path,
+    snapshot_dir: Path,
+) -> None:
+    """Copy the ledger-family files that exist into the snapshot dir.
+
+    Never invokes SQLite on the source. The snapshot dir is local to
+    the OS temp area (caller's responsibility to clean up).
+    """
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    # Always copy the main db (caller guarantees it exists).
+    with open(source_db, "rb") as src, open(
+        snapshot_dir / source_db.name, "wb"
+    ) as dst:
+        shutil.copyfileobj(src, dst)
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(source_db) + suffix)
+        if sidecar.is_file():
+            with open(sidecar, "rb") as src, open(
+                snapshot_dir / sidecar.name, "wb"
+            ) as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _cleanup_snapshot(snapshot_dir: Path) -> None:
+    """Best-effort cleanup of the disposable snapshot directory."""
+    try:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def verification_status_readonly(
+    *,
+    session_id: str,
+    root: str,
+    db_path: str | Path,
+) -> dict[str, Any]:
+    """Return verification state without touching the source ledger.
+
+    Implements the strict-A contract frozen by PR74986:
+
+      - ``sqlite3.connect`` is NEVER called on the source path.
+      - The cooperative cross-process lock is acquired only if the
+        writer has already initialized the lockfile. If the lockfile
+        is absent, the accessor fails closed through the existing
+        envelope (``status='unknown'`` semantics) without falling
+        back to any unlocked read.
+      - Source ledger-family bytes are never read via SQLite; a raw
+        file copy is used instead.
+      - No filesystem artifact is created by the reader.
+    """
+    sid = str(session_id)
+    root_str = str(root)
+    source_db = Path(db_path)
+    if not source_db.is_file():
+        return _unverified_strict(session_id=sid, root=root_str)
+
+    snapshot_dir = Path(tempfile.mkdtemp(prefix="verification_strict_snapshot_"))
+    try:
+        try:
+            with coordinated_lock("reader"):
+                _raw_snapshot_copy(source_db=source_db, snapshot_dir=snapshot_dir)
+        except LockUnavailable:
+            # Writer has not yet initialized coordination on this profile.
+            # Fail closed: do not fall back to any source-SQLite open.
+            return {
+                "status": "unknown",
+                "evidence": None,
+                "root": root_str,
+                "session_id": sid,
+                "changed_paths": [],
+            }
+        except LockTimeout:
+            return {
+                "status": "unknown",
+                "evidence": None,
+                "root": root_str,
+                "session_id": sid,
+                "changed_paths": [],
+            }
+
+        return _readonly_status_from_snapshot(
+            snapshot_dir=snapshot_dir,
+            session_id=sid,
+            root=root_str,
+        )
+    finally:
+        _cleanup_snapshot(snapshot_dir)
+
+
+def verification_status_readonly_for_cwd(
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+) -> dict[str, Any]:
+    """Strict read-only accessor entry point used by ``verification.status`` RPC.
+
+    The existing RPC envelope preserves ``session_id`` / ``session_key``,
+    default-session handling, project applicability, resolved project
+    root, ``not_applicable`` semantics, and the JSON-RPC envelope.
+    Unexpected handler failures continue to be mapped to the existing
+    ``unknown`` fallback by the RPC layer.
+    """
+    facts = _project_facts(cwd)
+    if not facts:
+        return {"status": "not_applicable", "evidence": None}
+
+    sid = str(session_id or "default")
+    root = _root_for(facts, cwd)
+    return verification_status_readonly(session_id=sid, root=root, db_path=_db_path())

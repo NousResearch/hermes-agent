@@ -60,7 +60,11 @@ class MCPServerRunMixin:
         if not self._native_config_managed or _config._native_mcp_server_enabled(self.name) is not False:
             return False
         logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
+        self._retired_from_config = True
         self._shutdown_event.set()
+        # A task can retire before its first transport starts. Complete start()'s
+        # handshake so discovery can treat that as an intentional no-op.
+        self._ready.set()
         self._fail_inflight_calls("config removal")
         self._deregister_tools()
         with _core._lock:
@@ -69,6 +73,8 @@ class MCPServerRunMixin:
                 _core._server_scope_keys.pop(self.name, None)
                 _core._server_tool_scopes.pop(self.name, None)
                 _core._server_connect_errors.pop(self.name, None)
+                _core._server_connect_failures.pop(self.name, None)
+                _core._server_connect_retry_after.pop(self.name, None)
                 _core._server_connecting.discard(self.name)
                 _core._parallel_safe_servers.discard(self.name)
         return True

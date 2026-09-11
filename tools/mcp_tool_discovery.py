@@ -132,6 +132,22 @@ def _adopt_server(name: str, server: _core.MCPServerTask) -> None:
         _core._server_scope_keys[name] = _core._mcp_registry_scope()
 
 
+def _discard_retired_candidate(name: str, server: _core.MCPServerTask) -> None:
+    """Drop pre-adoption state for a config-retired discovery candidate."""
+    with _core._lock:
+        owner = _core._servers.get(name)
+        if owner is not None and owner is not server:
+            return
+        if owner is server:
+            _core._servers.pop(name, None)
+        _core._server_scope_keys.pop(name, None)
+        _core._server_tool_scopes.pop(name, None)
+        _core._server_connecting.discard(name)
+        _core._server_connect_errors.pop(name, None)
+        _clear_connect_failure(name)
+        _core._parallel_safe_servers.discard(name)
+
+
 def _ensure_lazy_server_connected(server_name: str) -> bool:
     """Connect a lazily-registered server on demand (sync; blocks). Honours the cooldown and the
     ``_server_connecting`` dedup set; routes through ``_discover_and_register_server`` so
@@ -216,6 +232,10 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         raise
     finally:
         _core._connect_server_claim.reset(claim_token)
+    if server._retired_from_config:
+        await server.shutdown()
+        _discard_retired_candidate(name, server)
+        return []
     with _core._lock:
         _core._server_connecting.discard(name)
         _core._server_connect_errors.pop(name, None)

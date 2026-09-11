@@ -736,18 +736,17 @@ _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
     """Live phase notice ("⏳ loading <model> into memory — N%" / "⚙ processing
-    prompt — P%") while the managed local server works before the first token;
+    prompt — P%") while the watched local server (managed, else a detected
+    external router-mode llama-server) works before the first token;
     None when neither applies. Otherwise a cold load reads as a generic stall."""
     try:
         base = str(getattr(agent, "base_url", "") or "")
         if not base:
             return None
         from urllib.parse import urlparse
-        from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
-        from hermes_cli.local_runtime.supervisor import state_path
-        state = json.loads(state_path().read_text(encoding="utf-8"))
-        managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
-        if not managed or urlparse(base).netloc.lower() != managed:
+        from hermes_cli.local_runtime.load_progress import (
+            get_loading_progress, get_prefill_progress, watched_netloc)
+        if urlparse(base).netloc.lower() != watched_netloc():
             return None
         model = str(api_kwargs.get("model", ""))
         progress = get_loading_progress().get(model)

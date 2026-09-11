@@ -117,6 +117,27 @@ class TestSanitizeCommentText(unittest.TestCase):
         self.assertNotIn("&amp;gt;", result)
 
 
+def test_comment_agent_does_not_apply_direct_agent_timestamp_policy():
+    """Document-comment delivery is messaging gateway intake, not a native turn."""
+    from plugins.platforms.feishu.feishu_comment import _run_comment_agent
+
+    with (
+        patch(
+            "plugins.platforms.feishu.feishu_comment._resolve_model_and_runtime",
+            return_value=("test-model", {"api_key": "test-key"}),
+        ),
+        patch("run_agent.AIAgent") as agent_class,
+    ):
+        agent = agent_class.return_value
+        agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+
+        assert _run_comment_agent("comment question", Mock(), "doc-session") == "done"
+
+    agent.run_conversation.assert_called_once_with(
+        "comment question", conversation_history=None, message_timestamp_handling="disabled"
+    )
+
+
 class TestWikiReverseLookup(unittest.TestCase):
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)

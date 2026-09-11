@@ -519,7 +519,9 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
+def _merge_consecutive_users(
+    messages: List[Dict], *, agent: Any = None, current_user_msg: Optional[Dict] = None,
+) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import split_user_originated_turn
 
@@ -540,9 +542,21 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            prev["content"] = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
+            prev["content"] = _merge_user_content(prev_content, new_content)
+            if agent is not None and (prev is current_user_msg or msg is current_user_msg):
+                # The persist override must describe the same merged row as the wire,
+                # cleaning only this turn's part rather than erasing its neighbours.
+                override = getattr(agent, "_persist_user_message_override", None)
+                if isinstance(override, (str, list)):
+                    agent._persist_user_message_override = _merge_user_content(
+                        override if prev is current_user_msg else prev_content,
+                        override if msg is current_user_msg else new_content,
+                    )
+                if msg is current_user_msg:
+                    # The older row survives; do not relabel it with the absorbed turn's metadata.
+                    agent._persist_user_message_timestamp = None
+                    agent._persist_user_message_platform_id = None
+                current_user_msg = prev
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             repairs += 1
@@ -567,10 +581,20 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """
     if not messages:
         return 0
+    current_idx = getattr(agent, "_persist_user_message_idx", None)
+    current_user_msg = (
+        messages[current_idx]
+        if isinstance(current_idx, int) and 0 <= current_idx < len(messages) else None
+    )
+    if not isinstance(current_user_msg, dict) or current_user_msg.get("role") != "user":
+        current_user_msg = None
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
-        current, made = repair_pass(current)
+        if repair_pass is _merge_consecutive_users:
+            current, made = _merge_consecutive_users(current, agent=agent, current_user_msg=current_user_msg)
+        else:
+            current, made = repair_pass(current)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.

@@ -1,0 +1,7 @@
+{
+ "suites": [
+  "test_r6_ops",
+  "test_r7_integration"
+ ],
+ "result": "parity green inside 219/0; scratch-only policy unchanged"
+}

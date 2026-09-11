@@ -1,0 +1,35 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\wunwun\AppData\Local\Temp\hermes-r94
+configfile: pyproject.toml
+plugins: anyio-4.14.2
+collected 219 items
+
+tests\plugins\memory\test_holographic_store.py .............             [  5%]
+tests\plugins\memory\test_holographic_retrieval.py .............         [ 11%]
+tests\plugins\memory\test_holographic_auto_extract.py .............      [ 17%]
+tests\plugins\memory\test_holographic_shutdown_closes_db.py ...          [ 19%]
+tests\plugins\test_holographic_vector_storage.py ...........             [ 24%]
+tests\plugins\memory\test_r1_benchmark.py .......                        [ 27%]
+tests\plugins\memory\test_r1_semantic_brain.py ....................      [ 36%]
+tests\plugins\memory\test_r2_hardening.py ..............                 [ 42%]
+tests\plugins\memory\test_r3_storage.py .........                        [ 47%]
+tests\plugins\memory\test_r3_retrieval.py .......                        [ 50%]
+tests\plugins\memory\test_r3_semantic.py ..                              [ 51%]
+tests\plugins\memory\test_r3_quality.py .........                        [ 55%]
+tests\plugins\memory\test_r4_temporal.py ............................... [ 69%]
+                                                                         [ 69%]
+tests\plugins\memory\test_r4_paraphrase.py ...                           [ 70%]
+tests\plugins\memory\test_r4_thai.py .                                   [ 71%]
+tests\plugins\memory\test_r4_security.py .........                       [ 75%]
+tests\plugins\memory\test_r5_invariants.py .                             [ 75%]
+tests\plugins\memory\test_r5_fuzz.py .                                   [ 76%]
+tests\plugins\memory\test_r5_security.py .........                       [ 80%]
+tests\plugins\memory\test_r5_recovery.py .....                           [ 82%]
+tests\plugins\memory\test_r5_perf.py .....                               [ 84%]
+tests\plugins\memory\test_r5_longrun.py .                                [ 85%]
+tests\plugins\memory\test_r6_ops.py ........................             [ 96%]
+tests\plugins\memory\test_r7_integration.py ...                          [ 97%]
+tests\plugins\memory\test_r8_release.py .....                            [100%]
+
+======================= 219 passed in 132.47s (0:02:12) =======================

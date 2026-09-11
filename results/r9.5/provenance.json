@@ -1,0 +1,8 @@
+{
+ "rc1_sha": "1a1bb48f44e853c16303909a49b08d054de1c02e",
+ "rc1_tag": "v0.21.1-holographic-r1-r9-rc1 (unmoved)",
+ "integrated_sha": "15672997bfbc219a28964fa9a7ff480351af4e18",
+ "upstream_base": "dee30d12",
+ "method": "cherry-pick --no-commit (zero conflicts)",
+ "rc1_mutated": false
+}

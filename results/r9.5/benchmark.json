@@ -1,0 +1,9 @@
+{
+ "ref": "results/r9.4/performance_delta.json",
+ "delta_vs_rc1": {
+  "search": -5.2,
+  "health": 4.1,
+  "maint": 0.3
+ },
+ "verdict": "within noise"
+}

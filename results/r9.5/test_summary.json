@@ -1,0 +1,9 @@
+{
+ "suite": "25 files",
+ "passed": 219,
+ "failed": 0,
+ "skipped": 0,
+ "env": "py3.14+numpy",
+ "log": "results/r9.5/rc2_suite.log",
+ "llm_calls": 0
+}

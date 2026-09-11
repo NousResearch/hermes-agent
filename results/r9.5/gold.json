@@ -1,0 +1,9 @@
+{
+ "suites": [
+  "test_r1_benchmark",
+  "test_r2_hardening",
+  "test_r3_quality",
+  "test_r4_temporal"
+ ],
+ "result": "green inside 219/0, labels untouched"
+}

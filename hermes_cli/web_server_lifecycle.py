@@ -6,6 +6,7 @@ import logging
 import ipaddress
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -309,6 +310,35 @@ def _is_serve_orphaned(
         return False
 
 
+#: Ceiling on the post-orphan graceful unwind before the hard exit takes over.
+#: The desktop is already gone, so nothing escalates for us and this is the
+#: whole budget: comfortably past the 5s exit-flush budget
+#: (``HERMES_TUI_EXIT_FLUSH_BUDGET_S``), still short enough to keep the reap prompt.
+_ORPHAN_EXIT_CEILING_S = 10.0
+
+
+def _request_orphan_shutdown() -> threading.Timer:
+    """Ask this backend to shut itself down, with a hard-exit backstop.
+
+    ``os._exit`` here skipped the flush-on-kill handlers this same process
+    installs before serving (#96095, ``install_exit_flush_signal_handlers``)
+    and every ``atexit`` hook, so an unclean desktop exit dropped the in-memory
+    transcripts that a SIGTERM from a live desktop persists to ``state.db``.
+    Raise SIGTERM instead, and keep the reap guaranteed the way ``cli.py``'s
+    ``_arm_exit_watchdog`` does: a daemon timer that ``os._exit``\\ s if the
+    unwind stalls (it survives ``Py_FinalizeEx``'s non-daemon thread joins).
+    ``raise_signal`` reaches Python's handler on Windows too, where
+    ``os.kill(pid, SIGTERM)`` would terminate the process without running it.
+
+    Returns the armed ceiling timer.
+    """
+    ceiling = threading.Timer(_ORPHAN_EXIT_CEILING_S, os._exit, args=(0,))
+    ceiling.daemon = True
+    ceiling.start()
+    signal.raise_signal(signal.SIGTERM)
+    return ceiling
+
+
 def _start_parent_death_watchdog() -> None:
     """Exit when the exact desktop parent that spawned this backend dies.
 
@@ -352,13 +382,13 @@ def _start_parent_death_watchdog() -> None:
             time.sleep(poll)
         try:
             _log.warning(
-                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); exiting.",
+                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); shutting down.",
                 desktop_pid,
                 start_marker,
             )
         except Exception:
             pass
-        os._exit(0)
+        _request_orphan_shutdown()
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
 

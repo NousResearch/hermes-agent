@@ -3945,7 +3945,7 @@ def release_stale_claims(
                     {
                         "reason": "pid_alive",
                         "worker_pid": int(row["worker_pid"]),
-                        "claim_lock": row["claim_lock"],
+                        "owner": _public_label(row["claim_lock"]),
                         "claim_expires_was": int(row["claim_expires"]),
                         "claim_expires_now": new_expires,
                         "last_heartbeat_at": (
@@ -3986,7 +3986,7 @@ def release_stale_claims(
                 metadata=termination,
             )
             payload = {
-                "stale_lock": row["claim_lock"],
+                "stale_lock_owner": _public_label(row["claim_lock"]),
                 "worker_pid": (
                     int(row["worker_pid"])
                     if row["worker_pid"] is not None else None
@@ -4056,14 +4056,14 @@ def reclaim_task(
             outcome="reclaimed", status="reclaimed",
             error=(
                 f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
+                else f"manual_reclaim owner={_public_label(prev_lock)}"
             ),
             metadata=termination,
         )
         payload = {
             "manual": True,
             "reason": reason,
-            "prev_lock": prev_lock,
+            "prev_owner": _public_label(prev_lock),
         }
         payload.update(termination)
         _append_event(
@@ -6523,7 +6523,7 @@ def _defer_reclaim_for_live_worker(
             )
         payload = {
             "reason": reason,
-            "claim_lock": claim_lock,
+            "owner": _public_label(claim_lock),
             "claim_expires_now": grace,
         }
         payload.update(termination)

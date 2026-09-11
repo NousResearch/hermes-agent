@@ -429,6 +429,9 @@ def mint_claim_capability(host=None):
     return f"{host}:{secrets.token_urlsafe(24)}"
 
 
+UNATTRIBUTED_OWNER = '(unattributed)'
+
+
 def public_claim_label(lock):
     """A non-secret stand-in for a claim lock, safe to publish.
 
@@ -439,7 +442,19 @@ def public_claim_label(lock):
     """
     if not lock:
         return None
-    return str(lock).split(':', 1)[0]
+    text = str(lock)
+    host, sep, rest = text.partition(':')
+    if not sep or not host or not rest:
+        # FAIL CLOSED. Without a separator there is no part of this value we
+        # can PROVE is the public host segment, and split(':', 1)[0] returns the
+        # WHOLE capability, silently turning the redaction into a no-op. The
+        # repo's own suites pass colon-free explicit claimers such as
+        # 'private-bearer-token', and bind_owner treats an explicit claimer as a
+        # secret, so falling through to the input made the two halves of the
+        # code disagree about whether it may be published. A hash is not an
+        # option either: it is still a verifier for anyone who can guess it.
+        return UNATTRIBUTED_OWNER
+    return host
 
 
 def bind_owner(conn, task_id, *, claimer, consumer_id, runtime_id, owner_ref):

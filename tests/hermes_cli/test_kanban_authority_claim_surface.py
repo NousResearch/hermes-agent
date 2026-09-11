@@ -20,6 +20,7 @@ C3  Review claims must use the same secure mint-and-bind path as normal claims.
 import json
 import os
 import sqlite3
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -142,3 +143,110 @@ class AuthorityClaimSurfaceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class BearerPublicationSweepTests(unittest.TestCase):
+    """F1/F2 from the Mac review of 620e4fd5.
+
+    F1 exists because fixing C2 RE-ARMED a path: restoring the host prefix made
+    lock.startswith(host_prefix) true again, which made the release_stale_claims
+    extension branch reachable again, which republished the bearer at a line that
+    had been dead for minted tokens. The earlier C1 test read the `claimed`
+    payload and the earlier C2 test read the task ROW, so the defect sat exactly
+    in the seam between them. This one therefore drives claim, extension AND
+    reclaim, then enumerates EVERY column of EVERY table with no filtering.
+
+    The absence of a filter is deliberate. Three of my misses on this work came
+    from a heuristic applied AFTER the enumeration; this asserts over the raw set.
+    """
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "k.db"
+        kb._INITIALIZED_PATHS.discard(str(self.db.resolve()))
+        self.conn = kb.connect(db_path=self.db, board="f12")
+        self.addCleanup(self.conn.close)
+
+    def _bound(self, title):
+        tid = kb.create_task(self.conn, title=title, board="f12")
+        if kb.authority_history_capability(self.conn) is None:
+            kb.enroll_authority_history(self.conn)
+        kb.bind_authority_task(self.conn, tid, repo_id="r", project_id="p")
+        return tid
+
+    def _where_does_it_appear(self, needle):
+        """Every column of every table. No filter, no keyword guess, no head."""
+        found = set()
+        for (table,) in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"):
+            try:
+                cols = [c[1] for c in self.conn.execute(
+                    'PRAGMA table_info("%s")' % table)]
+                for row in self.conn.execute('SELECT * FROM "%s"' % table):
+                    for col, val in zip(cols, row):
+                        if isinstance(val, str) and needle in val:
+                            found.add("%s.%s" % (table, col))
+            except sqlite3.Error:
+                continue
+        return found
+
+    LEGITIMATE = {"tasks.claim_lock", "task_runs.claim_lock"}
+
+    def _live_worker_pid(self):
+        """A genuinely alive process that is NOT the test runner.
+
+        reclaim_task SIGTERMs the recorded worker pid (kanban_db kill site at the
+        _pid_alive/terminate path). An earlier version of this test recorded
+        os.getpid(), so calling reclaim killed the test process itself and pytest
+        exited 15 with no output. Use a real child instead: honest liveness,
+        and the signal lands somewhere harmless.
+        """
+        import subprocess
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self._reap, child)
+        return child.pid
+
+    @staticmethod
+    def _reap(child):
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+
+    def test_f1_bearer_absent_after_claim_extension_and_reclaim(self):
+        task_id = self._bound("f1")
+        task = kb.claim_task(self.conn, task_id, ttl_seconds=1)
+        self.assertIsNotNone(task)
+        bearer = task.claim_lock
+        kb._set_worker_pid(self.conn, task_id, self._live_worker_pid())
+        time.sleep(2.2)
+        kb.release_stale_claims(self.conn)          # the EXTENSION path (F1)
+        kb.reclaim_task(self.conn, task_id, reason="sweep test")
+        leaked = self._where_does_it_appear(bearer) - self.LEGITIMATE
+        self.assertEqual(
+            leaked, set(),
+            "the bearer is published outside the two legitimate lock columns "
+            "after extension/reclaim: " + repr(sorted(leaked)))
+
+    def test_f2_colon_free_explicit_secret_is_never_published(self):
+        secret = "private-bearer-token"          # no colon, as the repo's suites use
+        self.assertNotEqual(
+            kb._public_label(secret), secret,
+            "public_claim_label returns a colon-free capability unchanged, so the "
+            "redaction is a no-op for explicit claimers")
+        task_id = self._bound("f2")
+        # An explicit claimer on a BOUND task currently fails closed: no owner
+        # binding exists for it, so capture() refuses and the claim rolls back.
+        # Either outcome is acceptable for F2 -- what must never happen is the
+        # secret reaching a published record -- so the test accepts both and
+        # sweeps regardless. Reported to the reviewers rather than widened into
+        # a behaviour change, which would be outside a C1-only round.
+        try:
+            kb.claim_task(self.conn, task_id, ttl_seconds=60, claimer=secret)
+        except Exception:
+            pass
+        leaked = self._where_does_it_appear(secret) - self.LEGITIMATE
+        self.assertEqual(
+            leaked, set(),
+            "an explicit colon-free secret is published in " + repr(sorted(leaked)))

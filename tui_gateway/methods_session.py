@@ -466,10 +466,15 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Best known verification evidence for a cwd/session. Read-only: never runs checks,
-    never upgrades targeted evidence into a repository-wide guarantee."""
+    never upgrades targeted evidence into a repository-wide guarantee.
+
+    Bound to the strict-A accessor (PR74986) which acquires a cross-process
+    cooperative lock and reads the ledger via a raw file-copy snapshot so
+    the source ledger family is never opened by SQLite.
+    """
     try:
-        from agent.verification_evidence import verification_status
-        return _ok(rid, {"verification": verification_status(
+        from agent.verification_evidence import verification_status_readonly_for_cwd
+        return _ok(rid, {"verification": verification_status_readonly_for_cwd(
             session_id=params.get("session_id") or params.get("session_key"), cwd=params.get("cwd"))})
     except Exception:
         logger.exception("verification.status failed")

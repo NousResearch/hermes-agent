@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,10 @@ from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    record_verify_run,
     verification_status,
+    verification_status_readonly,
+    verification_status_readonly_for_cwd,
 )
 
 @pytest.fixture(autouse=True)
@@ -355,4 +359,277 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     result = _find_ad_hoc_match(f"python {win_script}", tmp_path)
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strict-A integration tests (PR74986 WAL3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _hermes_home(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+    import agent.verification_evidence as ve
+    import agent.verification_lock as vl
+    monkeypatch.setattr(ve, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(vl, "get_hermes_home", lambda: home)
+    return home
+
+
+def _sha(p: Path) -> str | None:
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
+
+
+def _list_family(home: Path) -> dict[str, Path]:
+    base = home / "verification_evidence.db"
+    paths = {"db": base}
+    for sfx in ("-wal", "-shm", "-journal"):
+        p = Path(str(base) + sfx)
+        if p.exists():
+            paths[sfx.lstrip("-")] = p
+    return paths
+
+
+def test_strict_writer_creates_lockfile(_hermes_home, monkeypatch):
+    """A25/A26: a single writer creates the persistent lockfile with 1 byte."""
+    # The writer path triggers a record_verify_run. We stub classify to
+    # avoid the project-facts step which requires a real project layout.
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    record_verify_run(root="/r", session_id="s1", ok=True)
+
+    lf = _hermes_home / ".locks" / "verification_evidence.lock"
+    assert lf.is_file()
+    assert lf.stat().st_size == 1
+    assert lf.read_bytes() == b"\x00"
+
+
+def test_strict_reader_does_not_create_lockfile(_hermes_home, monkeypatch):
+    """A20/A24: the reader MUST NOT create the lockfile or parent dir."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    db_path = _hermes_home / "verification_evidence.db"
+    result = verification_status_readonly_for_cwd(
+        session_id="s1", cwd="/r"
+    )
+
+    assert not (_hermes_home / ".locks").exists()
+    assert result["status"] == "unverified"
+
+
+def test_strict_reader_leaves_source_bytes_unchanged(_hermes_home, monkeypatch):
+    """A6: every primitive of the ledger family stays byte-stable."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    record_verify_run(root="/r", session_id="s1", ok=True)
+    db = _hermes_home / "verification_evidence.db"
+    # Force-checkpoint to consolidate WAL.
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+
+    before = {k: (_sha(p), p.stat().st_size if p.exists() else 0) for k, p in _list_family(_hermes_home).items()}
+
+    result = verification_status_readonly_for_cwd(
+        session_id="s1", cwd="/r"
+    )
+    after = {k: (_sha(p), p.stat().st_size if p.exists() else 0) for k, p in _list_family(_hermes_home).items()}
+
+    assert result["status"] == "passed"
+    assert before == after
+
+
+def test_strict_reader_missing_db_returns_unverified(_hermes_home, monkeypatch):
+    """A1/A24: missing DB → unverified, zero filesystem creation."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    before_listing = sorted(p.name for p in _hermes_home.glob("*"))
+    result = verification_status_readonly_for_cwd(
+        session_id="s1", cwd="/r"
+    )
+    after_listing = sorted(p.name for p in _hermes_home.glob("*"))
+
+    assert result["status"] == "unverified"
+    assert before_listing == after_listing
+
+
+def test_strict_reader_corrupt_db_returns_unverified(_hermes_home, monkeypatch):
+    """A2: corrupt DB → unverified, bytes unchanged."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    db = _hermes_home / "verification_evidence.db"
+    db.write_bytes(b"NOT A SQLITE FILE")
+    # Materialize lockfile via writer. The writer will run _transaction()
+    # which calls _connect; with corrupt bytes the connect succeeds (sqlite
+    # is permissive) and _ensure_schema silently no-ops because the tables
+    # already exist as part of the corrupt content. To avoid relying on the
+    # corrupt-content path of the writer, materialize the lockfile manually.
+    lf = _hermes_home / ".locks" / "verification_evidence.lock"
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    lf.write_bytes(b"\x00")
+
+    before = _sha(db)
+    result = verification_status_readonly_for_cwd(
+        session_id="s1", cwd="/r"
+    )
+    after = _sha(db)
+    assert result["status"] == "unverified"
+    assert before == after
+
+
+def test_strict_reader_incomplete_schema_returns_unverified(_hermes_home, monkeypatch):
+    """A3: incomplete schema → unverified, no repair."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    db = _hermes_home / "verification_evidence.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE foo (x INTEGER)")  # not the required tables
+    conn.commit()
+    conn.close()
+    lf = _hermes_home / ".locks" / "verification_evidence.lock"
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    lf.write_bytes(b"\x00")
+
+    before = _sha(db)
+    result = verification_status_readonly_for_cwd(
+        session_id="s1", cwd="/r"
+    )
+    after = _sha(db)
+    assert result["status"] == "unverified"
+    assert before == after
+
+
+def test_strict_reader_lockfile_byte_stable(_hermes_home, monkeypatch):
+    """A27: reader leaves lockfile size and SHA256 unchanged."""
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    record_verify_run(root="/r", session_id="s1", ok=True)
+    lf = _hermes_home / ".locks" / "verification_evidence.lock"
+    size_before = lf.stat().st_size
+    sha_before = hashlib.sha256(lf.read_bytes()).hexdigest()
+
+    for _ in range(10):
+        result = verification_status_readonly_for_cwd(
+            session_id="s1", cwd="/r"
+        )
+        assert result["status"] == "passed"
+
+    assert lf.stat().st_size == size_before
+    assert hashlib.sha256(lf.read_bytes()).hexdigest() == sha_before
+
+
+def test_strict_writer_timeout_propagates(_hermes_home, monkeypatch):
+    """A11: writer lock acquisition timeout raises LockTimeout; no bypass."""
+    from agent import verification_evidence as ve
+    from agent.verification_lock import LockTimeout, coordinated_lock
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    # First, materialize the lockfile via a writer.
+    record_verify_run(root="/r", session_id="s1", ok=True)
+
+    # Hold the lock in a separate coordination context to simulate an
+    # in-flight writer. The next record_verify_run must raise.
+    held = coordinated_lock("writer")
+    held.__enter__()
+    try:
+        with pytest.raises(LockTimeout):
+            record_verify_run(root="/r", session_id="s1", ok=True)
+    finally:
+        held.__exit__(None, None, None)
+
+
+def test_strict_reader_does_not_open_source(_hermes_home, monkeypatch):
+    """A21: SOURCE_SQLITE_CONNECT_COUNT=0 in the reader path.
+
+    Instruments sqlite3.connect at the agent.verification_evidence module
+    level and counts only paths that point at the source ledger.
+    """
+    from agent import verification_evidence as ve
+
+    monkeypatch.setattr(
+        ve, "_project_facts",
+        lambda cwd: {"root": "/r"} if cwd else None,
+    )
+    monkeypatch.setattr(ve, "_root_for", lambda facts, cwd: "/r")
+
+    record_verify_run(root="/r", session_id="s1", ok=True)
+    db = _hermes_home / "verification_evidence.db"
+    # Checkpoint to remove sidecars.
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+
+    real_connect = sqlite3.connect
+    source_open_count = {"n": 0}
+    home_str = str(_hermes_home)
+
+    def spy_connect(database, *args, **kwargs):
+        path_str = str(database)
+        # Source path: under hermes_home + verification_evidence.db,
+        # NOT a tempfile-prefixed snapshot path.
+        if (
+            home_str in path_str
+            and "verification_evidence.db" in path_str
+            and "verification_strict_snapshot_" not in path_str
+        ):
+            source_open_count["n"] += 1
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(ve.sqlite3, "connect", spy_connect)
+
+    verification_status_readonly_for_cwd(session_id="s1", cwd="/r")
+    assert source_open_count["n"] == 0, (
+        "Reader must never sqlite3.connect the source ledger"
     )

@@ -40,6 +40,21 @@ import type { RosterRow } from './types'
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
 
+/** Asset RPC for a row of the ACTIVE source's roster (#102978). These rows
+ *  came back from the active gateway's own `profiles.list`, which reads every
+ *  local profile's directory — `profiles.get_asset` / `set_asset` are the
+ *  same directory reads, so the active gateway answers them with the row's
+ *  backend name. Routing them through requestForBot instead dials the row's
+ *  own (connectionId, profile) secondary, and on a local-primary desktop
+ *  every roster row is source-scoped: the first roster paint after launch
+ *  queued one pooled backend spawn per registered profile (60 profiles, 3
+ *  slots → a queue that never drained). */
+function requestAssetOnActiveSource<T>(bot: RosterRow, method: string, params: Record<string, unknown>) {
+  const route = botConnectionRoute(bot)
+
+  return host.request<T>(method, { ...params, name: route ? route.targetProfile || route.profile : bot.name })
+}
+
 /** Backfill: local meta has art the server lacks -> profiles.set_asset.
  *  Server-side avatars power the inter-agent notice pfp (core #85855) and
  *  cross-machine roster art, so local-only images are a bug, not a state. */
@@ -56,17 +71,11 @@ function pushLocalAvatars(roster: RosterRow[]) {
     if (image && typeof image === 'string' && image.startsWith('data:')) {
       avatarPushInflight.add(key)
 
-      const request = bot.sourceScoped
-        ? requestForBot(bot, 'profiles.set_asset', {
-            name: bot.name,
-            asset: 'avatar',
-            data: image
-          })
-        : host.request('profiles.set_asset', {
-            name: bot.name,
-            asset: 'avatar',
-            data: image
-          })
+      const request = requestAssetOnActiveSource(bot, 'profiles.set_asset', {
+        name: bot.name,
+        asset: 'avatar',
+        data: image
+      })
 
       Promise.resolve(request)
         .then(() =>
@@ -92,18 +101,11 @@ function pushLocalAvatars(roster: RosterRow[]) {
     rasterizeSvgToPng(svg, 160)
       .then(png =>
         png
-          ? (bot.sourceScoped
-              ? requestForBot(bot, 'profiles.set_asset', {
-                  name: bot.name,
-                  asset: 'avatar',
-                  data: png
-                })
-              : host.request('profiles.set_asset', {
-                  name: bot.name,
-                  asset: 'avatar',
-                  data: png
-                })
-            ).then(() =>
+          ? requestAssetOnActiveSource(bot, 'profiles.set_asset', {
+              name: bot.name,
+              asset: 'avatar',
+              data: png
+            }).then(() =>
               queryClient.invalidateQueries({
                 queryKey: ['hermes-bots', 'roster']
               })
@@ -175,17 +177,12 @@ export function pullServerAvatars(roster: RosterRow[]) {
 
     avatarFetchInflight.add(key)
 
-    const assetRequest = bot.sourceScoped
-      ? requestForBot(bot, 'profiles.get_asset', {
-          name: bot.name,
-          asset: 'avatar'
-        })
-      : host.request('profiles.get_asset', {
-          name: bot.name,
-          asset: 'avatar'
-        })
+    const assetRequest = requestAssetOnActiveSource<ProfilesGetAssetResult>(bot, 'profiles.get_asset', {
+      name: bot.name,
+      asset: 'avatar'
+    })
 
-    Promise.resolve(assetRequest as Promise<ProfilesGetAssetResult>)
+    assetRequest
       .then(res => {
         if (res?.found && res.data) {
           const current = $botMeta.get()

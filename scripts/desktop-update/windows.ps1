@@ -122,6 +122,22 @@ function Get-UiHtmlPath {
     return $null
 }
 
+function Get-DefaultBrowserProgId {
+    # Windows 11 25H2+ Settings writes the user's browser choice only to
+    # <scheme>\UserChoiceLatest\ProgId and no longer mirrors it into the legacy
+    # <scheme>\UserChoice\ProgId, which UCPD.sys also keeps write-protected.
+    # Read the key the OS actually maintains first; the legacy key remains the
+    # source on pre-25H2 builds where UserChoiceLatest does not exist.
+    param([string]$Scheme)
+    foreach ($subkey in @("UserChoiceLatest", "UserChoice")) {
+        try {
+            $value = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$scheme\$subkey" -Name ProgId -ErrorAction Stop).ProgId
+            if ($value) { return $value }
+        } catch { continue }
+    }
+    return $null
+}
+
 function Get-DefaultBrowserExe {
     # The OS default browser, read from the UserChoice ProgId that the
     # Windows Settings app writes (https first, http as fallback). Only
@@ -130,9 +146,7 @@ function Get-DefaultBrowserExe {
     # default browser returns $null and degrades to the WinForms card.
     $progId = $null
     foreach ($proto in @("https", "http")) {
-        try {
-            $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
-        } catch { continue }
+        $progId = Get-DefaultBrowserProgId -Scheme $proto
         if ($progId) { break }
     }
     if (-not $progId) { return $null }

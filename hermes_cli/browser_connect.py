@@ -232,19 +232,43 @@ def _classify_default(value: str, channels, table, match) -> str | None:
     return next((browser for frag, browser in table if match(value, frag)), None)
 
 
-def _detect_default_windows() -> str | None:
+def _windows_default_prog_id() -> str | None:
+    """ProgId of the user's default browser, or None on any read failure.
+
+    Windows 11 25H2+ Settings writes the choice only to ``<scheme>\\UserChoiceLatest``
+    and no longer mirrors it into the legacy ``<scheme>\\UserChoice`` (write-protected
+    by UCPD.sys), so the legacy key can hold a browser the user abandoned — or one
+    already uninstalled. Read the key the OS maintains first; the legacy key stays
+    the source on pre-25H2 builds where UserChoiceLatest does not exist.
+    """
     try:
         import winreg  # type: ignore
-
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice")
-        prog_id, _ = winreg.QueryValueEx(key, "ProgId")
-        winreg.CloseKey(key)
-    except Exception:  # non-Windows host (no winreg) or unreadable key
+    except ImportError:  # non-Windows host
         return None
-    return _classify_default(str(prog_id or "").lower(), _WINDOWS_CHANNEL_PROGIDS,
-                             _WINDOWS_PROGID_MAP, str.startswith)
+    for scheme in ("https", "http"):
+        for subkey in ("UserChoiceLatest", "UserChoice"):
+            try:
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations"
+                    rf"\{scheme}\{subkey}",
+                )
+                prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+                winreg.CloseKey(key)
+            except OSError:
+                continue
+            if prog_id:
+                return str(prog_id)
+    return None
+
+
+def _detect_default_windows() -> str | None:
+    prog_id = _windows_default_prog_id()
+    if not prog_id:
+        return None
+    return _classify_default(
+        prog_id.lower(), _WINDOWS_CHANNEL_PROGIDS, _WINDOWS_PROGID_MAP, str.startswith
+    )
 
 
 def _run_stdout(argv: list[str]) -> str | None:

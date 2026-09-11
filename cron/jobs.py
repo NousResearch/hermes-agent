@@ -86,6 +86,9 @@ _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 _fire_fence_locks: Dict[str, threading.RLock] = {}
 _fire_fence_locks_guard = threading.Lock()
+# Process-wide (not thread-local) view of held fences: a heartbeat runs on its own thread, so a
+# thread-local view cannot see the delivery side effect that is holding the fence.
+_fire_fence_held_keys: Dict[str, int] = {}
 _fire_fence_lock_state = threading.local()
 
 # Upper bound on waiting for the cross-process .jobs.lock. Every cron function funnels through
@@ -329,10 +332,20 @@ def _fire_job_lock(job_id: str):
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
 
         held_locks[lock_key] = acquired
+        if acquired:
+            with _fire_fence_locks_guard:
+                _fire_fence_held_keys[lock_key] = _fire_fence_held_keys.get(lock_key, 0) + 1
         try:
             yield acquired
         finally:
             held_locks.pop(lock_key, None)
+            if acquired:
+                with _fire_fence_locks_guard:
+                    depth = _fire_fence_held_keys.get(lock_key, 1) - 1
+                    if depth > 0:
+                        _fire_fence_held_keys[lock_key] = depth
+                    else:
+                        _fire_fence_held_keys.pop(lock_key, None)
             if lock_fd is not None:
                 if acquired:
                     _release_flock(lock_fd)
@@ -2537,13 +2550,33 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
+def _fire_fence_held_here(job_id: str) -> bool:
+    """True when a thread in THIS process holds *job_id*'s fire fence (e.g. a delivery side effect
+    still in flight). Cheap probe so a heartbeat can avoid blocking on ourselves."""
+    lock_key = f"{_current_cron_store().cron_dir.resolve()}::{job_id}"
+    with _fire_fence_locks_guard:
+        return lock_key in _fire_fence_held_keys
+
+
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim.
+
+    A fence this process already holds is BUSY, not lost. The side-effect fence spans network
+    delivery, so a delivery that outlives ``_JOBS_LOCK_TIMEOUT_SECONDS`` (any bot-chat turn, a slow
+    platform send) made the heartbeat block on our own held lock, time out, and fail closed — which
+    aborted a live, working run and recorded it as an ownership-loss "shutdown". The fallback renews
+    through the same owner CAS WITHOUT the fire fence: ``fire_claim`` is written under the jobs lock,
+    a takeover needs the fence, and the CAS refuses a changed owner — so the TTL also stays fresh
+    across a delivery longer than ``FIRE_CLAIM_TTL_SECONDS``. A real takeover still reports False."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    if not _fire_fence_held_here(job_id):
+        with _fire_job_lock(job_id) as acquired:
+            if acquired:
+                return _with_job(job_id, apply, False)
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

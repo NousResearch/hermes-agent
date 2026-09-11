@@ -2580,20 +2580,35 @@ def run_one_job(
                     _running_fire_owners.pop(job["id"], None)
 
 
-_OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
+_OWNERSHIP_LOST_INTERRUPTED = (
+    "Interrupted before terminal completion after fire-claim renewal failed "
+    "(no gateway shutdown was recorded)."
+)
 
 
-def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
+def _record_fire_ownership_lost(
+    job_id: str, fire_owner: Optional[str], execution_id: str, *,
+    delivery_attempted: bool = False, delivery_error: Optional[str] = None,
+    success: bool = False,
+) -> None:
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
+    terminal write instead of leaving fire_claim/last_status stale; otherwise discard.
+
+    The execution row keeps the TRUTH about the side effect: a delivery that already left the
+    process must not be reported as if it never happened (this path used to blank
+    ``delivery_outcome``, which hides a real delivery behind the interruption)."""
+    delivery_outcome = "failed" if delivery_error else ("delivered" if (delivery_attempted and success) else None)
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
-        finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
+        finish_execution(
+            execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED,
+            delivery_outcome=delivery_outcome)
     else:
         finish_execution(
             execution_id, success=False,
-            error="Fire claim ownership lost; stale result was discarded.")
+            error="Fire claim ownership lost; stale result was discarded.",
+            delivery_outcome=delivery_outcome)
 
 
 def _classify_delivery_outcome(
@@ -2998,7 +3013,10 @@ def _run_one_job_body(
             _teardown_deferred()
 
         if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+            _record_fire_ownership_lost(
+                job["id"], fire_owner, execution_id,
+                delivery_attempted=d.delivery_attempted, delivery_error=d.delivery_error,
+                success=d.success)
             return True
 
         # Empty final_response is a soft failure so last_status is not "ok".

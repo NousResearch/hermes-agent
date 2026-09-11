@@ -540,16 +540,37 @@ class TestBridgeDispatch:
     """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
     and refuses tool_call targets outside the session-scoped deferrable catalog."""
 
+    def test_bridges_reject_missing_session_toolset_scope(self):
+        calls = (
+            ("tool_search", {"queries": ["anything"]}),
+            ("tool_describe", {"names": ["todo_list"]}),
+            ("tool_call", {"name": "todo_list", "arguments": {}}),
+        )
+        for function_name, arguments in calls:
+            with patch("model_tools.get_tool_definitions") as definitions, patch(
+                "model_tools.registry.dispatch"
+            ) as dispatch:
+                result = json.loads(handle_function_call(function_name, arguments))
+            assert "session toolset scope" in result["error"]
+            definitions.assert_not_called()
+            dispatch.assert_not_called()
+
     def test_tool_search_and_describe_return_json_strings(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
-            out = handle_function_call("tool_search", {"queries": ["anything"]})
+            out = handle_function_call(
+                "tool_search", {"queries": ["anything"]}, disabled_toolsets=[]
+            )
             assert isinstance(out, str) and json.loads(out) is not None
-            out = handle_function_call("tool_describe", {"names": ["nope"]})
+            out = handle_function_call(
+                "tool_describe", {"names": ["nope"]}, disabled_toolsets=[]
+            )
             assert isinstance(out, str) and json.loads(out) is not None
 
     def test_tool_call_bad_args_error(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call("tool_call", {}))
+            result = json.loads(
+                handle_function_call("tool_call", {}, disabled_toolsets=[])
+            )
         assert "requires 'calls'" in result["error"]
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
@@ -557,7 +578,11 @@ class TestBridgeDispatch:
         with patch("model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
-            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
+            result = json.loads(
+                handle_function_call(
+                    "tool_call", {"name": "mcp_x"}, disabled_toolsets=[]
+                )
+            )
         assert "not available in this session" in result["error"]
 
         with patch("model_tools.get_tool_definitions", return_value=[]), \
@@ -565,6 +590,8 @@ class TestBridgeDispatch:
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
              patch.object(ts, "validate_deferred_call_args", return_value=None), \
              patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
+            out = handle_function_call(
+                "tool_call", {"name": "mcp_x"}, task_id="t", disabled_toolsets=[]
+            )
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}

@@ -732,6 +732,10 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None
     if not ts.is_bridge_tool(function_name):
         return None
+    if enabled_toolsets is None and disabled_toolsets is None:
+        return tool_error(
+            "Tool Search bridges require an explicit session toolset scope."
+        ), None
     # Un-collapsed catalog scoped to the session's toolsets, so a restricted
     # session (subagent, kanban worker) can't reach the whole registry via the bridge.
     try:

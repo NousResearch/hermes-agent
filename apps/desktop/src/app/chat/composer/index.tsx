@@ -182,6 +182,9 @@ export function ChatBar({
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
 
+  // The guide uses the setup profile's inference route; the model pill and
+  // git controls would expose settings unrelated to its conversational steps.
+  // Solo covers startup before the guide's session ids are known.
   const onboardingThreadIds = useStore($chatOnboardingThreadIds)
   const chatOnboardingSolo = useStore($chatOnboardingSolo)
   const guidedChat = chatOnboardingSolo || (sessionId != null && onboardingThreadIds.includes(sessionId))

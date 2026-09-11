@@ -306,13 +306,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
 
+  // The guide remains selected while handoff creates on another profile.
+  // Without this pin, the owner ladder sends session.create to hermes-setup
+  // despite the gateway switch (#89206). Scope it to the create leg so
+  // concurrent session traffic keeps its recorded owner.
+  const handoffCreateProfileRef = useRef<null | string>(null)
+
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
   // The routing itself lives in createSessionRpcDispatcher (routed by the
   // session the RPC targets, owner ladder in resolveSessionRpcOwner) so the
   // exact production dispatcher is what the integration tests drive.
-  const handoffCreateProfileRef = useRef<null | string>(null)
-
   const dispatchSessionRpc = useMemo(
     () =>
       createSessionRpcDispatcher({
@@ -326,7 +330,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const requestGateway = useCallback<AmbientGatewayRequest>(
     (method, params, timeoutMs, signal) => {
-      // The selected guide owns existing-session traffic, but not the new build.
+      // The new build belongs to the handoff target; the selected guide's
+      // owner ladder would send its create to the wrong socket (#89206).
       const handoffProfile = handoffCreateProfileRef.current
 
       if (handoffProfile !== null && HANDOFF_CREATE_LEG_METHODS.has(method)) {

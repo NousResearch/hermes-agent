@@ -152,17 +152,18 @@ export function useOnboardingHandoff({
 
     try {
       await ensureSetupProfile(requestGateway)
-      $newChatRoute.set(null)
-      $newChatProfile.set(SETUP_PROFILE)
-      await ensureGatewayProfile(SETUP_PROFILE)
 
-      // Read the backend that will own the guide after its profile swap.
-      // An incomplete bootstrap record cannot authorize a guided chat.
+      // Probe the guide's own socket before switching profiles so a refusal
+      // leaves classic onboarding on the user's current backend.
       const record = await requestGatewayForProfile<SetupStatus>(SETUP_PROFILE, 'setup.status', {})
 
       if (record.ready !== true || record.provider_configured !== true) {
         return false
       }
+
+      $newChatRoute.set(null)
+      $newChatProfile.set(SETUP_PROFILE)
+      await ensureGatewayProfile(SETUP_PROFILE)
 
       startChatOnboardingSolo()
       window.hermesDesktop?.chatOnboarding?.soloBoot?.()

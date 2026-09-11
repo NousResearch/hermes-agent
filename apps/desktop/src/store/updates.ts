@@ -216,7 +216,9 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
     return
   }
 
-  // The existing poller can offer the update after the first-run surface closes.
+  // A toast would interrupt the cinematic or guided chat. Drop this poll's
+  // offer: the poller checks again later and normal snooze handling still
+  // applies, so there is no need to queue a notification.
   if (onboardingSurfaceActive()) {
     return
   }

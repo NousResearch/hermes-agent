@@ -43,12 +43,16 @@ vi.mock('@/store/onboarding-script', () => ({
 }))
 vi.mock('@/store/profile', async () => {
   const { atom } = await import('nanostores')
+  const activeGatewayProfile = atom('hermes-setup')
 
   return {
-    $activeGatewayProfile: atom('hermes-setup'),
+    $activeGatewayProfile: activeGatewayProfile,
     $newChatProfile: atom('hermes-setup'),
     $newChatRoute: atom(null),
-    ensureGatewayProfile: mocks.ensure,
+    ensureGatewayProfile: async (profile: string) => {
+      await mocks.ensure()
+      activeGatewayProfile.set(profile)
+    },
     ensureGatewayAgent: mocks.ensure,
     normalizeProfileKey: (profile: string) => profile || 'default'
   }
@@ -85,6 +89,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $onboardingAnswers, DEFAULT_ANSWERS } from '@/store/onboarding-answers'
 import { $onboardingGate, devResetOnboardingFlow } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { retrySetupHandoff } from './handoff-receipt'
@@ -138,6 +143,8 @@ beforeEach(() => {
   resetSetupHandoffForTests()
   vi.clearAllMocks()
   mocks.connectionId = 'source-a'
+  $activeGatewayProfile.set('hermes-setup')
+  $newChatProfile.set('hermes-setup')
   $setupSession.set({ profile: 'hermes-setup', runtimeId: 'guide-runtime', storedId: 'guide-stored' })
   $activeSessionId.set('guide-runtime')
   $selectedStoredSessionId.set('guide-stored')
@@ -163,6 +170,22 @@ beforeEach(() => {
 })
 
 describe('the real onboarding handoff effect', () => {
+  it('leaves the classic onboarding profiles unchanged when the guide is not ready', async () => {
+    $newChatProfile.set('default')
+    $activeGatewayProfile.set('default')
+    const originalNewChatProfile = $newChatProfile.get()
+    const originalActiveGatewayProfile = $activeGatewayProfile.get()
+    const h = harness()
+    mocks.request.mockResolvedValue({ ready: false, provider_configured: true })
+
+    await act(async () => expect(await h.result.current()).toBe(false))
+
+    expect($newChatProfile.get()).toBe(originalNewChatProfile)
+    expect($activeGatewayProfile.get()).toBe(originalActiveGatewayProfile)
+    expect(mocks.ensure).not.toHaveBeenCalled()
+    expect(h.options.createBackendSessionForSend).not.toHaveBeenCalled()
+  })
+
   it.each([
     { record: { provider_configured: true }, starts: false },
     { record: { ready: false, provider_configured: true }, starts: false },
@@ -179,11 +202,12 @@ describe('the real onboarding handoff effect', () => {
     expect(mocks.request.mock.calls.filter(([, , method]) => method === 'setup.status')).toEqual([
       ['source-a', 'hermes-setup', 'setup.status', {}]
     ])
-    expect(mocks.ensure.mock.invocationCallOrder[0]).toBeLessThan(mocks.request.mock.invocationCallOrder[0])
+    expect(mocks.ensure).toHaveBeenCalledTimes(starts ? 1 : 0)
     expect(startChatOnboardingSolo).toHaveBeenCalledTimes(starts ? 1 : 0)
     expect(h.options.createBackendSessionForSend).toHaveBeenCalledTimes(starts ? 1 : 0)
 
     if (starts) {
+      expect(mocks.request.mock.invocationCallOrder[0]).toBeLessThan(mocks.ensure.mock.invocationCallOrder[0])
       expect(buildChatOnboardingSeedMessages).toHaveBeenCalledWith(undefined, record.free_tier !== true)
       const createOverrides: SessionCreateOverrides = { title: 'Welcome to Hermes' }
 
@@ -230,7 +254,7 @@ describe('the real onboarding handoff effect', () => {
 
     await act(async () => expect(await h.result.current()).toBe(false))
     expect(h.options.createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(mocks.request).not.toHaveBeenCalled()
+    expect(mocks.request).toHaveBeenCalledTimes(stage === 'profile creation' ? 0 : 1)
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error', message: stage }))
   })
 
@@ -298,10 +322,6 @@ describe('the real onboarding handoff effect', () => {
 
   it('reconciles a lost ACK after remount without creating or submitting another build', async () => {
     mocks.request.mockImplementation(async (_connection, profile, method) => {
-      if (method === 'setup.status') {
-        return { ok: true, provider: 'custom', model: 'my-model' }
-      }
-
       if (method === 'profiles.remember_onboarding') {
         return { saved: true, profile: 'default', target: 'user' }
       }

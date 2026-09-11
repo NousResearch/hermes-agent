@@ -33,7 +33,7 @@ def test_agreed_facts_reach_future_default_sessions_without_sharing_or_rewriting
     finally:
         reset_hermes_home_override(token)
     answers = {'name': 'Ada', 'context': 'A garden tracker', 'connectors': ['Calendar'],
-               'accent': 'violet', 'layout': 'basic', 'api_key': 'must-not-transfer'}
+               'focus': ['research'], 'api_key': 'must-not-transfer'}
     assert remember(answers)['result']['saved'] is True
     assert remember(answers)['result']['saved'] is True
     assert not (guide / 'memories' / 'USER.md').exists()
@@ -42,9 +42,22 @@ def test_agreed_facts_reach_future_default_sessions_without_sharing_or_rewriting
         future = load_on_disk_store()
         text = future.format_for_system_prompt('user')
         assert 'Ada' in text and 'A garden tracker' in text and 'Calendar' in text
+        assert 'Focus areas: research' in text
         assert text.count('Ada') == 1 and 'Existing preference' in text
         assert 'must-not-transfer' not in text
         assert before.format_for_system_prompt('user') == frozen
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_answers_without_focus_or_theme_persist_the_agreed_facts(homes):
+    home, _guide = homes
+    assert remember({'name': 'Ada', 'context': 'x', 'connectors': []})['result']['saved'] is True
+    token = set_hermes_home_override(home)
+    try:
+        text = load_on_disk_store().format_for_system_prompt('user')
+        assert 'User prefers to be called: Ada' in text
+        assert 'Working on: x' in text
     finally:
         reset_hermes_home_override(token)
 

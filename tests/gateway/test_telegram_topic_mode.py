@@ -644,6 +644,42 @@ async def test_restored_topic_binding_is_followed_not_overwritten(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_switches_store_immediately(tmp_path):
+    """`/topic <id>` must switch the lane's store entry at command time.
+
+    Restoring the session that was just auto-reset makes the binding equal the
+    successor's prev_session_id; if the switch were left to the next inbound
+    heal, the heal could mistake the explicit restore for a stale binding and
+    repoint it at the successor — the next prompt would stay in the new session
+    despite "Session restored". The command now switches immediately.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+
+    runner = _make_runner(session_db=session_db)
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "Session restored" in response
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "old-topic-session"
+    )
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "old-topic-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
     """Stale topic bindings auto-heal to the compression child on next inbound.
 

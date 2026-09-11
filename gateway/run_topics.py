@@ -636,6 +636,16 @@ class GatewayTopicThreadsMixin:
             if "already linked" in str(exc):
                 return already_linked
             raise
+        # Switch the lane's store entry now — deferring to the next inbound heal would let it
+        # mistake an explicit restore of the just-retired session for a stale binding
+        # (binding == the successor's prev_session_id) and repoint it at the reset successor,
+        # breaking the "Session restored" promise on the next prompt.
+        try:
+            await self.async_session_store.switch_session(
+                self._session_key_for_source(source), session_id,
+            )
+        except Exception:
+            logger.debug("Failed to switch topic store to restored session", exc_info=True)
         title = await db.get_session_title(session_id) or session_id
         last_assistant = None
         with suppress(Exception):

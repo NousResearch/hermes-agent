@@ -3132,24 +3132,29 @@ def _launch_external_cron_worker(job: dict) -> bool:
         _restart_safe_waiter_job_ids.add(job_id)
 
     deadline = time.monotonic() + 5.0
+    unreadable_ack_logged = False
     while time.monotonic() < deadline:
+        have_ack = False
         if ack_path.exists():
             try:
                 acknowledgement = json.loads(ack_path.read_text(encoding="utf-8"))
             except Exception:
-                logger.exception(
-                    "Cron external worker %s published an unreadable acknowledgement; "
-                    "treating handoff as ownership-uncertain",
-                    execution_id,
-                )
-                return _wait_for_external_cron_worker(
-                    process,
-                    execution_id=execution_id,
-                    job_id=job_id,
-                    handoff_files=(payload_path,),
-                )
-            finally:
+                # An unreadable ack is not proof of a failed handoff — only proof that this
+                # read did not land on a complete file. Abandoning here burned the rest of
+                # the deadline for a condition that clears itself, so keep polling and let
+                # the deadline be the only thing that gives up. The file is left in place:
+                # the writer owns it, and a successful parse below is what removes it.
+                if not unreadable_ack_logged:
+                    logger.warning(
+                        "Cron external worker %s published an unreadable acknowledgement; "
+                        "retrying until the handoff deadline",
+                        execution_id,
+                    )
+                    unreadable_ack_logged = True
+            else:
                 ack_path.unlink(missing_ok=True)
+                have_ack = True
+        if have_ack:
             if (
                 not isinstance(acknowledgement, dict)
                 or acknowledgement.get("execution_id") != execution_id
@@ -3255,14 +3260,22 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
+            ack_tmp_path = ack_path.with_name(f"{ack_path.name}.tmp-{os.getpid()}")
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                # Publish through a temp file + rename. Creating ack_path directly made its
+                # directory entry — and therefore Path.exists() — visible to the scheduler's
+                # poll loop before a single JSON byte was written, so a poller that got there
+                # first read a zero-length file. os.replace is atomic on POSIX: a reader sees
+                # either no file or the whole file.
+                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
                     json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
                     ack_file.flush()
                     os.fsync(ack_file.fileno())
+                os.replace(ack_tmp_path, ack_path)
             except Exception:
+                ack_tmp_path.unlink(missing_ok=True)
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",
                     execution_id,

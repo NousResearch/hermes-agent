@@ -607,3 +607,113 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_external_worker_publishes_ack_by_atomic_rename(tmp_path, monkeypatch):
+    """The ack file must become visible already complete, never empty-then-filled.
+
+    Creating it at its final path with O_CREAT published the directory entry before any
+    JSON byte was written, so `_launch_external_cron_worker`'s exists()-then-read poll
+    could land on a zero-length file and raise JSONDecodeError.
+    """
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "ready.json"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        Mock(side_effect=lambda execution_id: {"id": execution_id, "status": "running"}),
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", Mock(return_value=True))
+
+    renames = []
+    real_replace = os.replace
+
+    def recording_replace(src, dst):
+        # At publish time the destination must not exist yet, and the source must already
+        # hold the complete document: that pair is what makes the swap atomic for a reader.
+        renames.append((Path(dst).exists(), json.loads(Path(src).read_text(encoding="utf-8"))))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(scheduler.os, "replace", recording_replace)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert len(renames) == 1
+    destination_existed, staged = renames[0]
+    assert destination_existed is False
+    assert staged["execution_id"] == "exec-1"
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert not list(tmp_path.glob("ready.json.tmp-*"))
+
+
+def test_launch_keeps_polling_when_an_ack_read_comes_back_unreadable(
+    tmp_path, monkeypatch, caplog
+):
+    """An unreadable ack means "not complete yet", not "the handoff failed".
+
+    The poller used to abandon ownership on the first JSONDecodeError even with almost the
+    whole 5s deadline left, downgrading a healthy handoff to ownership-uncertain and logging
+    the misleading "did not acknowledge within 5s".
+    """
+    import logging
+
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix: ["scope", "--", *command],
+    )
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+            return self.returncode
+
+    ack_paths = []
+
+    def popen(command, **kwargs):
+        ack_path = Path(command[command.index("--ack-file") + 1])
+        ack_paths.append(ack_path)
+        ack_path.write_text("", encoding="utf-8")  # torn read: file present, no bytes yet
+        return FakeProcess()
+
+    def complete_the_ack(_seconds):
+        ack_paths[0].write_text(
+            json.dumps({"pid": 4321, "execution_id": "exec-1"}), encoding="utf-8"
+        )
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    monkeypatch.setattr(scheduler.time, "sleep", complete_the_ack)
+    monkeypatch.setattr(
+        scheduler, "mark_execution_handoff_pending", Mock(return_value={"id": "exec-1"})
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        Mock(side_effect=iter([
+            {"id": "exec-1", "status": "running"},
+            {"id": "exec-1", "status": "completed"},
+        ])),
+    )
+
+    with caplog.at_level(logging.INFO, logger=scheduler.logger.name):
+        assert scheduler._launch_external_cron_worker(job) is True
+
+    assert "handed to restart-safe worker pid=4321" in caplog.text
+    assert "did not acknowledge within 5s" not in caplog.text

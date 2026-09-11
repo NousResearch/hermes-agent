@@ -559,7 +559,10 @@ def _build_prompt(
     marker_bytes = len(marker.encode("utf-8")) + 1
     selected: list[str] = []
     for index, event in enumerate(reversed(delta)):
-        # Newest first; while older lines remain unplaced, keep room for the omission marker.
+        # Newest first. Every line but the oldest is placed only if the omission marker still fits after it,
+        # so whenever a later line is dropped the marker has its bytes. The oldest line may take the full
+        # remainder: nothing older can be omitted after it, and if it is the one dropped it is still earlier
+        # than everything shown, so the marker text stays accurate.
         line = f"  {_format_message(event, room)}"
         reserve = marker_bytes if index < len(delta) - 1 else 0
         if (line_bytes := len(line.encode("utf-8")) + 1) > available - reserve:
@@ -655,7 +658,10 @@ def plan_next_task(
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
     if len(member_messages) >= MAX_DISCUSSION_MESSAGES:
         return decide("bounded", "max_messages")
-    terminals = {  # (round, member) -> latest terminal kind for this Discussion
+    # (round, member) -> latest terminal kind for this Discussion. ``validated`` is in strict ``seq`` order
+    # (_validate_event rejects anything else), so the last write per key is the highest-seq terminal, not
+    # whichever the caller happened to list last.
+    terminals = {
         (int(event.payload["round_index"]), str(event.payload["member_id"])): event.kind for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)

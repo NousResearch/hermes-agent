@@ -588,6 +588,23 @@ def test_oversized_member_reply_is_truncated_and_next_turn_stays_serviceable(
     assert "Earlier content omitted" in followup.payload["prompt"]
 
 
+def test_omission_marker_stands_in_for_a_dropped_oldest_line(room_db: tuple[Path, dict]):
+    """Two maximal user messages: the newest is placed with the marker's bytes reserved, so when the oldest
+    cannot take the remainder the marker leads the delta, the newest survives whole, and the prompt fits."""
+    db, room = room_db
+    _append_user(db, event_id="user-old", text="o" * discussion.MAX_USER_TEXT_BYTES)
+    _append_user(db, event_id="user-new", text="n" * discussion.MAX_USER_TEXT_BYTES)
+
+    prompt = _next_task(room, db).payload["prompt"]
+    lines = prompt.split("\n")
+
+    assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES
+    assert "oooo" not in prompt
+    marker_at = lines.index("  [Earlier content omitted to fit this turn.]")
+    assert lines[marker_at + 1] == f"  User (user): {'n' * discussion.MAX_USER_TEXT_BYTES}"
+    assert lines[marker_at + 2] == ""  # nothing else in the delta; the rules follow
+
+
 def test_three_round_bound(room_db: tuple[Path, dict]):
     db, room = room_db
     room["members"] = MEMBERS[:2]

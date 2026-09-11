@@ -30,6 +30,10 @@ from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
+# Sentinel for tool_call arguments that failed JSON parsing in
+# ``sanitize_tool_call_arguments`` — distinct from any valid parsed value.
+_CORRUPTED_SENTINEL = object()
+
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
 _REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
@@ -255,9 +259,26 @@ def sanitize_tool_call_arguments(
                 continue
             if not isinstance(arguments, str):
                 continue
-            with contextlib.suppress(json.JSONDecodeError):
-                json.loads(arguments)
+            # Parse once: invalid JSON, non-dict JSON, and single-element arrays
+            # wrapping a dict all need handling before the request goes out.
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                parsed = _CORRUPTED_SENTINEL
+            if parsed is not _CORRUPTED_SENTINEL and isinstance(parsed, dict):
                 continue
+            if (
+                isinstance(parsed, list)
+                and len(parsed) == 1
+                and isinstance(parsed[0], dict)
+            ):
+                # Some models emit a single-element array wrapping the intended
+                # argument object. Unwrap it instead of sending the array to
+                # strict OpenAI-compatible endpoints, which reject it (#58057).
+                stripped = arguments.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    function["arguments"] = stripped[1:-1].strip()
+                    continue
             # Canonical ``call_id || id`` precedence so scan and stub share the id the pipeline
             # uses; bare ``id`` misses Codex call_id results and orphans a stub.
             # Keying on bare ``id`` here would fail to find a result built with ``call_id`` (Codex Responses

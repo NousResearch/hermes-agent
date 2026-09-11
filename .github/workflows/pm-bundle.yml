@@ -78,8 +78,9 @@ jobs:
 
       # The host and payload toolchains use the same PM pins and installer.
       - uses: ./.github/actions/setup-pm
+        id: pm
         with:
-          cache-python: false
+          save-python-cache: false
 
       # One cache for the pm store: keyed on the lockfile, so a pin bump
       # rotates it. pm verifies every restored entry against the lock
@@ -141,6 +142,14 @@ jobs:
           python -m pm.cli bundle \
             --out build/agent-payload \
             --ref HEAD
+
+      - name: Save warmed Python dependencies even after a staging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          uv: ${{ steps.pm.outputs.uv-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
 
       # The payload must boot with nothing from this checkout: the staged
       # venv's interpreter, cwd at the staged REPO (the desktop spawn

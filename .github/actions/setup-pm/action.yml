@@ -16,6 +16,9 @@ inputs:
   cache-python:
     description: Cache uv downloads and built wheels; never cache the dependency environment.
     default: 'true'
+  save-python-cache:
+    description: Save automatically on success. Set false to save a rolling snapshot with save-pm-cache after the consumer, including on failure.
+    default: 'true'
   cache-node:
     description: Cache npm downloads; never cache node_modules.
     default: 'true'
@@ -28,7 +31,7 @@ inputs:
     description: npm lockfiles that invalidate the npm download cache; supports multiline globs.
     default: package-lock.json
   prune-python-cache:
-    description: Prune uv's cache at job teardown before saving, as setup-uv v8 did.
+    description: Use uv cache prune --ci before automatic saves. Explicit bundle saves preserve downloaded wheels.
     default: 'false'
   cache-suffix:
     description: Optional namespace for isolated cache smoke tests.
@@ -63,7 +66,13 @@ outputs:
     value: ${{ steps.tools-cache.outputs.cache-hit }}
   python-cache-hit:
     description: Exact uv dependency cache hit.
-    value: ${{ steps.python-cache.outputs.cache-hit }}
+    value: ${{ steps.python-cache.outputs.cache-hit || steps.python-cache-restore.outputs.cache-hit }}
+  python-cache-key:
+    description: Rolling snapshot key for save-pm-cache when save-python-cache is false.
+    value: ${{ steps.python-cache-restore.outputs.cache-primary-key }}
+  uv-cache-path:
+    description: Shared uv cache directory for save-pm-cache.
+    value: ${{ steps.install.outputs.uv-cache-path }}
   node-cache-hit:
     description: Exact npm dependency cache hit.
     value: ${{ steps.node-cache.outputs.cache-hit }}
@@ -117,15 +126,32 @@ runs:
 
     - name: Cache uv dependency downloads and builds
       id: python-cache
-      if: inputs.toolchain != 'node' && inputs.cache-python == 'true'
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.uv-cache-path }}
-        key: setup-pm-uv-v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}
+        key: setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}
+
+        # Isolated writes also need a distinct prefix: production's broad
+        # fallback must not restore a smoke run's partial dependency set.
+        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v1-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
+
+    - name: Restore uv dependencies for an explicit save
+      id: python-cache-restore
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.uv-cache-path }}
+        # Caches are immutable. Each producer needs its own snapshot, even
+        # when a caller run contains both PM Bundle and Desktop Release.
+        key: setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        restore-keys: |
+          setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}-
+          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v1-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
 
     # Post steps run in reverse registration order: prune before cache save.
     - name: Register uv cache pruning
-      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.prune-python-cache == 'true' && steps.python-cache.outputs.cache-hit != 'true'
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true' && inputs.prune-python-cache == 'true' && steps.python-cache.outputs.cache-hit != 'true'
       uses: ./.github/actions/setup-pm/prune
       with:
         uv: ${{ steps.install.outputs.uv-path }}

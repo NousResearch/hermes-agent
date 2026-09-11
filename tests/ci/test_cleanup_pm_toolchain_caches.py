@@ -10,7 +10,7 @@ def test_cleanup_collects_all_pages_then_deletes_only_its_run():
     rows = [
         {"id": 1, "key": "setup-pm-tools-x64-smoke-42-1"},
         {"id": 2, "key": "node-cache-Windows-x64-smoke-42-2"},
-        {"id": 3, "key": "setup-pm-uv-x64-smoke-prune-42-1"},
+        {"id": 3, "key": "setup-pm-uv-isolated-v1-x64-smoke-prune-42-1"},
         {"id": 4, "key": "setup-pm-tools-x64-smoke-consumers-42-1"},
         {"id": 5, "key": "setup-pm-tools-x64-smoke-420-1"},
         {"id": 6, "key": "node-cache-Windows-x64-normal"},

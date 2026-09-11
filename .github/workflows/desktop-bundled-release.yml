@@ -317,6 +317,7 @@ jobs:
           archive-inputs: true
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
+          save-python-cache: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -500,6 +501,14 @@ jobs:
             python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
           fi
 
+      - name: Save warmed Python dependencies even after a packaging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          uv: ${{ steps.pm.outputs.uv-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
+
       - name: Verify native signature cache contracts
         shell: bash
         working-directory: apps/desktop
@@ -603,6 +612,7 @@ jobs:
           archive-inputs: true
           # The payload tools cache does not include uv's built wheels.
           cache-python: true
+          save-python-cache: false
 
       - name: Resolve toolchain cache key
         id: toolchain
@@ -766,6 +776,14 @@ jobs:
           else
             python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
           fi
+
+      - name: Save warmed Python dependencies even after a packaging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          uv: ${{ steps.pm.outputs.uv-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
 
       - name: Audit bundle architecture
         shell: bash

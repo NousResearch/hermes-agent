@@ -581,6 +581,33 @@ class TestWebServerEndpoints:
         # Must swallow — reads fall back to the per-poll probe heal.
         _web_server_lifecycle._eager_reconcile_own_session_db()
 
+    def test_startup_eager_reconcile_opens_read_only(self, monkeypatch):
+        """A healthy store gets a read-only open (no second writable owner) and the handle is
+        released. The stale-schema heal is covered by test_startup_eager_reconcile_heals_stale_store."""
+        from pathlib import Path
+
+        import hermes_state
+        import hermes_cli.web_server_sessions as _web_server_sessions
+
+        calls = []
+        closed = []
+
+        def fake_open(db_path: Path, *, read_only: bool):
+            calls.append((str(db_path), read_only))
+            return SimpleNamespace(close=lambda: closed.append(True))
+
+        monkeypatch.setattr(hermes_state, "_default_db_path", lambda: "/tmp/fake-state.db")
+        monkeypatch.setattr(
+            _web_server_sessions, "_open_session_db_at_path", fake_open,
+        )
+
+        _web_server_lifecycle._eager_reconcile_own_session_db()
+
+        assert calls == [("/tmp/fake-state.db", True)], (
+            "eager reconcile must open state.db read-only on a healthy store"
+        )
+        assert closed == [True], "the startup handle must be released, not leaked"
+
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
 

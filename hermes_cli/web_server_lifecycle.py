@@ -168,18 +168,17 @@ def _resolve_restart_drain_timeout() -> float:
 
 
 def _eager_reconcile_own_session_db() -> None:
-    """One writable open of this process's own state.db at startup.
-
-    ``SessionDB.__init__`` runs ``_init_schema`` → ``_reconcile_columns`` with
-    open-time lock patience. Never raises: an unfixable store still gets the
-    per-poll read-probe heal in :func:`_open_session_db_at_path`.
+    """Heal a stale schema in this process's own state.db at startup — read-only, so the dashboard
+    never becomes a second writable owner beside the gateway (a writable open ran full schema init
+    plus a close-time checkpoint against its writer). Access-mode semantics: see
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never raises: an unfixable
+    store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import _default_db_path
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        db = acquire(Path(_default_db_path()))
-        release_or_close(db)
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "

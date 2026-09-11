@@ -28,7 +28,9 @@ from tools.approval_context import (
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard, _matches_self_disruption_pattern,
+    _SELF_DISRUPTION_DESCRIPTIONS, _SELF_DISRUPTION_PATTERNS_COMPILED,
+    detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -908,7 +910,12 @@ def check_dangerous_command(command: str, env_type: str,
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+        # Self-disruption / self-termination (killing our own gateway/agent process, tearing down the
+        # gateway/container lifecycle) is a self-inflicted service DoS, not host damage — so the
+        # host-safety container boundary does not justify waiving it. Keep gating those; everything
+        # else the container bypass still waives.
+        if not _matches_self_disruption_pattern(command):
+            return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
@@ -999,7 +1006,12 @@ def check_all_command_guards(command: str, env_type: str,
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+        # Exception: self-disruption / self-termination commands (killing our own gateway/agent
+        # process, gateway/container lifecycle teardown) are a self-inflicted service DoS, not host
+        # damage, so the container host-safety boundary does not cover them — keep them gated. All
+        # other dangerous commands are still waived inside the sandbox.
+        if not _matches_self_disruption_pattern(command):
+            return _user_deny_block(command) or _approved()
 
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:
@@ -1082,7 +1094,16 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     if env_type == "vercel_sandbox":
         return _approved()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        # Self-disruption carve-out, mirroring check_dangerous_command / check_all_command_guards: the
+        # container host-safety boundary justifies waiving host-destructive commands, but NOT the agent
+        # killing its own gateway/service — a self-inflicted DoS regardless of the sandbox. execute_code
+        # is an equivalent bypass surface (a script can subprocess/os.system its way to `hermes gateway
+        # stop`, `pkill hermes`, etc.), so a script whose text carries a self-disruption *shell* command
+        # still routes through approval. Matching runs over the script text, so embedded shell
+        # self-termination is caught; a raw in-process kill (e.g. os.kill on a discovered PID) remains
+        # out of scope for string-pattern detection.
+        if not _matches_self_disruption_pattern(code):
+            return _approved()
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
         return _approved()

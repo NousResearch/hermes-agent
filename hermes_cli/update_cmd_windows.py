@@ -965,8 +965,10 @@ def _cold_start_attested_profiles(token: dict) -> None:
         home = Path(get_profile_dir(name))
         with _best_effort(f"Could not cold-start Windows gateway profile {name} after update: %s"):
             if not gateway_windows._live_gateway_pids(home=home):  # a concurrent autostart must not be doubled
-                pid = gateway_windows._spawn_detached(home=home)
-                if not pid:
+                # Same job-object escape as the active-profile cold-start (#84185), keyed by this
+                # profile's own task name and home; direct spawn only when it has no task.
+                via_task = gateway_windows._spawn_via_scheduled_task(hermes_home=str(home))
+                if not via_task and not gateway_windows._spawn_detached(home=home):
                     raise RuntimeError("cold-start did not return a process ID")
             ready_pids = gateway_windows._wait_for_gateway_ready(home=home)
             if not ready_pids:
@@ -981,7 +983,8 @@ def _cold_start_attested_profiles(token: dict) -> None:
 
 
 def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
-    """Direct-spawn a detached gateway after update for the ``cold_start_if_installed`` case (installed but down).
+    """Start a gateway after update for the ``cold_start_if_installed`` case (installed but down):
+    via the registered Scheduled Task when there is one, else a direct detached spawn.
 
     Idempotent: re-checks nothing is running so a concurrent autostart can't duplicate. A successful Popen
     doesn't prove survival (a job object denying breakaway kills it), so success is gated on the liveness poll.
@@ -1019,13 +1022,20 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
         if _desktop_owns_gateway_lifecycle() and not generation:
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
             return True
+    # Prefer the Task Scheduler: ``CreateProcess`` accepts CREATE_BREAKAWAY_FROM_JOB silently even
+    # when the parent job denies breakaway, so a direct spawn can land inside the updater's job and
+    # be torn down with it (#84185). ``schtasks /Run`` starts outside any job holding this updater.
+    # Direct spawn only when no task is registered — never as a fallback after the task fired, since
+    # a task-spawned gateway may still be coming up and both would race for the same port.
     with _abort_on_error("Could not cold-start Windows gateway after update"):
-        pid = gateway_windows._spawn_detached()
-    if not pid:
+        via_task = gateway_windows._spawn_via_scheduled_task()
+        pid = None if via_task else gateway_windows._spawn_detached()
+    if not via_task and not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
     ready_pids = gateway_windows._wait_for_gateway_ready()
     if not ready_pids:
-        raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
+        spawn = "via Scheduled Task" if via_task else f"PID {pid}"
+        raise RuntimeError(f"Windows gateway cold-start {spawn} did not become ready")
     # The dead attestation has done its job (it authorized this spawn under Desktop ownership). Consume
     # it only now: a spawn that never became ready leaves it in place, so the registered retry still
     # holds its recovery obligation instead of seeing Desktop ownership with no marker and returning

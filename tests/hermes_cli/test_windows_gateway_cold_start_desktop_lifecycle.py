@@ -140,6 +140,7 @@ def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(gateway_windows, "attested_death_generation", lambda **_k: None)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)  # no task registered
     monkeypatch.setattr(
         gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242
     )
@@ -183,6 +184,7 @@ def test_attested_dead_gateway_survives_desktop_ownership_and_marker_is_consumed
     assert marker.exists()  # plan-time probe is read-only
 
     spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)  # no task registered
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242)
     monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4242])
     monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
@@ -226,6 +228,7 @@ def test_cold_start_is_authorized_by_the_token_generation_not_the_mutable_marker
     assert newer != token["attested_generation"]
 
     spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)  # no task registered
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242)
     monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4242])
     monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
@@ -281,6 +284,7 @@ def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, 
     assert marker.exists()  # plan-time probe is read-only
 
     spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)  # no task registered
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
     update_cmd._resume_windows_gateways_after_update(token)
 
@@ -306,6 +310,7 @@ def test_no_attested_profile_leaves_the_pause_token_unchanged(monkeypatch, tmp_p
     assert "cold_start_profiles" not in token
     assert token["profiles"] == {"beta": 777}
     spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)  # no task registered
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
     monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
     update_cmd._resume_windows_gateways_after_update(token)

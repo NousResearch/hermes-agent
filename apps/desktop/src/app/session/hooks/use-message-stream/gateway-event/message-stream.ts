@@ -33,7 +33,10 @@ const LEGACY_INTERRUPT_STATUS_PATTERNS = [
   /^Operation interrupted: waiting for model response \(\d+\.\d+s elapsed\)\.$/,
   /^Operation interrupted during retry \(.+, attempt \d+\/\d+\)\.$/,
   /^Operation interrupted: handling API error \([^:\r\n]+: .*\)\.$/,
-  /^Operation interrupted: retrying API call after error \(retry \d+\/\d+\)\.$/
+  /^Operation interrupted: retrying API call after error \(retry \d+\/\d+\)\.$/,
+  // Empty-response retry backoff producer (agent/turn_empty_response.py) — same
+  // synthetic-interrupt family; the whole-message sentinel demotes to metadata.
+  /^Operation interrupted: retrying empty response from model \(retry \d+\/\d+\)\.$/
 ] as const
 
 /**

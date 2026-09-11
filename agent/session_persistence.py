@@ -210,11 +210,15 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
                 and msg.get("_interrupted_tool_tail") is True
                 and not msg.get("_db_interrupted_tail_stamped")
             ):
-                agent._session_db.mark_tool_tail_interrupted(
+                # Only latch the one-shot guard when the durable UPDATE actually
+                # matched a row — a 0-row match (row not yet flushed, raced
+                # rewind) must stay eligible for a later flush's back-stamp
+                # (quad review P2: silent provenance loss otherwise).
+                if agent._session_db.mark_tool_tail_interrupted(
                     agent.session_id,
                     msg.get("tool_call_id"),
-                )
-                msg["_db_interrupted_tail_stamped"] = True
+                ):
+                    msg["_db_interrupted_tail_stamped"] = True
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
         if id(msg) in history_ids or id(msg) in seed_ids:

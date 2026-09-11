@@ -232,7 +232,7 @@ function createPlayer(ctx) {
     // Browser/media controls can pause the element outside our buttons.
     // Reflect that state instead of showing a frozen trace as live playback.
     element.addEventListener('pause', () => {
-      if (current() && element.paused && !element.ended) stop()
+      if (current() && element.paused && !element.ended) status.set('paused')
     })
     element.addEventListener('waiting', () => {
       if (current()) { status.set('connecting'); clearTimeout(timeout); timeout = setTimeout(fail, 15000) }

@@ -1633,8 +1633,18 @@ try {
     # a one-line warning, exits 0). For a Desktop-DRIVEN update that warning
     # is fatal: we would relaunch the old exe and call it success. Detect it,
     # retry the build once, and propagate honestly.
+    #
+    # The detector lives in the companion policy file, which is dot-sourced from
+    # the checkout AFTER the pull: an in-flight script cannot see a fix to its own
+    # matching rules, but it can read them from the tree the update just wrote.
     $desktopBuildFailed = $false
-    if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
+    if (Get-Command Test-HermesDesktopBuildFailed -ErrorAction SilentlyContinue) {
+        $buildFailureReported = Test-HermesDesktopBuildFailed -Output $res.Output
+    } else {
+        Write-HandoffLog "desktop build-failure policy is unavailable after checkout swap; using the inline match"
+        $buildFailureReported = [bool]($res.Output -match "Desktop( GUI)? build failed")
+    }
+    if ($res.Code -eq 0 -and $buildFailureReported) {
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
         Publish-UiProgress "Rebuilding Desktop"
         $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
@@ -1648,7 +1658,7 @@ try {
         $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
+            $finalMsg = "The updated Hermes runtime or Desktop build could not be verified. The update was applied and nothing was removed - run hermes doctor in a terminal to check the install."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }

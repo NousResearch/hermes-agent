@@ -120,6 +120,106 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_id"] == "acp-session"
 
 
+def test_acp_real_agent_resolves_reasoning_config_from_config(monkeypatch):
+    """ACP sessions honor ``agent.reasoning_effort`` from config.yaml.
+
+    Parity with the CLI/TUI surfaces: _make_agent must resolve the effort
+    through the shared chokepoint and hand it to AIAgent, otherwise ACP
+    clients (Zed, OpenDesign) silently run on the provider's server default
+    regardless of the user's configured reasoning level.
+    """
+    captured = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {
+            "model": {"default": "m", "provider": "p"},
+            "agent": {"reasoning_effort": "max"},
+        }),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+            },
+        ),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    agent = manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert isinstance(agent, CapturingAgent)
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "max"}
+
+
+def test_acp_real_agent_reasoning_config_absent_when_unset(monkeypatch):
+    """No ``agent.reasoning_effort`` in config → AIAgent gets None and the
+    provider default applies, exactly as before the fix."""
+    captured = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {
+            "model": {"default": "m", "provider": "p"},
+        }),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+            },
+        ),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    agent = manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert isinstance(agent, CapturingAgent)
+    assert captured["reasoning_config"] is None
+
+
 @pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()

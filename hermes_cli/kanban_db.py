@@ -1784,6 +1784,22 @@ def connect(
                     from hermes_cli.kanban_history import validate_existing
                     validate_existing(conn)
                     conn.executescript(SCHEMA_SQL)
+                    # N2. The optional-column pass contains a real backfill
+                    # (UPDATE tasks SET consecutive_failures = ...). On an
+                    # ENROLLED board that is a guarded write, so it needs two
+                    # things this ordering provides. First the lease TABLE must
+                    # already exist, or the guard's own body is unresolvable and
+                    # the board cannot be opened at all -- the same failure class
+                    # as the UDF it replaced, which is why it is ensured here and
+                    # not left to migrate_history further down. Second the write
+                    # needs a transient capability. connect() already holds a
+                    # transaction here, so write_txn cannot nest; owned_writer
+                    # takes the lease within the transaction already open and
+                    # releases it immediately, leaving no permanent state. The
+                    # authority is deliberate and bounded to this pass, not
+                    # ambient: outside it the guard is unsatisfied as usual.
+                    from hermes_cli.kanban_history import _ensure_lease_table
+                    _ensure_lease_table(conn)
                     _migrate_add_optional_columns(conn)
                     from hermes_cli.kanban_history import migrate as migrate_history
                     migrate_history(conn)
@@ -1908,9 +1924,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "consecutive_failures INTEGER NOT NULL DEFAULT 0",
         )
         if added and "spawn_failures" in cols:
-            conn.execute(
-                "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
-            )
+            # N2. A real backfill, and on an ENROLLED board a guarded write. It runs
+            # here in autocommit, before any normal write transaction, so without a
+            # transient capability the board could not be opened at all. The lease is
+            # taken for this statement only and released immediately.
+            from hermes_cli.kanban_history import migration_writer as _mw
+            with _mw(conn):
+                conn.execute(
+                    "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
+                )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
     if "last_failure_error" not in cols:
@@ -1918,9 +1940,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
         )
         if added and "last_spawn_error" in cols:
-            conn.execute(
-                "UPDATE tasks SET last_failure_error = last_spawn_error"
-            )
+            from hermes_cli.kanban_history import migration_writer as _mw
+            with _mw(conn):
+                conn.execute(
+                    "UPDATE tasks SET last_failure_error = last_spawn_error"
+                )
     if "max_runtime_seconds" not in cols:
         _add_column_if_missing(
             conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
@@ -2315,10 +2339,17 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """Owned, audited transaction; enrolled mutations cannot use raw BEGIN."""
+    """Owned, audited transaction; enrolled mutations cannot use raw BEGIN.
+
+    owned_writer is entered INSIDE the transaction, not around it. The capability
+    is now a database row rather than a per-connection function, and a row written
+    before BEGIN would be committed in autocommit, outlive the transaction and
+    leave the guard permanently satisfied for every connection. The ordering is
+    load-bearing, not stylistic.
+    """
     from hermes_cli.kanban_history import owned_writer
-    with owned_writer(conn):
-        with _audited_write_txn(conn):
+    with _audited_write_txn(conn):
+        with owned_writer(conn):
             yield conn
 
 
@@ -2380,6 +2411,15 @@ def _new_task_id() -> str:
     :func:`create_task` rather than rely on id uniqueness.
     """
     return "t_" + secrets.token_hex(4)
+
+
+def _socket_host() -> str:
+    """Host name alone: a truthful PUBLIC identifier, never the bearer value."""
+    import socket
+    try:
+        return socket.gethostname() or 'unknown'
+    except Exception:
+        return 'unknown'
 
 
 def _claimer_id() -> str:
@@ -3594,6 +3634,27 @@ def claim_task(
                  WHERE id = ? AND ended_at IS NULL
                 """,
                 (now, int(stale["current_run_id"])),
+            )
+        # --- N1: truthful owner identity for an enrolled task -----------------
+        # The default token is _claimer_id(), i.e. host:pid: public, derivable
+        # from the task row, so hashing it proves nothing. For a BOUND task, mint
+        # an unpredictable capability and record a truthful owner binding in THIS
+        # transaction, before the CAS below, so a failed binding rolls the claim
+        # back with it. The bearer value never reaches a public identifier, an
+        # event payload or a log line: only its hash is stored, and the value goes
+        # back to the caller on the returned Task, which is the capability needed
+        # for heartbeat and reclaim. An explicit claimer= is left alone.
+        if claimer is None and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='authority_task_bindings'").fetchone() and conn.execute(
+                'SELECT 1 FROM authority_task_bindings WHERE task_id=?',
+                (task_id,)).fetchone():
+            from hermes_cli import kanban_history as _kh
+            lock = _kh.mint_claim_capability()
+            _kh.bind_owner_locked(
+                conn, task_id, claimer=lock,
+                consumer_id=_socket_host(), runtime_id=str(os.getpid()),
+                owner_ref='kanban-dispatcher',
             )
         cur = conn.execute(
             """

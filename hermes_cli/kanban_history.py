@@ -46,6 +46,30 @@ _TABLES = {
 }
 
 
+# NOT part of _TABLES, deliberately. Every _TABLES member receives the immutability
+# and owned-insert guards; applying those to the lease would make it unwritable and
+# so unusable as a capability. It holds at most one row, only inside a protected
+# transaction, and is excluded from the ownership snapshot and audit records.
+_LEASE_TABLE = ('CREATE TABLE IF NOT EXISTS authority_writer_lease ('
+                ' singleton INTEGER PRIMARY KEY CHECK(singleton=1))')
+
+
+def _ensure_lease_table(conn):
+    """Idempotent, and safe on an already-enrolled database being upgraded."""
+    started = not conn.in_transaction
+    conn.execute(_LEASE_TABLE)
+    # A lease can only be left behind by a process killed mid-transaction, which
+    # rollback already discards. Clearing on open is belt-and-braces for a crash
+    # that somehow committed one: a stale lease would be fail-OPEN, the one
+    # direction this mechanism must never fail in.
+    conn.execute('DELETE FROM authority_writer_lease')
+    # That DELETE opens an implicit transaction in autocommit mode. Leaving it
+    # open made connect() return mid-transaction and the caller's next write_txn
+    # fail with 'cannot start a transaction within a transaction'.
+    if started and conn.in_transaction:
+        conn.execute('COMMIT')
+
+
 def _guards():
     guards = {f'{table}_no_{op.lower()}':
             f"CREATE TRIGGER {table}_no_{op.lower()} BEFORE {op} ON {table} "
@@ -59,7 +83,7 @@ def _guards():
                 for ref in refs)
             name = f'authority_writer_{table}_{op.lower()}'
             guards[name] = (f'CREATE TRIGGER {name} BEFORE {op} ON {table} '
-                            f'WHEN {enrolled} BEGIN SELECT CASE WHEN authority_owned_writer() != 1 '
+                            f'WHEN {enrolled} BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM authority_writer_lease) '
                             "THEN RAISE(ABORT, 'authority mutation requires owned writer') END; END")
     keys = {'authority_history_meta': ('singleton',), 'authority_task_bindings': ('task_id',),
             'authority_owner_bindings': ('task_id', 'token_hash'),
@@ -75,7 +99,7 @@ def _guards():
     for table in _TABLES:
         name = f'{table}_owned_insert'
         guards[name] = (f'CREATE TRIGGER {name} BEFORE INSERT ON {table} '
-                        'BEGIN SELECT CASE WHEN authority_owned_writer() != 1 '
+                        'BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM authority_writer_lease) '
                         "THEN RAISE(ABORT, 'authority insert requires owned writer') END; END")
     return guards
 
@@ -85,21 +109,98 @@ from contextlib import contextmanager
 
 @contextmanager
 def owned_writer(conn):
-    """Connection-local gate, enabled only around the audited transaction.
+    """Transaction-scoped write capability, readable by the database itself.
 
-    Other SQLite connections lack the function and fail closed. This prevents
-    accidental unsupported writers, not an administrator replacing schema/UDFs.
+    WHY NOT A PER-CONNECTION UDF (the G3 defect this replaces). The guards live in
+    the schema, so every connection prepares them; a UDF lives in one connection,
+    so every other connection failed at statement PREPARE with "no such function"
+    -- even for a non-bound task, even for a statement matching zero rows, because
+    SQLite resolves a trigger body's function before evaluating its WHEN clause.
+    The opt-in predicate therefore protected nothing and the gate was
+    database-wide. A row any connection can read restores the intended scope and
+    returns the failure to the guard's own IntegrityError instead of
+    OperationalError, which a caller could not previously distinguish.
+
+    WHY THE ROW MUST BE WRITTEN INSIDE THE CALLER'S TRANSACTION. This context
+    manager is entered by ``kanban_db.write_txn`` BEFORE ``BEGIN IMMEDIATE``. A
+    lease inserted at that point would be written in autocommit, survive the
+    transaction, and permanently disable the guard for every later connection --
+    fail-closed silently converted to fail-open, with the owned path still green.
+    So the lease is taken lazily, only once a transaction is actually open, and is
+    released before that transaction ends. Rollback or an abrupt exit discards it
+    with the transaction, which is the fail-closed direction.
     """
     if not isinstance(conn, sqlite3.Connection):
         # Boundary-only test doubles never contain SQLite authority state.
         yield
         return
-    active = [True]
-    conn.create_function('authority_owned_writer', 0, lambda: int(active[0]))
+    taken = _take_lease(conn)
     try:
         yield
     finally:
-        active[0] = False
+        if taken:
+            _release_lease(conn)
+
+
+@contextmanager
+def migration_writer(conn):
+    """Bounded capability for connect-time migration (N2).
+
+    The optional-column pass contains a real backfill, so on an enrolled board it
+    is a guarded write. It runs before any normal write transaction and sometimes
+    in autocommit, where owned_writer alone would silently no-op and the board
+    could not be opened at all. This opens a transaction when one is not already
+    held, takes the lease, and always releases it, so the authority is explicit,
+    bounded to the migration, and leaves no permanent lease behind.
+    """
+    if not isinstance(conn, sqlite3.Connection) or not _lease_available(conn):
+        yield
+        return
+    own_txn = not conn.in_transaction
+    if own_txn:
+        conn.execute('BEGIN IMMEDIATE')
+    try:
+        conn.execute('INSERT OR IGNORE INTO authority_writer_lease (singleton) VALUES (1)')
+        yield
+        conn.execute('DELETE FROM authority_writer_lease')
+        if own_txn:
+            conn.execute('COMMIT')
+    except Exception:
+        if own_txn:
+            try:
+                conn.execute('ROLLBACK')
+            except sqlite3.Error:
+                pass
+        else:
+            try:
+                conn.execute('DELETE FROM authority_writer_lease')
+            except sqlite3.Error:
+                pass
+        raise
+
+
+def _lease_available(conn):
+    try:
+        conn.execute('SELECT 1 FROM authority_writer_lease LIMIT 1')
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def _take_lease(conn):
+    """Claim the transaction-scoped capability. No-op outside a transaction."""
+    if not conn.in_transaction or not _lease_available(conn):
+        return False
+    conn.execute('INSERT OR IGNORE INTO authority_writer_lease (singleton) VALUES (1)')
+    return True
+
+
+def _release_lease(conn):
+    if conn.in_transaction:
+        try:
+            conn.execute('DELETE FROM authority_writer_lease')
+        except sqlite3.Error:
+            pass
 
 
 def migrate(conn):
@@ -109,6 +210,9 @@ def migrate(conn):
     if present:
         if present != set(_TABLES):
             raise AuthorityHistoryError('incomplete authority history schema')
+        # Upgrade path: an board enrolled before the lease existed still needs it,
+        # or every guarded write on it would fail closed for want of a capability.
+        _ensure_lease_table(conn)
         _validate_guards(conn)
         capability(conn)
         return
@@ -118,6 +222,7 @@ def migrate(conn):
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='authority_history_meta'").fetchone():
             conn.execute('COMMIT')
             return migrate(conn)
+        conn.execute(_LEASE_TABLE)
         for sql in (*_TABLES.values(), *_guards().values()):
             conn.execute(sql)
         conn.execute('COMMIT')
@@ -225,7 +330,7 @@ def refuse_authority_copy(root):
             conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
             try:
                 conn.row_factory = sqlite3.Row
-                names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'authority_%'")}
+                names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'authority_%' AND name != 'authority_writer_lease'")}
                 if names and capability(conn) is not None:
                     raise AuthorityHistoryError('copied authority identity cannot be activated')
             finally:
@@ -296,22 +401,48 @@ def bind_task(conn, task_id, *, repo_id, project_id):
         return dict(zip(('task_id', 'version', 'repo_id', 'project_id'), values))
 
 
+def mint_claim_capability():
+    """An unpredictable bearer value for a claim.
+
+    N1. The previous default was `_claimer_id()`, i.e. host:pid: public,
+    derivable from the task row, and therefore useless as the secret the owner
+    binding's token hash assumes. This mints a real capability instead. It is
+    returned to the claimer on the Task and is never written into a public owner
+    identifier, an event payload or a log line.
+    """
+    import secrets
+    return 'cap_' + secrets.token_urlsafe(32)
+
+
 def bind_owner(conn, task_id, *, claimer, consumer_id, runtime_id, owner_ref):
+    """Public entry point: opens its own transaction."""
     from hermes_cli.kanban_db import write_txn
+    with write_txn(conn):
+        bind_owner_locked(conn, task_id, claimer=claimer, consumer_id=consumer_id,
+                          runtime_id=runtime_id, owner_ref=owner_ref)
+
+
+def bind_owner_locked(conn, task_id, *, claimer, consumer_id, runtime_id, owner_ref):
+    """Same contract, but assumes the caller already holds the write transaction.
+
+    The claim path must bind the owner in the SAME transaction as the claim CAS,
+    so a failed binding rolls the claim back with it. write_txn issues
+    BEGIN IMMEDIATE and cannot nest, hence this variant.
+    """
     public = tuple(_identifier(v) for v in (consumer_id, runtime_id, owner_ref))
     if any(claimer in v for v in public):
         raise AuthorityHistoryError('bearer token is not a public owner identifier')
     values = (task_id, _token_hash(claimer), 1, *public)
-    with write_txn(conn):
-        if capability(conn) is None or not conn.execute(
-                'SELECT 1 FROM authority_task_bindings WHERE task_id=?', (task_id,)).fetchone():
-            raise AuthorityHistoryError('task not enrolled')
-        old = conn.execute('SELECT * FROM authority_owner_bindings WHERE task_id=? AND token_hash=?', values[:2]).fetchone()
-        if old:
-            if tuple(old) != values:
-                raise AuthorityHistoryError('immutable owner binding conflict')
-            return
-        conn.execute('INSERT INTO authority_owner_bindings VALUES (?,?,?,?,?,?)', values)
+    if capability(conn) is None or not conn.execute(
+            'SELECT 1 FROM authority_task_bindings WHERE task_id=?', (task_id,)).fetchone():
+        raise AuthorityHistoryError('task not enrolled')
+    old = conn.execute('SELECT * FROM authority_owner_bindings WHERE task_id=? AND token_hash=?',
+                       values[:2]).fetchone()
+    if old:
+        if tuple(old) != values:
+            raise AuthorityHistoryError('immutable owner binding conflict')
+        return
+    conn.execute('INSERT INTO authority_owner_bindings VALUES (?,?,?,?,?,?)', values)
 
 
 KINDS = frozenset('''archived assigned attached attachment_removed block_loop_detected
@@ -391,7 +522,7 @@ def capture(conn, task_id, kind, source_event_id, run_id=None):
 
 def validate_existing(conn):
     """Validate before legacy repair or any authority write; fresh DBs may lack schema."""
-    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'authority_%'")}
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'authority_%' AND name != 'authority_writer_lease'")}
     if not names:
         return
     if not set(_TABLES) <= names:

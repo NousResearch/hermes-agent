@@ -104,6 +104,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
             "auto_assigned_default": res.auto_assigned_default,
         }, ascii=True)
         return 0
@@ -136,6 +140,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.respawn_guarded:
+        details = ", ".join(
+            f"{task_id} ({reason})" for task_id, reason in res.respawn_guarded
+        )
+        print(f"Deferred (respawn guard): {details}")
     return 0
 
 

@@ -150,6 +150,28 @@ async def test_complete_preview_survives_long_flood_fallback_failure(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_full_fallback_resend_threads_and_deletes_truncated_preview():
+    """When the visible prefix is not a prefix of the final (Feishu post vs
+    cleaned text), fallback resends the whole answer. Thread it to the user
+    message and delete the truncated edit bubble (#103068)."""
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(success=True, message_id="full-1")
+
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", initial_reply_to_id="user-1",
+    )
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "truncated snapshot"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("full completed answer that does not start with the snapshot")
+
+    assert adapter.send.await_args.kwargs["reply_to"] == "user-1"
+    adapter.delete_message.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_telegram_long_flood_result_keeps_retry_after():
     """The real adapter contract preserves the server delay for consumers."""
     class FloodError(Exception):

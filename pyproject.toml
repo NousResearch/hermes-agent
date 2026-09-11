@@ -204,11 +204,23 @@ anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
+ddgs = ["ddgs==9.16.0"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
+# These engines' upstream Python ceilings exclude the managed interpreter.
+# Keep dependency markers and PM gates together: bundles omit them, explicit
+# setup requests report unavailable rather than succeeding with an empty set.
+neutts = ["neutts[all]==1.4.1; python_version < '3.14'"]
+kittentts = [
+  # KittenTTS requires misaki[en]>=0.9.4, whose Python ceiling is <3.13.
+  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl ; python_version < '3.13'",
+  "soundfile==0.14.0; python_version < '3.13'",
+]
+# onnxruntime has no Intel macOS wheel. Piper has no Windows ARM64 wheel.
+piper = ["piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
@@ -357,6 +369,7 @@ mistral = ["mistralai==2.4.8"]
 # tools/lazy_deps.py on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
+langfuse = ["langfuse==4.15.2"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
@@ -478,6 +491,10 @@ google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # Match the engine dependency markers so PM refuses an unsupported install.
 wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+# NeuTTS excludes Python 3.14. KittenTTS's misaki dependency excludes 3.13+.
+neutts = "python_version < '3.14'"
+kittentts = "python_version < '3.13'"
+piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 
 [tool.uv]
 override-dependencies = [
@@ -564,6 +581,7 @@ concurrent-log-handler = false
 croniter = false
 cryptography = false
 daytona = false
+ddgs = "2026-08-26T21:52:34Z"
 debugpy = false
 defusedxml = false
 dingtalk-stream = false
@@ -590,6 +608,7 @@ httpx = false
 httpx2 = false
 huggingface_hub = false
 jinja2 = false
+langfuse = "2026-09-09T16:01:26Z"
 lark-oapi = false
 markdown = false
 maturin = false
@@ -600,6 +619,7 @@ microsoft-teams-apps = false
 mistralai = false
 modal = false
 nemo-relay = false
+neutts = "2026-07-22T14:54:23Z"
 numpy = false
 openai = false
 opentelemetry-exporter-otlp-proto-http = false
@@ -608,6 +628,7 @@ packaging = false
 parallel-web = false
 pathspec = false
 pillow = false
+piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false
 psutil = false
 pvporcupine = false
@@ -637,6 +658,7 @@ slack-bolt = false
 slack-sdk = false
 snowballstemmer = false
 sounddevice = false
+soundfile = "2026-06-06T08:58:48Z"
 starlette = false
 supermemory = false
 tenacity = false

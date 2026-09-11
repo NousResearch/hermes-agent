@@ -542,6 +542,57 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
                   f"({', '.join(cleaned)}) — Bot Chat sessions now get the live roster instead.")
 
 
+def _migrate_to_43(results: Dict[str, Any], quiet: bool) -> None:
+    # 42 → 43: turn the `connections` toolset on for every platform whose saved `platform_toolsets`
+    # list predates it. `hermes tools` writes an explicit list, and absence from that list reads as
+    # "unchecked", so a toolset that ships later stays off for picker users while composite users
+    # inherit it. Two "no"s are kept: a platform whose `known_builtin_toolsets` records `connections`
+    # saw the checkbox and left it off, and `agent.disabled_toolsets` (Blank Slate, `hermes tools
+    # --disable`) is subtracted last by the resolver, so appending there would claim an enable that
+    # never takes effect.
+    from agent.skill_utils import parse_config_string_list
+    from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
+    from hermes_cli.toolset_scope import toolset_allowed_for_platform
+
+    config = read_raw_config()
+    saved = config.get("platform_toolsets")
+    if not isinstance(saved, dict):
+        return
+    if "connections" in parse_config_string_list(_dict_at(config, "agent").get("disabled_toolsets")):
+        return
+    known = _dict_at(config, "known_builtin_toolsets")
+    # Same predicate the resolver uses to pick its explicit branch: any configurable or plugin key.
+    explicit_keys = _configurable_keys() | _get_plugin_toolset_keys()
+    enabled_for: List[str] = []
+    for platform, toolsets in saved.items():
+        if not isinstance(toolsets, list) or "connections" in toolsets:
+            continue
+        if not toolset_allowed_for_platform("connections", platform):
+            continue
+        # A composite like [hermes-cli] already inherits every core tool at read time.
+        if not any(str(ts) in explicit_keys for ts in toolsets):
+            continue
+        offered = known.get(platform)
+        if isinstance(offered, list) and "connections" in offered:
+            continue
+        saved[platform] = sorted({*map(str, toolsets), "connections"})
+        if isinstance(offered, list):
+            known[platform] = sorted({*map(str, offered), "connections"})
+        enabled_for.append(str(platform))
+    if not enabled_for:
+        return
+    config["platform_toolsets"] = saved
+    if known:
+        config["known_builtin_toolsets"] = known
+    platforms = ", ".join(sorted(enabled_for))
+    _commit(
+        config, results, quiet,
+        f"enabled the connections toolset for {platforms}",
+        f"  ✓ Enabled the Connections toolset (Gmail, Linear, Notion, ...) for {platforms} — "
+        "the manage_connections tool appears when your Nous Portal account has tool access "
+        "(paid plan or active free pool). Uncheck Connections in `hermes tools` to turn it off.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -637,6 +688,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
             "model/provider they were created under when the global default changes, instead "
             "of being skipped. Pin a job or set cron.model to move it."))),
+    (43, _migrate_to_43),
 )
 
 

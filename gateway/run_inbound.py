@@ -219,6 +219,12 @@ class GatewayInboundMixin:
             _estop_state = self._peek_session_state(_estop_key)
             if _estop_state is not None and _estop_state.persistent.update_prompt_pending:
                 return True
+            # #99106 parity: a session already ended in state.db (ws_orphan_reap/agent_close) keeps
+            # its in-memory turn slot alive, so the running-session check below would otherwise read
+            # a dead runtime as "in-flight work" and let a paused gateway process a real turn for it.
+            # Evict first (idempotent, cheap no-op if already evicted or genuinely live) so the check
+            # that follows sees the true state.
+            self._hm_evict_reaped_agent(_estop_key)
             # A running session covers steering plus pending clarify / tool approvals it holds.
             if self._is_session_running(_estop_key):
                 return True
@@ -1206,7 +1212,11 @@ class GatewayInboundMixin:
         if _reply is not None:
             return _reply
 
-        # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
+        # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path. Also
+        # called earlier, on ``_estop_key``, from the pause gate's ``_hm_estop_turn_allowed`` (same
+        # key for the same ``source`` — see ``_session_key_for_source``) so a reaped slot can't be
+        # read as "in-flight work" and bypass a global pause. Idempotent: if that earlier call
+        # already evicted this slot, this is a cheap no-op.
         self._hm_evict_idle_stale_agent(_quick_key)
         if self._is_session_running(_quick_key):
             self._hm_evict_reaped_agent(_quick_key)

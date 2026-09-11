@@ -953,6 +953,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_rehydration_checked: set = set()
         self._pending_thread_updates: Dict[str, str] = {}
         self._pending_thread_full_refresh: Dict[str, str] = {}
+        self._recovered_pending_updates: set[Tuple[str, str]] = set()
         # Message IDs with reaction lifecycle (bounded: an exception between add and finalize would
         # leak entries).
         self._reacting_message_ids: set = set()
@@ -4070,23 +4071,40 @@ class SlackAdapter(BasePlatformAdapter):
             pending_ts = self._pending_thread_updates.get(pending_key, "")
             restart_check = rehydration_key not in self._thread_rehydration_checked
             full_refresh_ts = self._pending_thread_full_refresh.get(pending_key, "")
-            needs_full_refresh = restart_check or (
-                full_refresh_ts
-                and self._slack_timestamp_sort_key(full_refresh_ts)
-                > self._slack_timestamp_sort_key(watermark_ts)
+            pending_marker = (rehydration_key, pending_ts)
+            pending_unresolved = bool(
+                pending_ts and pending_marker not in self._recovered_pending_updates
             )
-            needs_delta = (
-                is_mentioned
-                or restart_check
+            pending_behind_watermark = bool(
+                pending_unresolved
+                and self._slack_timestamp_sort_key(pending_ts)
+                <= self._slack_timestamp_sort_key(watermark_ts)
+            )
+            needs_full_refresh = (
+                restart_check
+                or pending_behind_watermark
                 or (
-                    pending_ts
-                    and self._slack_timestamp_sort_key(pending_ts)
-                    > self._slack_timestamp_sort_key(watermark_ts)
+                    pending_unresolved
+                    and full_refresh_ts == pending_ts
                 )
             )
-            if needs_delta:
+            needs_recovery = (
+                is_mentioned
+                or restart_check
+                or pending_unresolved
+            )
+            if needs_recovery:
                 if needs_full_refresh or not watermark_ts:
-                    await _fetch(force_refresh=True)
+                    full_context, recovery_complete = (
+                        await self._fetch_complete_thread_context(
+                            channel_id=channel_id,
+                            thread_ts=event_thread_ts,
+                            current_ts=ts,
+                            team_id=team_id,
+                        )
+                    )
+                    channel_context = full_context or None
+                    watermark_to_set = ts if recovery_complete else ""
                 else:
                     channel_context, watermark_to_set = await self._fetch_thread_delta(
                         channel_id=channel_id,
@@ -4100,6 +4118,13 @@ class SlackAdapter(BasePlatformAdapter):
             if recovery_complete:
                 self._mark_thread_rehydration_checked(
                     channel_id, event_thread_ts, user_id, team_id)
+                if pending_unresolved:
+                    self._recovered_pending_updates.add(pending_marker)
+                    self._evict_oldest_by_ts(
+                        self._recovered_pending_updates,
+                        self._PENDING_THREAD_UPDATES_MAX,
+                        lambda marker: marker[-1],
+                    )
         if watermark_to_set:
             self._set_thread_watermark(watermark_ts=watermark_to_set, **watermark_args)
         return channel_context, thread_root_media_urls, thread_root_media_types
@@ -5503,6 +5528,48 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
             return ""
+
+    async def _fetch_complete_thread_context(
+        self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str,
+    ) -> Tuple[str, bool]:
+        """Fetch a complete bounded snapshot for restart/edit recovery.
+
+        A failure or a thread beyond the ten-page safety bound is explicitly incomplete, so the
+        caller retains its old watermark and retries on a later human turn.
+        """
+        messages: List[dict] = []
+        cursor = ""
+        for _page in range(10):
+            try:
+                result = await self._conversations_replies_with_backoff(
+                    channel_id, thread_ts, 100, team_id, cursor=cursor
+                )
+            except Exception as exc:
+                logger.warning("[Slack] Failed to fetch complete thread context: %s", exc)
+                return "", False
+            if result is None:
+                return "", False
+            page_messages = result.get("messages", [])
+            if not isinstance(page_messages, list):
+                return "", False
+            messages.extend(page_messages)
+            metadata = result.get("response_metadata") or {}
+            cursor = str(metadata.get("next_cursor") or "")
+            if not cursor:
+                content = (
+                    await self._format_thread_context(
+                        messages,
+                        thread_ts=thread_ts,
+                        current_ts=current_ts,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                    )
+                )[0]
+                return content, True
+        logger.warning(
+            "[Slack] Complete thread refresh exceeded 10 pages; watermark retained"
+        )
+        return "", False
 
     @staticmethod
     def _thread_cache_key(channel_id: str, thread_ts: str, team_id: str) -> str:

@@ -3438,17 +3438,26 @@ class TestThreadReplyHandling:
         adapter_with_session_store._pending_thread_full_refresh.clear()
         adapter_with_session_store._thread_rehydration_checked.clear()
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
-            return_value={
-                "messages": [
-                    {
-                        "ts": "123.200",
-                        "user": "U_APP",
-                        "bot_id": "B_APP",
-                        "text": "Deployment succeeded",
-                    },
-                    {"ts": "123.500", "user": "U_USER", "text": "verify"},
-                ]
-            }
+            side_effect=[
+                {
+                    "messages": [
+                        {"ts": "123.000", "user": "U_PARENT", "text": "Original report"},
+                    ],
+                    "response_metadata": {"next_cursor": "page-2"},
+                },
+                {
+                    "messages": [
+                        {
+                            "ts": "123.200",
+                            "user": "U_APP",
+                            "bot_id": "B_APP",
+                            "text": "Deployment succeeded",
+                        },
+                        {"ts": "123.500", "user": "U_USER", "text": "verify"},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            ]
         )
 
         await adapter_with_session_store._handle_slack_message({
@@ -3464,7 +3473,93 @@ class TestThreadReplyHandling:
 
         context = adapter_with_session_store.handle_message.call_args[0][0].channel_context
         assert "Deployment succeeded" in context
+        assert adapter_with_session_store._app.client.conversations_replies.await_count == 2
         assert metadata["slack_thread_watermark:C123:123.000"] == "123.500"
+
+    @pytest.mark.asyncio
+    async def test_failed_restart_refresh_retains_watermark_for_retry(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.300"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            side_effect=RuntimeError("temporary Slack failure")
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "verify",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.500",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.300"
+        assert not adapter_with_session_store._thread_rehydration_checked
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_pending_bot_event_forces_full_recovery(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.500"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+        await adapter_with_session_store._handle_slack_message({
+            "text": "Late-delivered deployment success",
+            "user": "U_APP",
+            "bot_id": "B_APP",
+            "subtype": "bot_message",
+            "channel": "C123",
+            "ts": "123.400",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "123.400",
+                        "user": "U_APP",
+                        "bot_id": "B_APP",
+                        "text": "Late-delivered deployment success",
+                    },
+                    {"ts": "123.600", "user": "U_USER", "text": "verify"},
+                ]
+            }
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "verify",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.600",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        context = adapter_with_session_store.handle_message.call_args[0][0].channel_context
+        assert "Late-delivered deployment success" in context
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.600"
 
     @pytest.mark.asyncio
     async def test_oversized_delta_advances_to_last_fetched_page(

@@ -195,6 +195,8 @@ terminal(command="opencode stats --days 7 --models anthropic/claude-sonnet-4")
   - `process(action="log", session_id="<id>")`
 - Avoid sharing one working directory across parallel OpenCode sessions.
 - Enter may need to be pressed twice to submit in the TUI (once to finalize text, once to send).
+- Kimi/Moonshot has TWO provider IDs with different endpoints, and the key prefix tells them apart: `sk-kimi-*` keys belong to `kimi-for-coding` (api.kimi.com/coding), legacy `sk-*` keys belong to `moonshotai` (api.moonshot.ai/v1). A key against the wrong endpoint fails with a 401 "API Key appears to be invalid or may have expired" that looks like a bad key — check the prefix before rotating anything.
+- `opencode auth login` is interactive (TUI). For headless setup, write `~/.local/share/opencode/auth.json` directly as `{"<provider>": {"type": "api", "key": "..."}}` (chmod 600), and optionally pin a default model in `~/.config/opencode/opencode.json` with `{"model": "<provider>/<model>"}` so `opencode run` needs no `--model` flag.
 
 ## Verification
 

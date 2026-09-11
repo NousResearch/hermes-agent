@@ -7,7 +7,21 @@ from starlette.testclient import TestClient
 
 import hermes_cli.web_server as ws_mod
 from hermes_cli.web_server_idle_exit import (
-    IdleClientTracker, should_exit_idle, start_idle_watchdog, wrap_asgi_with_ws_tracking)
+    IdleClientTracker, should_exit_idle, start_idle_watchdog, turn_in_flight,
+    wrap_asgi_with_ws_tracking)
+
+
+def _stub_gateway_sessions(monkeypatch, sessions=None):
+    """Empty / no-running gateway table — the pre-fix probe's only liveness signal."""
+    import tui_gateway.server as gateway
+    monkeypatch.setattr(gateway, "_sessions", {} if sessions is None else sessions)
+
+
+def _past_grace_tracker(grace=900.0):
+    clock = {"t": 0.0}
+    tracker = IdleClientTracker(now=lambda: clock["t"])
+    clock["t"] = grace + 1.0
+    return tracker, grace
 
 
 def test_ws_sessions_are_counted_at_the_asgi_boundary_for_any_route():
@@ -78,3 +92,43 @@ def test_watchdog_sets_should_exit_and_only_arms_for_ssh_isolated_backends(monke
         assert isinstance(ws_mod.app.state.ssh_isolated_clients, IdleClientTracker)
     finally:
         ws_mod.app.state._state.pop("ssh_isolated_clients", None)  # process-global app: never leak the tracker
+
+
+def test_turn_in_flight_is_true_when_cron_has_running_job_ids(monkeypatch):
+    """In-process cron dispatch is active work even when no GUI session is running (#107485)."""
+    import cron.scheduler as cron_sched
+
+    _stub_gateway_sessions(monkeypatch)
+    monkeypatch.setattr(cron_sched, "get_running_job_ids", lambda: frozenset({"job-1"}))
+
+    assert turn_in_flight() is True
+    tracker, grace = _past_grace_tracker()
+    assert should_exit_idle(tracker, grace, probe=turn_in_flight) is False
+
+
+def test_turn_in_flight_is_false_when_cron_and_sessions_are_idle(monkeypatch):
+    """Empty get_running_job_ids is a conclusive no — idle-exit still fires (#107485)."""
+    import cron.scheduler as cron_sched
+
+    _stub_gateway_sessions(monkeypatch)
+    monkeypatch.setattr(cron_sched, "get_running_job_ids", lambda: frozenset())
+
+    assert turn_in_flight() is False
+    tracker, grace = _past_grace_tracker()
+    assert should_exit_idle(tracker, grace, probe=turn_in_flight) is True
+
+
+def test_turn_in_flight_is_none_when_cron_probe_raises(monkeypatch):
+    """get_running_job_ids import/call failure is indeterminate — fail closed (#107485)."""
+    import cron.scheduler as cron_sched
+
+    _stub_gateway_sessions(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("cron scheduler unavailable")
+
+    monkeypatch.setattr(cron_sched, "get_running_job_ids", _boom)
+
+    assert turn_in_flight() is None
+    tracker, grace = _past_grace_tracker()
+    assert should_exit_idle(tracker, grace, probe=turn_in_flight) is False

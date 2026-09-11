@@ -95,20 +95,38 @@ _probe_failure_logged = False
 
 
 def turn_in_flight() -> Optional[bool]:
-    """True/False from the gateway's running-session table; None when it cannot be read. The table
-    lives on ``tui_gateway.server`` (the voice mixin's helper is bound into that namespace). None
-    keeps the backend alive forever, so the cause is logged once — a silent never-exits would be
-    the original bug with a new face."""
+    """True when a GUI session is running or in-process cron is in-flight via
+    ``cron.scheduler.get_running_job_ids``; False when both probes succeed and report idle;
+    None when a half cannot be read. The session table lives on ``tui_gateway.server``
+    (the voice mixin's helper is bound into that namespace). None keeps the backend alive
+    forever, so the cause is logged once — a silent never-exits would be the original bug
+    with a new face."""
     global _probe_failure_logged
+
     try:
         import tui_gateway.server as gateway
         with gateway._sessions_lock:
-            return any(s.get("running") for s in gateway._sessions.values())
+            session_running: Optional[bool] = any(s.get("running") for s in gateway._sessions.values())
     except Exception:
         if not _probe_failure_logged:
             _probe_failure_logged = True
             _log.warning("idle-exit turn probe unavailable; this backend will not self-retire", exc_info=True)
+        session_running = None
+
+    try:
+        import cron.scheduler as cron
+        cron_running: Optional[bool] = bool(cron.get_running_job_ids())
+    except Exception:
+        if not _probe_failure_logged:
+            _probe_failure_logged = True
+            _log.warning("idle-exit turn probe unavailable; this backend will not self-retire", exc_info=True)
+        cron_running = None
+
+    if session_running or cron_running:
+        return True
+    if session_running is None or cron_running is None:
         return None
+    return False
 
 
 def should_exit_idle(tracker: IdleClientTracker, grace_s: float,

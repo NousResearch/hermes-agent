@@ -468,6 +468,26 @@ class TestTickLifecycle:
             decision = mgr.complete_tick("some output")
         assert decision["stopped"] is False  # fail-open: keep looping
 
+    def test_until_judge_gets_the_loop_session(self, hermes_home):
+        """``--until`` is judged after its wakeup turn ended, where nothing is bound: the loop must
+        hand its own session to the judge, so the aux call can declare that session's relay-affinity
+        scope instead of the relay's ephemeral per-request key."""
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="t13")
+        state = mgr.set("poll", interval_seconds=300, until="the suite is green")
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+        seen = {}
+
+        def fake_judge(goal, last_response, **kwargs):
+            seen["session_id"] = kwargs.get("session_id")
+            return ("continue", "still red", False, None, False)
+
+        with patch("hermes_cli.goals.judge_goal", side_effect=fake_judge):
+            mgr.complete_tick("3 tests still failing")
+        assert seen["session_id"] == "t13"
+
 
 class TestSelfPacedBackoff:
     def test_backoff_doubles_on_unchanged_and_resets_on_change(self, hermes_home):

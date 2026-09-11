@@ -64,7 +64,7 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
     'build it\nverify: test passes', 'status', '',
 ])
 def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
-    monkeypatch.setattr(goals, 'draft_contract', lambda objective: goals.GoalContract())
+    monkeypatch.setattr(goals, 'draft_contract', lambda objective, session_id=None: goals.GoalContract())
     goals._DB_CACHE.clear()
     command = command.format(pid=os.getpid())
     snapshots = []
@@ -92,8 +92,8 @@ def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
     surface, draft_result, monkeypatch,
 ):
     calls = []
-    def draft(objective):
-        calls.append(objective)
+    def draft(objective, session_id=None):
+        calls.append((objective, session_id))
         if draft_result == 'error':
             raise RuntimeError('aux offline')
         return goals.GoalContract(verification='tests pass') if draft_result == 'contract' else None
@@ -106,7 +106,9 @@ def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
     state = goals.load_goal(mgr.session_id)
     assert state.goal == 'build it'
     assert state.has_contract() == (draft_result == 'contract')
-    assert calls == ['build it']
+    # The drafting call declares the goal's own relay-affinity scope, so it must carry the session
+    # that will own the goal (never a caller-less default).
+    assert calls == [('build it', mgr.session_id)]
     assert prompts == ['build it']
     execute('show')
     execute('draft')
@@ -115,5 +117,5 @@ def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
     assert prompts == ['build it']
     execute('drafting docs')
     assert goals.load_goal(mgr.session_id).goal == 'drafting docs'
-    assert calls == ['build it']
+    assert calls == [('build it', mgr.session_id)]
     assert prompts[-1] == 'drafting docs'

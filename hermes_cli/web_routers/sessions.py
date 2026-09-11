@@ -551,9 +551,14 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
+    from hermes_cli.profiles import get_active_profile_name
+
+    serving_profile = _serving_profile(profile) if profile else get_active_profile_name()
     projected_messages = _project_for_display(messages)
     return {
         "session_id": sid,
+        # Unscoped reads use this process's DB, which may be a named profile.
+        "profile": None if serving_profile == "custom" else serving_profile,
         "messages": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,

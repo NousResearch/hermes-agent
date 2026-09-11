@@ -68,7 +68,10 @@
 }
 .filterActive {
   background: var(--ifm-color-emphasis-900);
-  color: var(--ifm-background-color);
+  /* emphasis-0 keeps labels readable on the near-black pill; --ifm-background-color
+     is only set under [data-theme='dark'] in custom.css, so Infima's light theme
+     resolves it to transparent and the default-active pills look like empty blobs (#91491). */
+  color: var(--ifm-color-emphasis-0);
   border-color: var(--ifm-color-emphasis-900);
 }
 [data-theme='dark'] .filterActive {

@@ -192,6 +192,59 @@ def test_reporting_is_idempotent_after_one_fix(tmp_path, written):
 
 
 @pytest.mark.parametrize(
+    "label,body",
+    [
+        # A text search over the file is satisfied by any matching line while the *effective* value
+        # at updates.pre_update_backup is a documented mode — doctor would warn and rewrite a config
+        # that was already correct.
+        ("other section decoy + off",
+         "other:\n  pre_update_backup: false\nupdates:\n  pre_update_backup: off\n"),
+        ("block scalar decoy + off",
+         "updates:\n  pre_update_backup: off\nnote: |\n  pre_update_backup: false\n"),
+        # Duplicate key: PyYAML keeps the last, so the effective token is the documented ``off``.
+        ("duplicate keys, last is off",
+         "updates:\n  pre_update_backup: false\nupdates:\n  pre_update_backup: off\n"),
+    ],
+)
+def test_decoys_elsewhere_in_the_file_are_not_reported(tmp_path, label, body):
+    """The gate reads the scalar at ``updates.pre_update_backup``'s own node, not the file text."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(body, encoding="utf-8")
+
+    f = _drift(cfg, False)
+    assert f.issues == [], f"{label}: reported a documented value as legacy"
+    assert _drift(cfg, True).fixed == 0
+    assert cfg.read_text(encoding="utf-8") == body
+
+
+@pytest.mark.parametrize(
+    "label,body",
+    [
+        # The value really is a legacy boolean; the old file-wide regex could not see these shapes.
+        ("flow style", "updates: {pre_update_backup: false}\n"),
+        ("double-quoted key", 'updates:\n  "pre_update_backup": false\n'),
+        ("single-quoted key", "updates:\n  'pre_update_backup': false\n"),
+        ("anchored value", "b: &pb false\nupdates:\n  pre_update_backup: *pb\n"),
+        # Duplicate key: the last one wins, and it is the legacy boolean.
+        ("duplicate keys, last is false",
+         "updates:\n  pre_update_backup: quick\nupdates:\n  pre_update_backup: false\n"),
+    ],
+)
+def test_forms_a_text_search_misses_are_still_reported(tmp_path, label, body):
+    """Every shape that resolves ``updates.pre_update_backup`` to a legacy boolean is reported."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(body, encoding="utf-8")
+    assert _resolved_mode(tmp_path) == "off", label  # the harm is real for each shape
+
+    f = _drift(cfg, False)
+    assert [i for i in f.issues if "pre_update_backup" in i], f"{label}: not reported"
+
+    assert _drift(cfg, True).fixed == 1
+    assert _written_value(cfg) == "off"
+    assert _resolved_mode(tmp_path) == "off"  # meaning preserved
+
+
+@pytest.mark.parametrize(
     "written,expected_mode",
     # Mode strings are the supported surface: never reported, never rewritten.
     [("quick", None), ("off", None), ("full", None),

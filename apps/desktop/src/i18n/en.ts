@@ -3320,7 +3320,8 @@ export const en: Translations = {
     stripBody: 'Open the model picker to try them, or sign in with a Nous account.',
     openModelPicker: 'Open model picker',
     dismiss: 'Dismiss',
-    statusLabel: model => `Nous · free tier · ${model}`,
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
     signIn: 'Sign in',
     signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',
@@ -3994,7 +3995,8 @@ export const en: Translations = {
     vaultCodeDesc: site =>
       `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
     vaultCodeLabel: 'Code',
-    vaultCodeFootnote: 'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeFootnote:
+      'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
     vaultCodeSkip: 'Skip',
     vaultCodeConfirm: 'Enter code'
   },

@@ -13762,13 +13762,15 @@ ipcMain.on('hermes:chat-onboarding:solo-boot', event => {
   const width = Math.min(600, area.width)
   const height = Math.min(640, area.height)
 
-  mainWindow.setBounds({
-    height,
-    width,
-    x: Math.round(area.x + (area.width - width) / 2),
-    y: Math.round(area.y + (area.height - height) / 2)
-  })
-  introRevealController.showMainAfterOnboarding()
+  mainWindow.setBounds(
+    {
+      height,
+      width,
+      x: Math.round(area.x + (area.width - width) / 2),
+      y: Math.round(area.y + (area.height - height) / 2)
+    },
+    true
+  )
 })
 
 // The pet overlay: a single transparent, frameless, always-on-top window that

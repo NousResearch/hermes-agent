@@ -9,6 +9,7 @@ import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-act
 import type { ClientSessionState } from '@/app/types'
 import {
   $chatOnboardingThreadIds,
+  endChatOnboardingSolo,
   pickOnboardingGreeting,
   startChatOnboardingSolo
 } from '@/components/onboarding-chat/assembly'
@@ -33,7 +34,7 @@ import { activeGatewayConnectionId, requestGatewayForAgent, requestGatewayForPro
 import { loadMachineProfile } from '@/store/machine'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
-import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
+import { beginOnboardingHandoff, completeOnboardingFlow, skipGuide } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
   $activeGatewayProfile,
@@ -150,6 +151,14 @@ export function useOnboardingHandoff({
       return false
     }
 
+    const previousNewChatProfile = $newChatProfile.get()
+    const previousNewChatRoute = $newChatRoute.get()
+    const previousProfile = $activeGatewayProfile.get()
+    const previousConnectionId = activeGatewayConnectionId()
+    const previousSetupSession = $setupSession.get()
+    const previousThreadIds = $chatOnboardingThreadIds.get()
+    let swapped = false
+
     try {
       await ensureSetupProfile(requestGateway)
 
@@ -161,6 +170,7 @@ export function useOnboardingHandoff({
         return false
       }
 
+      swapped = true
       $newChatRoute.set(null)
       $newChatProfile.set(SETUP_PROFILE)
       await ensureGatewayProfile(SETUP_PROFILE)
@@ -182,7 +192,7 @@ export function useOnboardingHandoff({
       const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
         include_hidden: true,
         title: SETUP_CHAT_TITLE
-      }).catch(() => null)
+      })
 
       const canonical = registryHit?.sessions?.[0]
 
@@ -204,7 +214,7 @@ export function useOnboardingHandoff({
       )
 
       if (!runtimeId) {
-        return false
+        throw new Error('The welcome chat could not be created. Please try again.')
       }
 
       const storedId = $selectedStoredSessionId.get()
@@ -217,6 +227,23 @@ export function useOnboardingHandoff({
       // session.create persisted both seed rows before the phase can advance.
       return true
     } catch (error) {
+      $newChatProfile.set(previousNewChatProfile)
+      $newChatRoute.set(previousNewChatRoute)
+      $setupSession.set(previousSetupSession)
+      $chatOnboardingThreadIds.set(previousThreadIds)
+      endChatOnboardingSolo()
+      skipGuide()
+
+      if (swapped) {
+        await (
+          previousConnectionId
+            ? ensureGatewayAgent(previousConnectionId, previousProfile)
+            : ensureGatewayProfile(previousProfile)
+        ).catch(restoreError => {
+          notify({ kind: 'error', title: 'Could not restore your profile', message: String(restoreError) })
+        })
+      }
+
       console.error('[setup] welcome chat could not start', error)
       notify({
         kind: 'error',

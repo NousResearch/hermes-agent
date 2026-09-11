@@ -16,11 +16,6 @@ vi.mock('@/store/gateway', () => ({
   requestGatewayForAgent: mocks.request,
   requestGatewayForProfile: (profile: string, ...args: unknown[]) => mocks.request('source-a', profile, ...args)
 }))
-vi.mock('@/components/onboarding-chat/assembly', async () => {
-  const { atom } = await import('nanostores')
-
-  return { $chatOnboardingThreadIds: atom([]), pickOnboardingGreeting: vi.fn(), startChatOnboardingSolo: vi.fn() }
-})
 vi.mock('@/components/onboarding-chat/first-build', async () => {
   const { atom } = await import('nanostores')
 
@@ -30,13 +25,14 @@ vi.mock('@/components/onboarding-chat/signpost', () => ({
   declinedLookAround: () => true,
   showProfileSignpost: vi.fn()
 }))
-vi.mock('@/components/pane-shell/tree/store', async () => ({
-  $layoutTree: (await import('nanostores')).atom(null),
-  activateTreePane: vi.fn()
-}))
+vi.mock('@/store/layout', () => ({ setSidebarOpen: vi.fn() }))
 vi.mock('@/store/session-states', () => ({ patchSessionTile: mocks.tile }))
 vi.mock('@/store/notifications', () => ({ notify: mocks.notify, dismissNotification: vi.fn() }))
-vi.mock('@/store/machine', () => ({ loadMachineProfile: vi.fn(), machineDescription: () => '' }))
+vi.mock('@/store/machine', () => ({
+  loadMachineProfile: vi.fn(async () => undefined),
+  machineDescription: () => '',
+  machineUserName: () => ''
+}))
 vi.mock('@/store/onboarding-script', () => ({
   PLAIN_SPEECH: '',
   buildChatOnboardingSeedMessages: vi.fn(() => [])
@@ -78,7 +74,12 @@ vi.mock('@/store/session', async () => {
 
 import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
 import type { ClientSessionState } from '@/app/types'
-import { startChatOnboardingSolo } from '@/components/onboarding-chat/assembly'
+import * as assembly from '@/components/onboarding-chat/assembly'
+import { $chatOnboardingSolo, $onboardingGreeting } from '@/components/onboarding-chat/assembly'
+import { group } from '@/components/pane-shell/tree/model'
+import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import {
   $setupHandoff,
   $setupSession,
@@ -89,7 +90,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $onboardingAnswers, DEFAULT_ANSWERS } from '@/store/onboarding-answers'
 import { $onboardingGate, devResetOnboardingFlow } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
-import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { retrySetupHandoff } from './handoff-receipt'
@@ -141,6 +142,9 @@ beforeEach(() => {
   $onboardingAnswers.set({ ...DEFAULT_ANSWERS, name: 'Ada', context: 'Garden tracker', connectors: ['Calendar'] })
   localStorage.clear()
   resetSetupHandoffForTests()
+  vi.restoreAllMocks()
+  vi.spyOn(assembly, 'startChatOnboardingSolo')
+  $chatOnboardingSolo.set(false)
   vi.clearAllMocks()
   mocks.connectionId = 'source-a'
   $activeGatewayProfile.set('hermes-setup')
@@ -203,12 +207,12 @@ describe('the real onboarding handoff effect', () => {
       ['source-a', 'hermes-setup', 'setup.status', {}]
     ])
     expect(mocks.ensure).toHaveBeenCalledTimes(starts ? 1 : 0)
-    expect(startChatOnboardingSolo).toHaveBeenCalledTimes(starts ? 1 : 0)
+    expect(assembly.startChatOnboardingSolo).toHaveBeenCalledTimes(starts ? 1 : 0)
     expect(h.options.createBackendSessionForSend).toHaveBeenCalledTimes(starts ? 1 : 0)
 
     if (starts) {
       expect(mocks.request.mock.invocationCallOrder[0]).toBeLessThan(mocks.ensure.mock.invocationCallOrder[0])
-      expect(buildChatOnboardingSeedMessages).toHaveBeenCalledWith(undefined, record.free_tier !== true)
+      expect(buildChatOnboardingSeedMessages).toHaveBeenCalledWith($onboardingGreeting.get(), record.free_tier !== true)
       const createOverrides: SessionCreateOverrides = { title: 'Welcome to Hermes' }
 
       if (record.free_tier) {
@@ -258,12 +262,43 @@ describe('the real onboarding handoff effect', () => {
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error', message: stage }))
   })
 
+  it.each(['null', 'throw'])('restores the launch surface after a %s create in the solo shell', async failure => {
+    $newChatProfile.set('launch')
+    $activeGatewayProfile.set('launch')
+    const route = { connectionId: 'source-a', profile: 'launch' }
+    $newChatRoute.set(route)
+    applyLayoutPreset('launch-layout', group(['workspace', 'sessions']))
+    const tree = $layoutTree.get()
+    const h = harness()
+    mocks.request.mockImplementation(async (_connection, _profile, method) =>
+      method === 'setup.status' ? { ready: true, provider_configured: true } : { sessions: [] }
+    )
+    vi.mocked(h.options.createBackendSessionForSend).mockImplementation(async () => {
+      expect($chatOnboardingSolo.get()).toBe(true)
+      if (failure === 'throw') throw new Error('create failed')
+      return null
+    })
+
+    await act(async () => expect(await h.result.current()).toBe(false))
+
+    expect(h.options.createBackendSessionForSend).toHaveBeenCalledOnce()
+    expect($chatOnboardingSolo.get()).toBe(false)
+    expect($newChatProfile.get()).toBe('launch')
+    expect($newChatRoute.get()).toEqual(route)
+    expect($layoutTree.get()).toEqual(tree)
+    expect($onboardingGreeting.get()).toBe('')
+    expect(onboardingSurfaceActive()).toBe(false)
+    expect($onboardingGate.get()).toEqual({ phase: 'done', guideQueued: false })
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+    expect(mocks.ensure).toHaveBeenLastCalledWith('source-a', 'launch')
+  })
+
   it('adds no backend work or onboarding surface with the flag absent', async () => {
     vi.stubGlobal('hermesDesktop', {})
     const h = harness()
     await act(async () => expect(await h.result.current()).toBe(false))
     act(() => $setupHandoff.set({ ...task, phase: 'pending' }))
-    expect(startChatOnboardingSolo).not.toHaveBeenCalled()
+    expect(assembly.startChatOnboardingSolo).not.toHaveBeenCalled()
     expect(h.options.requestGateway).not.toHaveBeenCalled()
     expect(h.options.createBackendSessionForSend).not.toHaveBeenCalled()
     expect(mocks.request).not.toHaveBeenCalled()

@@ -19,6 +19,7 @@ import { atom } from 'nanostores'
 import { allPaneIds, group, type LayoutNode } from '@/components/pane-shell/tree/model'
 import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
 import {
+  $activePresetId,
   $layoutTree,
   adoptContributedPanes,
   dismissTreePane,
@@ -92,11 +93,14 @@ export function pickOnboardingGreeting(): string {
  *  moment it takes effect. */
 export const $chatLayoutPicked = atom(false)
 
+let previousLayout: { id: string; tree: LayoutNode | null } | null = null
+
 export function startChatOnboardingSolo(): void {
   if (!isOnboardingEnabled() || $chatOnboardingSolo.get()) {
     return
   }
 
+  previousLayout = { id: $activePresetId.get(), tree: $layoutTree.get() }
   $chatOnboardingSolo.set(true)
   $chatLayoutPicked.set(false)
   // Bank the opening line the moment the solo chat owns the screen. The
@@ -106,7 +110,9 @@ export function startChatOnboardingSolo(): void {
   // the empty-draft wordmark. The kickoff picks again and gets this same
   // banked line (pick is first-write-wins).
   void loadMachineProfile().then(() => {
-    pickOnboardingGreeting()
+    if ($chatOnboardingSolo.get()) {
+      pickOnboardingGreeting()
+    }
   })
   // One zone, strip pinned off. applyTree ADOPTS panes the preset doesn't
   // declare (sessions, terminal, …) into this group as tabs — with the strip
@@ -115,6 +121,23 @@ export function startChatOnboardingSolo(): void {
   // unhides (files on cwd-arrival) can't pop a zone open mid-flow: there is
   // no other zone to open.
   applyLayoutPreset('chat-solo', group(['workspace'], { tabStrip: 'never' }))
+}
+
+/** A failed kickoff releases the screen so classic onboarding can resume. */
+export function endChatOnboardingSolo(): void {
+  $chatOnboardingSolo.set(false)
+  $onboardingGreeting.set('')
+
+  const previous = previousLayout
+  previousLayout = null
+
+  if (previous) {
+    const tree = previous.tree ?? registry.getArea('layouts').find(preset => preset.id === 'default')?.data
+
+    if (tree) {
+      applyLayoutPreset(previous.tree ? previous.id : 'default', tree as LayoutNode)
+    }
+  }
 }
 
 /** Minimal per-edge growth per layout — the least the window must gain for

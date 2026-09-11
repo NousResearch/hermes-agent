@@ -134,9 +134,8 @@ declare global {
           right: number
           top: number
         }) => void
-        /** The guided chat is starting — main pre-sizes the (hidden) app window
-         *  to the solo-chat card so the first visible frame is already the
-         *  conversation panel. */
+        /** The film has revealed the app. Animate the visible window down to
+         *  the solo-chat size as the guided chat starts. */
         soloBoot?: () => void
       }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its

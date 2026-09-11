@@ -56,7 +56,9 @@ export interface TourHolder {
  *  supplies the actual navigation (see TourHost), so the engine itself stays
  *  self-contained and portable to a guest page. */
 export interface TourStep {
-  /** Emphasizes the handoff signpost without changing tour navigation. */
+  /** Draw this step accent-lit: a slowly travelling ring around the popover
+   *  instead of the usual hairline. For the moment in a run that is worth more
+   *  than a step — used sparingly, or it stops meaning anything. */
   accent?: boolean
   navigate?: string
   pane?: string

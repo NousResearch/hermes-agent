@@ -351,6 +351,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         : undefined
 
     completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+
+    // Onboarding's first build: between turns is the only moment Setup may
+    // put a check-in into that session (no-op everywhere else).
     reportFirstBuildTurnComplete(sessionId, finalText)
 
     // Structured billing wall forwarded by the gateway (out of credits /

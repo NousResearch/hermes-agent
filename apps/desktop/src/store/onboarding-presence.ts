@@ -1,3 +1,14 @@
+/**
+ * Onboarding presence — one tiny dependency-free flag the first-run surfaces
+ * raise while they own the screen (intro cinematic and guided solo chat).
+ *
+ * Exists so leaf infrastructure (the update toast, future ambient
+ * notifications) can ask "is onboarding on screen?" WITHOUT importing the
+ * feature stores — updates.ts pulling intro-reveal/assembly
+ * dragged their whole import chains into every test that mocks around it.
+ * Surfaces push state in; consumers read a boolean out.
+ */
+
 import { atom } from 'nanostores'
 
 export type OnboardingSurface = 'intro' | 'solo-chat'

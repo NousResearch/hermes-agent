@@ -69,6 +69,8 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+      // Onboarding's first build paces its check-ins off real work done
+      // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)
 
       if (isActiveEvent) {

@@ -13,7 +13,7 @@ export const selectableClass = (on: boolean) =>
     on ? 'border-primary bg-primary/15' : 'border-transparent bg-muted hover:bg-accent/60'
   )
 
-/** Toggleable chip — every pickable row/tag in the wizard. Two shapes:
+/** Toggleable chip — every pickable row/tag in the guided cards. Two shapes:
  *  `card` (connector rows, roomier, fits an icon) and `pill` (compact
  *  tag-cloud toggles). */
 export function Chip({

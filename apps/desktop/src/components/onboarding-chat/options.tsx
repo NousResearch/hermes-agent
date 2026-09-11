@@ -72,8 +72,8 @@ export function AccentSwatch({
   )
 }
 
-// Mini layout trees — the two starting layouts, mirroring the real preset
-// trees in app/contrib/controller.tsx (BASIC_TREE / TERMINAL_TREE), drawn in
+// Mini layout trees mirror the basic (BASIC_TREE) and terminal-deck
+// (TERMINAL_TREE) presets registered in app/contrib/controller.tsx, drawn in
 // the layout editor's thumbnail language, upscaled.
 export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
 

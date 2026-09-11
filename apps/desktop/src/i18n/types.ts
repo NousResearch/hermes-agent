@@ -2679,6 +2679,11 @@ export interface Translations {
     }
   }
 
+  /** The guided first run's pre-written opening line — banked, not generated,
+   *  so the first paint costs no model time. Translated per locale because the
+   *  model is told to speak the user's language from its first real turn, and
+   *  an English opener above a Japanese reply reads as two different agents.
+   *  `nameSuggestion` offers the OS account name as a default. */
   guidedGreeting: {
     lines: readonly string[]
     nameSuggestion: (name: string) => string

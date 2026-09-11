@@ -1,3 +1,12 @@
+/**
+ * The setup picks — connectors, accent, layout.
+ *
+ * Everything applies LIVE on click: the accent retints the app, the layout
+ * preset rearranges the panes behind the chat. That's the trick. The model
+ * never enumerates options in prose; it only places the card, and the catalog
+ * lives in options.tsx so the cards and previews can't drift.
+ */
+
 import { useStore } from '@nanostores/react'
 
 import { $chatLayoutPicked, assembleChatOnboarding } from '@/components/onboarding-chat/assembly'

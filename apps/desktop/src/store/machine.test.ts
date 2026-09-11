@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopMachineProfile } from '@/global'
 
 import {
   $machine,
+  loadMachineProfile,
   machineDescription,
   machineIsSpark,
   machineKind,
@@ -12,6 +13,19 @@ import {
   machineUserName
 } from './machine'
 import { forkFallbackOptions, forkOptions, machineForkOption } from './onboarding-script'
+
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+vi.mock('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: (key: string, api: Window['hermesDesktop']) => vi.stubGlobal(key, api)
+  },
+  ipcRenderer: { invoke, sendSync: () => ({ guestOnboarding: true }) },
+  webFrame: {},
+  webUtils: {}
+}))
+
+afterEach(() => vi.unstubAllGlobals())
 
 const profile = (patch: Partial<DesktopMachineProfile>): DesktopMachineProfile => ({
   ageDays: 900,
@@ -171,4 +185,23 @@ describe('the fork', () => {
 
     expect([...twoTier].sort()).toEqual([...forkOptions()].sort())
   })
+})
+
+it('loads machine facts through the real preload bridge and reuses them for the guide', async () => {
+  const host = profile({ username: 'Alex', ageDays: 2 })
+
+  $machine.set(null)
+  invoke.mockResolvedValue(host)
+  // Preload is typechecked with the Electron project's compiler options.
+  await vi.importActual('../../electron/preload')
+  expect(invoke).not.toHaveBeenCalled()
+
+  await loadMachineProfile()
+  await loadMachineProfile()
+
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('hermes:machine:profile')
+  expect($machine.get()).toBe(host)
+  expect(machineUserName()).toBe(host.username)
+  expect(machineSetupLeads()).toBe(true)
+  expect(machineForkOption()).toBe('Help me set up this Mac')
 })

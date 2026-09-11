@@ -1,3 +1,15 @@
+/**
+ * In-chat onboarding cards — the `::onboarding{step="…"}` transcript
+ * directive. Hermes walks the user through setup in the transcript, and each
+ * step's paragraph renders as an interactive picker with a shared option
+ * catalog and persistence.
+ *
+ * This module is only the dispatcher. Two tables say what a step means — one
+ * writes an answer, the other renders a card — and a step in neither renders
+ * nothing, which is the right answer for the model's invisible acks. The cards
+ * themselves live in ./cards.
+ */
+
 import { useEffect } from 'react'
 
 import { FirstBuildCard, HandoffCard, ProgressCard } from '@/components/onboarding-chat/cards/build'

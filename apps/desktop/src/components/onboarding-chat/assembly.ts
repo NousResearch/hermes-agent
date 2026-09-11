@@ -1,3 +1,18 @@
+/**
+ * The layout assembly for in-chat onboarding.
+ *
+ * The guided chat starts SOLO: just the chat pane in a small window — no
+ * sidebar, nothing to explain. When the user picks a layout in the
+ * ::onboarding card, the app assembles around the conversation.
+ *
+ * The OS window grows OUTWARD by the MINIMUM each layout needs — the
+ * sidebar's width to the left, the terminal/rail minimums where a layout
+ * has them — animated (macOS setBounds animate), so the chat stays roughly
+ * where it was and the window ends as small as the layout allows, but never
+ * so small that the sidebar it just docked pops back out as a floating
+ * Sheet.
+ */
+
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 

@@ -34,6 +34,7 @@ from plugins.memory.hindsight import (
     _resolve_bank_id_template,
     _WRITER_SENTINEL,
 )
+from plugins.memory.hindsight.embedded import _install_profile_env_guard
 from plugins.memory.hindsight.settings import _sanitize_bank_segment
 
 
@@ -345,6 +346,150 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
+
+    def test_embedded_profile_env_forwards_embeddings_and_reranker(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text(
+            "HINDSIGHT_LLM_API_KEY=llm-secret\n"
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY=embed-secret\n"
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY=rerank-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("plugins.memory.hindsight.embedded.get_hermes_home", lambda: hermes_home)
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "gpt-4o-mini",
+            "llm_base_url": "https://llm.example.test/v1",
+            "llm_reasoning_effort": "medium",
+            "llm_wire": "chat",
+            "llm_timeout": 300,
+            "api_port": 9177,
+            "idle_timeout": 300,
+            "embeddings_provider": "openai",
+            "embeddings_openai_model": "qwen3-embedding-0.6b",
+            "embeddings_openai_base_url": "https://embed.example.test/v1",
+            "reranker_provider": "siliconflow",
+            "reranker_siliconflow_model": "BAAI/bge-reranker-v2-m3",
+            "reranker_siliconflow_base_url": "https://rerank.example.test/v1",
+            "reranker_siliconflow_timeout": 15,
+            "reranker_failover_provider": "local",
+            "reranker_local_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        })
+
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL"] == "qwen3-embedding-0.6b"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"] == "embed-secret"
+        assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "siliconflow"
+        assert env["HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL"] == "BAAI/bge-reranker-v2-m3"
+        assert env["HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY"] == "rerank-secret"
+        assert env["HINDSIGHT_API_RERANKER_1_PROVIDER"] == "local"
+        assert env["HTTP_PROXY"] == "http://proxy.example.test:8080"
+        assert "HINDSIGHT_API_LLM_API_KEY" in env
+        assert len(env) >= 20
+
+    def test_ensure_running_guard_injects_embeddings_before_register(
+        self, tmp_path, monkeypatch
+    ):
+        """Official ensure_running/_register_profile comments keys missing from config.
+
+        Last-writer rematerialize is not enough: the dict passed into
+        ensure_running must already contain embeddings, or render_config
+        comments them out and the next cold start falls back to bge-small.
+        """
+        render_config = pytest.importorskip("hindsight_embed.env_template").render_config
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text(
+            "HINDSIGHT_LLM_API_KEY=llm-secret\n"
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY=embed-secret\n"
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY=rerank-secret\n",
+            encoding="utf-8",
+        )
+        disk_config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_model": "gpt-4o-mini",
+            "llm_base_url": "https://llm.example.test/v1",
+            "embeddings_provider": "openai",
+            "embeddings_openai_model": "qwen3-embedding-0.6b",
+            "embeddings_openai_base_url": "https://embed.example.test/v1",
+            "reranker_provider": "siliconflow",
+            "reranker_siliconflow_model": "BAAI/bge-reranker-v2-m3",
+            "reranker_siliconflow_base_url": "https://rerank.example.test/v1",
+            "reranker_siliconflow_timeout": 15,
+            "reranker_failover_provider": "local",
+            "reranker_local_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        }
+        (hermes_home / "hindsight").mkdir()
+        (hermes_home / "hindsight" / "config.json").write_text(
+            json.dumps(disk_config), encoding="utf-8"
+        )
+        monkeypatch.setattr("plugins.memory.hindsight.embedded.get_hermes_home", lambda: hermes_home)
+
+        profile_env = Path.home() / ".hindsight" / "profiles" / "hermes.env"
+        captured = []
+
+        class FakeManager:
+            def ensure_running(self, config, profile, extra_args=None):
+                captured.append(dict(config))
+                existing = _load_simple_env(profile_env) if profile_env.exists() else {}
+                api_config = {
+                    key: value
+                    for key, value in config.items()
+                    if str(key).startswith("HINDSIGHT_API_")
+                }
+                merged = {key: value for key, value in existing.items() if not str(key).islower()}
+                merged.update(api_config)
+                profile_env.parent.mkdir(parents=True, exist_ok=True)
+                profile_env.write_text(render_config(merged), encoding="utf-8")
+                return True
+
+        llm_only = {
+            "HINDSIGHT_API_LLM_PROVIDER": "openai",
+            "HINDSIGHT_API_LLM_API_KEY": "llm-secret",
+            "HINDSIGHT_API_LLM_MODEL": "gpt-4o-mini",
+            "HINDSIGHT_API_LLM_BASE_URL": "https://llm.example.test/v1",
+        }
+
+        class FakeEmbedded:
+            def __init__(self):
+                self.config = dict(llm_only)
+                self.profile = "hermes"
+                self._manager = FakeManager()
+
+            def _ensure_started(self):
+                return self._manager.ensure_running(self.config, self.profile)
+
+        client = FakeEmbedded()
+        _install_profile_env_guard(client, disk_config)
+        client._ensure_started()
+        # Official second register still uses the constructor's LLM-only dict.
+        client._manager.ensure_running(dict(llm_only), "hermes")
+
+        assert captured, "ensure_running was not called"
+        for snapshot in captured:
+            assert snapshot.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER") == "openai"
+            assert snapshot.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL") == "qwen3-embedding-0.6b"
+            assert snapshot.get("HINDSIGHT_API_RERANKER_PROVIDER") == "siliconflow"
+
+        saved = _load_simple_env(profile_env)
+        assert saved.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER") == "openai"
+        assert saved.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL") == "qwen3-embedding-0.6b"
+        assert saved.get("HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL") == "BAAI/bge-reranker-v2-m3"
+        text = profile_env.read_text(encoding="utf-8")
+        assert "HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai" in text
+        assert not any(
+            line.strip().startswith("#") and "HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai" in line
+            for line in text.splitlines()
+            if "HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai" in line
+        )
 
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):

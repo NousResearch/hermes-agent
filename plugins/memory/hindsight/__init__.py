@@ -35,7 +35,8 @@ from tools.registry import tool_error
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
     _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
-    _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _export_port_health_grace_timeout, _install_profile_env_guard, _load_simple_env,
+    _local_runtime_hint, _materialize_embedded_profile_env,
 )
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
@@ -466,7 +467,12 @@ class HindsightMemoryProvider(MemoryProvider):
                       idle_timeout=self._idle_timeout)
         if self._llm_base_url:
             kwargs["llm_base_url"] = self._llm_base_url
-        return HindsightEmbedded(**kwargs)
+        client = HindsightEmbedded(**kwargs)
+        full_env = _build_embedded_profile_env(cfg, llm_api_key=kwargs.get("llm_api_key"))
+        if hasattr(client, "config") and isinstance(getattr(client, "config", None), dict):
+            client.config.update(full_env)
+        _install_profile_env_guard(client, cfg, load_config=_load_config)
+        return client
 
     def _new_cloud_client(self):
         _ensure_client_dependency()
@@ -815,14 +821,32 @@ class HindsightMemoryProvider(MemoryProvider):
 
             client = self._get_client()
             profile = self._config.get("profile", "hermes")
-            # Profile .env out of sync with config -> rewrite and restart a running daemon.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
-                _materialize_embedded_profile_env(self._config)
-                if client._manager.is_running(profile):
-                    _log("\n=== Config changed, restarting daemon ===\n")
+            if hasattr(client, "config") and isinstance(getattr(client, "config", None), dict):
+                client.config.update(_build_embedded_profile_env(self._config))
+            _install_profile_env_guard(client, self._config, load_config=_load_config)
+            profile_env = _embedded_profile_env_path(self._config)
+            expected_env = _build_embedded_profile_env(self._config)
+            saved = _load_simple_env(profile_env)
+            config_changed = any(saved.get(key) != value for key, value in expected_env.items())
+            if config_changed:
+                profile_env = _materialize_embedded_profile_env(self._config)
+                embeddings_mismatch = (
+                    saved.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER")
+                    != expected_env.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER")
+                    or saved.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL")
+                    != expected_env.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL")
+                )
+                if embeddings_mismatch and client._manager.is_running(profile):
+                    _log("\n=== Embeddings config changed, restarting daemon ===\n")
                     client._manager.stop(profile)
+                elif config_changed:
+                    _log(
+                        "\n=== Profile env repaired in place "
+                        f"(keys={len(_load_simple_env(profile_env))}); leaving running daemon ===\n"
+                    )
             client._ensure_started()
-            _log("\n=== Daemon started successfully ===\n")
+            repaired = _materialize_embedded_profile_env(self._config)
+            _log(f"\n=== Daemon started successfully (profile env keys={len(_load_simple_env(repaired))}) ===\n")
         except Exception as e:
             _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
 

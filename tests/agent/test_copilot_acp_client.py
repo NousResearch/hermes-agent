@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -421,3 +422,72 @@ def test_run_prompt_receives_picker_model():
             model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
         )
     assert seen["model"] == "gpt-5.6-terra"
+
+
+def test_list_models_reads_enabled_session_config_options(tmp_path):
+    server = tmp_path / "fake_copilot_acp.py"
+    server.write_text(
+        """import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {
+            "sessionId": "catalog-session",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "options": [
+                    {"value": "auto"},
+                    {"value": "gpt-5.6-terra"},
+                    {"value": "gpt-5.6-terra"},
+                    {"value": "claude-fable-5", "_meta": {"copilotEnablement": "disabled"}},
+                ],
+            }],
+            "models": {"availableModels": [{"modelId": "stale-legacy-model"}]},
+        }
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = CopilotACPClient(
+        command=sys.executable,
+        args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client.list_models(timeout_seconds=2) == ["auto", "gpt-5.6-terra"]
+    assert client.is_closed is True
+
+
+def test_model_discovery_does_not_allow_file_requests(tmp_path):
+    target = tmp_path / "should-not-be-read.txt"
+    target.write_text("private", encoding="utf-8")
+    server = tmp_path / "fake_copilot_acp_fs_request.py"
+    server.write_text(
+        f"""import json
+import sys
+
+initialize = json.loads(sys.stdin.readline())
+print(json.dumps({{"jsonrpc": "2.0", "id": initialize["id"], "result": {{"protocolVersion": 1}}}}), flush=True)
+session = json.loads(sys.stdin.readline())
+print(json.dumps({{"jsonrpc": "2.0", "id": 99, "method": "fs/read_text_file", "params": {{"path": {str(target)!r}}}}}), flush=True)
+file_response = json.loads(sys.stdin.readline())
+assert file_response["error"]["code"] == -32601
+print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId": "catalog-session", "configOptions": [{{"id": "model", "options": [{{"value": "gpt-5.6-sol"}}]}}]}}}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = CopilotACPClient(
+        command=sys.executable,
+        args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client.list_models(timeout_seconds=2) == ["gpt-5.6-sol"]

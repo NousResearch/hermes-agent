@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -134,10 +135,32 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
 
 
-def _enabled_ids(entries: Any, key: str) -> set[str]:
-    """Ids of ``entries`` (dicts) whose ``_meta.copilotEnablement`` is not ``disabled``."""
-    return {str(e.get(key) or "").strip() for e in (entries or []) if isinstance(e, dict)
-            and str((e.get("_meta") or {}).get("copilotEnablement") or "").strip().lower() != "disabled"}
+def _enabled_id_list(entries: Any, key: str) -> list[str]:
+    """Ordered ids whose ``_meta.copilotEnablement`` is not ``disabled``."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get(key) or "").strip()
+        if (not value or value in seen
+                or str((entry.get("_meta") or {}).get("copilotEnablement") or "").strip().lower() == "disabled"):
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _model_config_option(session: dict[str, Any]) -> dict[str, Any] | None:
+    return next((option for option in (session.get("configOptions") or []) if isinstance(option, dict)
+                 and "model" in (option.get("category"), option.get("id"))), None)
+
+
+def _session_model_ids(session: dict[str, Any]) -> list[str]:
+    """Account-authorized model ids advertised by ``session/new`` in ACP v1 or its legacy extension."""
+    if option := _model_config_option(session):
+        return _enabled_id_list(option.get("options"), "value")
+    return _enabled_id_list((session.get("models") or {}).get("availableModels"), "modelId")
 
 
 def _model_selection_request(session: dict[str, Any], requested_model: str) -> tuple[str, dict[str, str]] | None:
@@ -149,12 +172,12 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
     requested_model = str(requested_model or "").strip()
     if not session_id or not requested_model or requested_model == "copilot-acp":
         return None
-    options = [o for o in (session.get("configOptions") or []) if isinstance(o, dict) and "model" in (o.get("category"), o.get("id"))]
-    if options:
-        if requested_model not in _enabled_ids(options[0].get("options"), "value"):
+    option = _model_config_option(session)
+    if option:
+        if requested_model not in _session_model_ids(session):
             return None
-        return "session/set_config_option", {"sessionId": session_id, "configId": str(options[0].get("id") or "model"), "value": requested_model}
-    available = _enabled_ids((session.get("models") or {}).get("availableModels"), "modelId")
+        return "session/set_config_option", {"sessionId": session_id, "configId": str(option.get("id") or "model"), "value": requested_model}
+    available = set(_session_model_ids(session))
     return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
 
 
@@ -322,10 +345,11 @@ class CopilotACPClient:
             self._active_process = proc
         return proc
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
-        # The CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown id
-        # aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
-        requested_model = str(model or "").strip()
+    @contextlib.contextmanager
+    def _session(
+        self, timeout_seconds: float, *, allow_file_requests: bool = True
+    ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
+        """Start one ACP process and yield its ``session/new`` result plus request callable."""
         proc = self._spawn()
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
@@ -344,7 +368,8 @@ class CopilotACPClient:
         threading.Thread(target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True).start()
         request_ids = iter(range(1, 1 << 62))
 
-        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
+        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
+                     reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
             proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
             proc.stdin.flush()
@@ -355,7 +380,8 @@ class CopilotACPClient:
                 except queue.Empty:
                     continue
                 if self._handle_server_message(
-                    msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts, reasoning_parts=reasoning_parts
+                    msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
+                    reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
                 ) or msg.get("id") != request_id:
                     continue
                 if "error" in msg:
@@ -372,9 +398,23 @@ class CopilotACPClient:
         try:
             _request("initialize", _INITIALIZE_PARAMS)
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
-            session_id = str(session.get("sessionId") or "").strip()
-            if not session_id:
+            if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+            yield session, _request
+        finally:
+            self.close()
+
+    def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
+        """Return the enabled models advertised by a short-lived authenticated ACP session."""
+        with self._session(timeout_seconds, allow_file_requests=False) as (session, _request):
+            return _session_model_ids(session)
+
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+        # The CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown id
+        # aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
+        requested_model = str(model or "").strip()
+        with self._session(timeout_seconds) as (session, _request):
+            session_id = str(session.get("sessionId") or "").strip()
             if requested_model and requested_model != "copilot-acp":
                 try:
                     if (selection := _model_selection_request(session, requested_model)) is not None:
@@ -388,11 +428,10 @@ class CopilotACPClient:
             prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}
             _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
             return "".join(text_parts), "".join(reasoning_parts)
-        finally:
-            self.close()
 
     def _handle_server_message(
         self, msg: dict[str, Any], *, process: subprocess.Popen[str], cwd: str, text_parts: list[str] | None, reasoning_parts: list[str] | None,
+        allow_file_requests: bool = True,
     ) -> bool:
         """Consume a server->client message; True when handled (notification or request answered)."""
         method = msg.get("method")
@@ -412,10 +451,13 @@ class CopilotACPClient:
         if method == "session/request_permission":
             response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
         elif method in _FS_HANDLERS:
-            try:
-                response = _jsonrpc_result(message_id, _FS_HANDLERS[method](msg.get("params") or {}, cwd))
-            except Exception as exc:
-                response = _jsonrpc_error(message_id, -32602, str(exc))
+            if not allow_file_requests:
+                response = _jsonrpc_error(message_id, -32601, "File access is unavailable during model discovery.")
+            else:
+                try:
+                    response = _jsonrpc_result(message_id, _FS_HANDLERS[method](msg.get("params") or {}, cwd))
+                except Exception as exc:
+                    response = _jsonrpc_error(message_id, -32602, str(exc))
         else:
             response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
         process.stdin.write(json.dumps(response) + "\n")

@@ -52,7 +52,6 @@ import { requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
-import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
@@ -86,6 +85,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -1206,6 +1206,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
   const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0)
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
+
   const titlebarToolsWidth =
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 

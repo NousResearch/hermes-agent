@@ -291,6 +291,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const visibleLeftTools = (
     appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
   ).filter(tool => !tool.hidden)
+
   const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(tool => !tool.hidden) : []
   const visiblePaneTools = tools.filter(tool => !tool.hidden)
 

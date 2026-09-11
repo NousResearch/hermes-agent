@@ -473,7 +473,17 @@ _STYLE_PALETTE = (
     ("status_critical", "status_bar_critical", "@error"), ("voice_bg", "voice_status_bg", "@status_bg"),
     ("menu_bg", "completion_menu_bg", "#1a1a2e"), ("menu_current_bg", "completion_menu_current_bg", "#333355"),
     ("menu_meta_bg", "completion_menu_meta_bg", "@menu_bg"),
-    ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"))
+    ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"),
+    # Clarify / approval panels prefer dedicated skin keys when a skin sets them, and
+    # inherit the derived palette above otherwise (skins that set none are unchanged).
+    ("clarify_border", "clarify_border", "@input_rule"),
+    ("clarify_title", "clarify_title", "@title"), ("clarify_question", "clarify_question", "@text"),
+    ("clarify_choice", "clarify_choice", "@dim"), ("clarify_selected", "clarify_selected", "@title"),
+    ("clarify_active_other", "clarify_active_other", "@title"),
+    ("clarify_countdown", "clarify_countdown", "@input_rule"),
+    ("approval_border", "approval_border", "@input_rule"), ("approval_title", "approval_title", "@warn"),
+    ("approval_desc", "approval_desc", "@text"), ("approval_cmd", "approval_cmd", "@dim"),
+    ("approval_choice", "approval_choice", "@dim"), ("approval_selected", "approval_selected", "@title"))
 
 # prompt_toolkit style class -> format template over the resolved palette names.
 _STYLE_TEMPLATES = {
@@ -493,13 +503,17 @@ _STYLE_TEMPLATES = {
     "completion-menu.completion.current": "bg:{menu_current_bg} {title}",
     "completion-menu.meta.completion": "bg:{menu_meta_bg} {dim}",
     "completion-menu.meta.completion.current": "bg:{menu_meta_current_bg} {label}",
-    "clarify-border": "{input_rule}", "clarify-title": "{title} bold", "clarify-question": "{text} bold",
-    "clarify-choice": "{dim}", "clarify-selected": "{title} bold", "clarify-active-other": "{title} italic",
-    "clarify-countdown": "{input_rule}",
+    "clarify-border": "{clarify_border}", "clarify-title": "{clarify_title} bold",
+    "clarify-question": "{clarify_question} bold",
+    "clarify-choice": "{clarify_choice}", "clarify-selected": "{clarify_selected} bold",
+    "clarify-active-other": "{clarify_active_other} italic",
+    "clarify-countdown": "{clarify_countdown}",
     "sudo-prompt": "{error} bold", "sudo-border": "{input_rule}", "sudo-title": "{error} bold",
     "sudo-text": "{text}",
-    "approval-border": "{input_rule}", "approval-title": "{warn} bold", "approval-desc": "{text} bold",
-    "approval-cmd": "{dim} italic", "approval-choice": "{dim}", "approval-selected": "{title} bold",
+    "approval-border": "{approval_border}", "approval-title": "{approval_title} bold",
+    "approval-desc": "{approval_desc} bold",
+    "approval-cmd": "{approval_cmd} italic", "approval-choice": "{approval_choice}",
+    "approval-selected": "{approval_selected} bold",
     "voice-status": "bg:{voice_bg} {label}", "voice-status-recording": "bg:{voice_bg} {error} bold"}
 
 

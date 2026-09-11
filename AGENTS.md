@@ -165,5 +165,4 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, plugin quarantine |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
 
-Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage
-process) live in the `hermes-agent-dev` skill, not here.
+Long-form background and workflow guidance live in `website/docs/developer-guide/`.

@@ -1134,8 +1134,8 @@ def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
     return home / _TAKEOVER_MARKER_FILENAME
 
 
-def _get_planned_stop_marker_path() -> Path:
-    return _get_process_hermes_home() / _PLANNED_STOP_MARKER_FILENAME
+def _get_planned_stop_marker_path(hermes_home: Optional[Path] = None) -> Path:
+    return (hermes_home or _get_process_hermes_home()) / _PLANNED_STOP_MARKER_FILENAME
 
 
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
@@ -1416,11 +1416,12 @@ def _terminate_verified_owner(
     return None
 
 
-def write_planned_stop_marker(target_pid: int) -> bool:
+def write_planned_stop_marker(target_pid: int, *, target_home: Optional[Path] = None) -> bool:
     """Record that ``target_pid`` is being stopped intentionally: unexpected SIGTERM exits non-zero
     so service managers revive the gateway; the CLI writes this first so a deliberate stop exits
-    cleanly."""
-    return _write_marker(_get_planned_stop_marker_path(), {
+    cleanly. Cross-profile service operations pass the target's home without changing the
+    caller's process environment."""
+    return _write_marker(_get_planned_stop_marker_path(target_home), {
         "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
         "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
     })

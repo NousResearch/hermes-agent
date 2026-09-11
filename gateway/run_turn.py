@@ -1853,7 +1853,7 @@ class GatewayTurnMixin:
                 status_hint = " The request was rejected by the API."
         return self._hmwa_add_failed_turn_notice(
             f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Use /reset to start a fresh session if needed.",
+            "Try again or use /reset to start a fresh session.",
             self._PARTIAL_FAILED_TURN_NOTICE,
         )
 

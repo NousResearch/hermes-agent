@@ -382,6 +382,8 @@ def install_node_sidecar(
             cwd=str(plugin_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=900,
         )
     except Exception as exc:
@@ -469,7 +471,8 @@ def lock_and_sync(
 
     if not frozen:
         lock = subprocess.run(
-            [uv_bin, "lock"], cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800
+            [uv_bin, "lock"], cwd=str(generated), env=run_env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
         )
         if lock.returncode != 0:
             raise classify_uv_failure("lock", lock.returncode, lock.stderr or lock.stdout)
@@ -484,7 +487,10 @@ def lock_and_sync(
     cmd = [uv_bin, "sync", "--frozen", "--all-packages"]
     for extra in sorted(set(extras or [])):
         cmd += ["--extra", extra]
-    sync = subprocess.run(cmd, cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800)
+    sync = subprocess.run(
+        cmd, cwd=str(generated), env=run_env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
+    )
     if sync.returncode != 0:
         # --frozen means the lock already resolved; a sync failure here is
         # install/download/tooling, never a NEW resolution conflict.

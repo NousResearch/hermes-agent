@@ -53,6 +53,10 @@ Isolation: **board** is the hard boundary — workers get `HERMES_KANBAN_BOARD` 
 cannot see other boards; **tenant** is a soft namespace within a board (workspace-path + memory-key
 isolation, one fleet serving several businesses). After `kanban.failure_limit` consecutive
 non-success attempts on a task (default 2) the dispatcher auto-blocks it to stop spin loops.
+`kanban.max_in_progress` limits concurrent `running` tasks. Its value is coerced to an integer;
+failed conversions or results below 1 are ignored (`0` does not pause spawning). An unset or
+ignored value uses a memory-derived default of 2–8 workers when total host memory is known,
+otherwise no derived cap. Explicit positive values override that default.
 Process-identity note: `kanban --preserve-cache` contains "serve" — never classify processes by argv
 substring (root).
 

@@ -21,3 +21,5 @@ from hermes_cli.local_runtime.gguf import read_gguf_header  # noqa: F401
 from hermes_cli.local_runtime.hardware import probe_budget  # noqa: F401
 from hermes_cli.local_runtime.presets import generate_presets  # noqa: F401
 from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor  # noqa: F401
+from hermes_cli.local_runtime.child_watchdog import (  # noqa: F401
+    COOLDOWN_S, FAILURE_THRESHOLD, ChildWatchdog)

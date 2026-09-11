@@ -2393,6 +2393,10 @@ DEFAULT_CONFIG = {
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
+        # Wedged-child watchdog (issue #104050): after 3 consecutive inference
+        # 500s on a managed model, confirm with a live probe and ask the router
+        # to unload it (bounce only when the router won't drop it). False = off.
+        "child_watchdog": True,
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],

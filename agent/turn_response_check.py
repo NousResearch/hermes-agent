@@ -140,6 +140,14 @@ def check_api_response(
             return _verdict(_iv.action, _iv.result)
 
     agent._turn_received_provider_response = True
+    try:
+        # Successful inference proves the child computes: reset its watchdog
+        # streak (issue #104050). Shape-validated above, so 200-with-content.
+        from agent.conversation_loop import _note_managed_inference_result
+
+        _note_managed_inference_result(agent, True)
+    except Exception:  # noqa: BLE001 — the helper already swallows; belt and braces
+        logger.debug("child-watchdog success note failed", exc_info=True)
     finish_reason = _derive_finish_reason(agent, response, messages)
 
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.

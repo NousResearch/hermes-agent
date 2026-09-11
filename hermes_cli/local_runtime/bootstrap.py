@@ -237,7 +237,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),
-                                    port=int(section.get("port", 0)) or None)
+                                    port=int(section.get("port", 0)) or None,
+                                    child_watchdog=bool(section.get("child_watchdog", True)))
         try:
             sup.start()
         except Exception:
@@ -269,8 +270,9 @@ def get_supervisor():
 
 
 def _start_idle_sweeper(sup) -> None:
-    """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
-    threshold. Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
+    """Maintenance loop: every couple of minutes, unload models idle past the
+    supervisor's threshold AND probe/heal wedged router children (issue #104050).
+    Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
     import threading
 
     def _loop():
@@ -278,8 +280,9 @@ def _start_idle_sweeper(sup) -> None:
             time.sleep(120)
             try:
                 sup.sweep_idle()
+                sup.check_wedged_children()
             except Exception as exc:  # noqa: BLE001
-                logger.debug("idle sweep skipped: %s", exc)
+                logger.debug("local-runtime maintenance skipped: %s", exc)
 
     threading.Thread(target=_loop, daemon=True, name="local-runtime-idle-sweep").start()
 

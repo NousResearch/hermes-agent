@@ -856,6 +856,28 @@ class TestTaskRpcHandlers:
         resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d3", "id": "cfg-wrong"})
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
+    def test_inline_push_reads_spec_task_push_notification_config(self):
+        """A2A 1.0 §3.2.2 SendMessageConfiguration.taskPushNotificationConfig."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-i", "ctx-i", "peer")
+        adapter._register_inline_push("task-i", {
+            "configuration": {
+                "taskPushNotificationConfig": {"url": "https://example.com/hook"},
+            },
+        })
+        assert adapter.tasks.get("task-i")["push_url"] == "https://example.com/hook"
+
+    def test_inline_push_reads_jsonrpc_push_notification_config(self):
+        """JSON-RPC peers (Seed call_agent) send configuration.pushNotificationConfig."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-j", "ctx-j", "peer")
+        adapter._register_inline_push("task-j", {
+            "configuration": {
+                "pushNotificationConfig": {"url": "http://127.0.0.1:3979/push/hermes"},
+            },
+        })
+        assert adapter.tasks.get("task-j")["push_url"] == "http://127.0.0.1:3979/push/hermes"
+
 
 # --------------------------------------------------------------------------
 # End-to-end inbound round-trip (real http.server + mocked agent)
@@ -1300,6 +1322,62 @@ class TestPushNotificationEndToEnd:
             ).hexdigest()
             assert received["signature"] == expected
 
+            await adapter.disconnect()
+
+        try:
+            asyncio.run(run())
+        finally:
+            hook_server.shutdown()
+            hook_server.server_close()
+
+    def test_jsonrpc_push_config_delivers_on_loopback_bind_with_peer_tokens(self, monkeypatch):
+        """Seed call_agent shape: configuration.pushNotificationConfig to /push/<agent>
+        while inbound has peer tokens on a 127.0.0.1 bind."""
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-alice")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+
+        received = {}
+        received_evt = threading.Event()
+
+        class _Hook(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # noqa: A002
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                received["path"] = self.path
+                received["body"] = json.loads(self.rfile.read(length).decode())
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                received_evt.set()
+
+        hook_port = _free_port()
+        hook_server = HTTPServer(("127.0.0.1", hook_port), _Hook)
+        hook_thread = threading.Thread(target=hook_server.serve_forever, daemon=True)
+        hook_thread.start()
+
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            body = _send_body("ping with jsonrpc push", extra_params={
+                "configuration": {
+                    "pushNotificationConfig": {
+                        "url": f"http://127.0.0.1:{hook_port}/push/hermes",
+                    },
+                },
+            })
+            resp = await asyncio.to_thread(
+                _post_json, base + "/", body, {"Authorization": "Bearer tok-alice"})
+            task = resp["result"]
+            assert received_evt.wait(timeout=5), "push callback never received"
+            assert received["path"] == "/push/hermes"
+            su = received["body"]["statusUpdate"]
+            assert su["taskId"] == task["id"]
+            assert su["status"]["state"] == "TASK_STATE_COMPLETED"
+            assert "ECHO:" in protocol.extract_text(su["status"]["message"])
             await adapter.disconnect()
 
         try:

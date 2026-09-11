@@ -668,6 +668,28 @@ class TestSSRFProtection:
         assert security.is_safe_callback_url("http://127.0.0.1:8080/hook") is True
         assert security.is_safe_callback_url("http://localhost:8080/hook") is True
 
+    def test_loopback_bind_with_peer_tokens_allows_loopback_callback(self, monkeypatch):
+        """Loopback-bound inbound (Hermes :9900) may push to a same-host door (:3979)."""
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-alice")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        ctx = security.A2ASecurityContext.capture()
+        assert ctx.allow_loopback_callbacks() is True
+        assert security.is_safe_callback_url(
+            "http://127.0.0.1:3979/push/hermes",
+            localhost_mode=ctx.allow_loopback_callbacks(),
+        ) is True
+
+    def test_wide_bind_with_peer_tokens_blocks_loopback_callback(self, monkeypatch):
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-alice")
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        ctx = security.A2ASecurityContext.capture()
+        assert ctx.allow_loopback_callbacks() is False
+        assert security.is_safe_callback_url(
+            "http://127.0.0.1:3979/push/hermes",
+            localhost_mode=ctx.allow_loopback_callbacks(),
+        ) is False
+
     def test_aws_metadata_blocked(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "tok")
         assert security.is_safe_callback_url("http://169.254.169.254/latest/meta-data/") is False

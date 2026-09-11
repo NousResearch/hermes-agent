@@ -198,6 +198,69 @@ def _run(child):
 
 
 class TestRunSingleChildSchemaValidation:
+    def test_schema_retry_keeps_child_context(self):
+        from agent.delegation_context import is_delegated_child_context
+
+        child = _StubChild(["invalid", '{"city": "Oslo"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        observed = []
+        original = child.run_conversation
+
+        def observe(**kwargs):
+            observed.append(is_delegated_child_context())
+            return original(**kwargs)
+
+        child.run_conversation = observe
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert observed == [True, True]
+        assert not is_delegated_child_context()
+
+    def test_schema_retry_timeout_defers_close_until_retry_unwinds(self, monkeypatch):
+        import threading
+        from tools import delegate_tool
+
+        child = _StubChild(["invalid", '{"city": "Oslo"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        retry_started = threading.Event()
+        release_retry = threading.Event()
+        returned = threading.Event()
+        closed = threading.Event()
+        stopped = threading.Event()
+        entries = []
+        original = child.run_conversation
+
+        def blocking_retry(**kwargs):
+            if child.calls:
+                retry_started.set()
+                assert release_retry.wait(10)
+            return original(**kwargs)
+
+        child.run_conversation = blocking_retry
+        child.hard_interrupt = lambda *_: stopped.set()
+        child.close = closed.set
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.5)
+        monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+
+        def run():
+            try:
+                entries.append(_run(child))
+            finally:
+                returned.set()
+
+        caller = threading.Thread(target=run, daemon=True)
+        caller.start()
+        try:
+            assert retry_started.wait(5)
+            assert returned.wait(2), "schema retry escaped the configured child timeout"
+            assert entries[0]["status"] == "timeout"
+            assert stopped.is_set()
+            assert not closed.is_set(), "the retry still owns the child"
+        finally:
+            release_retry.set()
+            caller.join(5)
+            assert closed.wait(5)
+
     def test_valid_first_try_no_retry(self):
         child = _StubChild(['{"city": "Berlin"}'])
         child._delegate_output_schema = ADDRESS_SCHEMA

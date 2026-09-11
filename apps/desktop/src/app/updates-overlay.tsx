@@ -67,7 +67,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  const updateAvailable = status?.updateAvailable || behind > 0 || behind === -2
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
@@ -239,7 +239,13 @@ function IdleView({
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  const { title, body } =
+    behind === -2
+      ? {
+          title: "Branch diverged",
+          body: "HEAD and origin/main have diverged (not a fast-forward). Review WIP before updating — this may switch to main / stash WIP.",
+        }
+      : resolveUpdateCopy({ target, shownItems, copy: u })
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">

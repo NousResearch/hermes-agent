@@ -520,7 +520,9 @@ export default function SystemPage() {
         if (force) {
           if (info.update_available) {
             showToast(
-              info.behind && info.behind > 0
+              info.behind === -2
+                ? (info.message || "Branch diverged from origin/main (not a fast-forward)")
+                : info.behind && info.behind > 0
                 ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
                 : "Update available",
               "success",
@@ -664,7 +666,9 @@ export default function SystemPage() {
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
         description={
-          updateInfo && updateInfo.behind && updateInfo.behind > 0
+          updateInfo?.behind === -2
+            ? `Branch diverged from origin/main (not a fast-forward). Review WIP before running '${updateInfo.update_command}'. This may switch to main / stash WIP. The gateway restarts when the update finishes.`
+            : updateInfo && updateInfo.behind && updateInfo.behind > 0
             ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
             : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
         }
@@ -853,7 +857,9 @@ export default function SystemPage() {
                     updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
-                        {updateInfo.behind && updateInfo.behind > 0
+                        {updateInfo.behind === -2
+                          ? "diverged"
+                          : updateInfo.behind && updateInfo.behind > 0
                           ? `${updateInfo.behind} behind`
                           : "update available"}
                       </Badge>
@@ -944,7 +950,8 @@ export default function SystemPage() {
                       <span className="font-mono">{updateInfo.update_command}</span>
                     </span>
                   )}
-                {updateInfo?.message && !updateInfo.update_available && (
+                {updateInfo?.message &&
+                  (!updateInfo.update_available || updateInfo.behind === -2) && (
                   <span className="text-xs text-muted-foreground">
                     {updateInfo.message}
                   </span>

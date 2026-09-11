@@ -464,6 +464,19 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.muted}>/help for commands</Text>
       </Text>
 
+      {typeof info.update_behind === 'number' && info.update_behind === -2 && (
+        <Text bold color={t.color.warn}>
+          ! branch diverged from origin/main
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            - not a fast-forward; review before{' '}
+          </Text>
+          <Text bold color={t.color.warn}>
+            {info.update_command || 'hermes update'}
+          </Text>
+        </Text>
+      )}
+
       {typeof info.update_behind === 'number' && info.update_behind > 0 && (
         <Text bold color={t.color.warn}>
           ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind

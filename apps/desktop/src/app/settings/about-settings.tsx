@@ -89,7 +89,12 @@ export function AboutSettings() {
     statusLine = a.installing
     statusTone = 'available'
   } else if (updateAvailable) {
-    statusLine = behind > 0 ? a.updateReady(behind) : a.updateReadyUnknown
+    statusLine =
+      behind === -2
+        ? "Branch diverged from origin/main (not a fast-forward)"
+        : behind > 0
+          ? a.updateReady(behind)
+          : a.updateReadyUnknown
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest

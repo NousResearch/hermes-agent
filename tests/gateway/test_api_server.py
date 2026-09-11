@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import stat
+import sqlite3
 import sys
 import time
 import types
@@ -33,6 +34,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
+    _make_request_fingerprint,
     _redact_api_error_text,
     _request_agent_overrides,
     check_api_server_requirements,
@@ -114,6 +116,78 @@ class TestResponseStore:
         store.delete("resp_1")
         assert store.get_conversation("chat-a") is None
 
+    def test_large_excess_eviction_exceeding_sql_variable_limit(self, tmp_path):
+        """Evicting >1000 items in a single put must not crash with too many SQL variables."""
+        db_file = str(tmp_path / "oversized.db")
+        # Pre-populate 1200 items under a large max_size
+        store1 = ResponseStore(db_path=db_file, max_size=2000)
+        for i in range(1200):
+            store1.put(f"resp_{i}", {"output": f"data_{i}"})
+            store1.set_conversation(f"conv_{i}", f"resp_{i}")
+        assert len(store1) == 1200
+        store1.close()
+
+        # Reopen with max_size=5 so the next single put() triggers >1000 evictions at once
+        store2 = ResponseStore(db_path=db_file, max_size=5)
+        assert len(store2) == 1200
+        store2.put("resp_trigger", {"output": "trigger"})
+
+        # Single put() should evict 1196 rows cleanly in one atomic query
+        assert len(store2) == 5
+        assert store2.get("resp_trigger") == {"output": "trigger"}
+        assert store2.get("resp_0") is None
+        assert store2.get_conversation("conv_0") is None
+        for i in range(1196, 1200):
+            assert store2.get(f"resp_{i}") is not None
+            assert store2.get_conversation(f"conv_{i}") == f"resp_{i}"
+        store2.close()
+
+    def test_response_store_closed_fence(self, tmp_path):
+        """Operations on a closed ResponseStore safely no-op or return None without errors."""
+        db_file = str(tmp_path / "fenced.db")
+        store = ResponseStore(db_path=db_file, max_size=10)
+        store.put("resp_1", {"data": 1})
+        store.set_conversation("conv_1", "resp_1")
+        assert len(store) == 1
+
+        store.close()
+        assert store._closed is True
+        with pytest.raises(sqlite3.ProgrammingError):
+            store._conn.execute("SELECT 1")
+
+        # All operations must safely return neutral values / no-op
+        assert store.get("resp_1") is None
+        assert store.get_conversation("conv_1") is None
+        store.put("resp_2", {"data": 2})
+        store.set_conversation("conv_2", "resp_2")
+        assert store.delete("resp_1") is False
+        assert len(store) == 0
+
+        # Repeated close() is safe and idempotent
+        store.close()
+
+    def test_concurrent_response_store_access(self):
+        """Concurrent threads executing get, put, and set_conversation must be thread-safe."""
+        import concurrent.futures
+        store = ResponseStore(max_size=50)
+
+        def worker(worker_id: int):
+            for i in range(50):
+                resp_id = f"resp_{worker_id}_{i}"
+                store.put(resp_id, {"val": i, "worker": worker_id})
+                store.set_conversation(f"conv_{worker_id}_{i}", resp_id)
+                res = store.get(resp_id)
+                if res is not None:
+                    assert res["worker"] == worker_id
+                store.get_conversation(f"conv_{worker_id}_{i}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(worker, w) for w in range(8)]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+
+        assert len(store) <= 50
+
 
 # ---------------------------------------------------------------------------
 # _IdempotencyCache
@@ -121,6 +195,46 @@ class TestResponseStore:
 
 
 class TestIdempotencyCache:
+    def test_request_fingerprint_deterministic_key_ordering(self):
+        """_make_request_fingerprint must produce identical hashes regardless of dict key order."""
+        body1 = {
+            "model": "hermes-3",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.7,
+            "stream": False,
+        }
+        body2 = {
+            "stream": False,
+            "temperature": 0.7,
+            "messages": [{"content": "hello", "role": "user"}],
+            "model": "hermes-3",
+        }
+        keys = ["model", "messages", "temperature", "stream"]
+        fp1 = _make_request_fingerprint(body1, keys)
+        fp2 = _make_request_fingerprint(body2, keys)
+        assert fp1 == fp2
+
+    def test_request_fingerprint_scoped_to_session_and_memory(self):
+        """Identical request bodies under different sessions or memory contexts must have distinct fingerprints."""
+        body = {
+            "model": "hermes-3",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        keys = ["model", "messages"]
+        fp_plain = _make_request_fingerprint(body, keys)
+        fp_sess_a = _make_request_fingerprint(body, keys, session_id="session-a")
+        fp_sess_b = _make_request_fingerprint(body, keys, session_id="session-b")
+        fp_gw_key = _make_request_fingerprint(body, keys, session_id="session-a", gateway_session_key="telegram:123")
+
+        # All must be distinct
+        assert fp_plain != fp_sess_a
+        assert fp_sess_a != fp_sess_b
+        assert fp_sess_a != fp_gw_key
+
+        # Same session and gateway key must produce identical hash
+        fp_sess_a_dup = _make_request_fingerprint(body, keys, session_id="session-a")
+        assert fp_sess_a == fp_sess_a_dup
+
     @pytest.mark.asyncio
     async def test_concurrent_same_key_and_fingerprint_runs_once(self):
         cache = _IdempotencyCache()

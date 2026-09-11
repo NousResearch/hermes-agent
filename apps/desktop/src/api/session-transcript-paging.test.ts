@@ -82,6 +82,23 @@ describe('session transcript pagination ownership', () => {
     }
   )
 
+  it('coalesces spellings against a backend that predates the profile field', async () => {
+    setApiRequestConnection(null)
+    const owner = { connectionId: 'local', profile: 'default' }
+    const tail = Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) => row(index + 1))
+    const { profile: _omitted, ...legacyPage } = page(tail)
+    api.mockResolvedValue(legacyPage)
+
+    for (const scope of [owner, 'default', undefined]) {
+      await getLatestSessionMessages('stored-session', scope)
+    }
+
+    // The legacy response cannot name its profile; the ambient profile stands in.
+    expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(1)
+    expect(transcriptBackfillAvailable('stored-session', owner)).toBe(true)
+    expect(transcriptBackfillAvailable('stored-session')).toBe(true)
+  })
+
   it('preserves legacy named-profile routing while the foreground is local', async () => {
     setApiRequestConnection(null)
     const profile = 'remote-alias'

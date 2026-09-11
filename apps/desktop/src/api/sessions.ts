@@ -15,6 +15,7 @@ import {
   capabilityScoped,
   connectionScoped,
   getApiRequestConnection,
+  getApiRequestProfile,
   hermesApi,
   type ProfileScope,
   profileScoped
@@ -479,7 +480,11 @@ export function getLatestSessionMessages(
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    const resolvedOwnerScope = { ...ownerScope, profile: ownerScope.profile || page.profile || undefined }
+    // A backend that predates the `profile` field cannot name itself; an
+    // untagged read there lands on the ambient profile (`'default'` when
+    // none is active). `null` is a custom HERMES_HOME and stays distinct.
+    const servedProfile = page.profile === undefined ? getApiRequestProfile() || 'default' : page.profile
+    const resolvedOwnerScope = { ...ownerScope, profile: ownerScope.profile || servedProfile }
     recordTranscriptTail(id, page, tailScope, resolvedOwnerScope)
 
     if (page.session_id && page.session_id !== id) {

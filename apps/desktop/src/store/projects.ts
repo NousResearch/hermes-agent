@@ -151,14 +151,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
-  // Inside Home, "no folder" is the point: a new chat must stay detached rather
-  // than silently attaching to the configured default dir and leaving Home.
-  if (scope === NO_PROJECT_ID) {
-    return ''
-  }
-
-  if (scope !== ALL_PROJECTS) {
-    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
+  if (scope !== ALL_PROJECTS && scope !== NO_PROJECT_ID) {
+    const project = $projectTree.get().find(node => node.id === scope)
+    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
 
     if (cwd) {
       return cwd

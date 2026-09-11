@@ -89,7 +89,8 @@ import {
   setSessionStartedAt,
   setTurnStartedAt,
   setWorkspaceCwdOwner,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
@@ -554,15 +555,19 @@ export function useSessionActions({
         // (resolveNewSessionCwd — a project's new session keeps its repo cwd).
         // Home is an explicit detached scope: do not let a stale live cwd from
         // the previously selected project leak into this new session (#84220).
+        // When workspaceCwdForNewSession resolves a default (configured local
+        // dir or remembered remote workspace), use it; otherwise stay detached.
         const workspaceTarget = $newChatWorkspaceTarget.get()
         const homeScope = $projectScope.get() === NO_PROJECT_ID
 
         const cwd =
-          workspaceTarget === null || (workspaceTarget === undefined && homeScope)
+          workspaceTarget === null
             ? ''
             : typeof workspaceTarget === 'string'
               ? workspaceTarget.trim()
-              : $currentCwd.get().trim() || resolveNewSessionCwd()
+              : homeScope
+                ? workspaceCwdForNewSession()
+                : $currentCwd.get().trim() || resolveNewSessionCwd()
 
         // The EXACT owner for this create: an explicit agent route, else the
         // (registry source, profile) pair the draft was made on. Read ONCE at

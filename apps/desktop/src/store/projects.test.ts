@@ -204,9 +204,14 @@ describe('resolveNewSessionCwd', () => {
     $sessions.set([])
   })
 
-  it('starts a chat detached inside Home, ignoring the configured default dir', () => {
-    // Attaching the default dir here would move the new chat out of Home the
-    // moment it was created — "no folder" is what the bucket means.
+  it('starts a chat with the configured default dir inside Home when set', () => {
+    enterProject(NO_PROJECT_ID)
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('starts a chat detached inside Home when no default dir is configured', () => {
+    applyConfiguredDefaultProjectDir(null)
     enterProject(NO_PROJECT_ID)
 
     expect(resolveNewSessionCwd()).toBe('')

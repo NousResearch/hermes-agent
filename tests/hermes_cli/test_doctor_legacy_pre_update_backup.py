@@ -67,6 +67,51 @@ def test_legacy_false_is_flagged_by_doctor_and_fixed_to_off(tmp_path, monkeypatc
 
 @pytest.mark.parametrize(
     "written,expected_mode",
+    # PyYAML folds this whole set to booleans in any case (verified against PyYAML 6.0.3):
+    # true/false/yes/no/on. Only ``off`` is excluded — it is a documented mode string.
+    [("True", "full"), ("TRUE", "full"), ("False", "off"), ("FALSE", "off"),
+     ("yes", "full"), ("Yes", "full"), ("YES", "full"),
+     ("no", "off"), ("No", "off"), ("NO", "off"),
+     ("on", "full"), ("On", "full"), ("ON", "full")],
+)
+def test_every_folded_bool_spelling_is_reported(tmp_path, written, expected_mode):
+    """A capitalised or word-spelled boolean is the same invisible write as ``false``/``true``.
+
+    The token guard was lowercase-only, so ``pre_update_backup: True`` parsed as a bool, matched
+    nothing, and was never flagged or fixed — the drift this check exists to surface.
+    """
+    cfg = _write_config(tmp_path, f"pre_update_backup: {written}")
+    f = Finding()
+
+    from hermes_cli.doctor_config import _drift_pre_update_backup_legacy_bool
+
+    _drift_pre_update_backup_legacy_bool(f, should_fix=True, config_path=cfg)
+
+    assert f.fixed == 1
+    assert _written_value(cfg) == expected_mode
+    assert _resolved_mode(tmp_path) == expected_mode
+
+
+@pytest.mark.parametrize("written", ["off", "Off", "OFF", "y", "n"])
+def test_documented_off_and_non_bool_spellings_are_never_reported(tmp_path, written):
+    """``off`` in any case is the documented mode — never drift, never rewritten.
+
+    ``y``/``n`` are in the YAML 1.1 spec's bool set but PyYAML does not fold them (they parse as
+    strings), so they must not be reported either.
+    """
+    cfg = _write_config(tmp_path, f"pre_update_backup: {written}")
+    f = Finding()
+
+    from hermes_cli.doctor_config import _drift_pre_update_backup_legacy_bool
+
+    _drift_pre_update_backup_legacy_bool(f, should_fix=True, config_path=cfg)
+
+    assert f.issues == [] and f.fixed == 0
+    assert f"pre_update_backup: {written}" in cfg.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "written,expected_mode",
     # Mode strings are the supported surface: never reported, never rewritten.
     [("quick", None), ("off", None), ("full", None),
      # The other legacy form: ``true`` is an alias for a full zip on every update.

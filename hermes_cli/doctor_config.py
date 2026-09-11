@@ -363,9 +363,13 @@ def _drift_max_iterations_ghost(f: Finding, should_fix: bool, config_path) -> No
         f.manual_issues.append(f"Manually delete the HERMES_MAX_ITERATIONS line from {_DHH}/.env — config.yaml agent.max_turns is authoritative.")
 
 
-# Only the literal legacy tokens count: YAML 1.1 also folds unquoted ``off``/``on``/``yes``/``no``
-# into bools, and ``off`` is a documented mode string that must never be reported as legacy.
-_PRE_UPDATE_BACKUP_BOOL_RE = re.compile(r"^\s*pre_update_backup\s*:\s*(true|false)\s*(?:#.*)?$", re.MULTILINE)
+# Every spelling PyYAML folds into a bool ("true"/"false"/"yes"/"no"/"on", any case) is a legacy
+# write — except "off", which is a documented mode string that must never be reported as legacy
+# drift, or doctor would rewrite a deliberate opt-out on every run. "y"/"n" are not folded by
+# PyYAML (they resolve as strings), so they are not listed; `isinstance(value, bool)` below is
+# the second half of the gate.
+_PRE_UPDATE_BACKUP_BOOL_RE = re.compile(r"^\s*pre_update_backup\s*:\s*(true|false|yes|no|on)\s*(?:#.*)?$",
+                                       re.MULTILINE | re.IGNORECASE)
 
 
 def _drift_pre_update_backup_legacy_bool(f: Finding, should_fix: bool, config_path) -> None:
@@ -385,8 +389,8 @@ def _drift_pre_update_backup_legacy_bool(f: Finding, should_fix: bool, config_pa
     updates_cfg = raw_config.get("updates")
     if not isinstance(updates_cfg, dict) or not isinstance(updates_cfg.get("pre_update_backup"), bool):
         return
-    # YAML folds an unquoted ``off``/``on`` into a bool as well, so the parsed value alone cannot
-    # tell the legacy boolean from the documented ``off`` string — accept only the literal token,
+    # YAML folds unquoted ``off`` into a bool as well, so the parsed value alone cannot tell the
+    # legacy boolean from the documented ``off`` string — accept only the folded spellings above,
     # or doctor would "fix" a deliberate `off` into a quoted 'off' on every run.
     if not _PRE_UPDATE_BACKUP_BOOL_RE.search(config_path.read_text(encoding="utf-8")):
         return

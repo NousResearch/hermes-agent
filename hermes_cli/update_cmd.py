@@ -6,12 +6,13 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
 import sys
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -441,6 +442,42 @@ def _log_only_write(text: str) -> None:
         else:
             log_file.write(text)
             log_file.flush()
+
+
+@contextmanager
+def _update_progress_heartbeat(message: str, *, interval_seconds: int = 30):
+    """Print a flushed elapsed-time line so idle watchdogs see progress.
+
+    Windows Desktop's hand-off kills ``hermes update`` after 600s of
+    silence on both stdout and ``logs/update.log``. ``npm --progress=false``
+    and captured Electron builds are routinely quiet that long. *message*
+    must contain ``{elapsed}``.
+
+    ``print`` is the primary tick: ``cmd_update`` wraps stdout (CLI and
+    gateway), so the hangup tee already mirrors into ``update.log``. The
+    ``_log_only_write`` fallback ticks that file only when wrap is absent
+    (wrap-setup failure, or a caller outside ``cmd_update``).
+    """
+    done = threading.Event()
+    start = _time.time()
+
+    def _beat() -> None:
+        while not done.wait(interval_seconds):
+            elapsed = int(_time.time() - start)
+            line = message.format(elapsed=elapsed)
+            print(line, flush=True)
+            # Hangup tee already mirrors print() into update.log when wrapped.
+            # Tick the file via _log_only_write only if wrap is absent.
+            if getattr(sys.stdout, "_log", None) is None:
+                _log_only_write(line if line.endswith("\n") else line + "\n")
+
+    t = threading.Thread(target=_beat, daemon=True, name="update-heartbeat")
+    t.start()
+    try:
+        yield
+    finally:
+        done.set()
+        t.join(timeout=0.2)
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):

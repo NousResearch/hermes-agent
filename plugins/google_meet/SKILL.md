@@ -30,6 +30,8 @@ The user says any of:
 | `realtime` | Same as transcribe PLUS speaks into the meeting via OpenAI Realtime. The agent calls `meet_say(text)` and the bot's voice comes out of the call. |
 
 Pick `realtime` only when the user actually wants the agent to speak. It costs real money (OpenAI Realtime is pay-per-audio-minute) and requires a virtual audio device set up on the machine running the bot.
+The realtime model defaults to `gpt-realtime`; set
+`HERMES_MEET_REALTIME_MODEL=gpt-realtime-2` when you want the newer alias.
 
 ## Two locations
 
@@ -64,6 +66,7 @@ pip install playwright websockets && python -m playwright install chromium
 #   macOS:  brew install blackhole-2ch ffmpeg
 #           → System Settings → Sound → Input → BlackHole 2ch
 #   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.hermes/.env
+#   Optional: HERMES_MEET_REALTIME_MODEL=gpt-realtime-2
 ```
 
 For a remote node:

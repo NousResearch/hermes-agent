@@ -14837,7 +14837,8 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_db_error", "utf-8 decode failure")
 
-    server._sessions["lost-sid"] = _session()
+    session = _session()
+    server._sessions["lost-sid"] = session
     try:
         resp = server.handle_request(
             {
@@ -14846,11 +14847,107 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
                 "params": {"session_id": "lost-sid", "text": "will vanish"},
             }
         )
+        assert resp["error"]["code"] == 5072
+        assert "session storage unavailable" in resp["error"]["message"]
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session.get("_run_thread") is None
+        assert server._session_live_status("lost-sid", session) == "idle"
+
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+
+        class _DormantThread:
+            def __init__(self, target=None, **_kwargs):
+                self.target = target
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(server.threading, "Thread", _DormantThread)
+        retry = server.handle_request(
+            {
+                "id": "retry",
+                "method": "prompt.submit",
+                "params": {"session_id": "lost-sid", "text": "saved now"},
+            }
+        )
+        assert retry["result"] == {"status": "streaming"}
+        assert session["running"] is True
     finally:
         server._sessions.pop("lost-sid", None)
 
-    assert resp["error"]["code"] == 5072
-    assert "session storage unavailable" in resp["error"]["message"]
+
+def test_prompt_submit_waits_for_persist_rejection_before_queuing_follow_up(monkeypatch):
+    """A concurrent submit must not be accepted into a queue before the first
+    submit's pre-execution persistence decision is known."""
+    persist_entered = threading.Event()
+    release_persist = threading.Event()
+    busy_entered = threading.Event()
+    responses = {}
+    ensure_calls = 0
+    ensure_lock = threading.Lock()
+
+    def _blocked_store_unavailable(_session):
+        nonlocal ensure_calls
+        with ensure_lock:
+            ensure_calls += 1
+            call = ensure_calls
+        if call == 1:
+            persist_entered.set()
+            assert release_persist.wait(2)
+        return False
+
+    real_busy_submit = server._handle_busy_submit
+
+    def _observed_busy_submit(*args, **kwargs):
+        busy_entered.set()
+        return real_busy_submit(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {}})
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _blocked_store_unavailable)
+    monkeypatch.setattr(server, "_db_error", "store unavailable")
+    monkeypatch.setattr(server, "_handle_busy_submit", _observed_busy_submit)
+
+    session = _session()
+    server._sessions["persist-race-sid"] = session
+
+    def _submit(name, text):
+        responses[name] = server.handle_request(
+            {
+                "id": name,
+                "method": "prompt.submit",
+                "params": {"session_id": "persist-race-sid", "text": text},
+            }
+        )
+
+    first = threading.Thread(target=_submit, args=("first", "first prompt"))
+    second = threading.Thread(target=_submit, args=("second", "second prompt"))
+    try:
+        first.start()
+        assert persist_entered.wait(2)
+        second.start()
+        assert busy_entered.wait(2)
+        release_persist.set()
+        first.join(2)
+        second.join(2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert responses["first"]["error"]["code"] == 5072
+        assert responses["second"]["error"]["code"] == 5072
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session.get("queued_prompt") is None
+        assert not session.get("queued_prompts")
+        assert server._session_live_status("persist-race-sid", session) == "idle"
+    finally:
+        release_persist.set()
+        first.join(2)
+        second.join(2)
+        server._sessions.pop("persist-race-sid", None)
 
 
 @pytest.mark.real_agent_prewarm

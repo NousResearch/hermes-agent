@@ -430,7 +430,15 @@ async function submitGroupTurnPrompt(
 // timeout alone silently dropped long real turns: a 7-minute research run
 // timed out at 3 minutes, read as a pass, and its finished result never
 // reached the room (db's Aug 2026 report).
-const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+
+/** Harvest bound for stranded replies (#105247): the background watch must
+ *  cover the whole legal life of a turn (hard cap) plus a margin, or a
+ *  reply landing in a quiet room after the old fixed 5-minute window was
+ *  dropped. Floor 60 keeps the previous behavior for degenerate intervals. */
+export function groupStrandedHarvestMaxTries(intervalMs: number): number {
+  return Math.max(60, Math.ceil(GROUP_TURN_HARD_CAP_MS / intervalMs) + Math.ceil(60000 / intervalMs))
+}
 
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed

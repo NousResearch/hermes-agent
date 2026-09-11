@@ -19,7 +19,7 @@ import {
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
 import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
-import { harvestStrandedGroupReply } from './group-turns'
+import { groupStrandedHarvestMaxTries, harvestStrandedGroupReply } from './group-turns'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -594,9 +594,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 }
 
 /** Bounded background harvest for members whose replies outlived the turn
- *  loop. Polls every 5s for up to 5 minutes; stops early when nothing is
- *  stranded, a new loop takes the room over (it harvests on its own), or the
- *  room record disappears (disband). */
+ *  loop. Polls every 5s until the whole legal life of a turn is covered
+ *  (hard cap + margin, see groupStrandedHarvestMaxTries); stops early when
+ *  nothing is stranded, a new loop takes the room over (it harvests on its
+ *  own), or the room record disappears (disband). */
 async function harvestStrandedUntilSettled(group: string, members: GroupMember[], thread: string) {
   const binding = followGroupChat(group, name => {
     group = name
@@ -604,7 +605,7 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
 
   try {
     const HARVEST_INTERVAL_MS = 5000
-    const HARVEST_MAX_TRIES = 60
+    const HARVEST_MAX_TRIES = groupStrandedHarvestMaxTries(HARVEST_INTERVAL_MS)
 
     for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
       await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))

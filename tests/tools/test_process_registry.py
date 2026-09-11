@@ -2896,3 +2896,62 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+def test_async_batch_block_surfaces_resolved_child_toolsets():
+    """A batch completion block must render each subagent's RESOLVED toolsets so
+    the parent can catch a goal/capability mismatch — e.g. a "write a file" goal
+    dispatched to a child that never held the file toolset, which a budget-tier
+    child may report as completed with a fabricated verification (issue #63887).
+    """
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-abc",
+        "is_batch": True,
+        "goals": ["Write a bridge request file to ~/.hermes/bridge/requests/x.md"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Created the bridge request file and confirmed via cat.",
+                "toolsets": ["todo"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = _format_async(evt)
+    assert "Toolsets available: todo" in text
+    # The impossible capability (file) must be visibly absent from the child's
+    # resolved toolset list, exposing the mismatch to the parent.
+    toolset_line = text.split("Toolsets available:")[1].split("\n")[0]
+    assert "file" not in toolset_line
+
+
+@pytest.mark.parametrize("status", ["interrupted", "timeout", "error"])
+def test_async_batch_block_surfaces_toolsets_on_synthetic_results(status):
+    """The resolved-toolsets diagnostic must survive the synthetic result entries
+    too (interrupted / timed-out / errored children), not just successful ones —
+    those are exactly the runs where a capability mismatch is most worth seeing.
+    Regression for the per-subagent guarantee gap noted on #63887: fabricated
+    entries used to omit ``toolsets`` so the formatter dropped the line for them.
+    """
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-xyz",
+        "is_batch": True,
+        "goals": ["Patch the config file and verify the change"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": status,
+                "summary": None,
+                "error": "child did not finish",
+                "toolsets": ["todo", "web"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = _format_async(evt)
+    assert "Toolsets available: todo, web" in text

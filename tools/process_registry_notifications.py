@@ -200,6 +200,14 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
                   + (f", {r['duration_seconds']}s" if r.get("duration_seconds") is not None else "")
                   + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else ""))
         lines += ["", header + ") ---"]
+        # Resolved toolsets this subagent actually held (post parent
+        # intersection + blocked-tool stripping). Surfacing them lets the parent
+        # notice when a goal required a capability the child never had — a
+        # budget-tier child can otherwise report success with a fabricated
+        # verification narrative (#63887).
+        r_toolsets = r.get("toolsets")
+        if r_toolsets:
+            lines.append(f"Toolsets available: {', '.join(r_toolsets)}")
         if r_status in _DONE and r_summary:
             if r_truncated:
                 lines.append(_TRUNCATED_SUMMARY_NOTE)
@@ -258,6 +266,12 @@ def _format_async_delegation(evt: dict) -> str:
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
+    # Same resolved-toolsets diagnostic as the batch block: the parent can catch
+    # a goal/capability mismatch the child may have masked with a fabricated
+    # verification narrative (#63887).
+    _toolsets = evt.get("toolsets")
+    if _toolsets:
+        lines.append(f"Toolsets available: {', '.join(_toolsets)}")
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)

@@ -322,6 +322,14 @@ fn upgrade_cached_script(kind: ScriptKind, cached: &Path, emit_log: &impl Fn(&st
 /// black-holed connection (captive portal, hung proxy, silently dropped
 /// packets) never errors — the whole bootstrap would hang here instead of
 /// falling back to the cached script.
+/// Transient HTTP statuses worth retrying: CDN/gateway hiccups (5xx) and
+/// rate-limit backpressure (429). A single raw.githubusercontent 503 once
+/// landed users on the fatal "INSTALL DIDN'T FINISH" screen during the
+/// beta→stable transition while the URL served 200 from elsewhere (#88475).
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.is_server_error()
+}
+
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
     let url = format!(
         "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
@@ -343,25 +351,66 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::builder()
+    // raw.githubusercontent hiccups (503/502/429) are transient, but a single
+    // one of them used to abort the whole bootstrap and land the user on the
+    // fatal "INSTALL DIDN'T FINISH" screen while the URL served 200 from
+    // elsewhere (#88475). Retry the transient class — gateway/rate-limit
+    // statuses and network-level errors (connect/timeout/reset) — with a
+    // short backoff. Exhausting the attempts still returns Err, so the
+    // stale-cache fallback in `resolve()` keeps firing exactly as before.
+    let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .context("building download client")?
-        .get(&url)
-        .header("User-Agent", "hermes-setup/0.0.1")
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
+        .context("building download client")?;
 
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut response: Option<reqwest::Response> = None;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client
+            .get(&url)
+            .header("User-Agent", "hermes-setup/0.0.1")
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                response = Some(resp);
+                break;
+            }
+            Ok(resp) if is_retryable_status(resp.status()) => {
+                last_err = Some(anyhow!(
+                    "Failed to download {}: HTTP {} from {}",
+                    kind.filename(),
+                    resp.status(),
+                    url
+                ));
+            }
+            Ok(resp) => {
+                // Non-transient client error (404, 403, …): retrying cannot
+                // change the answer — surface it immediately.
+                return Err(anyhow!(
+                    "Failed to download {}: HTTP {} from {}",
+                    kind.filename(),
+                    resp.status(),
+                    url
+                ));
+            }
+            Err(err) => {
+                last_err = Some(anyhow!("GET {url}: {err}"));
+            }
+        }
+        if attempt < MAX_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_secs(u64::from(attempt) * 2)).await;
+        }
     }
+    let response = match response {
+        Some(resp) => resp,
+        None => {
+            return Err(last_err
+                .expect("retry loop always records the last transient error"))
+        }
+    };
 
     let bytes = response
         .bytes()
@@ -394,6 +443,23 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_statuses_cover_gateway_hiccups_and_rate_limits() {
+        // #88475: the 503 that aborted a beta→stable bootstrap is in the
+        // transient class; definitive client errors are not.
+        assert!(is_retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_retryable_status(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(reqwest::StatusCode::FORBIDDEN));
+        assert!(!is_retryable_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(reqwest::StatusCode::OK));
+    }
 
     #[test]
     fn is_valid_commit_accepts_short_and_full_shas() {

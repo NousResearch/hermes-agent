@@ -32,7 +32,8 @@ from tools.approval_detection import (
 )
 from tools.approval_floors import (
     _approval_required_rules, _command_matches_permanent_allowlist, _hardline_block_result,
-    _match_approval_required_rule, _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
+    _match_approval_required_rule, _match_user_deny_rule, _observe_approval_required_policies,
+    _sudo_stdin_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -945,6 +946,7 @@ def check_dangerous_command(command: str, env_type: str,
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
+    _observe_approval_required_policies()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
@@ -1048,6 +1050,7 @@ def check_all_command_guards(command: str, env_type: str,
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    _observe_approval_required_policies()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1138,6 +1141,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
 
+    # Command rules never match execute_code, but a process that only runs code during a review-policy
+    # interval must still observe the transition (see _observe_approval_required_policies).
+    _observe_approval_required_policies()
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":
         return _approved()

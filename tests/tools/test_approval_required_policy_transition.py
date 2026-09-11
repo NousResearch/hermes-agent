@@ -21,7 +21,7 @@ import pytest
 import hermes_cli.config as hc
 import tools.approval as approval_module
 from tools import approval_floors, approval_smart
-from tools.approval import check_all_command_guards
+from tools.approval import check_all_command_guards, check_dangerous_command
 from tools.approval_context import reset_current_session_key, set_current_session_key
 
 KUBECTL = "kubectl --context admin -n vault exec vault-0 -c vault -- du -sh /vault/data"
@@ -42,10 +42,10 @@ def live_config(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
-    def set_review(review):
+    def set_review(review, mode="smart"):
         current = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
         current.update({
-            "approvals": {"mode": "smart", "command_approval_required": [
+            "approvals": {"mode": mode, "command_approval_required": [
                 {"pattern": PATTERN, "description": "kubectl on admin", "review": review}]},
             "security": {"tirith_enabled": False},
         })
@@ -113,6 +113,7 @@ def _simulate_restart(monkeypatch):
     """Drop in-memory state and reload the persisted allowlist the way a new process does."""
     monkeypatch.setattr(approval_module, "_permanent_approved", set())
     monkeypatch.setattr(approval_module, "_session_approved", {})
+    approval_floors._observed_review.clear()
     approval_module.load_permanent_allowlist()
 
 
@@ -279,6 +280,100 @@ class TestRoundTripWithNoMatchingCommandInBetween:
             _simulate_restart(monkeypatch)
             live_config("smart")
             _simulate_restart(monkeypatch)
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        finally:
+            approval_module.unregister_gateway_notify(isolated_state)
+        assert guardian == [KUBECTL, KUBECTL] and notified == [True, True]
+
+
+class TestRoundTripUnderBypass:
+    """The human interval is only ever seen while a bypass is active — session ``/yolo`` or
+    ``approvals.mode: off`` — which returns before any rule matching. The transition must still be
+    observed there (PR #106779 review, round 4): a bypass hides the interval, it must not hide the
+    revocation. Every case: grant under smart, bypass on, flip to human, run a guarded command while
+    bypassed, flip back to smart, bypass off, match again — and the match needs a fresh decision."""
+
+    def _yolo_interval(self, live_config, session, check=check_all_command_guards):
+        approval_module.enable_session_yolo(session)
+        live_config("human")
+        assert check(KUBECTL, "local")["approved"] is True, "yolo bypassed the human prompt"
+        live_config("smart")
+        approval_module.disable_session_yolo(session)
+
+    def _mode_off_interval(self, live_config):
+        live_config("human", mode="off")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True, "mode: off bypassed the prompt"
+        live_config("smart", mode="smart")
+
+    def test_session_grant_yolo_cli(self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "session", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        self._yolo_interval(live_config, isolated_state)
+        assert _rule_key("smart") not in approval_module._session_approved.get(isolated_state, set()), \
+            "the human interval was observed through the yolo bypass"
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_session_grant_yolo_gateway(self, live_config, isolated_state, guardian, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        answers = iter(["session", "deny"])
+        notified = []
+
+        def notify(data):
+            notified.append(data["allow_permanent"])
+            approval_module.resolve_gateway_approval(isolated_state, next(answers))
+
+        approval_module.register_gateway_notify(isolated_state, notify)
+        try:
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+            self._yolo_interval(live_config, isolated_state)
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        finally:
+            approval_module.unregister_gateway_notify(isolated_state)
+        assert guardian == [KUBECTL, KUBECTL] and notified == [True, True]
+
+    def test_session_grant_yolo_pattern_gate(self, live_config, isolated_state, guardian, monkeypatch):
+        """``check_dangerous_command`` has the same yolo early return."""
+        seen = _cli_prompt(monkeypatch, "session", "deny")
+        assert check_dangerous_command(KUBECTL, "local")["approved"] is True
+        self._yolo_interval(live_config, isolated_state, check=check_dangerous_command)
+        assert check_dangerous_command(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_session_grant_mode_off_cli(self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "session", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        self._mode_off_interval(live_config)
+        assert _rule_key("smart") not in approval_module._session_approved.get(isolated_state, set()), \
+            "the human interval was observed through the mode: off bypass"
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_permanent_grant_yolo_across_restart_cli(self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "always", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        self._yolo_interval(live_config, isolated_state)
+        assert _rule_key("smart") not in (yaml.safe_load(live_config.path.read_text(encoding="utf-8")).get("command_allowlist") or []), \
+            "the persisted Always was dropped while yolo was active"
+        _simulate_restart(monkeypatch)
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_permanent_grant_mode_off_across_restart_gateway(self, live_config, isolated_state, guardian, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        answers = iter(["always", "deny"])
+        notified = []
+
+        def notify(data):
+            notified.append(data["allow_permanent"])
+            approval_module.resolve_gateway_approval(isolated_state, next(answers))
+
+        approval_module.register_gateway_notify(isolated_state, notify)
+        try:
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+            self._mode_off_interval(live_config)
+            _simulate_restart(monkeypatch)
+            assert _rule_key("smart") not in approval_module._permanent_approved
             assert check_all_command_guards(KUBECTL, "local")["approved"] is False
         finally:
             approval_module.unregister_gateway_notify(isolated_state)

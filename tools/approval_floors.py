@@ -138,6 +138,18 @@ def _observe_review_policies(rules: list[_RequiredRule]) -> None:
         _revoke_superseded_grants(rule)
 
 
+def _observe_approval_required_policies() -> None:
+    """Parse the rules for the transition side effect only. Every approval gate calls this FIRST —
+    before the container fast path, ``--yolo`` / ``/yolo`` and ``approvals.mode: off`` — because
+    a policy edit made while such a bypass is active must still be seen: otherwise the bypass
+    hides the ``human`` interval and the pre-transition ``smart`` grant revives once the operator
+    switches back and turns the bypass off. A config read failure observes nothing."""
+    try:
+        _approval_required_rules()
+    except Exception:
+        pass
+
+
 def _match_approval_required_rule(command: str) -> _RequiredRule | None:
     """First configured approval-required rule matching the command (config order), or None.
     A config read failure means no rules — the built-in detectors still run."""

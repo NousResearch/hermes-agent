@@ -815,13 +815,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
         self._split_threshold = max(100, self.max_message_length - 100)
-        self._homeserver: str = (config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
+        # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
+        # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
+        # secondary's credential sends that credential to the wrong homeserver (or reuses the
+        # default's E2EE device id).
+        self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
         self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
-        self._user_id: str = config.extra.get("user_id", "") or os.getenv("MATRIX_USER_ID", "")
+        self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
         self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
-        self._device_id: str = config.extra.get("device_id", "") or os.getenv("MATRIX_DEVICE_ID", "")
+        self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -2912,8 +2916,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        # In-turn read inside an installed secret scope: honor get_secret, no env fallback.
+        # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
+        # homeserver too, so the scoped token is never sent to the default profile's server.
+        homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}

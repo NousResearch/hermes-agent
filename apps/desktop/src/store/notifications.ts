@@ -27,6 +27,8 @@ export interface AppNotification {
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
+  /** Sticky agent notices survive routine toast traffic and interaction cleanup. */
+  retainUntilDismissed?: boolean
 }
 
 export interface NotificationInput {
@@ -42,6 +44,7 @@ export interface NotificationInput {
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
+  retainUntilDismissed?: boolean
 }
 
 let notificationCounter = 0
@@ -174,12 +177,18 @@ export function notify(input: NotificationInput): string {
     action: input.action,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
-    placement: input.placement ?? defaultPlacement(kind, input.action)
+    placement: input.placement ?? defaultPlacement(kind, input.action),
+    retainUntilDismissed: input.retainUntilDismissed
   }
 
   window.clearTimeout(timers.get(id))
   timers.delete(id)
-  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)].slice(0, 4))
+  let transientCount = 0
+  $notifications.set(
+    [notification, ...$notifications.get().filter(item => item.id !== id)].filter(
+      item => item.retainUntilDismissed || transientCount++ < 4
+    )
+  )
 
   const duration = input.durationMs ?? defaultDuration(kind)
 
@@ -212,6 +221,33 @@ export function dismissNotification(id: string) {
   dismissed?.onDismiss?.()
 }
 
+/** Routine interaction cleanup is not a dismissal or backend recovery. */
+export function clearTransientNotifications() {
+  const all = $notifications.get()
+  const retained = all.filter(item => item.retainUntilDismissed)
+  const retainedIds = new Set(retained.map(item => item.id))
+
+  for (const [id, timer] of timers) {
+    if (!retainedIds.has(id)) {
+      window.clearTimeout(timer)
+      timers.delete(id)
+    }
+  }
+
+  if (retained.length === all.length) {
+    return
+  }
+
+  $notifications.set(retained)
+
+  for (const item of all) {
+    if (!item.retainUntilDismissed) {
+      item.onDismiss?.()
+    }
+  }
+}
+
+/** Explicit user clear-all and gateway/account reset must also remove sticky notices. */
 export function clearNotifications() {
   for (const timer of timers.values()) {
     window.clearTimeout(timer)

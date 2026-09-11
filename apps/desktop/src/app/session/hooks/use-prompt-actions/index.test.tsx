@@ -7,12 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearAgentNotice, showAgentNotice } from '@/store/agent-notices'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
-import { $notifications, clearNotifications } from '@/store/notifications'
+import { $notifications, clearNotifications, notify } from '@/store/notifications'
 import {
   $busy,
   $connection,
@@ -248,6 +249,84 @@ function Harness({
 
   return null
 }
+
+describe('sticky notice cleanup during prompt actions', () => {
+  beforeEach(() => {
+    clearNotifications()
+    $busy.set(false)
+    dropSessionState(RUNTIME_SESSION_ID)
+    setMessages([
+      { id: 'u1', role: 'user', parts: [textPart('original prompt')] },
+      { id: 'a1', role: 'assistant', parts: [textPart('reply')] }
+    ])
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setMessages([])
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  it.each(['submit', 'regenerate', 'restore', 'edit'] as const)(
+    '%s preserves unresolved notices until exact recovery or explicit clear-all',
+    async action => {
+      const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+          seedMessages={$messages.get()}
+        />
+      )
+
+      const warning = {
+        key: 'context-maintenance:profile:session',
+        kind: 'sticky',
+        level: 'warn',
+        text: 'Compaction failed'
+      }
+
+      showAgentNotice(warning, 'connection-a/default')
+      const recoveredId = $notifications.get()[0].id
+      showAgentNotice(warning, 'connection-b/default')
+      showAgentNotice({ ...warning, key: 'context-maintenance:profile:other-session' }, 'connection-a/default')
+      showAgentNotice({ key: 'credits.depleted', kind: 'sticky', level: 'warn', text: 'Credits depleted' })
+      const retained = $notifications.get()
+      notify({ id: 'ordinary-warning', kind: 'warning', message: 'Old request failed' })
+      showAgentNotice({ key: 'credits.restored', kind: 'ttl', ttl_ms: 30_000, text: 'Credits restored' })
+
+      const actions = {
+        submit: () => handle!.submitText('continue'),
+        regenerate: () => handle!.reloadFromMessage('u1'),
+        restore: () => handle!.restoreToMessage('u1'),
+        edit: () =>
+          handle!.editMessage({
+            content: [{ text: 'edited prompt', type: 'text' }],
+            parentId: null,
+            role: 'user',
+            sourceId: 'u1'
+          } as never)
+      }
+
+      await actions[action]()
+      expect(
+        requestGateway.mock.calls.some(
+          ([method, params]) => method === 'prompt.submit' && params?.session_id === RUNTIME_SESSION_ID
+        )
+      ).toBe(true)
+      expect($notifications.get()).toEqual(retained)
+
+      clearAgentNotice(warning.key, 'connection-a/default')
+      expect($notifications.get()).toEqual(retained.filter(item => item.id !== recoveredId))
+      clearNotifications()
+      expect($notifications.get()).toEqual([])
+    }
+  )
+})
 
 describe('usePromptActions /title', () => {
   beforeEach(() => {

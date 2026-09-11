@@ -20,10 +20,12 @@ import {
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { showAgentNotice } from '@/store/agent-notices'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications, clearNotifications, notify } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -113,6 +115,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   | 'archiveSession'
+  | 'branchCurrentSession'
   | 'branchStoredSession'
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
@@ -1064,6 +1067,156 @@ function ResumeTimerHarness({
 
   return null
 }
+
+describe('sticky notice cleanup during session actions', () => {
+  beforeEach(() => {
+    clearNotifications()
+    setConnection(null)
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setBusy(false)
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    setSessions([storedSession({ message_count: 2 })])
+    setMessages([
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'question' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer' }] }
+    ])
+
+    const transcript = {
+      messages: [
+        { content: 'question', role: 'user', timestamp: 1 },
+        { content: 'answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-1'
+    }
+
+    vi.mocked(getAllSessionMessages).mockResolvedValue(transcript as never)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript as never)
+    vi.mocked(deleteSession).mockResolvedValue({} as never)
+    vi.mocked(setSessionArchived).mockResolvedValue({} as never)
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setResumeFailedSessionId(null)
+    setMessages([])
+    setSessions([])
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    vi.clearAllMocks()
+    vi.mocked(requestGatewayForProfile).mockReset()
+    vi.mocked(requestGatewayForAgent).mockReset()
+  })
+
+  it.each([
+    'cold resume',
+    'warm resume',
+    'fresh draft',
+    'branch current',
+    'branch stored',
+    'remove',
+    'archive',
+    'connection reset'
+  ] as const)('%s respects sticky retention and explicit reset boundaries', async action => {
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.create' || method === 'session.branch') {
+        return { session_id: 'runtime-branch', stored_session_id: 'stored-branch' } as never
+      }
+
+      return { session_id: RUNTIME_SESSION_ID, resumed: 'stored-1', info: {}, messages: [] } as never
+    })
+
+    vi.mocked(requestGatewayForProfile).mockImplementation((_profile, method, params) => requestGateway(method, params))
+    vi.mocked(requestGatewayForAgent).mockImplementation((_connection, _profile, method, params) =>
+      requestGateway(method, params)
+    )
+    let run: () => Promise<unknown> | void
+
+    if (action === 'cold resume' || action === 'warm resume') {
+      const warm = action === 'warm resume'
+      const state = createClientSessionState('stored-1')
+      state.messages = $messages.get()
+      await act(async () => {
+        render(
+          <ResumeHarness
+            onReady={resume => {
+              run = () => resume('stored-1')
+            }}
+            requestGateway={requestGateway}
+            runtimeIdByStoredSessionIdRef={{ current: new Map(warm ? [['stored-1', RUNTIME_SESSION_ID]] : []) }}
+            sessionStateByRuntimeIdRef={{ current: new Map(warm ? [[RUNTIME_SESSION_ID, state]] : []) }}
+          />
+        )
+      })
+    } else {
+      await act(async () => {
+        render(
+          <Harness
+            activeSessionId={RUNTIME_SESSION_ID}
+            onReady={actions => {
+              const operations = {
+                'fresh draft': () => actions.startFreshSessionDraft(),
+                'connection reset': () =>
+                  actions.startFreshSessionDraft({
+                    preserveRoute: true,
+                    workspaceTarget: null,
+                    clearAllNotifications: true
+                  }),
+                'branch current': () => actions.branchCurrentSession(),
+                'branch stored': () => actions.branchStoredSession('stored-1'),
+                remove: () => actions.removeSession('stored-1'),
+                archive: () => actions.archiveSession('stored-1')
+              }
+
+              run = operations[action]
+            }}
+            requestGateway={requestGateway}
+            selectedStoredSessionId="stored-1"
+          />
+        )
+      })
+    }
+
+    const warning = {
+      key: 'context-maintenance:profile:session',
+      kind: 'sticky',
+      level: 'warn',
+      text: 'Compaction failed'
+    }
+
+    showAgentNotice(warning, 'connection-a/default')
+    showAgentNotice(warning, 'connection-b/default')
+    const retained = $notifications.get()
+    notify({ id: 'ordinary-feedback', message: 'Saved', durationMs: 0 })
+
+    await act(async () => {
+      await run!()
+    })
+    const methods = requestGateway.mock.calls.map(([method]) => method)
+
+    const verifyAction = {
+      'cold resume': () => expect(methods).toContain('session.resume'),
+      'warm resume': () => expect(methods).toContain('session.activate'),
+      'fresh draft': () => expect($selectedStoredSessionId.get()).toBeNull(),
+      'connection reset': () => expect($selectedStoredSessionId.get()).toBeNull(),
+      'branch current': () => expect(methods).toContain('session.branch'),
+      'branch stored': () => expect(methods).toContain('session.create'),
+      remove: () => expect(deleteSession).toHaveBeenCalled(),
+      archive: () => expect(setSessionArchived).toHaveBeenCalled()
+    }
+
+    verifyAction[action]()
+    expect($notifications.get().filter(item => item.kind === 'error')).toEqual([])
+    expect($notifications.get().some(item => item.id === 'ordinary-feedback')).toBe(false)
+    expect($notifications.get().filter(item => item.retainUntilDismissed)).toEqual(
+      action === 'connection reset' ? [] : retained
+    )
+  })
+})
 
 describe('resumeSession failure recovery', () => {
   afterEach(() => {

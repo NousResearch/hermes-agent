@@ -22,7 +22,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { clearTransientNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import {
@@ -890,7 +890,7 @@ export function usePromptActions({
         return
       }
 
-      clearNotifications()
+      clearTransientNotifications()
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
@@ -960,7 +960,7 @@ export function usePromptActions({
         sessionId
       })
 
-      clearNotifications()
+      clearTransientNotifications()
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
@@ -1027,7 +1027,7 @@ export function usePromptActions({
         sessionId
       })
 
-      clearNotifications()
+      clearTransientNotifications()
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)

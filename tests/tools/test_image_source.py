@@ -115,6 +115,99 @@ class TestLocalBackend:
         assert res.data == svg_bytes
 
 
+class TestPseudoSchemePrefixStripping:
+    """Issue #98428: text-routed local models (gpt-oss via Ollama) re-call
+    vision_analyze with a bare "path:"/"local:" pseudo-scheme prefixed onto the
+    injected cache path. The resolver must strip it instead of failing with
+    "media file not found" on the whole string as a relative path."""
+
+    @pytest.mark.asyncio
+    async def test_path_prefix_resolves_underlying_file(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "img.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(f"path:{img}", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_local_prefix_and_separator_variants_resolve(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "img.png"
+        img.write_bytes(PNG)
+        for src in (f"local:{img}", f"path= {img}"):
+            res = await isrc.resolve_image_source(src, isrc.ResolveContext())
+            assert res.data == PNG
+            assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_real_scheme_still_rejected_and_bare_name_untouched(
+            self, tmp_path, monkeypatch):
+        """The strip must not broaden scheme handling: a genuine scheme keeps
+        raising UnsupportedScheme, and a relative name carrying a literal colon
+        keeps the old not-found behaviour instead of being rewritten."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(isrc.UnsupportedScheme):
+            await isrc.resolve_image_source("paths://x.png", isrc.ResolveContext())
+        with pytest.raises(isrc.SourceNotFound):
+            await isrc.resolve_image_source("path:pic.png", isrc.ResolveContext())
+
+    @pytest.mark.parametrize(
+        "raw,stripped",
+        [
+            pytest.param("path:/abs/img.png", "/abs/img.png", id="posix-abs"),
+            pytest.param("LOCAL:~/img.png", "~/img.png", id="home-case-insensitive"),
+            pytest.param("path: ./rel.png", "./rel.png", id="equals-space-separator"),
+            pytest.param(r"path:C:\Users\me\img.png", r"C:\Users\me\img.png",
+                         id="windows-drive-backslash"),
+            pytest.param("local:C:/Users/me/img.png", "C:/Users/me/img.png",
+                         id="windows-drive-forward-slash"),
+            pytest.param(r"path:\\server\share\img.png", r"\\server\share\img.png",
+                         id="unc-root"),
+        ],
+    )
+    def test_windows_path_shapes_stripped(self, tmp_path, monkeypatch, raw, stripped):
+        """Windows drive-absolute and UNC spellings are real absolute paths and
+        must be stripped too. The strip is pure string work, so it is pinned at
+        the regex level where it stays testable on POSIX CI."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        assert isrc._PSEUDO_SCHEME_RE.sub("", raw, count=1) == stripped
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("path://host/img.png", id="authority-form-path"),
+            pytest.param("local://host/img.png", id="authority-form-local"),
+            pytest.param("paths://x.png", id="different-scheme-name"),
+            pytest.param("path:pic.png", id="bare-relative-name"),
+            pytest.param(r"path:C:relative.png", id="drive-relative"),
+        ],
+    )
+    def test_uri_and_ambiguous_forms_left_untouched(
+            self, tmp_path, monkeypatch, raw):
+        """The "//" authority form ("path://host") is a structurally complete
+        URI, not a decorated path; drive-relative spellings are cwd-dependent
+        and ambiguous. Neither is rewritten."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        assert isrc._PSEUDO_SCHEME_RE.sub("", raw, count=1) == raw
+
+    @pytest.mark.asyncio
+    async def test_uri_authority_form_still_unsupported_scheme(
+            self, tmp_path, monkeypatch):
+        """Pins the "path://host" decision end to end: the authority form must
+        flow into the existing unsupported-scheme branch instead of being
+        rewritten to a "//host" POSIX path."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with pytest.raises(isrc.UnsupportedScheme):
+            await isrc.resolve_image_source(
+                "path://host/img.png", isrc.ResolveContext())
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

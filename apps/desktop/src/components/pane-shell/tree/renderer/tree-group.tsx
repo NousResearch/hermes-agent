@@ -387,9 +387,12 @@ export function TreeGroup({
     return chrome.uncloseable || chrome.hideOnly ? undefined : paneId
   }
 
-  // The zone hosting the uncloseable workspace never minimizes — collapsing
-  // MAIN strands the whole app behind a strip.
-  const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
+  const standingNavigation = shown.length > 0 && shown.every(id => paneChrome(paneFor(id)).hideOnly)
+  const stackedHeader = Boolean(topEdge) && standingNavigation
+
+  // Main and standing sidebar navigation never minimize: the former strands
+  // the app, while the latter already has the sidebar show/hide control.
+  const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable) && !standingNavigation
 
   // Middle-click / ⌘-click on a tab: one routing for every tab kind, the same
   // one the zone menu's Close and ⌘W use.
@@ -500,11 +503,21 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || topEdge) && (
         <div
-          className="flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className={cn(
+            'flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)',
+            stackedHeader && 'flex-col'
+          )}
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
+          style={topEdge ? { height: TITLEBAR_HEIGHT + (stackedHeader ? 28 : 0) } : undefined}
         >
-          {topEdge && leftEdge && (
+          {stackedHeader && (
+            <div
+              className="w-full shrink-0 [-webkit-app-region:drag]"
+              data-window-drag-handle=""
+              style={{ height: TITLEBAR_HEIGHT }}
+            />
+          )}
+          {topEdge && leftEdge && !stackedHeader && (
             <div className="flex shrink-0">
               <div className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]" data-window-drag-handle="" />
               <div className="relative w-(--titlebar-controls-width,96px)">
@@ -537,7 +550,7 @@ export function TreeGroup({
                 }}
                 ref={stripRef}
                 style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
-                titlebar={topEdge}
+                titlebar={topEdge && !stackedHeader}
                 trailing={
                   <>
                     {minimizable && (
@@ -697,7 +710,7 @@ export function TreeGroup({
           ) : (
             <div className="min-w-0 flex-1 [-webkit-app-region:drag]" />
           )}
-          {topEdge && rightEdge && (
+          {topEdge && rightEdge && !stackedHeader && (
             <div className="flex shrink-0">
               <div
                 className="w-6"

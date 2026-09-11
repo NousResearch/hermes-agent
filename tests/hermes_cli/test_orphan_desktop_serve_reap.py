@@ -9,6 +9,7 @@ boot must clear those corpses without touching intentional fixed-port serves
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 from hermes_cli.dashboard_procs import (
@@ -159,6 +160,29 @@ def test_lock_owned_serve_pids_reads_valid_backend_lock(tmp_path):
         json.dumps({**_valid_lock_payload(8888, other_oid, nonce), "schemaVersion": 99})
     )
     assert _lock_owned_serve_pids(base_dir=lock_root) == {7777}
+
+
+def test_lock_owned_serve_pids_uses_machine_root_for_named_profile(
+    tmp_path, monkeypatch
+):
+    oid = "f" * 32
+    nonce = "d" * 16
+    machine_root = tmp_path / ".hermes"
+    lock_root = machine_root / "desktop-ssh"
+    (lock_root / oid).mkdir(parents=True)
+    (lock_root / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(7777, oid, nonce))
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    profile_home = machine_root / "profiles" / "reviewer"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    (profile_home / "desktop-ssh" / oid).mkdir(parents=True)
+    (profile_home / "desktop-ssh" / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(8888, oid, nonce))
+    )
+
+    assert _lock_owned_serve_pids() == {7777}
 
 
 def test_valid_lockfile_payload_rejects_wrong_owner_and_shape():

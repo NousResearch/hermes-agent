@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_default_hermes_root, get_desktop_ssh_runtime_root
+
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
 _DASHBOARD_PATTERNS = tuple(
@@ -523,12 +525,6 @@ _REMOTE_LOCK_SUBDIR = "desktop-ssh"
 _HEX32 = set("0123456789abcdef")
 
 
-def _hermes_home_dir() -> Path:
-    """Resolved Hermes home (HERMES_HOME override or ~/.hermes)."""
-    override = os.environ.get("HERMES_HOME", "").strip()
-    return Path(override).expanduser() if override else Path.home() / ".hermes"
-
-
 def _is_hex(value: object, length: int) -> bool:
     return isinstance(value, str) and len(value) == length and not (set(value) - _HEX32)
 
@@ -556,29 +552,39 @@ def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:
 
 
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
-    """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
+    """PIDs claimed by valid machine-level ``desktop-ssh`` ownership records
     (best-effort: a bad record contributes no PID; never raises)."""
     import json
-    root = base_dir if base_dir is not None else _hermes_home_dir() / _REMOTE_LOCK_SUBDIR
     owned: set[int] = set()
-    try:
-        entries = list(root.iterdir()) if root.is_dir() else []
-    except OSError:
-        return owned
-    for entry in entries:
-        ownership_id = entry.name
-        lock_path = entry / "backend.lock.json"
-        try:  # validateOwnershipId(): exactly 32 lowercase hex chars
-            if not entry.is_dir() or not _is_hex(ownership_id, 32) or not lock_path.is_file():
-                continue
-            data = lock_path.read_bytes()
-            if len(data) > 65536:
-                continue
-            parsed = json.loads(data)
-        except (OSError, UnicodeDecodeError, ValueError):
+    if base_dir is not None:
+        roots = (base_dir,)
+    else:
+        if sys.platform == "win32":
+            from hermes_cli.windows_ssh_runtime import _root
+            machine_root = _root()
+        else:
+            machine_root = get_desktop_ssh_runtime_root()
+        configured_root = get_default_hermes_root() / _REMOTE_LOCK_SUBDIR
+        roots = (machine_root,) if machine_root == configured_root else (machine_root, configured_root)
+    for root in roots:
+        try:
+            entries = list(root.iterdir()) if root.is_dir() else []
+        except OSError:
             continue
-        if _valid_lockfile_payload(parsed, ownership_id):
-            owned.add(parsed["pid"])  # validated as int above
+        for entry in entries:
+            ownership_id = entry.name
+            lock_path = entry / "backend.lock.json"
+            try:  # validateOwnershipId(): exactly 32 lowercase hex chars
+                if not entry.is_dir() or not _is_hex(ownership_id, 32) or not lock_path.is_file():
+                    continue
+                data = lock_path.read_bytes()
+                if len(data) > 65536:
+                    continue
+                parsed = json.loads(data)
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if _valid_lockfile_payload(parsed, ownership_id):
+                owned.add(parsed["pid"])  # validated as int above
     return owned
 
 

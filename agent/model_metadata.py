@@ -2099,6 +2099,10 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
         return 0
     content = msg.get("content")
     count = _count_parts(content, {"image", "image_url", "input_image"})
+    if msg.get("type") == "function_call_output":
+        output = msg.get("output")
+        if isinstance(output, list):
+            count += sum(1 for part in output if isinstance(part, dict) and part.get("type") == "input_image")
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
@@ -2151,6 +2155,12 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "output" and msg.get("type") == "function_call_output" and isinstance(v, list):
+            shadow[k] = [
+                {"type": part.get("type"), "image": "[stripped]"}
+                if isinstance(part, dict) and part.get("type") == "input_image" else part
+                for part in v
+            ]
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

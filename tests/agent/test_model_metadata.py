@@ -162,6 +162,18 @@ class TestEstimateMessagesTokensRough:
         # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
+    def test_responses_function_call_output_image_uses_flat_cost(self):
+        item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [{
+                "type": "input_image",
+                "image_url": "data:image/png;base64," + "A" * 300_000,
+            }],
+        }
+
+        assert 1_500 <= estimate_messages_tokens_rough([item]) < 2_000
+
 
 
 class TestEstimateRequestTokensRough:

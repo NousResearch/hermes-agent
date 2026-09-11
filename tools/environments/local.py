@@ -364,7 +364,9 @@ def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
         return (shutil.which("bash")
-                or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
+                or next((p for p in (
+                    "/usr/bin/bash", "/bin/bash", "/run/current-system/sw/bin/bash"
+                ) if os.path.isfile(p)), None)
                 or os.environ.get("SHELL") or "/bin/sh")
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     candidates = _windows_bash_candidates(custom)

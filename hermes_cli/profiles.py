@@ -207,6 +207,20 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_named_profile_name(name: str) -> None:
+    """Validate a canonical id for a profile under ``profiles/``.
+
+    ``default`` is valid for commands that address the built-in root profile,
+    but it can never name a child directory.  Keeping that distinction here
+    gives declarative integrations one validator for the on-disk namespace.
+    """
+    validate_profile_name(name)
+    if name == "default":
+        raise ValueError(
+            "Profile name 'default' is reserved for the built-in root profile (~/.hermes)."
+        )
+
+
 def validate_alias_name(name: str) -> None:
     """Raise ``ValueError`` unless *name* is a safe wrapper filename: it is used verbatim
     under ``~/.local/bin``, so ``../../.bashrc`` must never escape the wrapper dir."""
@@ -832,9 +846,9 @@ def create_profile(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
-    canon = _canon_valid(name)
-    if canon == "default":
-        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
+    canon = normalize_profile_name(name)
+    validate_named_profile_name(canon)
+
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
         # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
@@ -1646,9 +1660,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         cleaned = set_profile_display_name("default", new_name)
         print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
         return _get_default_hermes_home()
-    new_canon = _canon_valid(new_name)
-    if new_canon == "default":
-        raise ValueError("Cannot rename to 'default' — it is reserved.")
+
+    new_canon = normalize_profile_name(new_name)
+    validate_named_profile_name(new_canon)
+
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():

@@ -101,6 +101,23 @@ class TestFindBashUnchanged:
         assert isinstance(result, str)
         assert len(result) > 0
 
+    def test_finds_nixos_system_bash_before_fish_fallback(self, monkeypatch):
+        """A restricted NixOS service PATH must not make bash scripts run in fish."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            local_mod.os.path,
+            "isfile",
+            lambda path: path in {
+                "/run/current-system/sw/bin/bash",
+                "/run/current-system/sw/bin/fish",
+            },
+        )
+        monkeypatch.setenv("SHELL", "/run/current-system/sw/bin/fish")
+
+        assert _find_bash() == "/run/current-system/sw/bin/bash"
+
 
 class TestFindBashSkipsBrokenCustomPath:
     """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""

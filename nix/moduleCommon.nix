@@ -671,6 +671,38 @@ let
       `services.hermes-agent` keeps the state, the configuration and
       the daemons. Remove `installPackage` and add the line above.
     '';
+  # ── Named profile options ────────────────────────────────────────────────
+  # A named profile is another HERMES_HOME managed by the same module and
+  # package. Reuse the default-profile option declarations where their
+  # semantics stay profile-local, and omit process/package options that only
+  # make sense for the installation as a whole.
+  profileOptions =
+    {
+      defaultPackage,
+      defaultPackageText,
+      defaultWorkingDirectory,
+      defaultWorkingDirectoryText,
+    }:
+    builtins.removeAttrs
+      (sharedOptions {
+        inherit
+          defaultPackage
+          defaultPackageText
+          defaultWorkingDirectory
+          defaultWorkingDirectoryText
+          ;
+      })
+      [
+        "enable"
+        "package"
+        "extraPackages"
+        "extraPythonPackages"
+        "extraDependencyGroups"
+        "backend"
+      ]
+    // {
+      gateway.enable = lib.mkEnableOption "the messaging gateway service for this profile";
+    };
 
   # ── Package resolution ──────────────────────────────────────────────────
   effectivePackage =
@@ -766,8 +798,10 @@ let
   #
   #   run       the command prefix ("" on NixOS, "$DRY_RUN_CMD " on
   #             Home Manager)
-  #   owner     "user:group" that owns each file, or null for the user that
-  #             runs the activation
+  #   configRun command prefix for generated config merges; defaults to run
+  #   owner     "user:group" that owns installed files, or null for the user
+  #             that runs the activation
+  #   manageConfig whether this helper should write config.yaml
   #   modes     the file mode for each kind of file
   mkStateScript =
     {
@@ -781,9 +815,19 @@ let
       # activation writes to the path on the host.
       configWorkingDirectory ? workingDirectory,
       run ? "",
+      configRun ? run,
       owner ? null,
+      manageConfig ? true,
       modes,
       stateDirs ? [ ],
+      # Whether this helper creates hermesHome, workingDirectory and the
+      # stateDirs itself. Callers that run unprivileged (the NixOS profile
+      # path drops to cfg.user via runuser) cannot mkdir outside trees that
+      # user already owns, so they provision the same set as root through
+      # systemd-tmpfiles beforehand and set this to false. Creating them a
+      # second time unprivileged is redundant, and it hard-fails activation
+      # when workingDirectory sits outside cfg.user's reach.
+      provisionDirectories ? true,
       # The module writes this value into the .managed marker. An
       # interactive shell reads the marker, because it does not see the
       # HERMES_MANAGED variable of the service. The value tells the shell
@@ -828,30 +872,40 @@ let
       # Directories. The service units and Hermes make most of these
       # directories when they first need them. Activation makes them here so
       # that the first activation sets the correct owner and mode, and does
-      # not use the umask.
-      ${run}mkdir -p ${
-        lib.escapeShellArgs (
-          [
-            hermesHome
-            workingDirectory
-          ]
-          ++ map (d: "${hermesHome}/${d}") stateDirs
-        )
-      }
+      # not use the umask. A caller that already provisioned them as root
+      # (see provisionDirectories) skips this.
+      ${lib.optionalString provisionDirectories ''
+        ${run}mkdir -p ${
+          lib.escapeShellArgs (
+            [
+              hermesHome
+              workingDirectory
+            ]
+            ++ map (d: "${hermesHome}/${d}") stateDirs
+          )
+        }
+      ''}
 
       # config.yaml: merge the Nix settings into the file on disk. Hermes
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
-      ${
+      ${lib.optionalString manageConfig (
         if cfg.configFile != null then
           "${inst} -m ${modes.config} -D ${configFiles.effective} ${hermesHome}/config.yaml"
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${hermesHome}/config.yaml
-            ${run}chmod ${modes.config} ${hermesHome}/config.yaml
+            ${configRun}${configFiles.mergeScript} ${
+              lib.escapeShellArgs (
+                [
+                  (toString configFiles.generated)
+                  "${hermesHome}/config.yaml"
+                  modes.config
+                ]
+              )
+            }
           ''
-      }
+      )}
 
       # The managed-mode marker. It makes an interactive shell also refuse to
       # change the configuration that Nix owns.
@@ -1102,6 +1156,89 @@ let
       }
     ];
 
+  # A profile's workingDirectory is provisioned by systemd-tmpfiles as root,
+  # but everything afterwards (config, .env, documents) is written as
+  # cfg.user, and the gateway unit runs with it as WorkingDirectory. Both
+  # need to *traverse* every parent. A path under another user's home is the
+  # case that actually happens, and NixOS knows those modes at eval time, so
+  # catch it here instead of failing activation with a bare EACCES.
+  profileWorkingDirectoryAssertions =
+    {
+      cfg,
+      users,
+      optionPath,
+    }:
+    let
+      # "0700" and "700" both occur; take the last three digits.
+      digits = mode: let s = toString mode; n = lib.stringLength s; in
+        if n >= 3 then lib.substring (n - 3) 3 s else s;
+      execBit = d: lib.elem d [ "1" "3" "5" "7" ];
+      groupExec = mode: execBit (lib.substring 1 1 (digits mode));
+      otherExec = mode: execBit (lib.substring 2 1 (digits mode));
+
+      # Homes that cfg.user cannot traverse. Owner-execute does not help:
+      # the owner is someone else by construction.
+      unreachable = lib.filterAttrs (
+        name: u:
+        name != cfg.user
+        && u.home != null
+        && u.home != ""
+        && u.home != "/var/empty"
+        && !(otherExec u.homeMode || (groupExec u.homeMode && u.group == cfg.group))
+      ) users;
+
+      offenders = lib.concatLists (
+        lib.mapAttrsToList (
+          profileName: profile:
+          lib.mapAttrsToList (userName: u: {
+            inherit profileName userName;
+            inherit (u) home homeMode;
+            inherit (profile) workingDirectory;
+          }) (lib.filterAttrs (_n: u: lib.hasPrefix "${u.home}/" profile.workingDirectory) unreachable)
+        ) cfg.profiles
+      );
+    in
+    map (o: {
+      assertion = false;
+      message = ''
+        ${optionPath}.${o.profileName}.workingDirectory is set to
+        ${o.workingDirectory}, which lives under ${o.userName}'s home
+        (${o.home}, mode ${toString o.homeMode}).
+
+        Profile setup and the profile gateway both run as '${cfg.user}', which
+        cannot traverse that directory, so activation and the service would
+        fail with "Permission denied". The default profile does not hit this
+        because its activation runs as root.
+
+        Put the workspace somewhere '${cfg.user}' can reach, for example
+        /srv/hermes/${o.profileName}, or widen ${o.home} with
+        users.users.${o.userName}.homeMode = "0711".
+      '';
+    }) offenders;
+
+  profileReservedNames = [
+    "default"
+    "hermes"
+    "root"
+    "sudo"
+    "test"
+    "tmp"
+  ];
+
+  profileNameAssertions =
+    { profiles, optionPath }:
+    let
+      valid = name: builtins.match "^[a-z0-9][a-z0-9_-]{0,63}$" name != null && !(lib.elem name profileReservedNames);
+    in
+    lib.mapAttrsToList (name: _profile: {
+      assertion = valid name;
+      message = ''
+        ${optionPath}: invalid profile name '${name}'. Names must match
+        [a-z0-9][a-z0-9_-]{0,63} and must not be one of:
+        ${lib.concatStringsSep ", " profileReservedNames}.
+      '';
+    }) profiles;
+
   # Two plugins with the same name use one nix-managed-<name> symlink. One of
   # the plugins then disappears without a message. Both modules assert
   # against this condition.
@@ -1156,8 +1293,12 @@ in
     mkEnvScript
     mkStateScript
     pluginNameAssertions
+    profileNameAssertions
+    profileReservedNames
+    profileWorkingDirectoryAssertions
     processEnvironment
     processPath
+    profileOptions
     sharedOptions
     stateSubdirs
     workspaceFilesAssertions

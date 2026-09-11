@@ -8,11 +8,13 @@ model (multimodal tool-result envelope) or are described by the auxiliary vision
 
 import base64
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
@@ -33,7 +35,7 @@ def _load_auxiliary_client() -> None:
         extract_content_or_reasoning = extract_content_or_reasoning or _aux.extract_content_or_reasoning
 
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 from tools.vision_tools_image_prep import (
@@ -55,6 +57,15 @@ def _cfg_auxiliary(*keys: str, default=None):
     try:
         from hermes_cli.config import cfg_get, load_config
         return cfg_get(load_config(), "auxiliary", *keys, default=default)
+    except Exception:
+        return default
+
+
+def _cfg_vision(*keys: str, default=None):
+    """``vision.<keys...>`` from config.yaml; ``default`` when config is unavailable."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        return cfg_get(load_config(), "vision", *keys, default=default)
     except Exception:
         return default
 
@@ -873,11 +884,93 @@ def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
 
 
+def _vision_repeat_guard(image_url: str, question: str, *, session_id: Optional[str] = None) -> Optional[str]:
+    """Cap repeat vision_analyze calls on one image per session.
+
+    Gated by ``vision.max_calls_per_image`` in config.yaml (int, default 0 =
+    disabled, matching historical unlimited repeats). When the cap is a
+    positive integer, further calls on the same normalized source return a
+    refusal without touching the vision backend or embedding image bytes.
+
+    State lives under ``$HERMES_HOME/cache/vision-repeat/<session>/``. Scope
+    comes from the tool ``session_id`` (falling back to ``task_id``); if
+    neither is set, a process-id directory is used so concurrent processes
+    do not share counters.
+    """
+    try:
+        max_calls = int(_cfg_vision("max_calls_per_image", default=0) or 0)
+    except (TypeError, ValueError):
+        max_calls = 0
+    if max_calls <= 0:
+        return None
+
+    src = (image_url or "").strip()
+    norm = src
+    try:
+        if src.startswith("file://"):
+            norm = os.path.realpath(os.path.expanduser(urlparse(src).path))
+        elif src and "://" not in src and not src.startswith("data:"):
+            norm = os.path.realpath(os.path.expanduser(src))
+    except Exception:
+        norm = src
+
+    sid_raw = (session_id or "").strip()
+    sid = "".join(c if c.isalnum() or c in "-_" else "_" for c in sid_raw) or f"pid-{os.getpid()}"
+    key = hashlib.sha256(norm.encode("utf-8", "replace")).hexdigest()[:24]
+    try:
+        d = get_hermes_home() / "cache" / "vision-repeat" / sid
+        d.mkdir(parents=True, exist_ok=True)
+        rec_path = d / f"{key}.json"
+        rec: Dict[str, Any] = {"source": norm, "calls": []}
+        if rec_path.exists():
+            try:
+                rec = json.loads(rec_path.read_text())
+            except Exception:
+                pass
+        calls = rec.get("calls") or []
+        if len(calls) >= max_calls:
+            first = calls[0] if calls else {}
+            logger.info(
+                "vision_analyze: repeat-call blocked by per-session budget "
+                "(%s, %d prior call(s))", norm, len(calls),
+            )
+            return tool_error(
+                "BLOCKED — per-session attachment budget: this image was already "
+                f"analyzed {len(calls)} time(s) in this session "
+                f"(first at {first.get('at', '?')}, question: "
+                f"{(first.get('question') or '')[:200]!r}). "
+                "Re-analyzing the same file is mechanically disabled because each "
+                "call re-embeds the full image into context. The image and/or its "
+                "description from the earlier call are ALREADY in your "
+                "conversation history — scroll up and use that answer. If it is "
+                "genuinely insufficient, proceed with what you have or escalate; "
+                "do NOT retry this tool on this file (all retries will be blocked).",
+                success=False,
+            )
+        calls.append({
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "question": (question or "")[:500],
+        })
+        rec["source"] = norm
+        rec["calls"] = calls
+        tmp = rec_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rec))
+        tmp.replace(rec_path)
+    except Exception:
+        logger.warning("vision_analyze: repeat-call guard errored; allowing call", exc_info=True)
+    return None
+
+
 async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url, question, region = args.get("image_url", ""), args.get("question", ""), args.get("region")
     task_id = kw.get("task_id")
     # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
     # encode/resize step, so multi-image fan-out keeps full request concurrency.
+    blocked = _vision_repeat_guard(
+        image_url, question, session_id=kw.get("session_id") or task_id,
+    )
+    if blocked is not None:
+        return blocked
     if _should_use_native_vision_fast_path():
         logger.info("vision_analyze: native fast path")
         return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)

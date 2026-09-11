@@ -806,6 +806,13 @@ prompt_caching:
 # uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
 # Other providers pick a sensible default automatically.
 #
+# vision:
+#   # Cap repeat vision_analyze calls on the same image in one session.
+#   # 0 = unlimited (default; current behavior). 1 = refuse the second call
+#   # without hitting the vision backend — each native-path call re-embeds
+#   # the full image into conversation history.
+#   max_calls_per_image: 0
+#
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:

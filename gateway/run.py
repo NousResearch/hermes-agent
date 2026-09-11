@@ -1517,6 +1517,19 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
+    # 1.5 Windows: CPython's compiled-in CA paths are empty there; the certifi fallback
+    # below would pin the frozen Mozilla bundle and drop the OS store's private corporate
+    # roots (#43294). Prefer the merged store + certifi bundle; None keeps today's behavior.
+    try:
+        from agent.win_ca_bundle import windows_merged_ca_bundle
+        merged = windows_merged_ca_bundle()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Windows CA bundle unavailable: %s", exc)
+    else:
+        if merged:
+            os.environ["SSL_CERT_FILE"] = merged
+            return
+
     # 2. certifi (ships its own Mozilla bundle)
     try:
         import certifi
@@ -1573,9 +1586,11 @@ def _clear_planned_restart_notification() -> None:
 # Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
 os.environ["_HERMES_GATEWAY"] = "1"
 
-_ensure_ssl_certs()
-
+# Must precede _ensure_ssl_certs(): its win32 branch imports agent.win_ca_bundle,
+# which needs the repo root on sys.path when this module runs as a script.
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+_ensure_ssl_certs()
 
 from hermes_constants import get_hermes_home, get_hermes_home_override
 _hermes_home = get_hermes_home()

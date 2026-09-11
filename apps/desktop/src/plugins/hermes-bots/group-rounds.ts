@@ -353,7 +353,7 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+  const onTurn = room.turn || null
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
@@ -397,9 +397,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     thread: thread || null
   })
 
-  // Interrupt the member actually mid-turn. room.turn is runtime-only and
-  // names exactly one member (the loop is serial); a settled room has none.
-  const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
+  // The captured descriptor owns routing even if the roster has changed.
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
   if (onTurn && sessionId) {

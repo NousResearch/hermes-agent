@@ -152,6 +152,59 @@ describe('routing', () => {
 })
 
 describe('round lifecycle', () => {
+  it('clears each exact member turn on success, failure and supersession without clearing a newer turn', async () => {
+    for (const outcome of ['success', 'failure', 'superseded', 'newer-turn']) {
+      let finish!: () => void
+
+      const gate = new Promise<void>(resolve => {
+        finish = resolve
+      })
+
+      const room = await loadRoom({
+        turn: async () => {
+          await gate
+
+          if (outcome === 'failure') {throw new Error('member failed')}
+
+          return '(pass)'
+        }
+      })
+
+      const { runGroupRoundMember } = await import('./group-round-members')
+      const presence = await import('./group-presence')
+      const member: GroupMember = { name: 'default', connectionId: 'remote', remoteSource: true, sourceScoped: true }
+      const newer = { ...member }
+      room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'hello', 't1')
+      room.chat.updateGroupChat('Room', state => ({ ...state, running: true, epoch: 1 }))
+
+      const context = {
+        group: 'Room',
+        members: [member],
+        thread: 't1',
+        startEpoch: 1,
+        binding: { isLive: () => true },
+        isCurrent: () => room.chat.$groupChats.get().Room.epoch === 1
+      }
+
+      const pending = runGroupRoundMember(context, member)
+      await drain(() => room.gateway.calls.length === 0)
+      expect(room.chat.$groupChats.get().Room.turn).toEqual(member)
+      expect([...presence.$activeGroupMemberKeys.get()]).toEqual(['remote::default'])
+
+      if (outcome === 'superseded' || outcome === 'newer-turn') {
+        room.chat.updateGroupChat('Room', state => ({
+          ...state,
+          epoch: 2,
+          ...(outcome === 'newer-turn' ? { turn: newer } : {})
+        }))
+      }
+
+      finish()
+      await pending
+      expect(room.chat.$groupChats.get().Room.turn).toBe(outcome === 'newer-turn' ? newer : null)
+      expect([...presence.$activeGroupMemberKeys.get()]).toEqual(outcome === 'newer-turn' ? ['remote::default'] : [])
+    }
+  })
   it('settles when everyone passes, logging only the user message', async () => {
     const room = await loadRoom()
 
@@ -730,7 +783,7 @@ describe('stopGroupThread (#91868/#94569)', () => {
         members: STOP_MEMBERS,
         running: true,
         sessions: { alpha: 'live-alpha-sid' },
-        turn,
+        turn: turn ? STOP_MEMBERS.find(member => member.name === turn) : null,
         watermarks: {}
       }
     } as unknown as Record<string, GroupChat>)
@@ -752,6 +805,27 @@ describe('stopGroupThread (#91868/#94569)', () => {
       expect(state.holds?.[member.name]).toBeTruthy()
       expect(state.holds?.[member.name].thread).toBe('t1')
     }
+  })
+
+  it('interrupts the exact on-turn owner even when same-name members are reordered', async () => {
+    const room = await loadRoom()
+    const local: GroupMember = { name: 'default', connectionId: 'local', sourceScoped: true }
+    const remote: GroupMember = { name: 'default', connectionId: 'remote', remoteSource: true, sourceScoped: true }
+    room.chat.$groupChats.set({
+      Room: {
+        epoch: 3,
+        running: true,
+        log: [],
+        watermarks: {},
+        members: [local, remote],
+        turn: remote,
+        sessions: { 'local::default': 'local-session', 'remote::default': 'remote-session' }
+      }
+    })
+    await room.rounds.stopGroupThread('Room', 't1', [remote, local])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['remote-session'])
+    expect(room.chat.$groupChats.get().Room.turn).toBeNull()
+    expect(room.chat.$groupChats.get().Room.running).toBe(false)
   })
 
   it('interrupts the member ON TURN via its live session', async () => {

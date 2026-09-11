@@ -14,7 +14,7 @@ import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
-import type { GroupMember, GroupMessage } from './types'
+import type { Attachment, GroupMember, GroupMessage } from './types'
 
 export interface GroupRoundMemberContext {
   group: string
@@ -105,6 +105,25 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   return { room, memberKey, markKey, prompt, deltaImages }
 }
 
+/** Each invocation owns its descriptor, so an old completion cannot clear a newer turn. */
+async function runVisibleMemberTurn(
+  context: GroupRoundMemberContext,
+  member: GroupMember,
+  prompt: string,
+  images?: Attachment[]
+) {
+  const turn = { ...member }
+  updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
+
+  try {
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+  } finally {
+    if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
+      updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
+    }
+  }
+}
+
 export async function runGroupRoundMember(
   context: GroupRoundMemberContext,
   member: GroupMember
@@ -117,18 +136,10 @@ export async function runGroupRoundMember(
   }
 
   const { room, markKey, prompt, deltaImages } = prepared
-  // Surface WHO is on turn (runtime-only, like running/epoch) so the
-  // room shows "Radar is thinking…" instead of a generic working line —
-  // long model turns otherwise read as the room being stuck.
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
-    r.turn = member.name
-
-    return r
-  })
   let reply: null | string = null
 
   try {
-    reply = await runGroupChatMemberTurn(context.group, member, prompt, thread, deltaImages)
+    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
     // reply (or an explicit pass) is a good turn — clear the badge.
@@ -271,15 +282,10 @@ async function runGroupContinuationMember(
     deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member.name))
   })
 
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
-    r.turn = member.name
-
-    return r
-  })
   let continuationReply: null | string = null
 
   try {
-    continuationReply = await runGroupChatMemberTurn(context.group, member, prompt, thread)
+    continuationReply = await runVisibleMemberTurn(context, member, prompt)
 
     if (continuationReply !== null) {
       clearBotAttention(memberKey)

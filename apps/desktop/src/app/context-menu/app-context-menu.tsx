@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { pickRevealLabel } from '@/app/right-sidebar/file-actions'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -17,11 +18,15 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
-import { isRemoteGateway } from '@/lib/media'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { isFileMediaPath, isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
+import { copyFilePath, revealFile } from '@/store/file-actions'
+import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
@@ -136,6 +141,11 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const sections: ReactNode[][] = []
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
+  // A bare path made clickable in chat (`InlinePathLink`) carries the raw
+  // path as its href. It is a file on the AGENT's machine, so the verbs are
+  // file verbs — preview, default app, reveal, copy path — not browser ones.
+  const linkIsFile = Boolean(linkUrl) && !linkIsWeb && isFileMediaPath(linkUrl)
+  const localFs = !isDesktopFsRemoteMode()
   const imageIsWeb = isWebUrl(target.imageUrl)
   const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
@@ -192,7 +202,55 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
   }
 
-  if (linkUrl) {
+  if (linkIsFile) {
+    const filePath = linkUrl.replace(/^file:\/\//i, '')
+
+    const openInPreview = async () => {
+      try {
+        const preview = await normalizeOrLocalPreviewTarget(linkUrl)
+
+        if (!preview) {
+          throw new Error(`Could not open preview target: ${linkUrl}`)
+        }
+
+        openPreview(preview, 'explicit-link')
+      } catch (error) {
+        notifyError(error, t.preview.unavailable)
+      }
+    }
+
+    const fileUrl = /^file:/i.test(linkUrl)
+      ? linkUrl
+      : `file://${linkUrl
+          .split('/')
+          .map(part => encodeURIComponent(part))
+          .join('/')}`
+
+    sections.push(
+      [
+        openInApp ? (
+          <Item icon="open-preview" key="file-open-preview" label={copy.file.openPreview} onSelect={() => void openInPreview()} />
+        ) : null,
+        localFs ? (
+          <Item
+            icon="link-external"
+            key="file-open-default"
+            label={copy.file.openDefaultApp}
+            onSelect={() => openExternalLink(fileUrl)}
+          />
+        ) : null,
+        localFs ? (
+          <Item
+            icon="folder-opened"
+            key="file-reveal"
+            label={pickRevealLabel(t.fileMenu.revealFinder, t.fileMenu.revealExplorer, t.fileMenu.revealFileManager)}
+            onSelect={() => void revealFile(filePath)}
+          />
+        ) : null,
+        <Item icon="copy" key="file-copy-path" label={t.fileMenu.copyPath} onSelect={() => void copyFilePath(filePath)} />
+      ].filter(Boolean)
+    )
+  } else if (linkUrl) {
     sections.push(
       [
         linkIsWeb && openInApp ? (

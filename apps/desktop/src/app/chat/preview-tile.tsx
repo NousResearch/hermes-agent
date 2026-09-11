@@ -12,14 +12,19 @@
 
 import { useStore } from '@nanostores/react'
 
+import { pickRevealLabel } from '@/app/right-sidebar/file-actions'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { translateNow } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { openExternalLink } from '@/lib/external-link'
+import { openPreviewTargetInBrowser } from '@/lib/local-preview'
+import { copyFilePath, revealFile } from '@/store/file-actions'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $dockedPreviewTabs,
@@ -63,30 +68,103 @@ export function browserTabExternalUrl(tabId: string): null | string {
   return url && !NON_EXTERNAL_URL.test(url) ? url : null
 }
 
+/** The on-disk path behind a file tab — what Copy path and Reveal act on.
+ *  Null for URL and artifact tabs (nothing on this disk). */
+export function fileTabPath(tabId: string): null | string {
+  const target = targetFor(tabId)
+
+  return target?.kind === 'file' ? target.path || target.source || null : null
+}
+
 function browserTabMenuPrefix(tabId: string) {
-  if (targetFor(tabId)?.kind !== 'url') {
-    return undefined
+  const kind = targetFor(tabId)?.kind
+
+  if (kind === 'url') {
+    return (kit: MenuKit) => (
+      <>
+        {canOpenBrowserWindow()
+          ? renderActionItem(kit, {
+              icon: 'empty-window',
+              key: 'pop-out',
+              label: translateNow('preview.popOut'),
+              onSelect: () => popOutBrowserTab(tabId)
+            })
+          : null}
+        {renderActionItem(kit, {
+          disabled: !browserTabExternalUrl(tabId),
+          icon: 'link-external',
+          key: 'open-external',
+          label: translateNow('preview.openInExternal'),
+          onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
+        })}
+        {renderActionItem(kit, {
+          disabled: !browserTabExternalUrl(tabId),
+          icon: 'copy',
+          key: 'copy-url',
+          label: translateNow('contextMenu.link.copyUrl'),
+          onSelect: () => void copyFilePath(browserTabExternalUrl(tabId) ?? '')
+        })}
+      </>
+    )
   }
 
-  return (kit: MenuKit) => (
-    <>
-      {canOpenBrowserWindow()
-        ? renderActionItem(kit, {
-            icon: 'empty-window',
-            key: 'pop-out',
-            label: translateNow('preview.popOut'),
-            onSelect: () => popOutBrowserTab(tabId)
-          })
-        : null}
-      {renderActionItem(kit, {
-        disabled: !browserTabExternalUrl(tabId),
-        icon: 'link-external',
-        key: 'open-external',
-        label: translateNow('preview.openInExternal'),
-        onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
-      })}
-    </>
-  )
+  // A file tab: the verbs a file gets everywhere else in the app (the file
+  // tree, a chat path link) — open it outside Hermes, reveal it, copy its
+  // path. Reveal and default-app need the file on THIS disk, so they are
+  // hidden on a remote gateway; copy path works everywhere.
+  if (kind === 'file') {
+    const localFs = !isDesktopFsRemoteMode()
+
+    return (kit: MenuKit) => {
+      const path = fileTabPath(tabId)
+      const target = targetFor(tabId)
+
+      if (!path || !target) {
+        return null
+      }
+
+      const openExternally = async () => {
+        try {
+          await openPreviewTargetInBrowser(target)
+        } catch (error) {
+          notifyError(error, translateNow('errors.genericFailure'))
+        }
+      }
+
+      return (
+        <>
+          {localFs
+            ? renderActionItem(kit, {
+                icon: 'link-external',
+                key: 'file-open-external',
+                label: translateNow('preview.openInExternal'),
+                onSelect: () => void openExternally()
+              })
+            : null}
+          {localFs
+            ? renderActionItem(kit, {
+                icon: 'folder-opened',
+                key: 'file-reveal',
+                label: pickRevealLabel(
+                  translateNow('fileMenu.revealFinder'),
+                  translateNow('fileMenu.revealExplorer'),
+                  translateNow('fileMenu.revealFileManager')
+                ),
+                onSelect: () => void revealFile(path)
+              })
+            : null}
+          {renderActionItem(kit, {
+            icon: 'copy',
+            key: 'file-copy-path',
+            label: translateNow('fileMenu.copyPath'),
+            onSelect: () => void copyFilePath(path)
+          })}
+        </>
+      )
+    }
+  }
+
+  return undefined
 }
 
 /** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see

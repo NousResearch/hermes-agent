@@ -524,6 +524,9 @@ export const zhHant = defineLocale({
       toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
+      requireModifierToOpenLinksTitle: '需 ⌘/Ctrl-點擊才能開啟聊天連結',
+      requireModifierToOpenLinksDesc:
+        '在 Mac 上用 ⌘-點擊、在其他系統用 Ctrl-點擊開啟聊天中的路徑與網址（包含程式碼片段）。一般點擊用於選取文字。焦點在連結上時按 Enter 仍會開啟。',
       vibeHeartsTitle: '心情愛心',
       vibeHeartsDesc: '當你說謝謝、愛你、good bot 或送出愛心時飄出的愛心。與上方的訊息回應是兩回事。',
       embedsTitle: '內嵌預覽',

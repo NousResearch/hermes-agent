@@ -3,6 +3,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
+import { linkifyBarePaths } from '@/lib/path-refs'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
@@ -193,11 +194,17 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
+// Order matters: `routeFileLinksToPreview` first, so an authored
+// `[label](/path)` becomes `#preview/` before `linkifyBarePaths` sees it (the
+// lookbehind then skips it as a link target); `autoLinkRawUrls` after, so a
+// bare path never appears inside a URL it would otherwise split.
 function rewriteProseSegment(segment: string): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
-      routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+      linkifyBarePaths(
+        routeFileLinksToPreview(
+          segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        )
       )
     )
   )

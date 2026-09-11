@@ -300,6 +300,22 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 # unique replacement, never safe under replace_all.
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 
+# These same two strategies are also the only ones that can accept a region whose
+# *content* differs from old_string by more than formatting. They are reached only after
+# every formatting-tolerant strategy has already failed, so when they fire, old_string is
+# not present except as an approximate shape. A match that is the same block with a line
+# or two drifted is a useful rescue; a match that merely shares its first/last line (or
+# half its lines) with an unrelated block means we would overwrite text the caller never
+# named. Require the matched region to be substantially the same text as old_string.
+_FUZZY_CONTENT_FLOOR = 0.90
+
+
+def _normalized_similarity(region: str, pattern: str) -> float:
+    """Similarity of two strings ignoring unicode form and whitespace runs."""
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", _unicode_normalize(s)).strip()
+    return SequenceMatcher(None, _norm(region), _norm(pattern)).ratio()
+
 
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
@@ -374,6 +390,20 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             drift_err = _detect_escape_drift(content, matches, old_string, new_string)
             if drift_err:
                 return content, 0, None, drift_err
+
+        # Content-divergence guard. Drop any similarity-strategy match that is not
+        # substantially the same text as old_string, comparing with unicode form and
+        # whitespace runs normalized away so legitimate reflow, indentation and
+        # smart-quote drift still pass. If nothing survives, fall through to the next
+        # strategy and ultimately the no-match path, which prompts a re-read instead of
+        # editing the wrong place.
+        if strategy_name in SIMILARITY_STRATEGIES:
+            matches = [
+                (start, end) for (start, end) in matches
+                if _normalized_similarity(content[start:end], old_string) >= _FUZZY_CONTENT_FLOOR
+            ]
+            if not matches:
+                continue
 
         effective_new = _maybe_unescape_new_string(new_string, content, matches)
         if strategy_name == "unicode_normalized":

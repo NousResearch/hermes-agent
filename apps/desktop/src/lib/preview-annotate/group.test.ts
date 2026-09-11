@@ -106,6 +106,43 @@ describe('groupAnnotations', () => {
     expect(groups).toHaveLength(1)
     expect(groups[0]?.items).toHaveLength(2)
   })
+
+  it('merges a container comment with the comments nested inside it', () => {
+    const groups = groupAnnotations([
+      item(1, 'body>main'),
+      item(2, 'body>main>section.hero>h1'),
+      item(3, 'body>main>section.pricing>button'),
+      item(4, 'body>main>section.faq>li')
+    ])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.items.map(entry => entry.number)).toEqual([1, 2, 3, 4])
+
+    const keys = groups.map(group => group.key)
+    const nested = keys.filter(key => keys.some(other => other !== key && other.startsWith(`${key}>`)))
+
+    expect(nested).toEqual([])
+  })
+
+  it('keeps a sibling region separate while merging a nested container', () => {
+    const groups = groupAnnotations([
+      item(1, 'body>header.nav>a.logo'),
+      item(2, 'body>header.nav>ul.links'),
+      item(3, 'body>main'),
+      item(4, 'body>main>section.hero>h1'),
+      item(5, 'body>main>section.pricing>button')
+    ])
+
+    expect(groups.map(group => group.label)).toEqual(['header.nav', 'main'])
+    expect(groups.map(group => group.key)).toEqual(['body>header.nav', 'body>main'])
+    expect(groups[0]?.items.map(entry => entry.number)).toEqual([1, 2])
+    expect(groups[1]?.items.map(entry => entry.number)).toEqual([3, 4, 5])
+
+    const keys = groups.map(group => group.key)
+    const nested = keys.filter(key => keys.some(other => other !== key && other.startsWith(`${key}>`)))
+
+    expect(nested).toEqual([])
+  })
 })
 
 describe('groupAnnotations refinement', () => {

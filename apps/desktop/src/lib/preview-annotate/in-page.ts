@@ -259,63 +259,107 @@ export function annotateInPage(doc: Document): AnnotateInPage {
    * whatever the page put there: a filled password box, a token in a hidden
    * input, an api-key data attribute. Redaction happens on a clone here, in
    * the guest, so the secret never reaches the host, the composer, or the
-   * model — the same reason `browser_type` masks what it types.
+   * model. Same reason `browser_type` masks what it types.
+   *
+   * Walk every descendant, not just form controls. A comment on a parent of a
+   * `data-api-key` node still serializes that child. Also clear the live
+   * `.value` of secret-shaped fields: typed passwords and secret textareas do
+   * not always show up as attributes. Target text is taken from this same
+   * clone so a textarea body cannot leak after the HTML is clean.
    */
-  const markupOf = (el: Element): string => {
+  const secretName = /key|token|secret|password|auth|session|credential/
+
+  const looksSecret = (value: string): boolean => secretName.test(value.toLowerCase())
+
+  const isSecretControl = (node: Element): boolean => {
+    const tag = node.tagName.toLowerCase()
+    const type = (node.getAttribute('type') || '').toLowerCase()
+
+    if (tag === 'input' && (type === 'password' || type === 'hidden')) {
+      return true
+    }
+
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      return (
+        looksSecret(node.getAttribute('name') || '') ||
+        looksSecret(node.id || '') ||
+        looksSecret(node.getAttribute('autocomplete') || '')
+      )
+    }
+
+    return node.hasAttribute('data-secret')
+  }
+
+  const clearControlValue = (node: Element): void => {
+    const tag = node.tagName.toLowerCase()
+
+    if (tag === 'input' || tag === 'select') {
+      const field = node as HTMLInputElement
+      field.value = '[redacted]'
+      node.setAttribute('value', '[redacted]')
+    }
+
+    if (tag === 'textarea') {
+      const field = node as HTMLTextAreaElement
+      field.value = '[redacted]'
+      node.textContent = '[redacted]'
+    }
+
+    if (node.hasAttribute('data-secret') && tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+      node.textContent = '[redacted]'
+    }
+  }
+
+  const redactClone = (el: Element): Element | null => {
     let clone: Element
 
     try {
       clone = el.cloneNode(true) as Element
     } catch {
-      return ''
+      return null
     }
 
     const nodes: Element[] = [clone]
-    const nested = clone.querySelectorAll('input, textarea, select, [data-secret]')
+    const nested = clone.querySelectorAll('*')
 
     for (let i = 0; i < nested.length; i++) {
       nodes.push(nested[i])
     }
 
     for (const node of nodes) {
-      const tag = node.tagName.toLowerCase()
-      const type = (node.getAttribute('type') || '').toLowerCase()
-      const secretField = tag === 'input' && (type === 'password' || type === 'hidden')
       const names = node.getAttributeNames()
 
       for (const name of names) {
-        const lower = name.toLowerCase()
-
-        if (lower === 'value' && (secretField || node.getAttribute('value'))) {
-          node.setAttribute(name, secretField ? '[redacted]' : node.getAttribute(name) || '')
-        }
-
-        if (/key|token|secret|password|auth|session|credential/.test(lower)) {
+        if (looksSecret(name)) {
           node.setAttribute(name, '[redacted]')
         }
       }
 
-      if (secretField) {
-        node.setAttribute('value', '[redacted]')
+      if (isSecretControl(node)) {
+        clearControlValue(node)
       }
     }
 
-    const html = clone.outerHTML || ''
+    return clone
+  }
 
+  const budgetHtml = (html: string): string => {
     if (html.length <= htmlBudget) {
       return html
     }
 
-    // Keep the opening tag — where the classes and props live — over the tail.
+    // Keep the opening tag, where the classes and props live, over the tail.
     return `${html.slice(0, htmlBudget - 1)}…`
   }
 
   const identityOf = (el: Element): AnnotatePageIdentity => {
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim()
+    const clone = redactClone(el)
+    const html = clone ? budgetHtml(clone.outerHTML || '') : ''
+    const text = ((clone ?? el).textContent || '').replace(/\s+/g, ' ').trim()
 
     return {
       css: readCss(el),
-      html: markupOf(el),
+      html,
       selector: cssPath(el),
       tag: el.tagName.toLowerCase(),
       text: text.length > 80 ? `${text.slice(0, 79)}…` : text

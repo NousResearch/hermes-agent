@@ -3225,7 +3225,11 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     if not isinstance(exc, RuntimeError):
         return False
     msg = str(exc).lower()
-    return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
+    return (
+        "auxiliary " in msg
+        and "llm returned invalid response" in msg
+        and ("choices[0].message" in msg or "empty content" in msg)
+    )
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
@@ -6185,6 +6189,25 @@ def _validate_llm_response(
         model = _field(response, "model")
         if isinstance(model, str) and model.strip():
             context["response_model"] = model
+    # Compression cannot use a response with no text as a summary. Rejecting it here fails the
+    # candidate rather than the route, so the configured fallback chain is tried to exhaustion
+    # before the compressor gives up on the auxiliary route and retries the main chat model — its
+    # existing behaviour when a candidate fails. The emptiness test is the compressor's own helper,
+    # so a summary recovered from reasoning/reasoning_content still counts as text (#11978).
+    if task == "compression":
+        try:
+            message = _field(_field(response, "choices")[0], "message")
+        except (TypeError, IndexError, KeyError):
+            message = None
+        if (
+            message is not None
+            and not extract_content_or_reasoning(response, max_reasoning_chars=8000).strip()
+            and not _field(message, "tool_calls")
+        ):
+            raise RuntimeError(
+                "Auxiliary compression: LLM returned invalid response (empty content). Expected a "
+                "non-empty summary — check provider adapter or custom endpoint compatibility."
+            )
     _complete_relay_auxiliary_call()
     return response
 

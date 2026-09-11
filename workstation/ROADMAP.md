@@ -392,3 +392,376 @@ novel task
 - deterministic replay fails closed on unmet preconditions or drift and hands control back to Hermes;
 - no duplicate SessionDB, Kanban, Memory, browser state or task scheduler is introduced;
 - Windows dogfood evidence exists first, with the supervisor/recovery contracts designed so Linux can implement the same semantics.
+
+## Research intake — 2026-09-10 — cross-briefing architecture backlog
+
+This intake consolidates actionable Hermes Workstation implications extracted from the
+Hermes Agent, DeepSeek Harness and broader agentic-systems briefings through
+2026-09-10. It records both **new gaps** and **disposition of ideas already covered**
+so research does not create duplicate owners or reopen completed milestones.
+
+### Non-negotiable interpretation
+
+- Hermes remains the primary conductor and canonical owner of Hermes sessions,
+  Kanban and Memory; Workstation must not become a second agent core.
+- Workstation owns the product/control layer around Hermes: canonical cross-surface
+  state, policy, supervision, recovery, evidence, operational UX and selected
+  compatibility adapters.
+- Prefer upstream capability reuse over downstream reimplementation. Every new
+  downstream feature needs an explicit `own / adapt / upstream` decision and an
+  upstream-delta/compatibility check.
+- Runtime/Data Plane must never be able to silently weaken the Control Plane that
+  constrains it.
+- Long-lived operation is the target: architecture must remain safe and observable
+  across days, restarts, model/provider changes, plugin failures and upgrades.
+
+### Research disposition — already covered or substantially represented
+
+The following research themes are already represented in completed/planned roadmap
+work and should be hardened there rather than reimplemented:
+
+- browser-visible persistent profile/session ownership → Foundation, V1 and V1.1;
+- popup/SSO, upload/download and browser recovery → V1;
+- scoped capability policy, approval and audit trail → V2.5 Policy Engine;
+- specialist worker adapters and canonical delegated-task lineage → V2.5 Worker Registry;
+- system-event-to-task ingestion → V2.5 Event Pipeline;
+- execution observability/journal → V1/V2.5 Control Center;
+- procedural memory, provenance-aware perception and drift governance → V2;
+- cross-platform host awareness → V2.5/V3;
+- independent supervisor, safe-mode Recovery Plane, last-known-good rollback and
+  deterministic routine promotion → V3.1.
+
+The items below are the remaining research-derived gaps or explicit hardening
+requirements.
+
+## V3.2 — Evidence-backed Long-Lived Runtime & AgentOps — Planned
+
+**Purpose:** make “running” mean demonstrably running, make long-lived sessions and
+workers operationally bounded, and expose one coherent runtime state to every
+Workstation surface.
+
+This milestone extends V3.1. It must reuse the canonical `ExecutionJournal`,
+Kanban, BrowserTask, Hermes session/memory owners, `WorkerRegistry`, Policy Engine
+and supervisor; it must not introduce parallel task/session/memory stores.
+
+### EvidenceState + explicit execution state machine — Planned
+
+Introduce `EvidenceState` as a first-class projection over canonical task/run state.
+
+At minimum a running operation should be able to expose:
+
+```text
+status
+started_at
+last_activity
+evidence[]:
+  process_id | browser_operation | worker_id | job_id | upload_id |
+  watcher_id | external_handle
+recovery_strategy
+blocked_reason?
+approval_id?
+```
+
+Rules:
+
+- `running` requires live/verifiable operational evidence, not only an agent claim.
+- Distinguish at least `ready`, `queued`, `running`, `waiting-for-human`,
+  `blocked`, `stalled`, `completed`, `failed`, `cancelled` and `hold`.
+- A worker safety stop, missing approval or external failure must never be reported
+  upstream as normal completion.
+- Explicit user constraints and target project/workspace identifiers override
+  implicit “currently active” UI/session context.
+- A stale evidence record must degrade state instead of allowing zombie “running”.
+- Recovery actions must be linked to the same canonical run/task lineage.
+
+**Acceptance:** kill a worker, browser operation, gateway or upload mid-run and
+prove the UI/state projection stops claiming progress without evidence and offers
+the correct recovery/handoff state.
+
+### Event bus, deadlines and backpressure — Planned
+
+Harden runtime ↔ cockpit communication into a complete event contract.
+
+- First-class events for tool calls, worker messages, progress, usage/cost,
+  approvals, errors, lifecycle transitions, deliverables and recovery.
+- No operation may wait forever: model calls, MCP requests/pagination, WebSocket
+  sends, file transfers, persistence, provider calls and worker waits require
+  deadline, cancellation and bounded retries.
+- One blocked WebSocket/message must not head-of-line block unrelated events/RPCs.
+- Prefer event-driven `wait`/wake semantics over context-expensive polling.
+- UI reconnect must follow an explicit lifecycle (`connecting → restoring →
+  ready`) before querying state aggressively.
+- Structural failures must become visible states; no silent no-op buttons or
+  swallowed persistence failures.
+
+**Acceptance:** inject a stuck event/channel and prove unrelated task events
+continue; cancellation/deadline produces an auditable terminal state.
+
+### Durable session ownership, migration and memory lifecycle — Planned
+
+Treat persistent conversation history and a live persistent agent as separate
+recovery concerns.
+
+- Enforce cross-process ownership/locking for a writable session/run.
+- Treat session schema changes as state migrations:
+  `backup → migrate → validate → promote → rollback`.
+- Preserve the original representation until migration is validated.
+- Persist enough identity to reconstruct agent/model/tool/worker bindings rather
+  than restoring only transcript text.
+- Provide administrative model-binding migration for existing long-lived sessions
+  when default provider/model changes.
+- Add `hot / warm / cold` session lifecycle so inactive sessions can leave RAM and
+  be reconstructed from durable state.
+- Trigger context compaction before model quality or cost collapses, not merely at
+  the provider's hard limit.
+- Preserve compaction/replay markers and surface persistence corruption/recovery
+  as observable events.
+- Version/snapshot important user/memory state so current-state files are not the
+  only recoverable copy.
+
+**Acceptance:** run a long-session soak with multiple sessions, force restart and
+model change, migrate one session, unload/reload cold sessions, and prove identity,
+history and ownership recover without unbounded memory growth.
+
+### Persistent workers: queue → message → steer → wait → stop — Planned
+
+Extend `WorkerRegistry` beyond fire-and-return delegation.
+
+- Optional persistent specialist worker identities with durable parent/task lineage.
+- Ordered message queue with sender identity and provenance.
+- `send_message`, `steer`, `wait`, `stop/cancel` and resumable worker semantics.
+- Parent-owned relay for worker questions:
+  `worker → Hermes parent → user/approval surface → parent → worker`.
+- Worker result envelope must include semantic status, model/provider, duration,
+  token/usage estimate, cost estimate when available, produced evidence and
+  explicit deliverables.
+- Parent must be awakened by meaningful worker delivery/event instead of polling.
+- Support bounded parallel hypothesis generation + verifier/selection for
+  high-complexity work, while keeping it opt-in and budget governed.
+
+**Acceptance:** keep one worker alive across multiple messages, steer it mid-run,
+pause/resume or reconstruct it, then stop it deterministically with complete
+journal/evidence and cost metadata.
+
+### Cost, budget and model/provider routing — Planned
+
+Make selection of intelligence an operational policy rather than a UI-only choice.
+
+- Budget per task/run/worker, not only post-hoc global usage.
+- Route by `complexity × risk × quality × cost × latency × availability`.
+- Cheap/local model for routine execution when adequate; stronger model for
+  planning, diagnosis, verification and exceptions.
+- Provider/model fallback must be explicit, observable and policy-bounded.
+- A material increase in possible spend requires approval.
+- Heartbeat/loop/cron checks should decide whether a model call is needed before
+  sending giant session context; use minimal context/cheap policy paths when possible.
+- Large tool/skill catalogs should be discovered/injected on demand instead of
+  repeatedly invalidating provider caches.
+- Provider auth/TLS/proxy/base-URL differences are operational facts, not assumed
+  interchangeable implementation details; localhost/LAN service traffic must not
+  be accidentally forced through external proxies.
+
+**Acceptance:** execute the same workload under at least two routing strategies and
+report quality/status, latency, usage/cost and fallback decisions in canonical
+journal metadata.
+
+### Typed Resources + one runtime / many clients — Planned
+
+Formalize a UI-neutral resource contract so capabilities publish typed state and
+interfaces decide how to render it.
+
+Examples:
+
+```text
+BrowserTask        → browser resource
+ExecutionJournal   → timeline/evidence resource
+Kanban             → task/dependency resource
+Worker             → terminal/log/result resource
+ProceduralMemory   → procedure resource
+Artifact delivery  → deliverable resource
+```
+
+Requirements:
+
+- Desktop, browser/WebUI, future mobile/remote clients are views over the same
+  canonical runtime, not separate agent implementations.
+- Resource identity, permissions and lineage survive client detach/reconnect.
+- Separate internal workspace artifacts from **explicit deliverables** promoted to
+  the user; “file touched” is not equivalent to “file delivered”.
+- UI defaults to outcome/progress/cost/state; deep logs remain inspectable rather
+  than flooding the primary surface.
+- No internal agent chain-of-thought/private scratch state is required for the
+  resource contract; only operationally useful state/evidence is exposed.
+
+**Acceptance:** open the same running task from two supported surfaces and prove
+both resolve identical canonical resources without duplicate workers/pages/tasks.
+
+### Human Handoff contract — Planned
+
+Generalize existing take/release-control primitives into a task-level human handoff.
+
+- Agent may request handoff for login, CAPTCHA, 2FA, sensitive confirmation,
+  ambiguous high-risk controls or automation failure.
+- Preserve the same browser/session/task identity while control changes hands.
+- Make handoff state explicit and auditable; resume only after a deliberate return
+  of control.
+- For personal-browser bridges, scope authorization to explicit tab/domain/session,
+  permit immediate revocation and avoid exposing stored credentials to the agent.
+
+**Acceptance:** agent reaches an authenticated workflow, yields to user, user
+completes login/2FA, returns the same session, and the agent continues with no
+duplicate page/profile.
+
+## V3.3 — Isolation, Protocol Governance & Supply-Chain Hardening — Planned
+
+### Control Plane boundary + independent watchdog — Planned
+
+Extend the V2.5 Policy Engine and V3.1 supervisor with an independent policy/watch
+path that cannot perform ordinary task work.
+
+- Observe actions, spend, network destinations, permission changes and critical
+  lifecycle events.
+- Detect expansion to a previously undeclared external surface and default to
+  `suspend → journal → request approval`.
+- Policy authority, secret scopes, sandbox mode, restart/recovery and permission
+  elevation live above the agent/Data Plane.
+- Runtime components cannot call an unprotected local control API to remove their
+  own confinement.
+- Distinguish trusted vs untrusted workspaces/content and propagate trust labels
+  into policy decisions.
+- Preserve an incident trace showing the sequence of decisions/actions that led to
+  a privileged or anomalous operation.
+
+### Plugin / Skill / MCP isolation and degraded boot — Planned
+
+Optional components must fail independently.
+
+- A broken plugin/skill/MCP server must not prevent core Workstation boot unless
+  canonical state integrity or safety requires fail-closed behavior.
+- Quarantine/disable optional components through Recovery Plane.
+- Version extension contracts and provide safe defaults for newly introduced
+  capabilities.
+- Bound MCP discovery/execution by maximum pages, tools, response size, time and
+  cancellation even when each page/cursor is formally valid.
+- Supervise MCP processes/lifecycle as external dependencies, including health,
+  restart and observable failure.
+- Plugin/skill install pipeline should evolve toward:
+  `source/provenance → static inspection → requested capabilities → sandbox →
+  behavioral smoke → signature/reputation → install`.
+- Secrets/credentials exposed to extensions should be scoped and preferably
+  write-only/non-readable where practical.
+
+### Protocol boundary / interoperability — Planned
+
+Keep Workstation semantics independent of any one external protocol.
+
+- MCP remains a tool/data adapter, not canonical task state.
+- Add/assess agent↔agent interoperability through A2A where it reduces bespoke
+  worker coupling.
+- Treat ACP/UHP-style runtime/client protocols as adapters/candidates for external
+  clients, not new state owners.
+- The internal event/resource/lifecycle contract must preserve tool events,
+  approvals, usage, errors and cancellation even if an external protocol omits them.
+- Version protocol adapters and test compatibility explicitly.
+
+### Upstream ownership & release qualification gate — Planned
+
+For every upstream Hermes update:
+
+1. classify each overlapping capability as `upstream-owned`, `Workstation-owned`
+   or `adapter-owned`;
+2. compare imported commit/version, packaged assets and expected integrations;
+3. run clean-machine install/build from the exact candidate release;
+4. execute Workstation contract/eval smoke, Windows-native smoke and migration
+   preflight;
+5. promote only after validation; retain last-known-good rollback.
+
+A stable upstream tag must never be assumed equivalent to `main`, and local caches
+must never be allowed to hide missing release dependencies.
+
+## V3.4 — Memory, Time, Replay & Evaluation — Planned
+
+### Typed memory + temporal awareness — Planned
+
+Build typed policy views over existing Hermes Memory ownership, not a second memory DB.
+
+Different memory classes need different retention/retrieval semantics:
+
+- task/work context;
+- factual/project knowledge;
+- decisions and rationale;
+- user preferences/principles (kept separate from operational facts);
+- reusable procedures/routines;
+- provenance/evidence/checkpoints.
+
+Add:
+
+- versioning/snapshots and recoverable history;
+- workspace scoping;
+- bounded recall/token budgets;
+- provenance;
+- confidence/validation metadata where useful;
+- temporal decay/staleness;
+- explicit `created_at / observed_at / last_verified_at`;
+- elapsed-time awareness for pending tasks, promises, stale decisions and recovery.
+
+### Portable trace, replay and model fork — Planned
+
+Extend Execution Journal toward operational replay/evaluation.
+
+- Produce a portable incident/execution trace with canonical event IDs and resource
+  references.
+- Support offline replay for diagnosis without re-performing side effects.
+- Permit controlled “fork at event N with another model/worker” experiments in an
+  isolated evaluation environment.
+- Preserve exact model/provider/tool/policy/version metadata needed to explain why
+  behavior changed between runs.
+
+### Evaluation & efficiency gates — Planned
+
+- Model-independent harness evals separate model quality from harness/runtime quality.
+- Long-duration soak tests for sessions, workers, memory and reconnect behavior.
+- Multi-process ownership tests for sessions/resources.
+- Cross-engine WebUI smoke where applicable: Chromium/Edge and Firefox first;
+  WebKit/Safari when/if a supported client target exists.
+- Regression budgets for action/tool count, latency, context tokens and recovery
+  success so a change that “works” but becomes dramatically less efficient is visible.
+- Critical workflows follow `hypothesis → action → verify final state → report
+  evidence`; completion should be evidence-backed, not response-backed.
+- Before deployment/promotion, evaluate technical behavior, safety and compatibility
+  against a reproducible baseline.
+
+## V4 radar — optional / evidence-gated explorations
+
+These are research-backed directions worth preserving without making them near-term
+dependencies:
+
+- **distributed local compute pool:** discover trusted LAN machines/models as
+  replaceable inference capacity rather than assuming local model == this GPU;
+- **hardened worker sandbox lane:** Windows host → WSL/container/sandbox for
+  untrusted/continuous worker execution while native Desktop remains the product shell;
+- **OAuth connection broker:** user-friendly scoped connections for external
+  services instead of routine raw API-key copying;
+- **mobile/remote client:** thin authenticated client over the same canonical runtime,
+  with pairing, device revocation and approval cards;
+- **tool-learning / WebMCP-style promotion:** `explore → validate → promote to
+  versioned tool/routine → reuse`, integrated with V3.1 deterministic promotion;
+- **large-search orchestration:** many cheap independent attempts + selection +
+  progressively stronger verification for problems that justify the budget;
+- **agent governance primitives:** independent verifier/auditor roles for high-stakes
+  multiagent workflows, with human authority remaining outside the agent society.
+
+### Research-derived acceptance principle
+
+A roadmap item should only be promoted from “interesting” to “default path” after it
+demonstrates at least one of:
+
+- measurable reliability or recovery improvement;
+- lower cost/latency at equal task success;
+- stronger safety/isolation with preserved usability;
+- clearer canonical state/evidence across restarts/clients;
+- reduced upstream-delta/maintenance burden.
+
+The objective is not to make Hermes Workstation contain every agent feature. The
+objective is to make upstream Hermes **predictable, observable, recoverable,
+policy-bounded and pleasant to operate for long periods**.

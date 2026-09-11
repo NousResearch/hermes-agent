@@ -211,9 +211,13 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
-            client._run_prompt("hello", timeout_seconds=1)
+    # Hermeticity: the --acp support probe (PR #87308) calls subprocess.run
+    # before Popen; stub it inconclusive so no real CLI on the host box can
+    # flip the resolution this test asserts.
+    with _patch("agent.copilot_acp_client.subprocess.run", side_effect=FileNotFoundError):
+        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+            with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+                client._run_prompt("hello", timeout_seconds=1)
 
     assert captured["kwargs"]["env"]["HOME"] == str(real_home)
     assert captured["kwargs"]["env"]["HERMES_REAL_HOME"] == str(real_home)
@@ -226,9 +230,194 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
-            client._run_prompt("hello", timeout_seconds=1)
+    # Hermeticity: the --acp support probe (PR #87308) calls subprocess.run
+    # before Popen; stub it inconclusive so no real CLI on the host box can
+    # flip the resolution this test asserts.
+    with _patch("agent.copilot_acp_client.subprocess.run", side_effect=FileNotFoundError):
+        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+            with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+                client._run_prompt("hello", timeout_seconds=1)
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── --acp support probe tests (PR #87308 / issue #87309) ────────────
+
+import subprocess as _subprocess
+
+from agent.copilot_acp_client import _ACP_PROBE_CACHE, _acp_supported
+
+
+@pytest.fixture(autouse=True)
+def _clear_probe_cache():
+    _ACP_PROBE_CACHE.clear()
+    yield
+    _ACP_PROBE_CACHE.clear()
+
+
+def _completed(returncode=0, stdout=""):
+    return _subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+def test_probe_true_when_help_advertises_acp():
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        return_value=_completed(stdout="Usage: copilot [--acp] [--stdio]"),
+    ):
+        assert _acp_supported("copilot", ["--acp", "--stdio"]) is True
+
+
+def test_probe_false_when_help_lacks_acp_and_run_prompt_fast_fails(tmp_path):
+    client = _make_home_client(tmp_path)
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        return_value=_completed(stdout="Usage: claude [--print] [--model]"),
+    ):
+        with pytest.raises(RuntimeError, match="ACP transport not supported"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+
+def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
+    """Missing binary: probe must NOT mask the established spawn error."""
+    client = _make_home_client(tmp_path)
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        side_effect=FileNotFoundError("copilot not found"),
+    ):
+        with _patch(
+            "agent.copilot_acp_client.subprocess.Popen",
+            side_effect=FileNotFoundError("copilot not found"),
+        ):
+            with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+                client._run_prompt("hello", timeout_seconds=1)
+
+
+def test_probe_result_cached_per_binary_path():
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        return_value=_completed(stdout="Usage: copilot [--acp]"),
+    ) as run_mock:
+        assert _acp_supported("copilot", ["--acp"]) is True
+        assert _acp_supported("copilot", ["--acp"]) is True
+    assert run_mock.call_count == 1
+
+
+def test_probe_inconclusive_not_cached():
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        side_effect=FileNotFoundError,
+    ) as run_mock:
+        assert _acp_supported("copilot", ["--acp"]) is None
+        assert _acp_supported("copilot", ["--acp"]) is None
+    assert run_mock.call_count == 2  # inconclusive verdicts retry
+
+
+def test_probe_skipped_for_custom_args_without_acp():
+    with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
+        assert _acp_supported("mycli", ["--custom-transport"]) is True
+    run_mock.assert_not_called()
+
+
+# --- session/set_model: honor the picker-selected model ----------------------
+#
+# `copilot --acp` validates but IGNORES the `--model` spawn flag; the ACP
+# session runs the CLI's own default unless the client issues the ACP-native
+# `session/set_model` call. Without it, picking gpt-5.6-terra in Hermes
+# visibly answers as the CLI's default model.
+
+
+# --- session model selection -------------------------------------------------
+
+
+def _session_with_config_options():
+    return {
+        "sessionId": "s1",
+        "configOptions": [
+            {
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "auto",
+                "options": [
+                    {"value": "auto", "name": "Auto"},
+                    {"value": "gpt-5.6-terra", "name": "GPT-5.6 Terra"},
+                    {
+                        "value": "claude-fable-5",
+                        "name": "Claude Fable 5",
+                        "_meta": {"copilotEnablement": "disabled"},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_model_selection_prefers_stable_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "gpt-5.6-terra"
+    ) == (
+        "session/set_config_option",
+        {"sessionId": "s1", "configId": "model", "value": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_rejects_disabled_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "claude-fable-5"
+    ) is None
+
+
+def test_model_selection_rejects_unknown_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "not-served-here"
+    ) is None
+
+
+def test_model_selection_falls_back_to_legacy_extension():
+    from agent.copilot_acp_client import _model_selection_request
+
+    legacy_session = {
+        "sessionId": "s1",
+        "models": {
+            "availableModels": [
+                {"modelId": "auto"},
+                {"modelId": "gpt-5.6-terra"},
+            ]
+        },
+    }
+    assert _model_selection_request(legacy_session, "gpt-5.6-terra") == (
+        "session/set_model",
+        {"sessionId": "s1", "modelId": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_skips_provider_virtual_slug():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "copilot-acp"
+    ) is None
+
+
+def test_run_prompt_receives_picker_model():
+    # _create_chat_completion must forward `model` into _run_prompt — the
+    # original wiring dropped it, reducing the selection to prompt text.
+    client = CopilotACPClient(acp_cwd="/tmp")
+    seen = {}
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        seen["model"] = model
+        return "ok", ""
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        client._create_chat_completion(
+            model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
+        )
+    assert seen["model"] == "gpt-5.6-terra"

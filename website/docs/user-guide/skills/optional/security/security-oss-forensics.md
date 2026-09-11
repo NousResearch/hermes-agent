@@ -1,25 +1,26 @@
 ---
-title: "Oss Forensics — Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories"
+title: "Oss Forensics — GitHub supply-chain forensics: recovery, IOCs, reporting"
 sidebar_label: "Oss Forensics"
-description: "Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories"
+description: "GitHub supply-chain forensics: recovery, IOCs, reporting"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Oss Forensics
 
-Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories.
-Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence
-collection, hypothesis formation/validation, and structured forensic reporting.
-Inspired by RAPTOR's 1800+ line OSS Forensics system.
+GitHub supply-chain forensics: recovery, IOCs, reporting.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/oss-forensics` |
-| Path | `optional-skills/security/oss-forensics` |
+| Path | `optional-skills/security\oss-forensics` |
+| Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
+| Tags | `Security`, `Forensics`, `GitHub`, `Supply-Chain` |
 
 ## Reference: full SKILL.md
 
@@ -73,7 +74,7 @@ Read these before every investigation step. Violating them invalidates the repor
    ```
 2. Initialize the evidence store:
    ```bash
-   python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list
+   python SKILL_DIR/scripts/evidence-store.py --store evidence.json list
    ```
 3. Copy the forensic report template:
    ```bash
@@ -103,7 +104,7 @@ Read these before every investigation step. Violating them invalidates the repor
 - Value
 - Source (user-provided, inferred)
 
-**Reference**: See [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) for IOC taxonomy.
+**Reference**: See [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/evidence-types.md) for IOC taxonomy.
 
 ---
 
@@ -143,13 +144,13 @@ git log --all --diff-filter=A --name-only --format="%H %ai" -- "*.so" "*.dll" "*
 git log --show-signature --format="%H %ai %aN" > ../signature_check.txt 2>&1
 ```
 
-**Evidence to collect** (add via `python3 SKILL_DIR/scripts/evidence-store.py add`):
+**Evidence to collect** (add via `python SKILL_DIR/scripts/evidence-store.py add`):
 - Each dangling commit SHA → type: `git`
 - Force-push evidence (reflog showing history rewrite) → type: `git`
 - Unsigned commits from verified contributors → type: `git`
 - Suspicious binary file additions → type: `git`
 
-**Reference**: See [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md) for accessing force-pushed commits.
+**Reference**: See [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/recovery-techniques.md) for accessing force-pushed commits.
 
 ---
 
@@ -189,7 +190,7 @@ curl -s "https://api.github.com/repos/OWNER/REPO/commits/SHA" | jq .sha
 - Contributor in archive events but not in contributors list → evidence of permission revocation
 - Commit in archive PushEvents but not in API commit list → evidence of force-push/deletion
 
-**Reference**: See [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) for GH event types.
+**Reference**: See [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/evidence-types.md) for GH event types.
 
 ---
 
@@ -226,7 +227,7 @@ curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO/wiki/*
 - Historical README versions showing changes
 - Evidence of content present in archive but missing from current GitHub state
 
-**Reference**: See [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md) for CDX API parameters.
+**Reference**: See [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/github-archive-guide.md) for CDX API parameters.
 
 ---
 
@@ -275,7 +276,7 @@ LIMIT 200
 - WorkflowRunEvents for suspicious CI/CD automation
 - PushEvents that precede a "gap" in the git log (evidence of rewrite)
 
-**Reference**: See [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md) for all 12 event types and query patterns.
+**Reference**: See [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/github-archive-guide.md) for all 12 event types and query patterns.
 
 ---
 
@@ -288,7 +289,7 @@ LIMIT 200
 - For each domain/IP: check passive DNS, WHOIS records (via `web_extract` on public WHOIS services)
 - For each package name: check npm/PyPI for matching malicious package reports
 - For each actor username: check GitHub profile, contribution history, account age
-- Recover force-pushed commits using 3 methods (see [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md))
+- Recover force-pushed commits using 3 methods (see [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/recovery-techniques.md))
 
 ---
 
@@ -296,7 +297,7 @@ LIMIT 200
 
 After all investigators complete:
 
-1. Run `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
+1. Run `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
 2. For each piece of evidence, verify the `content_sha256` hash matches the original source.
 3. Group evidence by:
    - **Timeline**: Sort all timestamped evidence chronologically
@@ -315,7 +316,7 @@ A hypothesis must:
 - Identify what evidence would disprove it
 - Be labeled `[HYPOTHESIS]` until validated
 
-**Common hypothesis templates** (see [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md)):
+**Common hypothesis templates** (see [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/investigation-templates.md)):
 - Maintainer Compromise: legitimate account used post-takeover to inject malicious code
 - Dependency Confusion: package name squatting to intercept installs
 - CI/CD Injection: malicious workflow changes to run code during builds
@@ -347,7 +348,7 @@ Rejected hypotheses feed back into Phase 4 for refinement (max 3 iterations).
 
 ## Phase 6: Final Report Generation
 
-Populate `investigation-report.md` using the template in [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md).
+Populate `investigation-report.md` using the template in [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/templates/forensic-report.md).
 
 **Mandatory sections**:
 - Executive Summary: one-paragraph verdict (Compromised / Clean / Inconclusive) with confidence level
@@ -367,7 +368,7 @@ Populate `investigation-report.md` using the template in [forensic-report.md](ht
 
 ## Phase 7: Completion
 
-1. Run final evidence count: `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
+1. Run final evidence count: `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
 2. Archive the full investigation directory.
 3. If compromise is confirmed:
    - List immediate mitigations (rotate credentials, pin dependency hashes, notify affected users)
@@ -417,9 +418,9 @@ If rate-limited mid-investigation, record the partial results in the evidence st
 
 ## Reference Materials
 
-- [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md) — BigQuery queries, CDX API, 12 event types
-- [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) — IOC taxonomy, evidence source types, observation types
-- [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md) — Recovering deleted commits, PRs, issues
-- [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md) — Pre-built hypothesis templates per attack type
-- [evidence-store.py](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/scripts/evidence-store.py) — CLI tool for managing the evidence JSON store
-- [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md) — Structured report template
+- [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/github-archive-guide.md) — BigQuery queries, CDX API, 12 event types
+- [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/evidence-types.md) — IOC taxonomy, evidence source types, observation types
+- [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/recovery-techniques.md) — Recovering deleted commits, PRs, issues
+- [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/references/investigation-templates.md) — Pre-built hypothesis templates per attack type
+- [evidence-store.py](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/scripts/evidence-store.py) — CLI tool for managing the evidence JSON store
+- [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security\oss-forensics/templates/forensic-report.md) — Structured report template

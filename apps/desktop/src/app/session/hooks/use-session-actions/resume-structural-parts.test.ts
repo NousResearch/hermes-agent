@@ -103,9 +103,9 @@ describe('reconcileResumeMessages — structural parts on a mid-turn switch', ()
 
     expect(assistant.parts.some(part => part.type === 'reasoning')).toBe(true)
     expect(assistant.parts.some(part => part.type === 'tool-call')).toBe(true)
-    expect(assistant.parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))).toEqual([
-      'partial'
-    ])
+    expect(assistant.parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))).toEqual(
+      ['partial']
+    )
   })
 
   it('does not graft historical structure onto a live text-only row after compression rewrote ordinals', () => {

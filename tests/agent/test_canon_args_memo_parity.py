@@ -237,3 +237,94 @@ class TestComplexityProof:
 
         # quadratic -> linear, by exact call count
         assert old_counter[0] == (n + 1) / 2 * new_counter[0]
+
+
+class TestUnrepairableArgsAreNotWrittenBackToHistory:
+    """The repair path must be copy-on-write too (#80498).
+
+    ``api_messages`` is built with ``msg.copy()`` — a SHALLOW per-message
+    copy — so every ``tool_calls`` entry is the same dict object the
+    persisted history holds. The canonicalize branch has always honoured
+    that (``test_history_not_mutated``), but the repair branch assigned
+    straight into ``tc["function"]``, so an unrepairable argument string
+    (repair returns ``"{}"``) overwrote the model's real arguments in the
+    stored turn.
+
+    Field report: a stream died mid ``write_file`` and the file content it
+    had already streamed was replaced by ``{}`` in the transcript, leaving
+    only a WARNING behind.
+    """
+
+    @staticmethod
+    def _history_with_truncated_write():
+        # Exactly the incident shape: arguments cut off mid-string.
+        truncated = '{"content": "# chapter draft\nline one\nline two'
+        history = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "write_file", "arguments": truncated},
+            }],
+        }]
+        return history, truncated
+
+    def test_history_keeps_the_original_arguments(self):
+        history, truncated = self._history_with_truncated_write()
+        before = copy.deepcopy(history)
+
+        api_messages = [dict(m) for m in history]  # shallow, like the send path
+        cl._canonicalize_api_tool_calls(api_messages)
+
+        assert history == before, (
+            "the send-path canonicalizer rewrote the persisted history"
+        )
+        assert (
+            history[0]["tool_calls"][0]["function"]["arguments"] == truncated
+        ), "the model's streamed arguments were destroyed in the transcript"
+
+    def test_send_copy_is_still_repaired(self):
+        """The API copy must still carry safe JSON — only the aliasing changes."""
+        history, _ = self._history_with_truncated_write()
+
+        api_messages = [dict(m) for m in history]
+        cl._canonicalize_api_tool_calls(api_messages)
+
+        sent = api_messages[0]["tool_calls"][0]["function"]["arguments"]
+        assert sent == "{}"
+        json.loads(sent)  # the whole point of the repair: never ship broken JSON
+
+    def test_valid_calls_alongside_a_broken_one_are_untouched(self):
+        """A broken call must not disturb its siblings' history entries."""
+        good = json.dumps({"path": "a.txt", "u": UNI})
+        history = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": good}},
+                {"id": "c2", "type": "function",
+                 "function": {"name": "write_file", "arguments": '{"content": "cut'}},
+            ],
+        }]
+        before = copy.deepcopy(history)
+
+        api_messages = [dict(m) for m in history]
+        cl._canonicalize_api_tool_calls(api_messages)
+
+        assert history == before
+        sent = api_messages[0]["tool_calls"]
+        assert json.loads(sent[0]["function"]["arguments"]) == json.loads(good)
+        assert sent[1]["function"]["arguments"] == "{}"
+
+    def test_repeated_sends_do_not_accumulate_damage(self):
+        """Re-canonicalizing the same history every iteration stays lossless."""
+        history, truncated = self._history_with_truncated_write()
+        for _ in range(5):
+            api_messages = [dict(m) for m in history]
+            cl._canonicalize_api_tool_calls(api_messages)
+            assert api_messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert (
+            history[0]["tool_calls"][0]["function"]["arguments"] == truncated
+        )

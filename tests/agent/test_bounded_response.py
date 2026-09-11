@@ -20,10 +20,7 @@ import time
 import httpx
 import pytest
 
-from agent.bounded_response import (
-    read_error_body_or_default,
-    read_streaming_error_body,
-)
+from agent.bounded_response import read_streaming_error_body
 
 
 class _ThreadingServer(socketserver.ThreadingTCPServer):
@@ -114,17 +111,3 @@ def test_oversize_body_is_capped(server_base, client):
     assert 0 < len(text) <= 64 * 1024
     # Capping must return promptly, not after draining the whole body.
     assert elapsed < 9.0
-
-
-
-
-
-
-
-
-
-
-def test_or_default_returns_text_when_present(server_base, client):
-    with client.stream("POST", server_base + "/normal") as response:
-        result = read_error_body_or_default(response)
-    assert result is not None and "RESOURCE_EXHAUSTED" in result

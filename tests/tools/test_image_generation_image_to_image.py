@@ -60,7 +60,7 @@ class TestFalEditPayload:
 
 
     def test_text_only_model_has_no_edit_endpoint(self):
-        from tools.image_generation_tool import FAL_MODELS
+        from tools.image_generation_catalog import FAL_MODELS
 
         # z-image/turbo is a pure text-to-image model — no edit endpoint.
         assert "edit_endpoint" not in FAL_MODELS["fal-ai/z-image/turbo"]
@@ -124,7 +124,11 @@ class TestFalRouting:
         capture: dict = {}
         self._patch_submit(monkeypatch, image_tool, capture)
 
-        raw = image_tool.image_generate_tool(prompt="a cat", aspect_ratio="square")
+        # Routing test — disable the (default-on) upscale pass so the captured
+        # endpoint is the generation submit, not the upscaler.
+        raw = image_tool.image_generate_tool(
+            prompt="a cat", aspect_ratio="square", upscale=False,
+        )
         out = json.loads(raw)
         assert out["success"] is True
         assert out["modality"] == "text"
@@ -272,9 +276,14 @@ class TestDynamicSchema:
         from tools.image_generation_tool import _build_dynamic_image_schema
 
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        desc = _build_dynamic_image_schema()["description"]
-        assert "text-to-image" in desc and "image-to-image" in desc
-        assert "routes automatically" in desc
+        schema = _build_dynamic_image_schema()
+        # Edit capability now surfaces as ADVERTISED PARAMS, not prose
+        # (#95681 diet): image_url + reference_image_urls present with the
+        # catalog's per-model cap; description states the edit path.
+        props = schema["parameters"]["properties"]
+        assert "image_url" in props
+        assert "reference_image_urls" in props
+        assert "edit / transform" in schema["description"]
 
 
     def test_builder_wired_into_registry(self):

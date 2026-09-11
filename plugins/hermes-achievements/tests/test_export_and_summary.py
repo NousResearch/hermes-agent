@@ -166,7 +166,10 @@ class AgentSummaryFileTests(unittest.TestCase):
             plugin_api.get_hermes_home = lambda: Path(tmp)
             try:
                 plugin_api._write_agent_summary(sample_data())
-                path = Path(tmp) / "plugins" / "hermes-achievements" / "agent_summary.json"
+                # Resolve through _data_file rather than hard-coding the layout:
+                # the plugin's data directory moved out of <home>/plugins/ and a
+                # frozen literal would pin the old location instead of the contract.
+                path = plugin_api._data_file(plugin_api.AGENT_SUMMARY_FILE)
                 self.assertTrue(path.exists())
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["top_tier"], "Gold")

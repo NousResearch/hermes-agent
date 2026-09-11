@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
-import { calendarBucket, DAY, formatAgo, HOUR, MINUTE, nominalDayStart, SECOND, sessionBucketLabel } from './time'
+import {
+  calendarBucket,
+  DAY,
+  fmtMonth,
+  fmtMonthYear,
+  formatAgo,
+  HOUR,
+  MINUTE,
+  nominalDayStart,
+  SECOND,
+  sessionBucketLabel
+} from './time'
 
 const labels = {
   ageNow: 'now',
@@ -117,8 +128,24 @@ describe('sessionBucketLabel', () => {
   })
 
   it('formats month (same year) and month + year (prior year) via Intl', () => {
-    // en-US default in the test env: month name, plus year for the prior year.
-    expect(labelAt(2026, 2, 3)).toBe('March')
-    expect(labelAt(2025, 11, 3)).toBe('December 2025')
+    // Locale-agnostic contract: same-year month buckets render via fmtMonth,
+    // prior-year buckets via fmtMonthYear. Assert against the shared
+    // formatters instead of frozen en-US strings so the test passes under
+    // any host locale (the formatters intentionally use the runtime locale).
+    const monthBucket = calendarBucket(secondsAt(2026, 2, 3), THU_NOON, 1)
+
+    if (monthBucket.kind !== 'month') {
+      throw new Error(`expected month bucket, got ${monthBucket.kind}`)
+    }
+
+    expect(sessionBucketLabel(monthBucket, labels)).toBe(fmtMonth.format(monthBucket.at))
+
+    const monthYearBucket = calendarBucket(secondsAt(2025, 11, 3), THU_NOON, 1)
+
+    if (monthYearBucket.kind !== 'monthYear') {
+      throw new Error(`expected monthYear bucket, got ${monthYearBucket.kind}`)
+    }
+
+    expect(sessionBucketLabel(monthYearBucket, labels)).toBe(fmtMonthYear.format(monthYearBucket.at))
   })
 })

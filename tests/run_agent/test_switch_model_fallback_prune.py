@@ -40,8 +40,8 @@ def _make_agent(chain):
 def _switch_to_anthropic(agent):
     with (
         patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-        patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-xyz"),
-        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-xyz"),
+        patch("agent.anthropic_credentials._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):
         agent.switch_model(
@@ -76,6 +76,20 @@ def test_switch_with_empty_chain_stays_empty():
 
     assert agent._fallback_chain == []
     assert agent._fallback_model is None
+
+
+def test_manual_switch_clears_provider_fallback_provenance():
+    agent = _make_agent([
+        {"provider": "openrouter", "model": "x-ai/grok-4"},
+        {"provider": "nous", "model": "hermes-4"},
+    ])
+    agent._provider_fallback_active = True
+    agent._provider_fallback_route = ("fallback-model", "fallback-provider")
+
+    _switch_to_anthropic(agent)
+
+    assert agent._provider_fallback_active is False
+    assert agent._provider_fallback_route is None
 
 
 

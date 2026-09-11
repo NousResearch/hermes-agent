@@ -18,10 +18,16 @@ export interface PluginRecord {
   name: string
   kind: PluginKind
   status: PluginStatus
+  /** One-liner from the plugin's own metadata (what it adds). */
+  description?: string
   /** Load/registration failure message (status 'error'). */
   error?: string
   /** Absolute plugin.js path (disk plugins) — powers "Reveal in Finder". */
   file?: string
+  /** Agent package this is the desktop half of (unified agent+desktop packages). */
+  packageName?: string
+  /** Where that package came from (catalog sidecar or git remote), when known. */
+  packageOrigin?: { catalogName?: string; repo?: string; sha?: string }
 }
 
 // Explicit user enable/disable choices, id -> boolean. ABSENCE means "no

@@ -33,13 +33,13 @@ def _clear_cpr_env(monkeypatch):
 class TestClassicCliOutputSelection:
 
 
-    def test_windows_preserves_default_output_selection(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "win32")
+    @pytest.mark.windows_only
+    def test_windows_preserves_default_output_selection(self):
         assert _terminal_may_leak_cpr() is False
         assert _select_classic_cli_pt_output(sys.stdout) is None
 
+    @pytest.mark.windows_only
     def test_windows_honors_explicit_no_cpr(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
         assert _terminal_may_leak_cpr() is True
         out = _select_classic_cli_pt_output(sys.stdout)

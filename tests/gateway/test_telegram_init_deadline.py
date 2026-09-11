@@ -1,30 +1,6 @@
-import sys
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-    sys.modules.setdefault("telegram.error", telegram_mod.error)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -103,13 +79,15 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     import asyncio as _asyncio
     import time as _time
 
+    from agent import deadline as _deadline
+
     dumps = []
     monkeypatch.setattr(
-        tg_adapter,
-        "_dump_loop_blocked_diagnostics",
-        lambda timeout, grace: dumps.append((timeout, grace)),
+        _deadline,
+        "_dump_blocked_loop_diagnostics",
+        lambda label, timeout_s: dumps.append((label, timeout_s)),
     )
-    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
+    monkeypatch.setattr(_deadline, "_LOOP_BLOCKED_DUMP_GRACE_S", 0.15)
 
     hung = _asyncio.get_running_loop().create_future()  # never completes
     task = _asyncio.ensure_future(
@@ -127,7 +105,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     with pytest.raises(_asyncio.TimeoutError):
         await task
 
-    assert dumps == [(0.05, 0.15)]
+    assert dumps == [("telegram-init", 0.05)]
     hung.cancel()
 
 

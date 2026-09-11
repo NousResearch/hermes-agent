@@ -1595,8 +1595,10 @@ def _dispatch_lane_task(
 
 def _apply_default_assignee(
     conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
+    source: str = "kanban.default_assignee",
 ) -> bool:
-    """Persist ``kanban.default_assignee`` on an unassigned ready row.
+    """Persist ``kanban.default_assignee`` (or the board's ``default_assignee``,
+    ``source="board.default_assignee"``) on an unassigned ready row.
 
     Mutating the row keeps board state honest: the task is legitimately owned
     by the default, not "unassigned but secretly routed". ``dry_run`` reports
@@ -1613,7 +1615,7 @@ def _apply_default_assignee(
             )
             _kb._append_event(
                 conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
+                {"assignee": assignee, "source": source},
             )
     except Exception:
         _kb._log.debug(
@@ -1812,7 +1814,11 @@ def _dispatch_once_locked(
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     )
-    default_assignee = _resolve_default_assignee(default_assignee)
+    # A board-level default_assignee (board.json) beats the global
+    # kanban.default_assignee for this board's unassigned rows.
+    board_default = _kb.board_default_assignee(board)
+    default_source = "board.default_assignee" if board_default else "kanban.default_assignee"
+    default_assignee = board_default or _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
@@ -1822,7 +1828,7 @@ def _dispatch_once_locked(
             # Honour kanban.default_assignee so an unassigned task doesn't
             # park in 'ready' forever.
             if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
+                conn, row["id"], default_assignee, dry_run=dry_run, source=default_source,
             ):
                 result.skipped_unassigned.append(row["id"])
                 continue

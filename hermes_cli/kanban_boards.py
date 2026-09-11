@@ -129,6 +129,10 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     print(f"Current board: {current}\n  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
+    if meta.get("default_workdir"):
+        print(f"  Default workdir:  {meta['default_workdir']}")
+    if meta.get("default_assignee"):
+        print(f"  Default assignee: {meta['default_assignee']}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
     return 0
@@ -152,6 +156,23 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_default_assignee(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-default-assignee", must_exist=True)
+    if rc:
+        return rc
+    profile = (args.profile or "").strip()
+    if profile.lower() in ("", "none"):
+        kb.write_board_metadata(normed, default_assignee="")
+        print(f"Board {normed!r} default assignee cleared.")
+        return 0
+    from hermes_cli.profiles import profile_exists
+    if not profile_exists(profile):
+        return _err(f"kanban boards set-default-assignee: profile {profile!r} does not exist")
+    new_val = kb.write_board_metadata(normed, default_assignee=profile).get("default_assignee")
+    print(f"Board {normed!r} default assignee set to {new_val!r}.")
     return 0
 
 
@@ -209,6 +230,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-default-assignee": _cmd_boards_set_default_assignee,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

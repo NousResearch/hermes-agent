@@ -99,6 +99,8 @@ Title: {title}
 Body:
 {body}
 
+Board: {board_line}
+
 Available profiles (assignees you may pick from):
 {roster}
 
@@ -199,18 +201,41 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    board_line: str = ""
+
+
+def _board_context() -> tuple[str, Optional[str]]:
+    """``(prompt_line, board_default_assignee)`` for the board this call is
+    pinned to (``HERMES_KANBAN_BOARD`` / current board). A board-level
+    ``default_assignee`` that names a real profile beats ``kanban.default_assignee``."""
+    try:
+        slug = kb.get_current_board()
+        meta = kb.read_board_metadata(slug)
+        board_default = kb.board_default_assignee(slug)
+    except Exception as exc:
+        logger.debug("decompose: could not read board metadata: %s", exc)
+        return "(unknown)", None
+    line = (
+        f"{meta.get('name') or slug} - {meta.get('description') or '(no description)'} "
+        f"(repo: {meta.get('default_workdir') or 'none'})"
+    )
+    if board_default:
+        line += f"; Board default assignee: {board_default}"
+    return line, board_default
 
 
 def _load_routing() -> _Routing:
     cfg = _load_config()
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
+    board_line, board_default = _board_context()
     return _Routing(
         orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile"),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee"),
+        default_assignee=board_default or _resolve_profile_from_cfg(cfg, "default_assignee"),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        board_line=board_line,
     )
 
 
@@ -316,6 +341,7 @@ def decompose_task(
             **_task_prompt_fields(task),
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
+            board_line=routing.board_line,
         ),
         max_tokens=4000, timeout=timeout or 180, log=logger,
     )

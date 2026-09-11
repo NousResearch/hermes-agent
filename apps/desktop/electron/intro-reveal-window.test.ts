@@ -15,9 +15,13 @@ interface IntroBridge {
   }
 }
 
+interface IntroInvokeEvent {
+  channel: string
+}
+
 interface NativeTestState {
   bridge?: IntroBridge
-  handlers: Map<string, (event: object, payload?: IntroPayload) => { ok: boolean }>
+  handlers: Map<string, (event: IntroInvokeEvent, payload?: IntroPayload) => { ok: boolean }>
 }
 
 const native = vi.hoisted(() => {
@@ -60,13 +64,15 @@ vi.mock('electron', async () => {
       }
     },
     ipcMain: Object.assign(new EventEmitter(), {
-      handle: (channel: string, handler: (event: object, payload?: IntroPayload) => { ok: boolean }) => {
+      handle: (channel: string, handler: (event: IntroInvokeEvent, payload?: IntroPayload) => { ok: boolean }) => {
         native.handlers.set(channel, handler)
       }
     }),
     ipcRenderer: {
       sendSync: vi.fn(),
-      invoke: vi.fn(async (channel: string, payload?: IntroPayload) => native.handlers.get(channel)?.({}, payload))
+      invoke: vi.fn(async (channel: string, payload?: IntroPayload) =>
+        native.handlers.get(channel)?.({ channel }, payload)
+      )
     },
     screen: { getPrimaryDisplay: () => ({ bounds: { x: 0, y: 0, width: 1440, height: 900 } }) },
     webFrame: {},

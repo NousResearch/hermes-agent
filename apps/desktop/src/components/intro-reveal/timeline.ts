@@ -1,33 +1,11 @@
-/**
- * Beat timeline for the intro reveal. One declarative table + continuous
- * curves own the whole sequence; the surface and sound derive from here.
- *
- * v4 arc — the product story, not an abstraction:
- *   ask        — an enlarged pristine composer; a request types itself
- *   send       — the message commits
- *   working    — real tool activity materializes (browser, terminal, cron)
- *   reply      — the agent's answer streams in
- *   everywhere — the chat becomes one of several live agents, on every surface
- *   brand      — badge + wordmark close
- *   dissolve   — release back to the desktop
- *
- * Times are milliseconds from sequence start — SCORE time, not wall time. The
- * surface divides its clock by `INTRO_PACE` before reading anything here, so
- * every schedule in the piece (beats, typing, streaming, tool rows, the cube's
- * materials, rotation and glitch) stretches together off one number. Retiming
- * the cinematic means moving that knob, never re-deriving the tables.
- *
- * Anything on a REAL timer — the deadman, the watchdogs, the conductor's
- * backstop — measures `INTRO_WALL_MS` instead.
- */
+/** Score time stretches animation and sound together through INTRO_PACE.
+ * Real timers use wall time so recovery still works if the frame clock stalls. */
 
 /** Playback rate for the score. >1 plays slower. */
 export const INTRO_PACE = 1.25
 
 export interface IntroBeat {
-  /** Sound cue fired when the beat lands. */
   cue?: 'latch' | 'resolve' | 'swell' | 'tick'
-  /** Stable id for tests + the surface's scene switches. */
   id: string
   /** ms from sequence start. */
   t: number
@@ -45,7 +23,6 @@ export const INTRO_BEATS: IntroBeat[] = [
 
 export const INTRO_TOTAL_MS = 17600
 
-/** How long the piece actually takes to watch. */
 export const INTRO_WALL_MS = Math.round(INTRO_TOTAL_MS * INTRO_PACE)
 
 /** Exit dissolve window after the sequence — kept in one place so the surface
@@ -58,8 +35,7 @@ export const INTRO_EXIT_MS = 900
  *  an independent watchdog above that. The screen ALWAYS comes back. */
 export const INTRO_DEADMAN_MS = INTRO_WALL_MS + 4000
 
-/** Continuous curves sampled every frame (0..1, smooth, pure). */
-export function sampleCurves(t: number): { glow: number; scatter: number } {
+export function sampleCurves(t: number) {
   const ramp = (from: number, to: number) => {
     if (to <= from) {
       return t >= to ? 1 : 0
@@ -78,8 +54,6 @@ export function sampleCurves(t: number): { glow: number; scatter: number } {
     scatter: ramp(dissolveT, dissolveT + 1000)
   }
 }
-
-// ── The demo script (deterministic typing + streaming) ──────────────────────
 
 export const INTRO_PROMPT = 'Model a hero cube in Blender and cycle it through some materials'
 

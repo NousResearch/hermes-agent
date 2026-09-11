@@ -11,11 +11,19 @@ import {
   INTRO_REPLY_WORDS,
   INTRO_TOOL_ROWS,
   INTRO_TOTAL_MS,
+  type IntroBeat,
   sampleCurves,
   streamingSchedule,
   typingSchedule
 } from './timeline'
 import { drawViewport, VIEWPORT_END_MS } from './viewport-cube'
+
+const SOUND_CUES = {
+  tick: (beat: string) => playTick(beat === 'send' ? 1.35 : 1),
+  swell: playSwell,
+  latch: playLatch,
+  resolve: playResolve
+} satisfies Record<NonNullable<IntroBeat['cue']>, (beat: string) => void>
 
 const INTRO_BEAT_INDEX: Record<string, number> = Object.fromEntries(INTRO_BEATS.map((b, i) => [b.id, i]))
 
@@ -92,7 +100,6 @@ export function useIntroClock(onSkip?: () => void) {
     }, 1200)
   }, [onSkip])
 
-  // ── Deadman: this window removes itself no matter what. ─────────────────
   useEffect(() => {
     const id = window.setTimeout(() => {
       void window.hermesDesktop?.introReveal?.close?.({ showMain: true }).catch(() => undefined)
@@ -104,7 +111,6 @@ export function useIntroClock(onSkip?: () => void) {
   // The native window keeps the clock running while the main app is hidden.
   useEffect(() => {
     if (reduceMotion) {
-      // Reduced motion: static brand card, short hold, out.
       setFrame({ ...INITIAL_FRAME, beat: INTRO_BEAT_INDEX.brand })
 
       // This branch has no frame loop to reveal the brand or hide the demo.
@@ -146,42 +152,14 @@ export function useIntroClock(onSkip?: () => void) {
       for (const b of beatsBetween(prevT, t)) {
         currentBeat = INTRO_BEAT_INDEX[b.id] ?? currentBeat
 
-        if (b.cue === 'tick') {
-          playTick(b.id === 'send' ? 1.35 : 1)
-        } else if (b.cue === 'swell') {
-          playSwell()
-        } else if (b.cue === 'latch') {
-          playLatch()
-        } else if (b.cue === 'resolve') {
-          playResolve()
+        if (b.cue) {
+          SOUND_CUES[b.cue](b.id)
         }
       }
 
       prevT = t
 
-      // The Blender-viewport cube: drawn imperatively every frame while
-      // visible (until the reply lands — it collapses on send).
-      const canvas = viewportRef.current
-
-      if (canvas && t < VIEWPORT_END_MS) {
-        const dpr = Math.min(2, window.devicePixelRatio || 1)
-        const cw = canvas.clientWidth
-        const ch = canvas.clientHeight
-
-        if (cw > 0 && ch > 0) {
-          if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
-            canvas.width = cw * dpr
-            canvas.height = ch * dpr
-          }
-
-          const ctx2d = canvas.getContext('2d')
-
-          if (ctx2d) {
-            ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
-            drawViewport(ctx2d, cw, ch, t)
-          }
-        }
-      }
+      drawViewportFrame(viewportRef.current, t)
 
       const next = frameAt(t, currentBeat)
       const key = `${next.beat}:${next.typed}:${next.replyWords}:${next.toolShown}:${next.toolDone}`
@@ -195,7 +173,6 @@ export function useIntroClock(onSkip?: () => void) {
 
       pad.setLevel(Math.max(curves.glow, next.beat >= INTRO_BEAT_INDEX.working ? 0.45 : 0.2))
 
-      // ── Continuous cinematography, all eased (smoothstep everywhere). ──
       const ss = (from: number, to: number) => {
         const f = Math.min(1, Math.max(0, (t - from) / (to - from)))
 
@@ -273,4 +250,26 @@ export function useIntroClock(onSkip?: () => void) {
   }, [])
 
   return { frame, leaving: clockLeaving, faded, skip, glowRef, stageRef, brandRef, viewportRef }
+}
+
+function drawViewportFrame(canvas: HTMLCanvasElement | null, t: number) {
+  if (canvas && t < VIEWPORT_END_MS) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    const cw = canvas.clientWidth
+    const ch = canvas.clientHeight
+
+    if (cw > 0 && ch > 0) {
+      if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
+        canvas.width = cw * dpr
+        canvas.height = ch * dpr
+      }
+
+      const ctx2d = canvas.getContext('2d')
+
+      if (ctx2d) {
+        ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
+        drawViewport(ctx2d, cw, ch, t)
+      }
+    }
+  }
 }

@@ -1,15 +1,4 @@
-/**
- * The viewport cube — a software-rendered cube cycling shading modes, as if a
- * Blender viewport were live in the chat. Pure canvas 2D and deterministic from
- * the sequence clock: rotation, material mode, and every frame of the texture
- * pass's glitch are f(t), so the cinematic replays identically.
- *
- * Materials CROSSFADE at mode boundaries rather than hard-swapping, like a
- * shader recompile settling. The geometry is ALWAYS a cube.
- *
- * Split out of `intro-reveal-surface.tsx`, which owns the sequence and the DOM;
- * this file owns one canvas.
- */
+/** Canvas geometry and texture noise derive from score time so every playback agrees. */
 
 import { INTRO_BEATS } from './timeline'
 
@@ -106,7 +95,6 @@ function cubeQuads(t: number, w: number, h: number): Quad[] {
                 ? [a, 1, b]
                 : [a, -1, b]
 
-    // rotate Y then X
     const x1 = p[0] * cy + p[2] * sy
     const z1 = -p[0] * sy + p[2] * cy
     const y2 = p[1] * cx - z1 * sx
@@ -126,7 +114,6 @@ function cubeQuads(t: number, w: number, h: number): Quad[] {
         ]
 
         const z = (c[0][2] + c[1][2] + c[2][2] + c[3][2]) / 4
-        // Face normal via cross product → simple headlamp lambert.
         const ux = c[1][0] - c[0][0]
         const uy = c[1][1] - c[0][1]
         const uz = c[1][2] - c[0][2]
@@ -143,10 +130,10 @@ function cubeQuads(t: number, w: number, h: number): Quad[] {
           z,
           shade,
           cell: [u, v],
-          pts: c.map(([x, y, zz]) => {
+          pts: c.map(([x, y, zz]): [number, number] => {
             const persp = 3.6 / (3.6 - zz * 0.9)
 
-            return [w / 2 + x * scale * persp, h / 2 + y * scale * persp] as [number, number]
+            return [w / 2 + x * scale * persp, h / 2 + y * scale * persp]
           })
         })
       }
@@ -173,7 +160,7 @@ let textureRequested = false
 /** Kicks the load on first use, then answers from memory. Null until decoded,
  *  which the caller reads as "paint the resting material instead". */
 function textureImage(): HTMLImageElement | null {
-  if (textureRequested || typeof document === 'undefined') {
+  if (textureRequested || globalThis.document === undefined) {
     return texture
   }
 
@@ -261,17 +248,16 @@ function scanlines(ctx: CanvasRenderingContext2D): CanvasPattern | null {
   return scanPattern
 }
 
-/** Push a polygon's corners out from its centre, in screen pixels. */
 function inflate(pts: [number, number][], px: number): [number, number][] {
   const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4
   const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4
 
-  return pts.map(([x, y]) => {
+  return pts.map(([x, y]): [number, number] => {
     const dx = x - cx
     const dy = y - cy
     const d = Math.hypot(dx, dy) || 1
 
-    return [x + (dx / d) * px, y + (dy / d) * px] as [number, number]
+    return [x + (dx / d) * px, y + (dy / d) * px]
   })
 }
 
@@ -425,11 +411,9 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
 
   const quads = cubeQuads(t, w, h)
 
-  // ── Viewport furniture (drawn under the mesh) ─────────────────────────
   ctx.save()
   ctx.font = "8px 'JetBrains Mono', monospace"
 
-  // Axis gizmo, bottom-left: x/y/z stubs following the cube's rotation.
   const rx = t * 0.00042
   const ry = t * 0.00071
   const gx = 24
@@ -481,7 +465,6 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
     ctx.globalAlpha = alpha
 
     if (m === 'standard') {
-      // standard: white, ambient-lit.
       const l = 152 + q.shade * 88
 
       ctx.fillStyle = `rgb(${l}, ${l}, ${l + 2})`
@@ -490,7 +473,6 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
       ctx.lineWidth = 0.5
       ctx.stroke()
     } else if (m === 'metal') {
-      // metal: dark base, tight specular ramp, cool cast.
       const s = Math.pow(q.shade, 2.6)
       const v = 26 + s * 205
 
@@ -500,7 +482,6 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
       ctx.lineWidth = 0.5
       ctx.stroke()
     } else if (m === 'glass') {
-      // glass: translucent facets, fresnel rim (grazing faces glow).
       const rim = 1 - q.shade
 
       ctx.fillStyle = `rgba(140, 180, 255, ${0.05 + rim * 0.17})`
@@ -509,7 +490,6 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
       ctx.lineWidth = 0.7
       ctx.stroke()
     } else {
-      // wireframe: the naked mesh, before the loop returns to standard.
       ctx.strokeStyle = `rgba(255,255,255,${0.14 + q.shade * 0.2})`
       ctx.lineWidth = 1
       ctx.stroke()

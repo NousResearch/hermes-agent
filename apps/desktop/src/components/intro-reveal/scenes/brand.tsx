@@ -13,7 +13,6 @@ export function BrandClose({ ref }: BrandCloseProps) {
     >
       <img alt="" className="h-[32vmin] w-auto object-contain" src={assetPath('nous-badge.png')} />
       <div className="flex flex-col items-center gap-[1.6vmin]">
-        {/* Light under the spotlight — the cone above lifts it off the dark. */}
         <h1
           className="text-[6.8vmin] leading-none uppercase text-white/95"
           style={{

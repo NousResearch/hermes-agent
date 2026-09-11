@@ -1,30 +1,28 @@
-/**
- * Synthesized sound bed for the intro reveal — no audio assets.
- *
- * Musical, not textural: a slow pad in D (D3+A3+D4) swells under the assemble
- * phase, particle beats land as soft plucked fifths, the mark locking is a
- * warm two-voice latch, and the wordmark resolves on a rising triad arp with a
- * long tail. Everything sits well under system volume — a score, not a sting.
- *
- * All scheduling is beat-driven from the sequence timeline so sound, type, and
- * particles share one clock. Autoplay-safe: the context resumes lazily and
- * every call is a no-op when audio is unavailable or muted.
- */
+/** Beat scheduling keeps synthesized audio and animation on one clock. */
 
 import { $hapticsMuted } from '@/store/haptics'
+
+interface IntroAudioWindow extends Window {
+  webkitAudioContext?: typeof AudioContext
+}
+
+interface IntroPad {
+  setLevel: (level: number) => void
+  stop: () => void
+}
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
 
 function getCtx(): AudioContext | null {
-  if (typeof window === 'undefined') {
+  if (globalThis.window === undefined) {
     return null
   }
 
   try {
     if (!ctx) {
-      const Ctor =
-        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      const audioWindow: IntroAudioWindow = window
+      const Ctor = window.AudioContext || audioWindow.webkitAudioContext
 
       if (!Ctor) {
         return null
@@ -46,27 +44,16 @@ function getCtx(): AudioContext | null {
   }
 }
 
-function muted(): boolean {
-  try {
-    return $hapticsMuted.get()
-  } catch {
-    return false
-  }
-}
-
 function env(g: GainNode, t0: number, peak: number, attack: number, decay: number): void {
   g.gain.setValueAtTime(0.0001, t0)
   g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t0 + attack)
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + decay)
 }
 
-/** The pad: three detuned triangle voices on a D root (D3, A3, D4) behind a
- *  gentle lowpass. `setLevel` follows the choreography — the chord swells as
- *  the streams flow and holds warm under the formed badge. */
-export function startPad(): { setLevel: (v: number) => void; stop: () => void } {
+export function startPad(): IntroPad {
   const ac = getCtx()
 
-  if (!ac || !master || muted()) {
+  if (!ac || !master || $hapticsMuted.get()) {
     return { setLevel: () => undefined, stop: () => undefined }
   }
 
@@ -119,22 +106,17 @@ export function startPad(): { setLevel: (v: number) => void; stop: () => void } 
       g.gain.setTargetAtTime(0, t, 0.4)
       window.setTimeout(() => {
         for (const osc of oscs) {
-          try {
-            osc.stop()
-          } catch {
-            // already stopped
-          }
+          osc.stop()
         }
       }, 1600)
     }
   }
 }
 
-/** Soft plucked fifth (D5→A4 glide) for text beats — melodic, dry, brief. */
 export function playTick(pitch = 1): void {
   const ac = getCtx()
 
-  if (!ac || !master || muted()) {
+  if (!ac || !master || $hapticsMuted.get()) {
     return
   }
 
@@ -153,12 +135,10 @@ export function playTick(pitch = 1): void {
   osc.stop(t0 + 0.3)
 }
 
-/** Rising swell for the flow phase — a low A that opens upward as the field
- *  gathers the motes. */
 export function playSwell(): void {
   const ac = getCtx()
 
-  if (!ac || !master || muted()) {
+  if (!ac || !master || $hapticsMuted.get()) {
     return
   }
 
@@ -180,11 +160,10 @@ export function playSwell(): void {
   osc.stop(t0 + 3.4)
 }
 
-/** Warm two-voice latch when the mark locks — root + fifth (D4+A4). */
 export function playLatch(): void {
   const ac = getCtx()
 
-  if (!ac || !master || muted()) {
+  if (!ac || !master || $hapticsMuted.get()) {
     return
   }
 
@@ -207,12 +186,10 @@ export function playLatch(): void {
   }
 }
 
-/** Resolving arp for the wordmark — D5, F#5, A5, D6 staggered with long
- *  tails: the major-third resolution the pad has been withholding. */
 export function playResolve(): void {
   const ac = getCtx()
 
-  if (!ac || !master || muted()) {
+  if (!ac || !master || $hapticsMuted.get()) {
     return
   }
 

@@ -6,8 +6,7 @@ export const scrambleGlyph = (i: number, tick: number) => {
   return SCRAMBLE_CHARS[n % SCRAMBLE_CHARS.length]
 }
 
-/** Text decoding left→right over `spanMs` since `bornAt`: unresolved tail
- *  churns scramble glyphs each tick, spaces never scramble (word shape holds). */
+/** Spaces stay fixed so word boundaries survive the scramble. */
 export function decoded(text: string, bornAt: number, tick: number, spanMs = 520): string {
   const age = tick * 45 - bornAt
   const resolved = Math.max(0, Math.min(text.length, Math.ceil((age / spanMs) * text.length)))

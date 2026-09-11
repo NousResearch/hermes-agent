@@ -44,16 +44,13 @@ export function IntroRevealSurface({ onSkip }: IntroRevealSurfaceProps = {}) {
       role="dialog"
       tabIndex={-1}
     >
-      {/* Dark wash over the native frost — the whole piece plays in dark
-          mode regardless of the desktop under it. */}
+      {/* The film stays dark regardless of the desktop beneath it. */}
       <div
         className="absolute inset-0 bg-black/82"
         style={{ opacity: faded && !leaving ? 1 : 0, transition: `opacity 900ms ${EASE}` }}
       />
 
-      {/* Brand spotlight — an Apple-keynote cone from above, not a bloom:
-          soft white falling from the top edge, gentle falloff, barely-there.
-          Opacity/scale driven per-frame alongside the brand group. */}
+      {/* One frame clock keeps the spotlight and brand group together. */}
       <div
         className="pointer-events-none absolute left-1/2 top-0 h-[130vmin] w-[150vmin] opacity-0"
         ref={glowRef}
@@ -64,10 +61,7 @@ export function IntroRevealSurface({ onSkip }: IntroRevealSurfaceProps = {}) {
         }}
       />
 
-      {/* ── The demo constellation ─────────────────────────────────────────
-          Wrapped in the stage: one per-frame transform gives the whole scene
-          slow continuous drift + breath, and eases it left as the agents
-          arrive so the finished composition sits intentionally off-center. */}
+      {/* One transform keeps the constellation drifting as a group. */}
       <div
         className="relative flex items-center justify-center gap-[2vw]"
         ref={stageRef}
@@ -80,7 +74,6 @@ export function IntroRevealSurface({ onSkip }: IntroRevealSurfaceProps = {}) {
         <SideAgents active={everywhere && !brand} side="right" tick={frame.tick} />
       </div>
 
-      {/* Surfaces caption (everywhere scene). */}
       <div
         className="pointer-events-none absolute inset-x-0 bottom-[13vh] text-center text-[1.02rem] tracking-[0.34em] text-white/60 uppercase"
         style={{
@@ -95,7 +88,6 @@ export function IntroRevealSurface({ onSkip }: IntroRevealSurfaceProps = {}) {
 
       <BrandClose ref={brandRef} />
 
-      {/* Skip affordance — quiet, bottom-right. */}
       <button
         className="absolute bottom-6 right-7 text-[0.72rem] uppercase tracking-[0.24em] text-white/40 transition-colors hover:text-white/80"
         onClick={skip}
@@ -115,7 +107,6 @@ interface HeroChatProps {
 
 function HeroChat({ frame, viewportRef }: HeroChatProps) {
   const beat = frame.beat
-  const viewport = viewportSlot(frame.tick * 45)
   const sent = beat >= INTRO_BEAT_INDEX.send
   const replying = beat >= INTRO_BEAT_INDEX.reply
   const everywhere = beat >= INTRO_BEAT_INDEX.everywhere
@@ -136,88 +127,8 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
         willChange: 'transform'
       }}
     >
-      {/* ── Detached viewport node — hermes-workflow-demo style: a small
-              glass node floating top-left of the chat, wired into it, the
-              cube autorotating through materials inside. It stays through
-              the reply and slides down/fades only on the scene change to
-              the constellation. */}
-      <div
-        className="absolute -left-64 -top-20 w-52 rounded-xl"
-        style={{
-          background: 'rgba(10, 11, 14, 0.88)',
-          border: '1px solid rgba(255,255,255,0.09)',
-          boxShadow: NOUS_SHADOW,
-          animation: 'intro-hover-b 6.8s ease-in-out infinite alternate',
-          opacity: sent && !everywhere ? 1 : 0,
-          transform:
-            sent && !everywhere
-              ? 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(0) scale(1)'
-              : everywhere
-                ? 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(26px) scale(0.97)'
-                : 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(12px) scale(0.95)',
-          transition: `opacity 480ms ${EASE}, transform 560ms ${EASE}`,
-          willChange: 'transform, opacity'
-        }}
-      >
-        <div
-          className="flex items-center justify-between px-3 pt-2.5 text-[0.5rem] uppercase tracking-[0.2em] text-white/30"
-          style={{ fontFamily: "'Collapse', sans-serif" }}
-        >
-          <span className="flex items-center gap-1.5">
-            <span
-              className="inline-block size-1 rounded-full"
-              style={{ animation: 'intro-dot 1.6s ease-in-out infinite', background: BLUE }}
-            />
-            viewport
-          </span>
-          <span
-            className="text-[0.6rem] normal-case tracking-normal"
-            style={{ color: BLUE_DIM, fontFamily: "'JetBrains Mono', monospace" }}
-          >
-            {decoded(viewport.mode, viewport.at, frame.tick, 300)}
-          </span>
-        </div>
-        <canvas className="block h-40 w-full" ref={viewportRef} />
-        {/* Output port on the node's right edge — where the wire leaves. */}
-        <span className="absolute -right-[5px] top-1/2 size-2.5 -translate-y-1/2 rounded-full border border-black/55 bg-[#0a0b0e]" />
-      </div>
+      <ViewportNode frame={frame} viewportRef={viewportRef} />
 
-      {/* The wire: node output port → chat input port. hermes-workflow-
-              demo grammar — one SOLID hairline bezier (no dashes), stroked
-              with a gradient between the two ends' states. It draws on at
-              send (the agent plugs into Blender), carries a droplet while the
-              tools run, and settles to the quiet done-green once they finish.
-              Wires appear when a connection EXISTS, not before. */}
-      <svg
-        aria-hidden
-        className="pointer-events-none absolute -left-12 top-0 h-16 w-12 overflow-visible"
-        style={{ opacity: everywhere ? 0 : sent ? 1 : 0, transition: `opacity 300ms ${EASE}` }}
-        viewBox="0 0 48 64"
-      >
-        <path
-          d="M 0 15 C 21 15, 27 44, 48 44"
-          fill="none"
-          pathLength={1}
-          stroke="rgba(0,0,0,0.55)"
-          strokeDasharray="1"
-          strokeDashoffset={sent ? 0 : 1}
-          strokeWidth="1.5"
-          style={{ transition: `stroke-dashoffset 440ms ${EASE}` }}
-        />
-      </svg>
-
-      {/* The chat's input port — the wire lands on a real socket. */}
-      <span
-        className="absolute -left-[5px] top-[40px] size-2.5 rounded-full border bg-[#0a0b0e]"
-        style={{
-          borderColor: 'rgba(0,0,0,0.55)',
-          opacity: everywhere ? 0 : sent ? 1 : 0,
-          transition: `opacity 380ms ${EASE}, border-color 380ms ${EASE}`
-        }}
-      />
-
-      {/* User bubble (reserved slot; appears on send) — bare text, no
-              chrome: the words are the bubble. */}
       <div className="flex min-h-[3.9rem] justify-end">
         <div
           className="max-w-[80%] px-1 py-3.5 text-right text-[1.02rem] leading-7 text-white/92"
@@ -232,9 +143,6 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
         </div>
       </div>
 
-      {/* Tool activity rows — the hackery heart: mono, braille spinners,
-              statuses scramble-decode in, results decode on completion.
-              (Reserved block so nothing reflows.) */}
       <div className="mt-5 grid min-h-[10.5rem] content-start gap-2.5">
         {INTRO_TOOL_ROWS.map((row, i) => {
           const shown = Boolean(frame.toolShown & (1 << i)) && sent
@@ -269,7 +177,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
                 className="ml-auto grid text-[0.8rem] text-white/50"
                 style={{ fontFamily: "'JetBrains Mono', monospace" }}
               >
-                {/* Stacked in one grid cell so running/done crossfade in place. */}
+                {/* Stacking keeps the running/done crossfade in place. */}
                 <span
                   className="col-start-1 row-start-1 text-right"
                   style={{ opacity: done ? 0 : 1, transition: `opacity 400ms ${EASE}` }}
@@ -288,7 +196,6 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
         })}
       </div>
 
-      {/* Streaming reply bubble (reserved slot). */}
       <div className="mt-5 min-h-[6.5rem]">
         <div
           className="max-w-[88%] rounded-xl rounded-bl-md px-5 py-3.5 text-[1.02rem] leading-7 text-white/88"
@@ -311,10 +218,6 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
         </div>
       </div>
 
-      {/* Composer — the REAL app composer's anatomy, faked: glass fill +
-              hairline ring (dt-composer-ring recipe), rounded-2xl dock shape,
-              ghost "+" left, mic + solid foreground-circle send right
-              (PRIMARY_ICON_BTN: white circle, dark glyph in dark mode). */}
       <div className="mt-5">
         <div
           className="rounded-2xl px-3 py-2.5"
@@ -392,5 +295,83 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
         </div>
       </div>
     </div>
+  )
+}
+
+function ViewportNode({ frame, viewportRef }: HeroChatProps) {
+  const viewport = viewportSlot(frame.tick * 45)
+  const sent = frame.beat >= INTRO_BEAT_INDEX.send
+  const everywhere = frame.beat >= INTRO_BEAT_INDEX.everywhere
+
+  return (
+    <>
+      <div
+        className="absolute -left-64 -top-20 w-52 rounded-xl"
+        style={{
+          background: 'rgba(10, 11, 14, 0.88)',
+          border: '1px solid rgba(255,255,255,0.09)',
+          boxShadow: NOUS_SHADOW,
+          animation: 'intro-hover-b 6.8s ease-in-out infinite alternate',
+          opacity: sent && !everywhere ? 1 : 0,
+          transform:
+            sent && !everywhere
+              ? 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(0) scale(1)'
+              : everywhere
+                ? 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(26px) scale(0.97)'
+                : 'translateZ(70px) rotateX(-2deg) rotateY(2.5deg) translateY(12px) scale(0.95)',
+          transition: `opacity 480ms ${EASE}, transform 560ms ${EASE}`,
+          willChange: 'transform, opacity'
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-3 pt-2.5 text-[0.5rem] uppercase tracking-[0.2em] text-white/30"
+          style={{ fontFamily: "'Collapse', sans-serif" }}
+        >
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block size-1 rounded-full"
+              style={{ animation: 'intro-dot 1.6s ease-in-out infinite', background: BLUE }}
+            />
+            viewport
+          </span>
+          <span
+            className="text-[0.6rem] normal-case tracking-normal"
+            style={{ color: BLUE_DIM, fontFamily: "'JetBrains Mono', monospace" }}
+          >
+            {decoded(viewport.mode, viewport.at, frame.tick, 300)}
+          </span>
+        </div>
+        <canvas className="block h-40 w-full" ref={viewportRef} />
+
+        <span className="absolute -right-[5px] top-1/2 size-2.5 -translate-y-1/2 rounded-full border border-black/55 bg-[#0a0b0e]" />
+      </div>
+
+      <svg
+        aria-hidden
+        className="pointer-events-none absolute -left-12 top-0 h-16 w-12 overflow-visible"
+        style={{ opacity: everywhere ? 0 : sent ? 1 : 0, transition: `opacity 300ms ${EASE}` }}
+        viewBox="0 0 48 64"
+      >
+        <path
+          d="M 0 15 C 21 15, 27 44, 48 44"
+          fill="none"
+          pathLength={1}
+          stroke="rgba(0,0,0,0.55)"
+          strokeDasharray="1"
+          strokeDashoffset={sent ? 0 : 1}
+          strokeWidth="1.5"
+          style={{ transition: `stroke-dashoffset 440ms ${EASE}` }}
+        />
+      </svg>
+
+      <span
+        className="absolute -left-[5px] top-[40px] size-2.5 rounded-full border bg-[#0a0b0e]"
+        style={{
+          borderColor: 'rgba(0,0,0,0.55)',
+          opacity: everywhere ? 0 : sent ? 1 : 0,
+          transition: `opacity 380ms ${EASE}, border-color 380ms ${EASE}`
+        }}
+      />
+    </>
   )
 }

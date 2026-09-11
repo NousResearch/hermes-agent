@@ -224,10 +224,58 @@ def _has_chromium_build(root: str) -> bool:
         return False
 
 
+def _managed_chromium_executable() -> Optional[str]:
+    """Return the newest concrete browser binary managed by agent-browser/Playwright."""
+    explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if explicit and (os.path.isfile(explicit) or shutil.which(explicit)):
+        return str(Path(explicit).expanduser())
+
+    candidates: list[tuple[int, tuple[int, ...], Path]] = []
+
+    def _add(release: Path, executable: Path, *, shell: bool = False) -> None:
+        try:
+            version = tuple(int(part) for part in release.name.rsplit("-", 1)[-1].split("."))
+        except ValueError:
+            return
+        if executable.is_file() and (sys.platform == "win32" or os.access(executable, os.X_OK)):
+            candidates.append((0 if shell else 1, version, executable))
+
+    for release in (Path.home() / ".agent-browser" / "browsers").glob("chrome-*"):
+        if sys.platform == "darwin":
+            executable = release / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+        elif sys.platform == "win32":
+            executable = next(release.glob("chrome-win*/chrome.exe"), release / "chrome.exe")
+        else:
+            executable = next(release.glob("chrome-linux*/chrome"), release / "chrome")
+        _add(release, executable)
+
+    for root_name in _chromium_search_roots():
+        root = Path(root_name)
+        for release in root.glob("chromium-*"):
+            if sys.platform == "darwin":
+                executable = next(release.glob("chrome-mac-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+                                  release / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium")
+            elif sys.platform == "win32":
+                executable = next(release.glob("chrome-win*/chrome.exe"), release / "chrome.exe")
+            else:
+                executable = next(release.glob("chrome-linux*/chrome"), release / "chrome")
+            _add(release, executable)
+        for release in root.glob("chromium_headless_shell-*"):
+            if sys.platform == "win32":
+                executable = next(release.glob("chrome-headless-shell-win*/chrome-headless-shell.exe"), release / "chrome-headless-shell.exe")
+            elif sys.platform == "darwin":
+                executable = next(release.glob("chrome-headless-shell-mac*/chrome-headless-shell"), release / "chrome-headless-shell")
+            else:
+                executable = next(release.glob("chrome-headless-shell-linux*/chrome-headless-shell"), release / "chrome-headless-shell")
+            _add(release, executable, shell=True)
+
+    return str(max(candidates)[2]) if candidates else None
+
+
 def _chromium_installed() -> bool:
     """True when a usable Chromium (or headless-shell) build is on disk; cached.
 
-    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then system Chrome/Chromium on PATH, then Playwright's cache.
+    Checks an explicit operator override, then agent-browser and Playwright managed downloads.
     Without a binary the CLI hangs on first use until the command timeout fires, so the tool must not be advertised.
     """
     _bt = _origin()
@@ -236,8 +284,7 @@ def _chromium_installed() -> bool:
     ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     _bt._cached_chromium_installed = bool(
         (ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
-        or any(shutil.which(name) for name in ("google-chrome", "chromium", "chromium-browser", "chrome"))
-        or any(root and os.path.isdir(root) and _has_chromium_build(root) for root in _chromium_search_roots())
+        or _managed_chromium_executable()
     )
     return _bt._cached_chromium_installed
 

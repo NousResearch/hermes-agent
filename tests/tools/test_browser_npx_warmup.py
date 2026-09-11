@@ -8,7 +8,7 @@ It must never raise, must accurately report success/failure via its return
 value, must use a credential-scrubbed and PATH-propagated environment (it
 runs registry-fetched, potentially install-scripted npm code on every
 `hermes update` — not only when a browser tool is actually used), must pass
---ignore-scripts (AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range, not an
+--ignore-scripts (AGENT_BROWSER_NPX_SPEC is a floating ^0.36.0 range, not an
 exact pin), and must kill the whole process tree — not just the top-level
 npx PID — on timeout.
 """
@@ -21,6 +21,10 @@ from unittest.mock import MagicMock, patch
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import warm_agent_browser_npx_cache
 from tools.browser_tool_lifecycle import _legacy_kill_process_tree
+
+
+def test_agent_browser_range_tracks_current_supported_release():
+    assert AGENT_BROWSER_NPX_SPEC == "agent-browser@^0.36.0"
 
 
 def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):

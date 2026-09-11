@@ -1,10 +1,15 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { $showAllProfiles } from '@/store/profile'
+
 import { ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $showAllProfiles.set(false)
+})
 
 // jsdom doesn't implement ResizeObserver; Radix's PopoverContent/Arrow use it
 // (via @radix-ui/react-use-size) to measure the arrow once the popover is
@@ -25,6 +30,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       common: { cancel: 'Cancel', confirm: 'Confirm', done: 'Done', loading: 'Loading…' },
+      profiles: { selectPrompt: 'Select a profile to manage projects.' },
       sidebar: {
         projects: {
           copyPath: 'Copy path',
@@ -115,4 +121,20 @@ describe('ProjectMenu', () => {
     // chain rather than getting silently dropped on an intermediate wrapper.
     expect(await screen.findByRole('button', { name: 'No color' })).toBeTruthy()
   }, 15000)
+
+  it('does not offer profile-owned mutations in the all-profiles view', async () => {
+    $showAllProfiles.set(true)
+    render(<ProjectMenu isActive={false} project={project} />)
+
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+
+    expect(
+      (await screen.findByRole('menuitem', { name: 'Select a profile to manage projects.' })).getAttribute(
+        'aria-disabled'
+      )
+    ).toBe('true')
+    expect(screen.queryByRole('menuitem', { name: 'Delete…' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Appearance' })).toBeNull()
+  })
 })

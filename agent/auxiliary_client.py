@@ -184,7 +184,10 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
     # via kwargs.
     kwargs.setdefault("max_retries", 0)
-    return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
+    from agent.runtime_routes import record_client_runtime, runtime_for_endpoint
+    resolved = runtime_for_endpoint(None, base_url).as_dict()
+    resolved.update(api_key=api_key, base_url=base_url, **kwargs)
+    return record_client_runtime(OpenAI(api_key=api_key, base_url=base_url, **kwargs), **resolved)
 
 
 # Interrupt protection for atomic aux tasks: a compression summary killed by an ordinary
@@ -1819,7 +1822,12 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        from agent.runtime_bundle import build_client_bundle
+        from agent.runtime_routes import runtime_from_client
+        runtime = runtime_from_client(
+            client_obj, provider="custom", model=model, api_mode="anthropic_messages", base_url=base_url,
+        ).with_updates(api_key=api_key)
+        real_client = build_client_bundle(runtime, anthropic_builder=build_anthropic_client).anthropic_client
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "

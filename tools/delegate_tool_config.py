@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
+from agent.runtime_bundle import ResolvedRuntime, mutable_config_copy
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -244,13 +246,12 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
     ``extra_body`` is deep-merged ONE level so provider personality (e.g. ``thinking: {type: disabled}``) survives
     unless the explicit dict redefines that exact key. Both sides are deep-copied so transport-side mutation can't
     leak into the config/runtime cache. None when both are empty."""
-    import copy as _copy
-    runtime_overrides = runtime_overrides if isinstance(runtime_overrides, dict) else None
-    explicit_overrides = explicit_overrides if isinstance(explicit_overrides, dict) else None
+    runtime_overrides = runtime_overrides if isinstance(runtime_overrides, Mapping) else None
+    explicit_overrides = explicit_overrides if isinstance(explicit_overrides, Mapping) else None
     if not runtime_overrides and not explicit_overrides:
         return None
-    merged = _copy.deepcopy(runtime_overrides) if runtime_overrides else {}
-    explicit = _copy.deepcopy(explicit_overrides) if explicit_overrides else {}
+    merged = mutable_config_copy(runtime_overrides) if runtime_overrides else {}
+    explicit = mutable_config_copy(explicit_overrides) if explicit_overrides else {}
     runtime_extra = merged.get("extra_body")
     explicit_extra = explicit.pop("extra_body", None)
     merged.update(explicit)
@@ -304,11 +305,12 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     # provider configured ALONGSIDE base_url: pull that provider's request personality (request_overrides /
     # max_output_tokens) onto the explicit endpoint. Best-effort — a resolution failure only skips the overrides.
     request_overrides = max_output_tokens = None
+    runtime = None
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
-            request_overrides = dict(runtime.get("request_overrides") or {}) or None
+            request_overrides = runtime.get("request_overrides")
             max_output_tokens = runtime.get("max_output_tokens")
         except Exception as exc:
             logger.debug(
@@ -316,9 +318,17 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
                 v["provider"], exc,
             )
     # api_key None → inherited from parent in _build_child_agent
+    from agent.runtime_routes import runtime_for_endpoint
+    if isinstance(runtime, Mapping):
+        runtime = ResolvedRuntime.from_mapping(runtime).with_updates(api_key=v["api_key"] or "")
+    resolved = runtime_for_endpoint(runtime, v["base_url"]).with_updates(
+        provider=provider, requested_provider=v["provider"] or provider,
+        model=v["model"] or "", api_key=v["api_key"] or "", api_mode=api_mode,
+    )
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides), max_output_tokens,
+        resolved_runtime=resolved,
     )
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -355,6 +365,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
         runtime.get("max_output_tokens"), command=pinned_command, args=list(runtime.get("args") or []),
+        resolved_runtime=ResolvedRuntime.from_mapping(runtime),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -364,6 +375,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    for key in ("model", "provider"):
+        if (values[key] or "").lower() == "auto":
+            values[key] = None
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
@@ -412,6 +426,7 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_max_tokens: Optional[int], override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    override_runtime: Optional[ResolvedRuntime] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -497,4 +512,16 @@ def _resolve_child_runtime(
     child_max_tokens = override_max_tokens if override_max_tokens is not None else getattr(parent_agent, "max_tokens", None)
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
+    inherited = getattr(parent_agent, "_resolved_runtime", None)
+    resolved = override_runtime
+    if resolved is None and not override_provider and not override_base_url and isinstance(inherited, ResolvedRuntime):
+        from agent.runtime_routes import runtime_for_endpoint
+        resolved = runtime_for_endpoint(inherited, effective_base_url)
+    if isinstance(resolved, ResolvedRuntime):
+        kwargs["resolved_runtime"] = resolved.with_updates(
+            model=effective_model, api_key=kwargs["api_key"], base_url=effective_base_url or "",
+            api_mode=effective_api_mode or resolved.api_mode,
+            provider="copilot-acp" if override_acp_command else resolved.provider,
+            command=effective_acp_command, args=effective_acp_args,
+        )
     return kwargs

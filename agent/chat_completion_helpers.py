@@ -1923,29 +1923,27 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install a resolver-built fallback as one complete runtime transaction."""
     from agent.auxiliary_client import AnthropicAuxiliaryClient
-    from agent.runtime_bundle import ClientBundle, ResolvedRuntime, build_client_bundle
+    from agent.runtime_bundle import ClientBundle, build_client_bundle, openai_client_kwargs
+    from agent.runtime_routes import runtime_from_client
 
     is_anthropic = isinstance(fb_client, AnthropicAuxiliaryClient)
-    if fb_api_mode == "anthropic_messages":
+    effective_base = str(getattr(fb_client, "base_url", "") or fb_base_url)
+    runtime = runtime_from_client(
+        fb_client, provider=fb_provider, model=fb_model, api_mode=fb_api_mode, base_url=effective_base,
+    )
+    timeout = runtime.get("timeout")
+    if timeout is None:
         timeout = get_provider_request_timeout(fb_provider, fb_model)
-        effective_key = getattr(fb_client, "api_key", "") or ""
-        effective_base = str(getattr(fb_client, "base_url", "") or fb_base_url)
-        runtime = ResolvedRuntime.from_mapping({
-            "provider": fb_provider,
-            "model": fb_model,
-            "requested_provider": fb_provider,
-            "api_mode": fb_api_mode,
-            "api_key": effective_key,
-            "base_url": effective_base,
-            "extra_headers": getattr(fb_client, "_hermes_runtime_extra_headers", {}) or {},
-        })
+        if timeout is not None:
+            runtime = runtime.with_updates(timeout=timeout)
+    if fb_api_mode == "anthropic_messages":
         if is_anthropic:
             # New resolver paths already return the exact Messages client.  Keep
             # it intact, including any adapter-local auth state.
             bundle = ClientBundle(
                 runtime=runtime,
                 anthropic_client=fb_client._real_client,
-                anthropic_api_key=effective_key,
+                anthropic_api_key=runtime.api_key,
                 anthropic_base_url=effective_base,
                 is_anthropic_oauth=bool(fb_client.is_oauth and fb_provider == "anthropic"),
             )
@@ -1958,27 +1956,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         # Keep the exact resolver-built OpenAI client.  The kwargs snapshot is
         # only for a later request-local rebuild; it retains headers and the
         # resolved timeout alongside the same runtime identity.
-        fb_headers = (
-            getattr(fb_client, "_hermes_runtime_extra_headers", None)
-            or getattr(fb_client, "_custom_headers", None)
-            or getattr(fb_client, "default_headers", None)
-        )
-        client_kwargs = {
-            "api_key": getattr(fb_client, "api_key", ""),
-            "base_url": fb_base_url,
-        }
-        if fb_headers:
-            client_kwargs["default_headers"] = dict(fb_headers)
-        timeout = get_provider_request_timeout(fb_provider, fb_model)
-        if timeout is not None:
-            client_kwargs["timeout"] = timeout
-        runtime = ResolvedRuntime.from_mapping({
-            "provider": fb_provider,
-            "model": fb_model,
-            "requested_provider": fb_provider,
-            "api_mode": fb_api_mode,
-            **client_kwargs,
-        })
+        client_kwargs = openai_client_kwargs(runtime)
         bundle = ClientBundle(runtime=runtime, client=fb_client, client_kwargs=client_kwargs)
 
     agent.install_runtime(bundle, reason="fallback")

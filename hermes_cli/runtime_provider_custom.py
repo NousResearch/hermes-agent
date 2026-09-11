@@ -91,6 +91,13 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     if isinstance(extra_body, dict):
         result["extra_body"] = dict(extra_body)
     _lift_extra_headers(entry, result)
+    from hermes_cli.config import _coerce_ssl_verify
+    ca = entry.get("ssl_ca_cert")
+    if isinstance(ca, str) and ca.strip():
+        result["ssl_ca_cert"] = ca.strip()
+    verify = _coerce_ssl_verify(entry.get("ssl_verify"))
+    if verify is not None:
+        result["ssl_verify"] = verify
     if api_mode:
         result["api_mode"] = api_mode
     _lift_max_output_tokens(entry, result)
@@ -380,6 +387,9 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
+    for key in ("ssl_ca_cert", "ssl_verify"):
+        if key in custom_provider:
+            result[key] = custom_provider[key]
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}

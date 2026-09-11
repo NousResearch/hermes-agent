@@ -85,6 +85,30 @@ The runtime resolver returns data such as:
 
 ## Why this matters
 
+### Immutable Runtime Handoffs
+
+`resolve_runtime_provider()` returns a mapping-compatible `ResolvedRuntime`.
+`agent/runtime_bundle.py` freezes nested configuration and builds a `ClientBundle`;
+`ClientLifecycleMixin.install_runtime()` commits the route and client together.
+Use `runtime.as_dict()` when a mutable, recursively independent configuration copy
+is needed. Do not `deepcopy()` a nested frozen mapping or reuse another agent's
+HTTP client.
+
+`AIAgent(resolved_runtime=runtime)` accepts an already-resolved route as the
+authoritative provider, model, credentials and transport input. Delegation derives
+this value from the live parent unless a provider or endpoint is explicitly pinned.
+`delegation.model: auto` and `delegation.provider: auto` mean inherit, not a literal
+wire model or a new environment-based provider search. Explicit request overrides
+win over inherited/provider defaults, without mutating the source configuration.
+
+Children own their clients. Headers, TLS settings, query parameters and timeouts
+survive child construction, fallback adoption, request-local reconstruction and
+credential rotation. Changing endpoints recomputes destination-specific settings
+instead of forwarding the previous endpoint's headers or CA/query configuration.
+Anthropic request reuse compares the complete immutable runtime and beta policy.
+Dedicated MoA and Bedrock builders remain separate; ACP command arguments are not
+sent to an ordinary OpenAI HTTP client.
+
 This resolver is the main reason Hermes can share auth/runtime logic between:
 
 - `hermes chat`

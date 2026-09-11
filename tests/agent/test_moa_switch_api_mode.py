@@ -16,14 +16,14 @@ same so the primary call always routes through ``MoAClient.chat.completions``.
 
 from __future__ import annotations
 
-import types
-
 import pytest
 
+from run_agent import AIAgent
 
-def _make_fake_agent():
-    """A minimal stand-in carrying only the attributes switch_model touches."""
-    agent = types.SimpleNamespace()
+
+def _make_agent():
+    """Use real lifecycle methods without initializing external clients."""
+    agent = AIAgent.__new__(AIAgent)
     agent.model = "minimax-m3"
     agent.provider = "opencode-go"
     agent.api_mode = "anthropic_messages"
@@ -34,12 +34,14 @@ def _make_fake_agent():
     agent._config_context_length = 123456
     agent._transport_cache = {}
     agent.quiet_mode = True
-    # switch_model re-reads reasoning_echo for the incoming model as part of the
-    # core field swap, before the moa branch runs. On a real AIAgent this is a
-    # method; without it the swap raises and the rollback undoes every field
-    # this test asserts on.
+    agent.context_compressor = None
+    agent._primary_runtime = {}
+    agent._fallback_chain = []
+    agent._anthropic_client = None
+    agent._anthropic_api_key = ""
+    agent._anthropic_base_url = None
+    agent._is_anthropic_oauth = False
     agent._reasoning_echo_flag = False
-    agent._read_reasoning_echo_from_config = lambda: False
     return agent
 
 
@@ -57,27 +59,17 @@ def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
     """
     from agent import agent_runtime_helpers as arh
 
-    # Neutralize the post-swap machinery that needs a real AIAgent (credential
-    # pool reload, context-compressor refresh, primary-runtime bookkeeping).
-    # We only assert the api_mode invariant set in the moa client-build branch.
-    monkeypatch.setattr(arh, "load_pool", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda *a, **k: None)
 
-    agent = _make_fake_agent()
-    try:
-        arh.switch_model(
-            agent,
-            new_model="frontier",
-            new_provider="moa",
-            api_key="moa-virtual-provider",
-            base_url="moa://local",
-            api_mode=incoming_api_mode,
-        )
-    except Exception:
-        # switch_model does post-swap work (compressor, pool, runtime) that may
-        # raise against a fake agent. The runtime-field swap — including the
-        # api_mode pin in the moa branch — happens before any of that, so the
-        # invariant we care about is already set even if a later step blew up.
-        pass
+    agent = _make_agent()
+    arh.switch_model(
+        agent,
+        new_model="frontier",
+        new_provider="moa",
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        api_mode=incoming_api_mode,
+    )
 
     assert agent.provider == "moa"
     assert agent.base_url == "moa://local"
@@ -88,3 +80,7 @@ def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
     )
     # The MoAClient facade should be installed as the client.
     assert type(agent.client).__name__ == "MoAClient"
+    assert agent._resolved_runtime.provider == "moa"
+    assert agent._resolved_runtime.model == "frontier"
+    assert agent._resolved_runtime.api_mode == "chat_completions"
+    assert agent._primary_runtime["api_mode"] == "chat_completions"

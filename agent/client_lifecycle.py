@@ -163,7 +163,7 @@ class ClientLifecycleMixin:
         the complete old route or the complete new route, never credentials
         from one route paired with a client from another.
         """
-        from agent.runtime_bundle import ClientBundle
+        from agent.runtime_bundle import ClientBundle, mutable_config_copy
 
         if not isinstance(bundle, ClientBundle):
             raise TypeError("install_runtime requires a ClientBundle")
@@ -171,7 +171,7 @@ class ClientLifecycleMixin:
             raise ValueError("ClientBundle cannot contain both wire clients")
 
         runtime = bundle.runtime
-        client_kwargs = dict(bundle.client_kwargs)
+        client_kwargs = mutable_config_copy(bundle.client_kwargs)
         is_anthropic = bundle.anthropic_client is not None
         model = runtime.model or getattr(self, "model", "")
         provider = runtime.provider or getattr(self, "provider", "")
@@ -456,28 +456,25 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
+        """Reuse only an identical complete runtime and beta policy (or legacy wire key)."""
         if getattr(self, "provider", None) == "bedrock":
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+        from agent.runtime_bundle import ResolvedRuntime
+        resolved = getattr(self, "_resolved_runtime", None)
+        if isinstance(resolved, ResolvedRuntime):
+            return ("runtime", resolved, bool(getattr(self, "_oauth_1m_beta_disabled", False)))
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
         )
 
-    def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
-        """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
-        from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
-
-    def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import _is_oauth_token
-        return _is_oauth_token(token) if self.provider == "anthropic" else False
-
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
+        if key[0] == "runtime":
+            from agent.runtime_bundle import build_client_bundle
+            return build_client_bundle(key[1], drop_context_1m_beta=key[2]).anthropic_client
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
@@ -535,6 +532,14 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        from agent.runtime_bundle import ResolvedRuntime
+        if isinstance(getattr(self, "_resolved_runtime", None), ResolvedRuntime):
+            try:
+                self._install_runtime_credentials(api_key.strip(), base_url.strip().rstrip("/"), reason=reason)
+                return True
+            except Exception as exc:
+                logger.warning("Failed to rebuild client after credential update (%s): %s", reason, exc)
+                return False
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
@@ -595,9 +600,7 @@ class ClientLifecycleMixin:
         if not _valid_credential_pair(api_key, base_url):
             return False
         if self.api_mode == "anthropic_messages":
-            self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
-            self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
-            self._rebuild_anthropic_client()
+            self._install_runtime_credentials(api_key.strip(), base_url.strip().rstrip("/"), reason="nous_credential_refresh")
             return True
         # Nous requests should not inherit OpenRouter-only attribution headers.
         self._client_kwargs.pop("default_headers", None)
@@ -680,20 +683,23 @@ class ClientLifecycleMixin:
         if not self._should_adopt_env_credentials(api_key, base_url, default_base):
             self._env_creds_seen = (base_url, api_key)
             return False
-        from hermes_cli.route_identity import normalize_route_base_url
-        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
-        prior_api_key, prior_base_url = self.api_key, self.base_url
-        prior_client_kwargs = dict(self._client_kwargs)
-        self.api_key, self.base_url = api_key, base_url
-        self._sync_client_kwargs_credentials()
-        # A base-url change moves the route: recompute TLS material and default headers.
-        self._reapply_route_client_config(route_changed=route_changed)
-        if not self._replace_primary_openai_client(reason="env_credential_refresh"):
-            # Leave the baseline un-advanced (retry next turn); roll the agent back to match the live client.
-            self.api_key, self.base_url = prior_api_key, prior_base_url
-            self._client_kwargs.clear()
-            self._client_kwargs.update(prior_client_kwargs)
-            return False
+        from agent.runtime_bundle import ResolvedRuntime
+        if isinstance(getattr(self, "_resolved_runtime", None), ResolvedRuntime):
+            if not self._adopt_openai_credentials(api_key, base_url, reason="env_credential_refresh"):
+                return False
+        else:
+            from hermes_cli.route_identity import normalize_route_base_url
+            route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
+            prior_api_key, prior_base_url = self.api_key, self.base_url
+            prior_client_kwargs = dict(self._client_kwargs)
+            self.api_key, self.base_url = api_key, base_url
+            self._sync_client_kwargs_credentials()
+            self._reapply_route_client_config(route_changed=route_changed)
+            if not self._replace_primary_openai_client(reason="env_credential_refresh"):
+                self.api_key, self.base_url = prior_api_key, prior_base_url
+                self._client_kwargs.clear()
+                self._client_kwargs.update(prior_client_kwargs)
+                return False
         # Rebind the pool entry id to the adopted key, or the next 429 quarantines the wrong credential.
         try:
             from agent.agent_runtime_helpers import sync_credential_pool_entry_id
@@ -722,6 +728,9 @@ class ClientLifecycleMixin:
         return ok
 
     def _apply_copilot_token(self, token: str, enterprise_base_url: Any, *, reason: str) -> bool:
+        from agent.runtime_bundle import ResolvedRuntime
+        if isinstance(getattr(self, "_resolved_runtime", None), ResolvedRuntime):
+            return self._adopt_openai_credentials(token, enterprise_base_url or self.base_url, reason=reason)
         self.api_key = token
         if enterprise_base_url:
             self.base_url = enterprise_base_url.rstrip("/")
@@ -811,16 +820,30 @@ class ClientLifecycleMixin:
         new_token = new_token.strip() if isinstance(new_token, str) else ""
         if not new_token or new_token == self._anthropic_api_key:
             return False
-        with suppress(Exception):
-            self._anthropic_client.close()
         try:
             base_url = getattr(self, "_anthropic_base_url", None)
-            self._anthropic_client = self._build_direct_anthropic_client(new_token, base_url)
+            self._install_runtime_credentials(new_token, base_url, reason="credential_refresh")
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
-        self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
         return True
+
+    def _install_runtime_credentials(self, token, base_url, *, reason):
+        from agent.runtime_bundle import ResolvedRuntime, build_client_bundle
+        from agent.runtime_routes import runtime_for_endpoint
+        resolved = getattr(self, "_resolved_runtime", None)
+        if not isinstance(resolved, ResolvedRuntime):
+            resolved = ResolvedRuntime.from_mapping({
+                "provider": self.provider, "model": self.model, "api_mode": self.api_mode,
+                "api_key": getattr(self, "api_key", ""), "base_url": self.base_url,
+                "timeout": get_provider_request_timeout(self.provider, self.model),
+            })
+        runtime = runtime_for_endpoint(resolved.with_updates(api_key=token), base_url)
+        bundle = build_client_bundle(
+            runtime, drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            openai_builder=lambda kwargs: self._create_openai_client(kwargs, reason=reason, shared=True, runtime=runtime),
+        )
+        self.install_runtime(bundle, reason=reason)
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:
@@ -861,18 +884,18 @@ class ClientLifecycleMixin:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
-        self._credential_pool_entry_id = getattr(entry, "id", None)
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        if self.api_mode == "anthropic_messages":
-            with suppress(Exception):
-                self._anthropic_client.close()
-            self._anthropic_api_key, self._anthropic_base_url = runtime_key, stripped_base
-            self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
-            self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
-            self.api_key, self.base_url = runtime_key, stripped_base
+        from agent.runtime_bundle import ResolvedRuntime
+        resolved = getattr(self, "_resolved_runtime", None)
+        if self.api_mode == "anthropic_messages" or (
+            isinstance(resolved, ResolvedRuntime) and self.provider not in {"bedrock", "moa"}
+        ):
+            self._install_runtime_credentials(runtime_key, stripped_base, reason="credential_rotation")
+            self._credential_pool_entry_id = getattr(entry, "id", None)
             return
+        self._credential_pool_entry_id = getattr(entry, "id", None)
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
@@ -913,4 +936,7 @@ class ClientLifecycleMixin:
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt/stale call (Bedrock SDK for bedrock; honors 1M-beta flag)."""
-        self._anthropic_client = self._build_anthropic_client_for_key(self._request_anthropic_client_key())
+        if self.provider == "bedrock":
+            self._anthropic_client = self._build_anthropic_client_for_key(self._request_anthropic_client_key())
+        else:
+            self._install_runtime_credentials(self._anthropic_api_key, self._anthropic_base_url, reason="rebuild")

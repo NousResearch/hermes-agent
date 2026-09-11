@@ -738,13 +738,14 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     with suppress(Exception):
         from hermes_cli.config import (
             get_compatible_custom_providers, get_custom_provider_extra_headers,
-            load_config_readonly,
+            load_config_readonly, apply_custom_provider_tls_to_client_kwargs,
         )
         _headers = get_custom_provider_extra_headers(
             base_url or "", get_compatible_custom_providers(load_config_readonly())
         )
         if _headers:
             runtime_fields["extra_headers"] = _headers
+        apply_custom_provider_tls_to_client_kwargs(runtime_fields, base_url or "")
     runtime = ResolvedRuntime.from_mapping(runtime_fields)
     bundle = build_client_bundle(runtime, timeout=_provider_timeout)
     agent.install_runtime(bundle, reason="agent_init")
@@ -972,11 +973,15 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
 
-def _build_client(agent, api_key, base_url, fallback_model):
+def _build_client(agent, api_key, base_url, fallback_model, resolved_runtime=None):
     # LLM client per wire mode (raw_codex=True: the main agent needs direct
     # responses.stream()). One provider/model timeout up front so every path applies it.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
+    if resolved_runtime is not None and agent.provider not in {"bedrock", "moa"}:
+        from agent.runtime_routes import build_resolved_agent_client
+        build_resolved_agent_client(agent, resolved_runtime)
+        return
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
@@ -2152,7 +2157,12 @@ def _snapshot_primary_runtime(agent):
     # Keep this historical turn snapshot mutable for plugin/test compatibility.
     # The authoritative live route is the immutable ``agent._resolved_runtime``
     # installed by the client bundle.
+    from agent.runtime_bundle import ResolvedRuntime
+    resolved = getattr(agent, "_resolved_runtime", None)
+    if isinstance(resolved, ResolvedRuntime):
+        runtime = {**resolved.as_dict(), **runtime}
     agent._primary_runtime = runtime
+    agent._resolved_runtime = ResolvedRuntime.from_mapping(runtime)
 
 
 def _init_usage_state(agent):
@@ -2252,6 +2262,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    resolved_runtime=None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
@@ -2268,6 +2279,18 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    if resolved_runtime is not None:
+        from agent.runtime_bundle import ResolvedRuntime, mutable_config_copy
+        resolved_runtime = ResolvedRuntime.from_mapping(resolved_runtime)
+        provider, model = resolved_runtime.provider, resolved_runtime.model
+        api_key, base_url, api_mode = resolved_runtime.api_key, resolved_runtime.base_url, resolved_runtime.api_mode
+        requested_provider = resolved_runtime.requested_provider or provider
+        acp_command = acp_command or resolved_runtime.get("command")
+        acp_args = acp_args if acp_args is not None else resolved_runtime.get("args")
+        if request_overrides is None:
+            request_overrides = mutable_config_copy(resolved_runtime.get("request_overrides") or {})
+        if max_tokens is None:
+            max_tokens = resolved_runtime.get("max_output_tokens")
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
@@ -2319,7 +2342,7 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
-    _build_client(agent, api_key, base_url, fallback_model)
+    _build_client(agent, api_key, base_url, fallback_model, resolved_runtime)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(

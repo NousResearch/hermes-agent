@@ -89,3 +89,35 @@ def test_anthropic_wire_bundle_merges_runtime_headers_through_builder():
     assert bundle.anthropic_client is client
     assert observed["default_headers"]["CF-Access-Client-Id"] == "client-id"
     assert observed["timeout"] == 23
+
+
+def test_default_openai_factory_uses_owned_tls_client_and_separate_query(monkeypatch):
+    import ssl
+    import certifi
+    import httpx
+
+    clients = []
+    def http_client(base_url, *, verify):
+        assert isinstance(verify, ssl.SSLContext)
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+        clients.append(client)
+        return client
+    monkeypatch.setattr("agent.process_bootstrap.build_keepalive_http_client", http_client)
+    runtime = ResolvedRuntime.from_mapping({
+        "provider": "custom", "model": "model", "api_key": "test-key",
+        "base_url": "https://route.invalid/v1?version=test", "ssl_ca_cert": certifi.where(),
+        "default_query": {"route": "one"}, "args": [],
+    })
+    first = build_client_bundle(runtime)
+    second = build_client_bundle(runtime)
+    try:
+        assert first.client._client is not second.client._client
+        assert first.runtime.base_url == "https://route.invalid/v1"
+        assert first.client.default_query == {"version": "test", "route": "one"}
+        assert first.runtime["default_query"] == first.client.default_query
+        assert "args" not in first.client_kwargs
+        first.client.close()
+        assert not second.client.is_closed()
+    finally:
+        first.client.close()
+        second.client.close()

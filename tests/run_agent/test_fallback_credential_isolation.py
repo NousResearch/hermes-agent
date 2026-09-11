@@ -11,7 +11,7 @@ _swap_credential continue operating on the PRIMARY's credential pool during
 fallback calls, contaminating primary state with fallback-provider errors.
 """
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -123,6 +123,7 @@ class TestFallbackCredentialIsolation:
     def test_fallback_attaches_matching_pool_after_clear(self):
         """Provider-switch fallback should attach the fallback provider's pool."""
         from agent.chat_completion_helpers import try_activate_fallback
+        from agent.client_lifecycle import ClientLifecycleMixin
 
         agent = _make_agent(
             provider="ollama-cloud",
@@ -138,7 +139,10 @@ class TestFallbackCredentialIsolation:
         agent._provider_model_requires_responses_api.return_value = False
         agent._anthropic_prompt_cache_policy.return_value = (False, False)
         agent._ensure_lmstudio_runtime_loaded = MagicMock()
-        agent._replace_primary_openai_client = MagicMock()
+        # Runtime installation must mutate the agent, not be a no-op Mock.
+        agent.install_runtime = MethodType(ClientLifecycleMixin.install_runtime, agent)
+        agent._client_lock = None
+        agent._openai_client_lock = MethodType(ClientLifecycleMixin._openai_client_lock, agent)
         agent.context_compressor = None
 
         fallback_client = SimpleNamespace(
@@ -166,6 +170,13 @@ class TestFallbackCredentialIsolation:
         assert agent._credential_pool is fallback_pool
         assert agent._credential_pool.provider == "openai-codex"
         assert agent._transport_cache == {}
+        assert agent.client is fallback_client
+        assert agent._resolved_runtime.provider == agent.provider
+        assert agent._resolved_runtime.model == agent.model
+        assert agent._resolved_runtime.api_mode == agent.api_mode
+        assert agent._resolved_runtime.base_url == agent.base_url
+        assert agent._resolved_runtime.api_key == agent.api_key == "codex-key"
+        assert agent._client_kwargs["base_url"] == agent.base_url
 
 
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────

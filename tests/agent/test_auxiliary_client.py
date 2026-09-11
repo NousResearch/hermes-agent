@@ -319,9 +319,9 @@ class TestMoaAggregatorSharedResolution:
         import yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
-        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
         cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
-        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -4239,7 +4239,8 @@ class TestCompressionFallbackContextFilter:
 
     # ── L2: configured fallback chain ─────────────────────────────────
 
-    def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
+    @pytest.mark.parametrize("entry_timeouts", [(None, None), (10.0, 20.0)])
+    def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch, entry_timeouts):
         """When entry[0] is reachable but too small and entry[1] is large enough,
         _try_configured_fallback_chain must return entry[1], not entry[0]."""
         from agent.auxiliary_client import (
@@ -4252,8 +4253,13 @@ class TestCompressionFallbackContextFilter:
             self._make_chain_entry("small-provider", "tiny-8k"),
             self._make_chain_entry("big-provider", "huge-1m"),
         ]
+        for entry, timeout in zip(entries, entry_timeouts):
+            if timeout is not None:
+                entry["timeout"] = timeout
+        resolved_timeouts = []
 
-        def fake_resolve(entry):
+        def fake_resolve(entry, *, timeout):
+            resolved_timeouts.append(timeout)
             if entry is entries[0]:
                 return small_client, "tiny-8k"
             return large_client, "huge-1m"
@@ -4280,6 +4286,7 @@ class TestCompressionFallbackContextFilter:
             "screening by context window.")
         assert model == "huge-1m"
         assert "big-provider" in label
+        assert resolved_timeouts == list(entry_timeouts)
 
 
     # ── same-provider, different-model chain entries ────────────────────
@@ -4577,13 +4584,17 @@ class TestSynchronousFallbackCachePlans:
         )
         return client, resolved_calls, tools
 
-    def test_direct_anthropic_fallback_uses_entry_destination_for_tool_marker(self, monkeypatch):
-        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, {
+    @pytest.mark.parametrize("entry_timeout", [None, 20.0])
+    def test_direct_anthropic_fallback_uses_entry_destination_for_tool_marker(self, monkeypatch, entry_timeout):
+        entry = {
             "provider": "anthropic",
             "model": "claude-sonnet-4-6",
             "base_url": "https://api.anthropic.com",
             "api_mode": "anthropic_messages",
-        })
+        }
+        if entry_timeout is not None:
+            entry["timeout"] = entry_timeout
+        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, entry)
 
         assert resolved_calls == [(
             "anthropic",
@@ -4592,6 +4603,7 @@ class TestSynchronousFallbackCachePlans:
                 "explicit_base_url": "https://api.anthropic.com",
                 "explicit_api_key": None,
                 "api_mode": "anthropic_messages",
+                "timeout": entry_timeout,
             },
         )]
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]

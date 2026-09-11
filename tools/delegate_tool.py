@@ -121,6 +121,7 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_runtime=None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -162,14 +163,16 @@ def _build_child_agent(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
-        override_acp_args=override_acp_args,
+        override_acp_args=override_acp_args, override_runtime=override_runtime,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
-        request_overrides = dict(override_request_overrides)
+        request_overrides = _merge_request_overrides(override_request_overrides, None) or {}
     else:
-        request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+        request_overrides = {} if override_provider else (_merge_request_overrides(getattr(parent_agent, "request_overrides", None), None) or {})
+    if rt.get("resolved_runtime") is not None:
+        rt["resolved_runtime"] = rt["resolved_runtime"].with_updates(request_overrides=request_overrides)
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():
@@ -311,6 +314,7 @@ def _build_children(
         "override_request_overrides": creds.get("request_overrides"),
         "override_max_tokens": creds.get("max_output_tokens"), "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
+        "override_runtime": creds.get("resolved_runtime"),
     }
     children = []
     for i, t in enumerate(task_list):

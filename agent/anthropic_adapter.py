@@ -309,24 +309,30 @@ def _client_timeout(timeout):
     return Timeout(timeout=float(read), connect=10.0)
 
 
-def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
+def _base_client_kwargs(base_url, timeout, default_query=None) -> tuple[str, Dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
     SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
     base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
     kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
-    normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+    parts = urlsplit(_normalize_base_url_text(base_url))
+    normalized = re.sub(r"/v1/?$", "", urlunsplit(parts._replace(query="")).rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
         if _is_azure_anthropic_endpoint(normalized) and "api-version" not in normalized:
             kwargs["default_query"] = {"api-version": "2025-04-15"}
+    query = {**kwargs.get("default_query", {}), **dict(parse_qsl(parts.query)), **(default_query or {})}
+    if query:
+        kwargs["default_query"] = query
     return normalized, kwargs
 
 
 def _build_anthropic_client_with_bearer_hook(
     token_provider, base_url: Optional[str] = None, timeout: Optional[float] = None, *,
     drop_context_1m_beta: bool = False, default_headers: Optional[Dict[str, str]] = None,
+    default_query=None, ssl_ca_cert=None, ssl_verify=None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
@@ -336,13 +342,23 @@ def _build_anthropic_client_with_bearer_hook(
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
-    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
-    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
+    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout, default_query)
+    transport = {}
+    if ssl_ca_cert is not None or ssl_verify is not None:
+        from agent.ssl_verify import resolve_httpx_verify
+        transport["verify"] = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify)
+    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"], **transport)
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
     if default_headers:
         headers.update(default_headers)
-    return _new_sdk_client(sdk, kwargs, headers)
+    from agent.runtime_routes import record_client_runtime
+    return record_client_runtime(
+        _new_sdk_client(sdk, kwargs, headers), provider="", api_mode="anthropic_messages",
+        api_key=token_provider, base_url=base_url or "", timeout=timeout,
+        default_headers=default_headers or {}, default_query=kwargs.get("default_query", {}),
+        ssl_ca_cert=ssl_ca_cert, ssl_verify=ssl_verify,
+    )
 
 
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
@@ -379,6 +395,7 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
 def build_anthropic_client(
     api_key, base_url: Optional[str] = None, timeout: Optional[float] = None, *,
     drop_context_1m_beta: bool = False, default_headers: Optional[Dict[str, str]] = None,
+    default_query=None, ssl_ca_cert=None, ssl_verify=None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
@@ -387,13 +404,24 @@ def build_anthropic_client(
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
     rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
     sdk = _require_sdk("the Anthropic provider")
+    if ssl_ca_cert is None and ssl_verify is None:
+        from hermes_cli.config import get_custom_provider_tls_settings
+        tls = get_custom_provider_tls_settings(base_url or "")
+        ssl_ca_cert, ssl_verify = tls.get("ssl_ca_cert"), tls.get("ssl_verify")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta,
             default_headers=default_headers,
+            default_query=default_query, ssl_ca_cert=ssl_ca_cert, ssl_verify=ssl_verify,
         )
     normalize_proxy_env_vars()
-    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
+    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout, default_query)
+    if ssl_ca_cert is not None or ssl_verify is not None:
+        from agent.process_bootstrap import build_keepalive_http_client
+        from agent.ssl_verify import resolve_httpx_verify
+        kwargs["http_client"] = build_keepalive_http_client(
+            base_url or "", verify=resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify),
+        )
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
@@ -412,7 +440,13 @@ def build_anthropic_client(
             headers.setdefault(k, v)
     if default_headers:
         headers.update(default_headers)
-    return _new_sdk_client(sdk, kwargs, headers)
+    from agent.runtime_routes import record_client_runtime
+    return record_client_runtime(
+        _new_sdk_client(sdk, kwargs, headers), provider="", api_mode="anthropic_messages",
+        api_key=api_key, base_url=base_url or "", timeout=timeout,
+        default_headers=default_headers or {}, default_query=kwargs.get("default_query", {}),
+        ssl_ca_cert=ssl_ca_cert, ssl_verify=ssl_verify,
+    )
 
 
 def build_anthropic_bedrock_client(region: str):

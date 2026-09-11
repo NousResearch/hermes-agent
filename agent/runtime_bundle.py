@@ -36,6 +36,19 @@ def _freeze(value: Any) -> Any:
     return value
 
 
+def mutable_config_copy(value: Any) -> Any:
+    """Copy configuration containers, including frozen ones, without copying SDK objects."""
+    if isinstance(value, Mapping):
+        return {key: mutable_config_copy(item) for key, item in value.items()}
+    if isinstance(value, (list, _FrozenList)):
+        return [mutable_config_copy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(mutable_config_copy(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return {mutable_config_copy(item) for item in value}
+    return value
+
+
 _CORE_FIELDS = frozenset({
     "provider", "model", "api_mode", "api_key", "base_url",
     "requested_provider", "source", "extra_headers", "ssl_ca_cert", "ssl_verify",
@@ -115,7 +128,7 @@ class ResolvedRuntime(Mapping[str, Any]):
 
     def as_dict(self) -> dict[str, Any]:
         """Return a mutable compatibility copy for legacy callers."""
-        return dict(self.items())
+        return mutable_config_copy(self)
 
     def with_updates(self, **updates: Any) -> "ResolvedRuntime":
         raw = self.as_dict()
@@ -150,8 +163,16 @@ AnthropicBuilder = Callable[..., Any]
 
 def _default_openai_builder(client_kwargs: dict[str, Any]) -> Any:
     from openai import OpenAI
-
-    return OpenAI(**client_kwargs)
+    from agent.process_bootstrap import build_keepalive_http_client
+    from agent.ssl_verify import resolve_httpx_verify
+    kwargs = mutable_config_copy(client_kwargs)
+    ca = kwargs.pop("ssl_ca_cert", None)
+    verify = kwargs.pop("ssl_verify", None)
+    kwargs["http_client"] = build_keepalive_http_client(
+        kwargs.get("base_url", ""), verify=resolve_httpx_verify(ca_bundle=ca, ssl_verify=verify),
+    )
+    kwargs.setdefault("max_retries", 0)
+    return OpenAI(**kwargs)
 
 
 def build_client_bundle(
@@ -160,6 +181,7 @@ def build_client_bundle(
     openai_builder: Optional[OpenAIBuilder] = None,
     anthropic_builder: Optional[AnthropicBuilder] = None,
     timeout: Optional[float] = None,
+    drop_context_1m_beta: bool = False,
 ) -> ClientBundle:
     """Build a wire client without mutating an agent.
 
@@ -180,6 +202,8 @@ def build_client_bundle(
         raw_timeout = resolved.get("timeout")
         if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool):
             effective_timeout = float(raw_timeout)
+    if effective_timeout is not None:
+        resolved = resolved.with_updates(timeout=effective_timeout)
 
     declared_headers = resolved.get("default_headers")
     headers = dict(declared_headers) if isinstance(declared_headers, Mapping) else {}
@@ -191,11 +215,18 @@ def build_client_bundle(
 
             anthropic_builder = build_anthropic_client
         assert anthropic_builder is not None
+        transport = {}
+        for key in ("ssl_ca_cert", "ssl_verify", "default_query"):
+            if resolved.get(key) is not None:
+                transport[key] = mutable_config_copy(resolved[key])
+        if drop_context_1m_beta:
+            transport["drop_context_1m_beta"] = True
         client = anthropic_builder(
             resolved.api_key,
             resolved.base_url or None,
             timeout=effective_timeout,
             default_headers=headers or None,
+            **transport,
         )
         is_oauth = False
         if provider == "anthropic" and isinstance(resolved.api_key, str):
@@ -210,14 +241,34 @@ def build_client_bundle(
             is_anthropic_oauth=is_oauth,
         )
 
+    client_kwargs = openai_client_kwargs(resolved, timeout=effective_timeout)
+    resolved = resolved.with_updates(base_url=client_kwargs["base_url"])
+    if "default_query" in client_kwargs:
+        resolved = resolved.with_updates(default_query=client_kwargs["default_query"])
+    client = (openai_builder or _default_openai_builder)(mutable_config_copy(client_kwargs))
+    return ClientBundle(
+        runtime=resolved,
+        client=client,
+        client_kwargs=_freeze(client_kwargs),
+    )
+
+
+def openai_client_kwargs(runtime: Mapping[str, Any], *, timeout=None) -> dict[str, Any]:
+    """Project transport configuration without carrying another client's owned HTTP handle."""
+    resolved = ResolvedRuntime.from_mapping(runtime)
     prior_kwargs = resolved.get("client_kwargs")
     client_kwargs: dict[str, Any] = (
-        dict(prior_kwargs) if isinstance(prior_kwargs, Mapping) else {}
+        mutable_config_copy(prior_kwargs) if isinstance(prior_kwargs, Mapping) else {}
     )
+    client_kwargs.pop("http_client", None)
     client_kwargs["api_key"] = resolved.api_key
     client_kwargs["base_url"] = resolved.base_url
+    headers = dict(client_kwargs.get("default_headers") or {})
+    headers.update(resolved.get("default_headers") or {})
+    headers.update(resolved.extra_headers)
     if headers:
         client_kwargs["default_headers"] = headers
+    effective_timeout = timeout if timeout is not None else resolved.get("timeout")
     if effective_timeout is not None:
         client_kwargs["timeout"] = effective_timeout
     if resolved.ssl_ca_cert:
@@ -227,19 +278,19 @@ def build_client_bundle(
     default_query = resolved.get("default_query")
     if isinstance(default_query, Mapping) and default_query:
         client_kwargs["default_query"] = dict(default_query)
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+    parts = urlsplit(resolved.base_url)
+    if parts.query:
+        client_kwargs["base_url"] = urlunsplit(parts._replace(query=""))
+        client_kwargs["default_query"] = {**dict(parse_qsl(parts.query)), **client_kwargs.get("default_query", {})}
     command = resolved.get("command")
     if isinstance(command, str) and command:
         client_kwargs["command"] = command
     args = resolved.get("args")
-    if isinstance(args, (list, tuple)):
+    if isinstance(args, (list, tuple)) and (command or resolved.base_url.startswith("acp://")):
         client_kwargs["args"] = list(args)
 
-    client = (openai_builder or _default_openai_builder)(dict(client_kwargs))
-    return ClientBundle(
-        runtime=resolved,
-        client=client,
-        client_kwargs=MappingProxyType(dict(client_kwargs)),
-    )
+    return client_kwargs
 
 
 __all__ = [
@@ -247,4 +298,6 @@ __all__ = [
     "ResolvedRuntime",
     "RuntimeWireNotMigratedError",
     "build_client_bundle",
+    "mutable_config_copy",
+    "openai_client_kwargs",
 ]

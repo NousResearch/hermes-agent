@@ -7402,7 +7402,7 @@ function installMediaPermissions() {
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return (
       permission === 'media' ||
-      permission === 'automatic-fullscreen' ||
+      (permission as string) === 'automatic-fullscreen' ||
       permission === ('audioCapture' as any) /* todo: is this needed? */ ||
       permission === ('videoCapture' as any)
     )

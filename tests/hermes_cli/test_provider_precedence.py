@@ -19,8 +19,8 @@ def _login(monkeypatch, provider_id):
                         lambda p: {"logged_in": p == provider_id})
 
 
-def _config(monkeypatch, model_cfg):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg})
+def _config(monkeypatch, model_cfg, **extra):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg, **extra})
 
 
 def _no_aws(monkeypatch):
@@ -48,13 +48,35 @@ class TestProviderPrecedence:
         _clear_provider_env(monkeypatch)
         _no_aws(monkeypatch)
         _logged_out(monkeypatch)
-        for provider in ("custom", "custom:llama-local"):
-            _config(monkeypatch, {"provider": provider, "default": "local-model"})
-            assert resolve_provider("auto", skip_free_tier=True) == provider
+        _config(monkeypatch, {
+            "provider": "custom", "default": "local-model", "base_url": "http://127.0.0.1:8080/v1",
+        })
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
+
+        _config(
+            monkeypatch,
+            {"provider": "custom:llama-local", "default": "local-model"},
+            providers={"llama-local": {"base_url": "http://127.0.0.1:8080/v1"}},
+        )
+        assert resolve_provider("auto", skip_free_tier=True) == "custom:llama-local"
 
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"provider": "auto", "default": "some-model"})
         assert resolve_provider("auto") == "anthropic"
+
+    @pytest.mark.parametrize("model_cfg", [
+        {"provider": "custom", "default": "local-model"},
+        {"provider": "custom:missing", "default": "local-model"},
+    ])
+    def test_incomplete_custom_provider_is_not_an_inference_route(self, monkeypatch, model_cfg):
+        """Bootstrap readiness rejects custom identities that runtime resolution cannot build."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, model_cfg, providers={})
+
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto", skip_free_tier=True)
 
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""

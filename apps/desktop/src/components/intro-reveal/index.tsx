@@ -11,6 +11,7 @@ import {
   startIntroReveal
 } from '@/store/intro-reveal'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { beginOnboardingFlow, queueGuideAfterIntro } from '@/store/onboarding-gate'
 
 import { IntroRevealSurface } from './intro-reveal-surface'
 import { INTRO_DEADMAN_MS, INTRO_EXIT_MS, INTRO_WALL_MS } from './timeline'
@@ -32,12 +33,25 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
   }, [enabled])
 
   useEffect(() => {
+    if (!enabled || !isIntroRevealEnabled()) {
+      return
+    }
+
+    // Observe the store edge directly: a failed native open can finish before
+    // React renders the playing phase.
+    return $introReveal.listen((state, previous) => {
+      if (state.phase === 'hidden' && previous?.phase !== 'hidden') {
+        queueGuideAfterIntro()
+      }
+    })
+  }, [enabled])
+
+  useEffect(() => {
     if (enabled && intro.phase === 'hidden' && shouldPlayFirstRunIntro(onboarding.firstRunSkipped)) {
+      beginOnboardingFlow()
       startIntroReveal()
     }
   }, [enabled, intro.phase, onboarding.firstRunSkipped])
-
-  // Step 3 wires queueGuideAfterIntro from store/onboarding-gate on the playing→hidden edge.
 
   // The native surface owns rAF: the hidden main renderer's clock is throttled.
   useEffect(() => {

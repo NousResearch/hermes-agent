@@ -489,8 +489,10 @@ def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int
     if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
         return None, None
     note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks expect the native "
-            "space — derive click points from element bounds, or scale screenshot positions up accordingly")
+            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks are sent to the "
+            f"driver as SCREENSHOT pixels (the driver reverses Retina/downscale itself) — never pass native "
+            f"bounds through directly: read the pixel off the screenshot, or divide the native bound by the "
+            f"estimated scale below")
     return round(max(max_x / image_width, max_y / image_height), 2), note
 
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]  # noqa: E731

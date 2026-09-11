@@ -2227,6 +2227,73 @@ class TestElementTokenAttachment:
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
 
+    def _backend_with_schema_session(self, schemas):
+        """Session double modeling MCP SDK 2.x behavior: the driver's top-level `capabilities`
+        array is DROPPED by the pydantic Tool model (supports_capability always False), while the
+        input schema survives (supports_input_property reads it). Regression shape of #108355."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False  # SDK dropped the array
+        backend._session.supports_input_property = (
+            lambda tool, prop: prop in (schemas.get(tool, {}).get("properties") or {}))
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_token_attached_from_live_schema_when_capabilities_dropped(self):
+        """#108355: driver 0.28.0 advertises element_token in its click inputSchema but MCP SDK 2.x
+        drops the top-level capabilities array, so the capability-only gate never fired and every
+        element click degraded to a bare element_index (driver refuses: snapshot_id_required)."""
+        backend = self._backend_with_schema_session({
+            "click": {"properties": {"element_index": {}, "element_token": {}, "x": {}, "y": {}}},
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert args["element_token"] == "s0001:5"
+
+    def test_token_withheld_when_schema_lacks_element_token(self):
+        """Fail-closed for older drivers: no element_token in the schema and no capability advertised
+        -> never send it (additionalProperties:false would reject the call)."""
+        backend = self._backend_with_schema_session({
+            "click": {"properties": {"element_index": {}, "x": {}, "y": {}}},
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert "element_token" not in args
+
+    def test_scroll_coordinates_from_live_schema_when_capabilities_dropped(self):
+        """Same SDK-drop regression on the scroll x/y gate: schema says x is accepted -> coordinates ride."""
+        backend = self._backend_with_schema_session({
+            "scroll": {"properties": {"direction": {}, "amount": {}, "x": {}, "y": {}}},
+        })
+        backend.scroll(direction="down", amount=2, x=40, y=60)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert args["x"] == 40 and args["y"] == 60
+
+    def test_scroll_coordinates_withheld_when_schema_lacks_xy(self):
+        """Schema without x/y (old driver) -> no coordinates sent; the window still scrolls via window_id."""
+        backend = self._backend_with_schema_session({
+            "scroll": {"properties": {"direction": {}, "amount": {}}},
+        })
+        backend.scroll(direction="down", amount=2, x=40, y=60)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert "x" not in args and "y" not in args
+
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a
@@ -2512,6 +2579,10 @@ class TestBoundsSpaceNote:
         note = _bounds_space_note(elems, 1455, 791)
         assert note is not None
         assert "native desktop coordinates" in note
+        # #108355 (px rung): the note must state the driver's contract — coordinate= clicks
+        # are SCREENSHOT pixels, never native bounds passed through (lands ~scale× off on HiDPI).
+        assert "SCREENSHOT pixels" in note
+        assert "never pass native" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement

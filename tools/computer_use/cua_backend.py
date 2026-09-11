@@ -354,10 +354,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
-        # 'stale' error. Gated on the per-tool capability: older drivers (`additionalProperties: false`) must never see it.
+        # 'stale' error. Gated on the LIVE INPUT SCHEMA: MCP SDK 2.x pydantic models silently drop the driver's
+        # non-standard top-level `capabilities` array (model_extra is None), so the capability-token gate read False
+        # on every modern driver and element clicks degraded to bare element_index — which 0.17+ refuses with
+        # `snapshot_id_required` (NousResearch/hermes-agent#108355). The schema (`additionalProperties: false`) is the
+        # same fail-closed guarantee: a driver that doesn't accept element_token doesn't list it, and the capability
+        # check stays as an OR-branch for SDKs that do preserve the array.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
+        if token and (self._session.supports_input_property(name, "element_token")
+                      or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)

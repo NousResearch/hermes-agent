@@ -134,10 +134,12 @@ class _InputMixin:
         args.update(direction=direction, amount=max(1, min(50, amount)))
         # An element without a known window_id is not an addressing form here; scrolling then falls through
         # to the coordinate form or the bare window. Some driver schemas reject x/y on scroll: only send
-        # coordinates when the driver advertises support; otherwise it scrolls the targeted window
-        # (window_id is still sent for routing).
+        # coordinates when the live schema accepts them (capability token as OR-branch — MCP SDK 2.x drops
+        # the driver's top-level `capabilities` array, same gate fix as #108355); otherwise it scrolls the
+        # targeted window (window_id is still sent for routing).
         xy = lambda: ({"x": x, "y": y}  # noqa: E731
-                      if self._session.supports_capability("input.scroll.coordinates", tool="scroll") else {})
+                      if (self._session.supports_input_property("scroll", "x")
+                          or self._session.supports_capability("input.scroll.coordinates", tool="scroll")) else {})
         refusal = self._pointer_args("scroll", args, (
             ("element scroll", {"element_index": element}
              if element is not None and self._active_window_id is not None else None),

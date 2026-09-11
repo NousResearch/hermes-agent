@@ -4522,7 +4522,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._handle_location_message
         ))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message
         ))
         # Handle inline keyboard button callbacks (update prompts)
@@ -9629,6 +9629,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return MessageType.PHOTO
         if msg.video:
             return MessageType.VIDEO
+        if msg.video_note:
+            return MessageType.VIDEO
         if msg.audio:
             return MessageType.AUDIO
         if msg.voice:
@@ -9747,6 +9749,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return msg.photo[-1], "", "", "image"
         if msg.video:
             return msg.video, "", "video/mp4", "video"
+        if msg.video_note:
+            return msg.video_note, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -10411,6 +10415,27 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "video file", e)
+
+        # Video notes ("circles") have no mime_type/caption of their own but
+        # carry a downloadable video file just like msg.video.
+        elif msg.video_note:
+            try:
+                allowed, note = self._telegram_media_size_allowed(msg.video_note, "video circle")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user video note (size=%s)", getattr(msg.video_note, "file_size", None))
+                    await self.handle_message(event)
+                    return
+                file_obj = await msg.video_note.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+                ext = ".mp4"
+                cached_path = await cache_video_from_bytes_async(bytes(video_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                logger.info("[Telegram] Cached user video note (circle) at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video note: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "video circle", e)
 
         # Download document files to cache for agent processing
         elif msg.document:

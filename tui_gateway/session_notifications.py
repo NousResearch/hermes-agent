@@ -557,12 +557,8 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = 0.0
-    last_wisdom_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        if not session.get("running") and now - last_wisdom_poll >= _WISDOM_POLL_SECONDS:
-            last_wisdom_poll = now
-            _sync_wisdom_activity_notice(sid, session)
         try:
             _poll_bot_live_delivery_once(sid, session)
         except Exception:

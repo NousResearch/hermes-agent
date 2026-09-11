@@ -2115,7 +2115,6 @@ from gateway.run_watchers import GatewaySessionWatchersMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
-from gateway.run_wisdom import GatewayWisdomMixin, WisdomCardRefresh, enqueue_weekly_review
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -3281,7 +3280,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin, GatewayWisdomMixin):
+    GatewayAgentCacheMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -4068,16 +4067,13 @@ class GatewayRunner(
             # fallback. See #210.
             team_id = getattr(source, "scope_id", None)
             user_id = getattr(source, "user_id", None)
-            profile = getattr(source, "profile", None)
-            if team_id or user_id or profile:
+            if team_id or user_id:
                 metadata = dict(metadata or {})
                 if team_id:
                     metadata["slack_team_id"] = str(team_id)
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
-                if profile:
-                    metadata.setdefault("profile", str(profile))
         from gateway.session_context import source_route_metadata
         metadata = source_route_metadata(source, metadata)
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
@@ -4570,9 +4566,6 @@ def _start_gateway_housekeeping(
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     chores: list[tuple[int, str, Any]] = []
-    wisdom_cards = WisdomCardRefresh(adapters, loop)
-    chores.append((1, "Wisdom publication-card refresh", wisdom_cards.tick))
-    chores.append((60, "Wisdom agent-led review tick", enqueue_weekly_review))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

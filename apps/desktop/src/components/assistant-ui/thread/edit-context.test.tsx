@@ -28,7 +28,6 @@ interface MockComposerProps {
 }
 
 const composerRenders = vi.hoisted(() => [] as MockComposerProps[])
-const wisdomSessionIds = vi.hoisted(() => [] as string[])
 
 vi.mock('./user-edit-composer', () => ({
   UserEditComposer: (props: MockComposerProps) => {
@@ -36,16 +35,6 @@ vi.mock('./user-edit-composer', () => ({
 
     return <div data-testid="edit-composer">{props.cwd}</div>
   }
-}))
-vi.mock('@/components/assistant-ui/wisdom-candidate-card', () => ({
-  WisdomCandidateCard: ({ sessionId }: { sessionId: string }) => {
-    wisdomSessionIds.push(sessionId)
-
-    return <div data-testid="wisdom-candidate-session">{sessionId}</div>
-  }
-}))
-vi.mock('@/components/assistant-ui/wisdom-notice-card', () => ({
-  WisdomNoticeCard: () => null
 }))
 stubThreadEnvironment()
 
@@ -55,7 +44,6 @@ afterEach(() => {
 
 beforeEach(() => {
   composerRenders.length = 0
-  wisdomSessionIds.length = 0
 })
 
 stubThreadViewportSize()
@@ -65,15 +53,7 @@ const noopAsync = async () => {}
 // The repository must stay referentially stable across rerenders: a new
 // object would make the incremental runtime resync the transcript and
 // unmount the open composer, defeating the test.
-function Harness({
-  cwd,
-  runtimeSessionId,
-  sessionKey
-}: {
-  cwd: string
-  runtimeSessionId?: string
-  sessionKey: string
-}) {
+function Harness({ cwd, sessionKey }: { cwd: string; sessionKey: string }) {
   const [repository] = useState(() => ExportedMessageRepository.fromArray([userMessage(), assistantMessage()]))
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -88,19 +68,12 @@ function Harness({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread cwd={cwd} sessionId={runtimeSessionId} sessionKey={sessionKey} />
+      <Thread cwd={cwd} sessionKey={sessionKey} />
     </AssistantRuntimeProvider>
   )
 }
 
 describe('thread edit context', () => {
-  it('polls Wisdom with the durable session key after a runtime reconnect', async () => {
-    render(<Harness cwd="/repo" runtimeSessionId="runtime-owner" sessionKey="stored-session" />)
-
-    expect((await screen.findByTestId('wisdom-candidate-session')).textContent).toBe('stored-session')
-    expect(wisdomSessionIds.at(-1)).toBe('stored-session')
-  })
-
   it('passes a same-session cwd change to the mounted edit composer', async () => {
     const { rerender } = render(<Harness cwd="/old" sessionKey="k1" />)
 

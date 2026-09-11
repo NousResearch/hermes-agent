@@ -599,6 +599,31 @@ class GatewayAgentCacheMixin:
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
         )
 
+    def _retire_timed_out_agent(
+        self: GatewayRunner, session_key: Optional[str], agent: Any, worker: GatewayRunner._RunAgentWorker,
+    ) -> None:
+        """Exclude this abandoned instance from reuse; its worker owns release until it exits."""
+        if agent is None:
+            return
+        with getattr(self, "_agent_cache_lock", None) or nullcontext():
+            cache = getattr(self, "_agent_cache", None)
+            if cache is not None and _first_agent(cache.get(session_key)) is agent:
+                cache.pop(session_key)
+                state = self._peek_session_state(session_key) if session_key else None
+                if state is not None:
+                    state.conversation.ephemeral_pin = None
+                    state.conversation.vc_last = None
+        # Arbitrate with the synchronous worker, not its cancelable asyncio wrapper.
+        with worker.cleanup_lock:
+            if worker.retired_agent is not None:
+                return
+            worker.retired_agent = agent
+            finished = worker.worker_done.is_set()
+        if finished:
+            self._spawn_release_thread(
+                self._release_evicted_agent_soft, (agent,), "agent-timeout-release", inline_fallback=True,
+            )
+
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no
         thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main."""

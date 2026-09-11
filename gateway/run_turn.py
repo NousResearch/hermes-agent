@@ -32,7 +32,7 @@ from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -3123,7 +3123,6 @@ class GatewayTurnMixin:
             try:
                 return run_sync()
             finally:
-                worker.worker_done.set()
                 # `.turn.agent` stays reachable until the *next* turn is claimed; clearing the
                 # ownership markers now means a /stop on the finished turn no longer reaps background
                 # work it left running.
@@ -3135,6 +3134,11 @@ class GatewayTurnMixin:
                 if _finished_agent is not None:
                     _finished_agent._gateway_turn_process_task_id = ""
                     _finished_agent._gateway_turn_process_baseline = frozenset()
+                with worker.cleanup_lock:
+                    worker.worker_done.set()
+                    retired_agent = worker.retired_agent
+                if retired_agent is not None:
+                    self._release_evicted_agent_soft(retired_agent)
 
         if _agent_timeout is not None:
             threading.Thread(
@@ -3204,7 +3208,10 @@ class GatewayTurnMixin:
             _cur_tool or "none",
         )
         if _timed_out_agent:
-            request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
+            try:
+                request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
+            finally:
+                cast("GatewayRunner", self)._retire_timed_out_agent(session_key, _timed_out_agent, worker)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
         _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [

@@ -4375,6 +4375,7 @@ class GatewayRunner(
         timeout_fired: Any = None
         cleanup_lock: Any = None
         is_current: Any = None
+        retired_agent: Any = None
 
 
 def _run_planned_stop_watcher(

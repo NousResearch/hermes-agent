@@ -38,7 +38,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
 try:
     from mautrix.types import (
@@ -966,11 +966,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
-        # allowlist, which must not decide who approves tool calls on a secondary bot.
-        # Fall back to config.yaml (allowed_users) only when the scoped reader has no value.
-        self._allowed_user_ids: Set[str] = _csv_set(
-            _startup_env_secret("MATRIX_ALLOWED_USERS") or config.extra.get("allowed_users") or "")
+        # Authz lists via the profile-scoped reader: under multiplex os.environ is the DEFAULT
+        # profile's allowlist, which must not decide who approves tool calls on a secondary bot.
+        # Single-profile: keep the original os.getenv(name, config) contract exactly (missing ->
+        # config.yaml / PlatformConfig.extra, explicitly-empty -> deny) so existing users see no
+        # behavior change. Multiplex: scoped reader only; an empty/absent scoped value fails closed
+        # instead of borrowing another profile's allowlist.
+        if is_multiplex_active():
+            allowed = _startup_env_secret("MATRIX_ALLOWED_USERS")
+        else:
+            allowed = os.getenv("MATRIX_ALLOWED_USERS", config.extra.get("allowed_users") or "")
+        self._allowed_user_ids: Set[str] = _csv_set(allowed)
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):

@@ -77,6 +77,7 @@ describe('WisdomMediationCard', () => {
       if (phase !== 'prerequisite') {
         expect(screen.getByText('echo reviewed').tagName).toBe('CODE')
       }
+
       resolve.mockResolvedValue({ ...step, state: 'completed', actions: ['inspect'] })
       fireEvent.click(
         screen.getByRole('button', { name: phase === 'prerequisite' ? 'Confirm prerequisite' : 'Run this step' })

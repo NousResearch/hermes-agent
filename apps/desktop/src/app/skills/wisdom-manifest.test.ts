@@ -44,9 +44,7 @@ describe('Desktop Wisdom manifest forms', () => {
   it('reports form-level validation errors before a revision is submitted', () => {
     expect(wisdomSystemSpecificationValidationError({ ...specification, platforms: [''] })).toMatch(/required/)
     expect(
-      wisdomManifestValidationError(
-        JSON.stringify({ schema_version: 1, name: '', requirements: specification })
-      )
+      wisdomManifestValidationError(JSON.stringify({ schema_version: 1, name: '', requirements: specification }))
     ).toBe('Skill name is required.')
   })
 })

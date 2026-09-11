@@ -132,7 +132,11 @@ function PresetMultiSelect({
           const checked = value.includes(option.value)
 
           return (
-            <label className="flex cursor-pointer items-center gap-2 text-[0.68rem]" htmlFor={checkboxId} key={option.value}>
+            <label
+              className="flex cursor-pointer items-center gap-2 text-[0.68rem]"
+              htmlFor={checkboxId}
+              key={option.value}
+            >
               <Checkbox
                 checked={checked}
                 disabled={disabled}
@@ -175,12 +179,7 @@ function BooleanField({
 }) {
   return (
     <label className="flex cursor-pointer items-start gap-2" htmlFor={id}>
-      <Checkbox
-        checked={checked}
-        disabled={disabled}
-        id={id}
-        onCheckedChange={next => onChange(next === true)}
-      />
+      <Checkbox checked={checked} disabled={disabled} id={id} onCheckedChange={next => onChange(next === true)} />
       <FieldCopy description={description} label={label} />
     </label>
   )
@@ -213,7 +212,9 @@ function ToolRequirements({
               id={`${id}-tool-${index}`}
               maxLength={512}
               onChange={event =>
-                onChange(value.map((item, itemIndex) => (itemIndex === index ? { ...item, name: event.target.value } : item)))
+                onChange(
+                  value.map((item, itemIndex) => (itemIndex === index ? { ...item, name: event.target.value } : item))
+                )
               }
               size="sm"
               value={tool.name}
@@ -301,7 +302,9 @@ function PluginRequirements({
               id={`${id}-plugin-${index}`}
               maxLength={512}
               onChange={event =>
-                onChange(value.map((item, itemIndex) => (itemIndex === index ? { ...item, id: event.target.value } : item)))
+                onChange(
+                  value.map((item, itemIndex) => (itemIndex === index ? { ...item, id: event.target.value } : item))
+                )
               }
               size="sm"
               value={plugin.id}
@@ -359,11 +362,7 @@ function PluginRequirements({
   )
 }
 
-export function WisdomSystemSpecificationEditor({
-  value,
-  disabled = false,
-  onChange
-}: SpecificationEditorProps) {
+export function WisdomSystemSpecificationEditor({ value, disabled = false, onChange }: SpecificationEditorProps) {
   const id = useId()
 
   const update = <K extends keyof WisdomSystemSpecification>(key: K, next: WisdomSystemSpecification[K]) =>
@@ -492,7 +491,11 @@ export function WisdomSystemSpecificationEditor({
       <fieldset className="grid gap-5 border-t border-(--ui-stroke-tertiary) pt-4 lg:grid-cols-2">
         <legend className="pr-3 text-[0.68rem] font-medium uppercase tracking-wide">Tools and plugins</legend>
         <ToolRequirements disabled={disabled} onChange={tools => update('tools', tools)} value={value.tools} />
-        <PluginRequirements disabled={disabled} onChange={plugins => update('plugins', plugins)} value={value.plugins} />
+        <PluginRequirements
+          disabled={disabled}
+          onChange={plugins => update('plugins', plugins)}
+          value={value.plugins}
+        />
       </fieldset>
 
       <fieldset className="grid gap-5 border-t border-(--ui-stroke-tertiary) pt-4 sm:grid-cols-2">

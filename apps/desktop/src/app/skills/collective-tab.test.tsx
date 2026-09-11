@@ -292,24 +292,26 @@ describe('CollectiveTab', () => {
     expect(await screen.findByRole('button', { name: 'Review update' })).toBeTruthy()
   })
 
-  it.each(['open', 'moderated'] as const)('reviews and rescans locally before one final %s submission', async publicationMode => {
-    mockInstallations()
-    getWisdomStatus.mockResolvedValue({ configured: true, verified_org_id: 'org-1' })
-    getWisdomDiscovery.mockResolvedValue({ next_cursor: null, skills: [] })
-    getWisdomCandidates.mockResolvedValue({
-      candidates: [
-        {
-          local_skill_id: 'local-1',
-          name: 'candidate-skill',
-          eligibility: 'eligible',
-          reason: null,
-          qualification: 'manual_selection',
-          contribution_state: 'new'
-        }
-      ]
-    })
-    getWisdomDrafts.mockResolvedValue({ drafts: [] })
-    suggestWisdomSkill.mockResolvedValueOnce({
+  it.each(['open', 'moderated'] as const)(
+    'reviews and rescans locally before one final %s submission',
+    async publicationMode => {
+      mockInstallations()
+      getWisdomStatus.mockResolvedValue({ configured: true, verified_org_id: 'org-1' })
+      getWisdomDiscovery.mockResolvedValue({ next_cursor: null, skills: [] })
+      getWisdomCandidates.mockResolvedValue({
+        candidates: [
+          {
+            local_skill_id: 'local-1',
+            name: 'candidate-skill',
+            eligibility: 'eligible',
+            reason: null,
+            qualification: 'manual_selection',
+            contribution_state: 'new'
+          }
+        ]
+      })
+      getWisdomDrafts.mockResolvedValue({ drafts: [] })
+      suggestWisdomSkill.mockResolvedValueOnce({
         network_submission: false,
         local_draft_id: 'local:draft',
         overlay_path: '/private/overlay',
@@ -317,56 +319,65 @@ describe('CollectiveTab', () => {
         system_specification: systemSpecification,
         next_step: 'review'
       })
-    const manifest = JSON.stringify({ schema_version: 1, name: 'candidate-skill', requirements: systemSpecification })
+      const manifest = JSON.stringify({ schema_version: 1, name: 'candidate-skill', requirements: systemSpecification })
 
-    const initialReview = {
-      draft: { id: 'local:draft', slug: 'candidate-skill', state: 'prepared', authorDescription: 'Drafted copy' },
-      publication_mode: publicationMode,
-      effective_policy: {},
-      files: [
-        { path: 'SKILL.md', mode: 'file', hash: 'sha256:skill', content_utf8: '# Candidate\n' },
-        { path: 'skill.manifest.json', mode: 'file', hash: 'sha256:manifest', content_utf8: manifest }
-      ],
-      hashes: { content: 'sha256:content', author_description: 'sha256:description', package_manifest: 'sha256:manifest' },
-      receipt: null
+      const initialReview = {
+        draft: { id: 'local:draft', slug: 'candidate-skill', state: 'prepared', authorDescription: 'Drafted copy' },
+        publication_mode: publicationMode,
+        effective_policy: {},
+        files: [
+          { path: 'SKILL.md', mode: 'file', hash: 'sha256:skill', content_utf8: '# Candidate\n' },
+          { path: 'skill.manifest.json', mode: 'file', hash: 'sha256:manifest', content_utf8: manifest }
+        ],
+        hashes: {
+          content: 'sha256:content',
+          author_description: 'sha256:description',
+          package_manifest: 'sha256:manifest'
+        },
+        receipt: null
+      }
+
+      const rescannedReview = {
+        ...initialReview,
+        draft: { ...initialReview.draft, authorDescription: 'Approved owner copy' },
+        hashes: { ...initialReview.hashes, author_description: 'sha256:revised' }
+      }
+
+      reviewWisdomPublication.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(rescannedReview)
+      saveWisdomPreparedDraft.mockResolvedValue({ local_draft_id: 'local:draft' })
+      submitWisdomPublication.mockResolvedValue({
+        draft_id: 'draft-1',
+        publication_state: publicationMode === 'open' ? 'published' : 'pending_moderation',
+        portal_url: 'https://portal.example/skill/draft-1'
+      })
+
+      await renderTab()
+      fireEvent.click(await screen.findByText('View all local skills (1)'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Start contribution' }))
+      const description = await screen.findByLabelText('Owner-authored description')
+      fireEvent.change(description, { target: { value: 'Approved owner copy' } })
+      const action = publicationMode === 'open' ? 'Publish to team' : 'Submit for approval'
+      expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', true)
+      expect(submitWisdomPublication).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', false))
+      expect(saveWisdomPreparedDraft).toHaveBeenCalledWith(
+        'local:draft',
+        'Approved owner copy',
+        initialReview.files.map(({ path, content_utf8 }) => ({ path, content_utf8 })),
+        scope
+      )
+      fireEvent.click(screen.getByRole('button', { name: action }))
+      await waitFor(() =>
+        expect(submitWisdomPublication).toHaveBeenCalledExactlyOnceWith(rescannedReview, scope, undefined)
+      )
+      expect(suggestWisdomSkill).toHaveBeenCalledTimes(1)
+      expect(suggestWisdomSkill.mock.calls[0][3]).toBe('local-1')
+      expect((await screen.findByRole('link', { name: 'View in Portal' })).getAttribute('href')).toBe(
+        'https://portal.example/skill/draft-1'
+      )
     }
-
-    const rescannedReview = {
-      ...initialReview,
-      draft: { ...initialReview.draft, authorDescription: 'Approved owner copy' },
-      hashes: { ...initialReview.hashes, author_description: 'sha256:revised' }
-    }
-
-    reviewWisdomPublication.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(rescannedReview)
-    saveWisdomPreparedDraft.mockResolvedValue({ local_draft_id: 'local:draft' })
-    submitWisdomPublication.mockResolvedValue({
-      draft_id: 'draft-1',
-      publication_state: publicationMode === 'open' ? 'published' : 'pending_moderation',
-      portal_url: 'https://portal.example/skill/draft-1'
-    })
-
-    await renderTab()
-    fireEvent.click(await screen.findByText('View all local skills (1)'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Start contribution' }))
-    const description = await screen.findByLabelText('Owner-authored description')
-    fireEvent.change(description, { target: { value: 'Approved owner copy' } })
-    const action = publicationMode === 'open' ? 'Publish to team' : 'Submit for approval'
-    expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', true)
-    expect(submitWisdomPublication).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', false))
-    expect(saveWisdomPreparedDraft).toHaveBeenCalledWith(
-      'local:draft', 'Approved owner copy',
-      initialReview.files.map(({ path, content_utf8 }) => ({ path, content_utf8 })), scope
-    )
-    fireEvent.click(screen.getByRole('button', { name: action }))
-    await waitFor(() => expect(submitWisdomPublication).toHaveBeenCalledExactlyOnceWith(rescannedReview, scope, undefined))
-    expect(suggestWisdomSkill).toHaveBeenCalledTimes(1)
-    expect(suggestWisdomSkill.mock.calls[0][3]).toBe('local-1')
-    expect((await screen.findByRole('link', { name: 'View in Portal' })).getAttribute('href')).toBe(
-      'https://portal.example/skill/draft-1'
-    )
-  })
+  )
 
   it('separates qualified suggestions, manual inventory, and submissions waiting on collective approval', async () => {
     mockInstallations()

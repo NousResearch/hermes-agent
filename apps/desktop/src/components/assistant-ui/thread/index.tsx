@@ -181,13 +181,14 @@ export const Thread = memo(function Thread({
   const wisdomSessionId = sessionKey || sessionId
 
   const wisdomContent = useMemo(
-    () => (wisdomSessionId ? (
-      <>
-        <WisdomNoticeCard profile={wisdomProfile} />
-        <WisdomMediationCard profile={wisdomProfile} sessionId={wisdomSessionId} />
-        <WisdomCandidateCard profile={wisdomProfile} sessionId={wisdomSessionId} />
-      </>
-    ) : undefined),
+    () =>
+      wisdomSessionId ? (
+        <>
+          <WisdomNoticeCard profile={wisdomProfile} />
+          <WisdomMediationCard profile={wisdomProfile} sessionId={wisdomSessionId} />
+          <WisdomCandidateCard profile={wisdomProfile} sessionId={wisdomSessionId} />
+        </>
+      ) : undefined,
     [wisdomProfile, wisdomSessionId]
   )
 

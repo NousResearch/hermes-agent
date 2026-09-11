@@ -371,16 +371,6 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 # uvicorn's 16 MiB default rejects files under the 256 MiB raw attach cap.
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
-
-# CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
-# website read/modify config and secrets.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
@@ -720,7 +710,7 @@ DASHBOARD_HEALTH = DashboardHealth()
 
 @app.middleware("http")
 async def _dashboard_health_middleware(request: Request, call_next):
-    """Outermost middleware (registered last): count unhandled exceptions and 5xx; re-raises, never alters."""
+    """Outermost non-CORS middleware: count unhandled exceptions and 5xx; re-raises, never alters."""
     try:
         response = await call_next(request)
     except Exception as exc:
@@ -729,6 +719,22 @@ async def _dashboard_health_middleware(request: Request, call_next):
     if response.status_code >= 500:
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
+
+
+# CORS: restrict to localhost origins only.  The web UI is intended to run
+# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
+# read/modify config and secrets.
+#
+# Registered AFTER all ``@app.middleware("http")`` decorators so it is the
+# *outermost* middleware (Starlette's onion: last-added runs first).
+# Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
+# middlewares before CORS can answer, producing 401 instead of 204 + headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Authenticated-route self-test: one in-process request per minute against a

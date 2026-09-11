@@ -323,6 +323,13 @@ class VisionMessagePrepMixin:
             or host.startswith("bedrock-runtime.")
         )
 
+    def _anthropic_preserve_model_id(self) -> bool:
+        """Whether this provider's Messages route requires its full catalog id."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(self, "provider", ""))
+        return bool(profile and profile.preserve_anthropic_model_id)
+
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")

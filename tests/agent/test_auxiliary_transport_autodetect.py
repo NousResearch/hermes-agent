@@ -25,6 +25,7 @@ def _clean_env(monkeypatch):
         "OPENAI_API_KEY", "OPENAI_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
         "KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL",
+        "XAI_API_KEY", "XAI_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -138,3 +139,20 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
         f"{type(client).__name__}"
     )
     assert "kimi.com/coding" in str(client.base_url)
+
+
+def test_profile_codex_mode_does_not_override_legacy_aux_transport(monkeypatch, tmp_path):
+    """A missing per-call mode must not reroute unrelated profiles onto Responses."""
+    from agent.auxiliary_client import CodexAuxiliaryClient, resolve_provider_client
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+
+    client, model = resolve_provider_client("xai", "grok-4.1-fast")
+    try:
+        assert client is not None
+        assert model == "grok-4.1-fast"
+        assert not isinstance(client, CodexAuxiliaryClient)
+    finally:
+        if client is not None:
+            client.close()

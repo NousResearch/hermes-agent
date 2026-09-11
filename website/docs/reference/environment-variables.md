@@ -109,6 +109,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
+| `XKIRO_API_KEY` | xKiro API key ([xkiro.com](https://xkiro.com/)) |
+| `XKIRO_BASE_URL` | Override xKiro base URL (default: `https://api.xkiro.com/v1`) |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |

@@ -77,6 +77,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | MiniMax (OAuth) | `minimax-oauth` | `hermes model` (MiniMax portal OAuth) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | CommandCode | `commandcode` (alias `commandcode-chat`; Claude via `commandcode-anthropic`) | `COMMANDCODE_API_KEY` |
+| xKiro | `xkiro` (alias `xkiro-ai`; Anthropic Messages via `xkiro-anthropic`) | `XKIRO_API_KEY` (optional: `XKIRO_BASE_URL`) |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | OpenCode Free | `opencode-free` | — (keyless, no credential) |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |

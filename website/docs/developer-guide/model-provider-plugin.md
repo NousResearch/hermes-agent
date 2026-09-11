@@ -101,6 +101,10 @@ Full definition in `providers/base.py`. The most useful ones:
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
+| `prefer_live_model_catalog` | bool | Prefer the profile's complete live catalog over the models.dev shortlist during setup |
+| `public_model_catalog` | bool | Permit live catalog discovery before an API key is configured |
+| `pricing_cache_ttl_seconds` | `float \| None` | Lifetime for non-empty pricing-hook cache entries; `None` keeps them for the process lifetime |
+| `preserve_anthropic_model_id` | bool | Keep full `vendor/model` IDs on Anthropic Messages routes instead of normalizing to a bare Claude name |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
@@ -142,6 +146,12 @@ class AcmeProfile(ProviderProfile):
         Bearer auth. Override for: custom auth (Anthropic), no REST endpoint
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
+    def fetch_model_pricing(self, *, api_key=None, base_url=None, timeout=8.0):
+        """Optional live picker pricing keyed by model ID. Return per-token
+        strings under prompt/completion (plus input_cache_read or
+        input_cache_write when documented), or None when unsupported."""
+        return None
 
     def create_client(self, **client_kwargs):
         """Supply your own client object instead of the shared openai.OpenAI.

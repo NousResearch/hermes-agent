@@ -100,6 +100,10 @@ author: Your Name
 | `models_url` | str | 显式目录 URL（回退到 `{base_url}/models`） |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `fallback_models` | `tuple[str, ...]` | 实时目录获取失败时显示的精选列表 |
+| `prefer_live_model_catalog` | bool | 设置时优先使用 profile 的完整实时目录，而不是 models.dev 的精简列表 |
+| `public_model_catalog` | bool | 允许在尚未配置 API key 时发现实时模型目录 |
+| `pricing_cache_ttl_seconds` | `float \| None` | 非空定价 hook 缓存的有效期；`None` 表示在进程生命周期内保留 |
+| `preserve_anthropic_model_id` | bool | Anthropic Messages 路由保留完整的 `vendor/model` ID，不规范化为裸 Claude 名称 |
 | `default_headers` | `dict[str, str]` | 随每个请求发送（如 Copilot 的 `Editor-Version`） |
 | `fixed_temperature` | Any | `None` = 使用调用方的值；`OMIT_TEMPERATURE` 哨兵值 = 完全不发送 temperature（Kimi） |
 | `default_max_tokens` | `int \| None` | 提供商级别的 max_tokens 上限（Nvidia：16384） |
@@ -135,11 +139,17 @@ class AcmeProfile(ProviderProfile):
         时需要此方法。默认：({}, {})。"""
         return {}, {}
 
-    def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
+    def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0) -> list[str] | None:
         """实时目录获取。默认使用 Bearer 认证访问 {models_url or base_url}/models。
         以下情况需覆盖：自定义认证（Anthropic）、无 REST 端点（Bedrock → None），
         或公开/无认证目录（OpenRouter）。"""
-        return super().fetch_models(api_key=api_key, timeout=timeout)
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
+    def fetch_model_pricing(self, *, api_key=None, base_url=None, timeout=8.0):
+        """可选的实时选择器定价，以模型 ID 为键。返回 prompt/completion
+        的每 token 价格字符串；若文档明确支持，也可返回 input_cache_read
+        或 input_cache_write。不支持时返回 None。"""
+        return None
 ```
 
 ## Hook 参考示例

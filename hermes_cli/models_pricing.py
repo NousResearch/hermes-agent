@@ -138,8 +138,7 @@ def _sale_pct(current: Any, original: Any) -> int | None:
 
 
 def compute_sale_discount(prompt: str, completion: str, original: Any) -> tuple[int, str, str] | None:
-    """Sale chrome from gateway ``pricing.original`` (Nous Portal only; callers gate on the provider
-    and opted in via ``include_sale_original=True``): ``(discount_percent, was_prompt_raw,
+    """Sale chrome for trusted callers (currently Nous Portal): ``(discount_percent, was_prompt_raw,
     was_completion_raw)`` when ``original`` is a dict and the current prompt (fallback: completion)
     rate is strictly below the original. Free / $0 models get a flat 100% off, with "was" prices
     only when the gateway served an original (a natively-free stealth model gets bare "-100%")."""
@@ -404,6 +403,63 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
 
 
+def _profile_pricing_context(provider: str) -> tuple[Any, str, str, str] | None:
+    """Resolve a profile pricing hook and its credential-isolated cache key."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(provider)
+    if (
+        profile is None
+        or getattr(type(profile), "fetch_model_pricing", None) is ProviderProfile.fetch_model_pricing
+    ):
+        return None
+
+    from hermes_cli.models import _api_key_credentials
+
+    api_key, resolved_base = _api_key_credentials(provider)
+    base_url = (resolved_base or profile.base_url or "").strip().rstrip("/")
+    if not base_url:
+        return None
+    cache_key = _strip_v1(base_url) + _pricing_auth_fingerprint(api_key)
+    return profile, api_key, base_url, cache_key
+
+
+def _fetch_profile_pricing_for_provider(
+    provider: str, *, force_refresh: bool = False, timeout: float = 8.0,
+) -> dict[str, dict[str, Any]]:
+    """Run an optional :class:`ProviderProfile` pricing hook through the shared cache.
+
+    Provider plugins own catalog-specific unit conversion; this layer owns credential resolution,
+    endpoint/credential cache isolation, failure expiry, and ``cached_only`` visibility. Profiles
+    that inherit the no-op base hook return immediately without touching credentials or the network.
+    """
+    context = _profile_pricing_context(provider)
+    if context is None:
+        return {}
+    profile, api_key, base_url, cache_key = context
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        raw = profile.fetch_model_pricing(api_key=api_key or None, base_url=base_url, timeout=timeout)
+    except Exception:
+        raw = None
+    result = {
+        str(model_id): dict(entry)
+        for model_id, entry in (raw.items() if isinstance(raw, dict) else ())
+        if model_id and isinstance(entry, dict)
+    }
+    ttl = profile.pricing_cache_ttl_seconds
+    try:
+        ttl = float(ttl) if ttl is not None and float(ttl) > 0 else None
+    except (TypeError, ValueError):
+        ttl = None
+    return _cache_catalog(cache_key, result, ttl)
+
+
 _OPENROUTER_PRICING_BASE = "https://openrouter.ai/api"
 _FIREWORKS_PRICING_KEY = "models.dev/fireworks"
 
@@ -466,16 +522,25 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
         if persisted_base:
             return persisted_base
         return _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+    context = _profile_pricing_context(normalized)
+    if context is not None:
+        return context[3]
     return ""
 
 
-def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
-    """Process-resident pricing for *normalized* without any provider I/O."""
+def _cached_only_pricing(normalized: str) -> dict[str, dict[str, Any]]:
+    """Process-resident pricing for *normalized* without provider network I/O.
+
+    Resolving a plugin-backed cache scope may perform lazy local discovery and credential reads.
+    """
     from hermes_cli.models import _deepinfra_catalog_cache, _deepinfra_catalog_url, _pricing_profile_key
     if normalized == "deepinfra":
         cache_key, _url = _deepinfra_catalog_url()
         return _fetch_deepinfra_pricing() if cache_key in _deepinfra_catalog_cache else {}
-    cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
+    context = _profile_pricing_context(normalized)
+    cache_key = context[3] if context is not None else None
+    if cache_key is None:
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
     if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
     return (_cached_catalog(cache_key) or {}) if cache_key else {}
@@ -483,9 +548,8 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
 
 def get_pricing_for_provider(
     provider: str, *, force_refresh: bool = False, cached_only: bool = False
-) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
-    deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
+) -> dict[str, dict[str, Any]]:
+    """Return live pricing from built-in adapters or a provider-profile hook. ``cached_only`` never starts provider I/O:
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
     prewarm fills the same caches for later opens."""
     from hermes_cli.models import normalize_provider
@@ -493,7 +557,9 @@ def get_pricing_for_provider(
     if cached_only:
         return _cached_only_pricing(normalized)
     fetcher = _PRICING_FETCHERS.get(normalized)
-    return fetcher(force_refresh=force_refresh) if fetcher else {}
+    if fetcher:
+        return fetcher(force_refresh=force_refresh)
+    return _fetch_profile_pricing_for_provider(normalized, force_refresh=force_refresh)
 
 
 def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[str, dict[str, str]]:

@@ -1244,6 +1244,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         reasoning_config=reasoning_config, is_oauth=agent._is_anthropic_oauth,
         preserve_dots=agent._anthropic_preserve_dots(),
+        preserve_model_id=agent._anthropic_preserve_model_id(),
         context_length=ctx_len.context_length if ctx_len else None,
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
@@ -2084,7 +2085,9 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
-            preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
+            preserve_dots=agent._anthropic_preserve_dots(),
+            preserve_model_id=agent._anthropic_preserve_model_id(),
+            base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)

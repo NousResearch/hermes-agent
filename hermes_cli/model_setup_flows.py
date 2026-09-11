@@ -893,6 +893,21 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider_id)
+    if profile is not None and profile.prefer_live_model_catalog:
+        try:
+            live_models = profile.fetch_models(
+                api_key=api_key_for_probe or None,
+                base_url=effective_base,
+            )
+        except Exception:
+            live_models = None
+        if live_models:
+            _report_live_models(live_models, f"{pconfig.name} API")
+            return live_models
+
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
         return special(pconfig, curated, api_key_for_probe, effective_base)

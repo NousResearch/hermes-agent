@@ -519,7 +519,8 @@ _TOOL_CHOICE_MAP = {None: {"type": "auto"}, "auto": {"type": "auto"}, "required"
 def build_anthropic_kwargs(
     model: str, messages: List[Dict], tools: Optional[List[Dict]], max_tokens: Optional[int],
     reasoning_config: Optional[Dict[str, Any]], tool_choice: Optional[str] = None,
-    is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
+    is_oauth: bool = False, preserve_dots: bool = False, preserve_model_id: bool = False,
+    context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
@@ -528,13 +529,14 @@ def build_anthropic_kwargs(
     clamped to ``context_length - 1``. The clamp ignores prompt size — callers must catch
     "max_tokens too large given prompt" and retry smaller (parse_available_output_tokens_from_error).
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
-    dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
+    dots (DashScope: qwen3.5-plus); ``preserve_model_id`` keeps a gateway's full catalog id;
+    a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
-    # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
-    # make the model unresolvable there (prefix AND dots kept).
-    if not _is_nous_portal_endpoint(base_url):
+    # Routing gateways use their own full catalog ids (``vendor/model``); normalizing would make
+    # the model unresolvable there (prefix and version punctuation must stay verbatim).
+    if not (preserve_model_id or _is_nous_portal_endpoint(base_url)):
         model = normalize_model_name(model, preserve_dots=preserve_dots)
     # Non-positive/non-finite values fail locally instead of 400-ing upstream.
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)

@@ -36,6 +36,13 @@ layer reads from it:
   `zai`, `openrouter`, `custom` — those need bespoke token resolution).
 - `hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
   `profile.fetch_models()` inside `provider_model_ids()`.
+- Setup normally favors models.dev's agentic shortlist; profiles with an
+  authoritative complete catalog set `prefer_live_model_catalog=True`.
+- Profiles whose models endpoint is explicitly public set
+  `public_model_catalog=True` to support keyless picker discovery.
+- `hermes_cli/models_pricing.py` calls an overridden
+  `profile.fetch_model_pricing()` and caches its normalized per-token prices;
+  `pricing_cache_ttl_seconds` bounds non-empty cache lifetime.
 - `hermes_cli/doctor.py` adds a `/models` health check for each
   `auth_type="api_key"` profile.
 - `hermes_cli/config.py` injects every `env_var` into
@@ -51,6 +58,8 @@ layer reads from it:
   and `profile.build_api_kwargs_extras()` on every call.
 - `run_agent.py` passes `provider_profile=<ProviderProfile>` so the
   transport takes the profile path instead of the legacy flag path.
+- Anthropic-compatible aggregators whose wire protocol requires full
+  `vendor/model` IDs set `preserve_anthropic_model_id=True`.
 
 ---
 

@@ -1590,10 +1590,14 @@ def _translate_anthropic_response_format(anthropic_kwargs: Dict[str, Any], respo
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False, base_url: str | None = None):
+    def __init__(
+        self, real_client: Any, model: str, is_oauth: bool = False,
+        base_url: str | None = None, preserve_model_id: bool = False,
+    ):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        self._preserve_model_id = preserve_model_id
         # Caller URL first; fall back to the SDK client's host only for Nous Portal — a blanket
         # fallback would flip MiniMax/Zhipu aux adapters to third-party handling (strips thinking sigs).
         self._base_url = base_url or None
@@ -1638,6 +1642,7 @@ class _AnthropicCompletionsAdapter:
             model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
             max_tokens=max_tokens, reasoning_config=reasoning_cfg, tool_choice=tool_choice,
             is_oauth=self._is_oauth,
+            preserve_model_id=self._preserve_model_id,
             # Portal routes on ``anthropic/<slug>`` ids and replays signed thinking
             # keyed off base_url; omitting it breaks Portal model resolution.
             base_url=self._base_url,
@@ -1705,9 +1710,15 @@ class _AnthropicCompletionsAdapter:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
+    def __init__(
+        self, real_client: Any, model: str, api_key: str, base_url: str,
+        is_oauth: bool = False, preserve_model_id: bool = False,
+    ):
         self._real_client = real_client
-        self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
+        self.chat = _ChatShim(_AnthropicCompletionsAdapter(
+            real_client, model, is_oauth=is_oauth, base_url=base_url,
+            preserve_model_id=preserve_model_id,
+        ))
         self.api_key = api_key
         self.base_url = base_url
 
@@ -1796,7 +1807,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
+    *, preserve_model_id: bool = False,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
@@ -1838,7 +1850,10 @@ def _maybe_wrap_anthropic(
         "(model=%s, base_url=%s, api_mode=%s)",
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    return AnthropicAuxiliaryClient(
+        real_client, model, api_key, base_url, is_oauth=False,
+        preserve_model_id=preserve_model_id,
+    )
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -4513,7 +4528,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     """Wrap a plain OpenAI client in the right transport adapter; specialized wrappers pass through.
     Codex (Responses API): explicit ``api_mode=codex_responses``, else — with no
     explicit api_mode — api.openai.com + codex model. Anthropic (Messages): ``api_mode=anthropic_messages``,
-    any ``/anthropic`` suffix, ``api.kimi.com/coding``, or ``api.anthropic.com``."""
+    any ``/anthropic`` suffix, ``api.kimi.com/coding``, ``api.anthropic.com``, or a provider profile
+    that explicitly declares ``anthropic_messages``."""
     if _is_actual_auxiliary_route(req, base_url_str):
         client = (
             client_obj._real_client
@@ -4522,22 +4538,37 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
         client._hermes_aux_effective_provider = "actual"
         return client
+    profile_mode = ""
+    preserve_model_id = False
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(req.provider)
+    if profile is not None:
+        profile_mode = profile.api_mode
+        preserve_model_id = profile.preserve_anthropic_model_id
+    if req.api_mode:
+        effective_api_mode = req.api_mode
+    elif _endpoint_speaks_anthropic_messages(base_url_str):
+        effective_api_mode = "anthropic_messages"
+    elif base_url_hostname(base_url_str) == "api.openai.com" and "codex" in (final_model_str or "").lower():
+        effective_api_mode = "codex_responses"
+    else:
+        # Profile fallback is needed for custom Anthropic-compatible endpoints such as xKiro.
+        # Do not also infer Responses mode here: that changes legacy auxiliary routing for
+        # unrelated providers whose call sites intentionally omitted api_mode.
+        effective_api_mode = profile_mode if profile_mode == "anthropic_messages" else ""
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
-    ) and (
-        req.api_mode == "codex_responses"
-        or (
-            not req.api_mode
-            and base_url_hostname(base_url_str) == "api.openai.com"
-            and "codex" in (final_model_str or "").lower()
-        )
-    )
+    ) and effective_api_mode == "codex_responses"
     if needs_codex:
         logger.debug("resolve_provider_client: wrapping client in CodexAuxiliaryClient "
                      "(api_mode=%s, model=%s, base_url=%s)",
-                     req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
+                     effective_api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, req.api_mode)
+    return _maybe_wrap_anthropic(
+        client_obj, final_model_str, api_key_str, base_url_str, effective_api_mode,
+        preserve_model_id=preserve_model_id,
+    )
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:

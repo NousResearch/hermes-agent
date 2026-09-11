@@ -1404,7 +1404,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None
     api_key, base_url = _api_key_credentials(normalized)
-    live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    live = (
+        profile.fetch_models(api_key=api_key or None, base_url=base_url or profile.base_url or None)
+        if api_key or profile.public_model_catalog
+        else None
+    )
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())

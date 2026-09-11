@@ -42,6 +42,11 @@ def _is_opencode_endpoint(base_url: str | None) -> bool:
     return base_url_host_matches(base_url or "", "opencode.ai")
 
 
+def _is_xkiro_endpoint(base_url: str | None) -> bool:
+    """xKiro's Anthropic-compatible API (Bearer auth, verbatim catalog ids)."""
+    return base_url_host_matches(base_url or "", "api.xkiro.com")
+
+
 # Kimi / Moonshot family model-name prefixes: official slugs (``kimi-k2.5``, ``kimi_thinking``,
 # ``moonshot-v1-8k``) and release lines (``k1.5-…``, ``k2-thinking``, ``k25-…``, ``k3.x``/``k3-…``).
 # Matched case-insensitively after stripping any ``vendor/`` prefix.
@@ -122,7 +127,7 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
-    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
+    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal, xKiro. Host checks use
     hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
     normalized = _normalized_lower(base_url)
     return (
@@ -130,7 +135,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or normalized.startswith(_MINIMAX_ANTHROPIC_PREFIXES)
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
-        or base_url_host_matches(normalized, "api.xkiro.com")
+        or _is_xkiro_endpoint(normalized)
         or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 

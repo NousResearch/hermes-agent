@@ -94,6 +94,24 @@ class ProviderProfile:
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
 
+    # Setup normally prefers models.dev's tool-capable shortlist. Aggregators
+    # whose own catalog is authoritative can opt into a fresh profile fetch so
+    # onboarding exposes every route rather than an incomplete registry subset.
+    prefer_live_model_catalog: bool = False
+
+    # Allow catalog discovery without credentials. Keep false unless the
+    # provider explicitly documents its models endpoint as public.
+    public_model_catalog: bool = False
+
+    # Optional lifetime for non-empty picker-pricing cache entries. ``None`` keeps
+    # the process cache indefinitely; providers with frequently changing prices
+    # or promotions should set a short value (for example 300 seconds).
+    pricing_cache_ttl_seconds: float | None = None
+
+    # Some Anthropic-compatible aggregators route on the full catalog id
+    # (``vendor/model``) rather than Anthropic's bare ``claude-*`` names.
+    preserve_anthropic_model_id: bool = False
+
     # hostname: base hostname for URL→provider reverse-mapping in model_metadata.py
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
     hostname: str = ""
@@ -338,3 +356,21 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+
+    def fetch_model_pricing(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> dict[str, dict[str, Any]] | None:
+        """Return picker pricing keyed by model id, or ``None`` when unsupported.
+
+        Entries use per-token strings under ``prompt`` and ``completion``;
+        optional cache prices use ``input_cache_read`` / ``input_cache_write``.
+        Provider plugins normalize their catalog's units here. The shared
+        pricing layer resolves credentials, caches results, and treats ``None``
+        as unavailable, so implementations should perform one bounded fetch and
+        never raise intentionally.
+        """
+        return None

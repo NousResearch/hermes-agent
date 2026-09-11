@@ -67,4 +67,7 @@ Override the `ProviderProfile` hooks in a subclass for per-provider
 quirks — see `plugins/model-providers/openrouter/__init__.py` for
 `build_extra_body` and `build_api_kwargs_extras` examples, and
 `plugins/model-providers/gemini/__init__.py` for `thinking_config`
-translation.
+translation. A provider catalog can expose picker prices by overriding
+`fetch_model_pricing()` and returning per-token `prompt` / `completion`
+strings. Represent zero prices as free; sale chrome remains an explicitly
+provider-specific UI policy rather than something inferred by this hook.

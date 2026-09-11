@@ -27,6 +27,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.email.uid_cursor import EmailUidCursor
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
 
@@ -165,6 +166,35 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _uid_int(uid: Any) -> int:
+    """Numeric value of an IMAP UID token, or 0 when it is not a number."""
+    try:
+        return int(uid)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_uidvalidity(imap: "imaplib.IMAP4") -> str:
+    """UIDVALIDITY of the selected mailbox, or '' when the server sent none.
+
+    SELECT already carries UIDVALIDITY in an untagged response that imaplib
+    buffers, so reading it here costs no extra round trip.  STATUS would cost
+    one, and RFC 3501 discourages STATUS against the mailbox that is currently
+    selected.
+    """
+    try:
+        _typ, data = imap.response("UIDVALIDITY")
+    except Exception as e:  # noqa: BLE001 — best-effort; '' just re-baselines
+        logger.debug("[Email] Could not read UIDVALIDITY: %s", e)
+        return ""
+    if not data or not data[0]:
+        return ""
+    value = data[0]
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("ascii", errors="replace")
+    return str(value).strip()
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -364,6 +394,18 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
+        # Resume the INBOX where the last run stopped instead of re-baselining against the whole mailbox on
+        # every start, so mail that arrived while the gateway was down still gets answered (#80925). Opt in
+        # via config.yaml:
+        #   platforms:
+        #     email:
+        #       resume_after_downtime: true
+        # Default off: an existing install keeps today's behavior exactly, and nothing is read from or written
+        # to disk. See uid_cursor.py for what is persisted and why it is one integer rather than a set of UIDs.
+        # The cursor exists only when the option is on, so `is not None` is the single test for "resume mode".
+        self._uid_cursor: Optional[EmailUidCursor] = (
+            EmailUidCursor(self._address) if bool(extra.get("resume_after_downtime", False)) else None
+        )
         # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
@@ -411,6 +453,44 @@ class EmailAdapter(BasePlatformAdapter):
         finally:
             _close_imap(imap)
 
+    def _establish_resume_point(self, imap: "imaplib.IMAP4", cursor: EmailUidCursor) -> None:
+        """Decide which UID this run resumes after. INBOX must be selected.
+
+        A cursor stored in the same UIDVALIDITY generation is resumed from: everything above it is mail that
+        arrived while the gateway was down, and the ordinary poll loop dispatches it on its first tick —
+        there is no separate catch-up path.
+
+        With no usable cursor — first opted-in start, an unreadable file, or a mailbox whose UIDVALIDITY
+        changed — we baseline at the highest UID present. That is exactly the default path's promise that
+        mail already in the INBOX is never answered.
+
+        A failed baseline search is not an empty mailbox: the 0 it leaves behind is indistinguishable from
+        one, and recording it would make the first poll search UID 1:* and answer the whole INBOX. The run
+        drops the cursor and behaves as if the option were off instead; the next start tries again.
+        """
+        uidvalidity = _read_uidvalidity(imap)
+        if not uidvalidity:
+            logger.warning("[Email] Mailbox reported no UIDVALIDITY — resume_after_downtime cannot store a "
+                           "resume point and behaves as if it were off.")
+        resume = cursor.resume_from(uidvalidity)
+        if resume is not None:
+            logger.info("[Email] IMAP connection test passed. Resuming after UID %d — mail that arrived "
+                        "since then will be answered.", resume)
+            return
+        status, data = imap.uid("search", None, "ALL")
+        if status != "OK":
+            logger.warning("[Email] Baseline UID search failed (%s) — no resume point this run; behaving as "
+                           "if resume_after_downtime were off.", status)
+            self._uid_cursor = None
+            return
+        highest = 0
+        if data and data[0]:
+            for uid in data[0].split():
+                highest = max(highest, _uid_int(uid))
+        cursor.baseline(uidvalidity, highest)
+        logger.info("[Email] IMAP connection test passed. No usable resume point — baselined at UID %d; "
+                    "mail already in the INBOX is not answered.", highest)
+
     def _connect_smtp(self) -> smtplib.SMTP:
         """SMTP connection with TLS established (callers go straight to ``login()``). An unreachable IPv6 address can
         hang until the socket timeout, so connection-level failures retry through an IPv4-only socket path (no global
@@ -433,6 +513,11 @@ class EmailAdapter(BasePlatformAdapter):
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
             with self._inbox() as imap:
+                cursor = self._uid_cursor
+                if cursor is not None:
+                    # Resume mode replaces the seen set entirely: the persisted cursor is the baseline.
+                    self._establish_resume_point(imap, cursor)
+                    return True
                 snapshot = self._seen_uids_snapshot.get(self._address)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
@@ -528,11 +613,26 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        cursor = self._uid_cursor
         try:
             with self._inbox() as imap:
-                status, data = imap.uid("search", None, "UNSEEN")
+                if cursor is not None:
+                    # The persisted cursor is the queue, not the server-side \Seen flag: a human opening the
+                    # mailbox in a mail client sets \Seen without the agent having answered anything, which
+                    # would hide that mail from an UNSEEN search forever.
+                    status, data = imap.uid("search", None, "UID", f"{cursor.uid + 1}:*")
+                else:
+                    status, data = imap.uid("search", None, "UNSEEN")
+                # Snapshot the cursor: it advances inside the loop, and filtering against a moving value
+                # would drop a lower UID if the server returned the batch out of order.
+                resume_after = cursor.uid if cursor is not None else 0
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
-                    if uid in self._seen_uids:
+                    if cursor is not None:
+                        # RFC 3501: a UID range ending in '*' always includes the last message in the
+                        # mailbox, even when the range starts above it — so filter what the server returns.
+                        if _uid_int(uid) <= resume_after:
+                            continue
+                    elif uid in self._seen_uids:
                         continue
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
@@ -541,8 +641,11 @@ class EmailAdapter(BasePlatformAdapter):
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     # IMAP fetch can return unexpected structures (e.g. a single bytes item instead of a
                     # list of tuples). See #80032.
-                    self._seen_uids.add(uid)
-                    self._trim_seen_uids()
+                    if cursor is not None:
+                        cursor.advance(_uid_int(uid))
+                    else:
+                        self._seen_uids.add(uid)
+                        self._trim_seen_uids()
                     try:
                         raw_email = msg_data[0][1]
                     except (IndexError, TypeError):
@@ -565,6 +668,10 @@ class EmailAdapter(BasePlatformAdapter):
             # connection (#79889).
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
+        finally:
+            # One write per poll that moved the cursor, including the polls that found nothing.
+            if cursor is not None:
+                cursor.flush()
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results

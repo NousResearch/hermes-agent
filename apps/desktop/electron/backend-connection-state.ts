@@ -16,15 +16,12 @@ interface PendingBackendStop<TProcess> {
 
 export interface BackendConnectionState<TProcess, TConnection> {
   startAttempt(): BackendConnectionAttempt<TConnection>
-  setPromise(attempt: BackendConnectionAttempt<TConnection>, nextPromise: Promise<TConnection>): boolean
+  setPromise(attempt: BackendConnectionAttempt<TConnection>, promise: Promise<TConnection>): boolean
   isCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean
-  attachProcess(
-    attempt: BackendConnectionAttempt<TConnection>,
-    nextProcess: TProcess
-  ): BackendProcessOwner<TProcess> | null
+  attachProcess(attempt: BackendConnectionAttempt<TConnection>, process: TProcess): BackendProcessOwner<TProcess> | null
   claimProcess(
     attempt: BackendConnectionAttempt<TConnection>,
-    nextProcess: TProcess,
+    process: TProcess,
     claim: (current: TProcess) => Promise<unknown>
   ): Promise<BackendProcessOwner<TProcess> | null>
   clearForCurrentProcess(owner: BackendProcessOwner<TProcess>): boolean
@@ -169,18 +166,19 @@ export function createBackendConnectionState<TProcess, TConnection>(): BackendCo
       }
 
       const completion = Promise.resolve()
-        .then(() => stop(current))
+        .then((): Promise<void> => stop(current))
         .then(
-          () => {
+          (): void => {
             stopping = null
           },
-          error => {
-            stopping!.failed = true
+          (error: unknown): never => {
+            pending.failed = true
             throw error
           }
         )
 
-      stopping = { process: current, completion, failed: false }
+      const pending: PendingBackendStop<TProcess> = { process: current, completion, failed: false }
+      stopping = pending
 
       return completion
     }

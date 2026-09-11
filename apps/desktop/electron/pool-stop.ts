@@ -26,7 +26,7 @@ export interface PoolStopEntry<Process = unknown> {
   process?: Process
 }
 
-export interface PoolStopperDeps<Process = unknown> {
+export interface PoolStopperDeps<Process> {
   /** The live backend pool. Entries are evicted synchronously on stop. */
   pool: Map<string, PoolStopEntry<Process>>
   /** Signal the child (tree/group kill per platform). Synchronous. */
@@ -42,7 +42,7 @@ export interface PoolStopper {
   hasPending: () => boolean
   /** Stop one pooled backend; concurrent calls share the same promise. */
   stop: (key: string) => Promise<void>
-  /** Stop every pooled backend currently in the pool. */
+  /** Stop every pooled backend and join stops already in flight. */
   stopAll: () => Promise<void>
 }
 
@@ -72,34 +72,37 @@ export function createPoolStopper<Process>(deps: PoolStopperDeps<Process>): Pool
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
 
-    const stopping = (async () => {
+    const stopping = (async (): Promise<void> => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
     })().then(
-      () => {
+      (): void => {
         stops.delete(key)
       },
-      error => {
+      (error: unknown): never => {
         pending.failed = true
         throw error
       }
     )
 
     const pending: PendingStop<Process> = { entry, completion: stopping, failed: false }
-
     stops.set(key, pending)
 
     return stopping
   }
 
   return {
-    inFlight: key => stops.get(key)?.completion,
-    hasPending: (): boolean => stops.size > 0 || [...deps.pool.values()].some(entry => entry.process != null),
+    inFlight: (key: string): Promise<void> | undefined => stops.get(key)?.completion,
+    hasPending: (): boolean =>
+      stops.size > 0 || [...deps.pool.values()].some((entry: PoolStopEntry<Process>): boolean => entry.process != null),
     stop,
-    stopAll: async () => {
+    stopAll: async (): Promise<void> => {
       const pending = new Set([...deps.pool.keys(), ...stops.keys()])
       const results = await Promise.allSettled([...pending].map(stop))
-      const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
+
+      const errors = results
+        .filter((result: PromiseSettledResult<void>): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result: PromiseRejectedResult): unknown => result.reason)
 
       if (errors.length) {
         throw new AggregateError(errors, 'Backend pool shutdown failed')

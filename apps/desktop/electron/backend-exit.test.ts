@@ -28,17 +28,28 @@ test('backend exit waits through escalation and removes its listener', async () 
   try {
     await waitForBackendExit(
       child,
-      process => {
-        escalated++
-        process.kill()
+      {
+        forceKillProcessTree: (): void => {
+          escalated++
+          child.kill()
+        },
+        killGroup: (): void => {
+          escalated++
+          child.kill()
+        }
       },
       0
     )
     assert.equal(escalated, 1)
     assert.ok(child.exitCode !== null || child.signalCode !== null)
     assert.equal(child.listenerCount('exit'), before)
-    await waitForBackendExit(child, () => {
-      throw new Error('an exited process must not be killed again')
+    await waitForBackendExit(child, {
+      forceKillProcessTree: (): never => {
+        throw new Error('an exited process must not be killed again')
+      },
+      killGroup: (): never => {
+        throw new Error('an exited process must not be killed again')
+      }
     })
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
@@ -55,7 +66,7 @@ test('backend exit refuses a live child rather than reporting a completed shutdo
 
   try {
     await assert.rejects(
-      waitForBackendExit(child, () => {}, 0),
+      waitForBackendExit(child, { forceKillProcessTree: (): void => {}, killGroup: (): void => {} }, 0),
       /did not exit/
     )
     assert.equal(child.exitCode, null)
@@ -77,8 +88,13 @@ test('a failed spawn has no process to escalate', async () => {
     assert.equal(child.pid, undefined)
     await waitForBackendExit(
       child,
-      () => {
-        throw new Error('a failed spawn must not be signalled')
+      {
+        forceKillProcessTree: (): never => {
+          throw new Error('a failed spawn must not be signalled')
+        },
+        killGroup: (): never => {
+          throw new Error('a failed spawn must not be signalled')
+        }
       },
       0
     )

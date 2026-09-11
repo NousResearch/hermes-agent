@@ -20,8 +20,6 @@
  * the function body.
  */
 
-import type { ChildProcess } from 'node:child_process'
-
 export interface StopBackendChildDeps {
   /** Defaults to the real platform check; injectable for tests. */
   isWindows?: boolean
@@ -51,13 +49,80 @@ export interface KillableChild extends BackendProcessRoot {
   kill: (signal: NodeJS.Signals) => void
 }
 
+export interface WaitableChild extends KillableChild {
+  exitCode: number | null
+  signalCode: string | null
+  once: (event: 'exit', listener: () => void) => unknown
+  removeListener: (event: 'exit', listener: () => void) => unknown
+}
+
+/** Graceful exit, SIGKILL escalation, then a bounded wait for the escalation. */
+export async function waitForBackendExit(
+  child: WaitableChild | null | undefined,
+  deps: StopBackendChildDeps,
+  timeoutMs: number = 5000
+): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return
+  }
+
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+
+  const wait = (delay: number): Promise<void> =>
+    new Promise<void>((resolve: () => void): void => {
+      if (exited()) {
+        resolve()
+
+        return
+      }
+
+      const finish = (): void => {
+        clearTimeout(timer)
+        child.removeListener('exit', finish)
+        resolve()
+      }
+
+      const timer = setTimeout(finish, delay)
+      child.once('exit', finish)
+    })
+
+  await wait(timeoutMs)
+
+  if (exited()) {
+    return
+  }
+
+  try {
+    if ((deps.isWindows ?? process.platform === 'win32') && Number.isInteger(child.pid)) {
+      deps.forceKillProcessTree(child.pid as number)
+    } else if (Number.isInteger(child.pid)) {
+      try {
+        const killGroup = deps.killGroup ?? ((pid: number, signal: string): boolean => process.kill(pid, signal))
+        killGroup(-(child.pid as number), 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+    } else {
+      child.kill('SIGKILL')
+    }
+  } catch {
+    // The process may have exited while the signal was sent. Verify below.
+  }
+
+  await wait(1000)
+
+  if (!exited()) {
+    throw new Error(`Backend PID ${child.pid} did not exit after escalation`)
+  }
+}
+
 /**
  * Stop a managed child process, choosing the right strategy for the platform.
  * No-ops silently if `child` is falsy, already killed, or the kill attempt
  * throws (the process may already be gone) -- mirrors the original inline
  * best-effort semantics in main.ts.
  */
-export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps): void {
+export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps) {
   if (!child || child.killed) {
     return
   }
@@ -102,47 +167,4 @@ export function stopBackendTreesForUpdate(
   }
 
   deps.stopAllPoolBackends()
-}
-
-export async function waitForBackendExit(
-  child: ChildProcess | null | undefined,
-  escalate: (child: ChildProcess) => void,
-  timeoutMs: number = 5000
-): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
-    return
-  }
-
-  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
-
-  const wait = (delay: number): Promise<void> =>
-    new Promise(resolve => {
-      if (exited()) {
-        resolve()
-
-        return
-      }
-
-      const finish = (): void => {
-        clearTimeout(timer)
-        child.removeListener('exit', finish)
-        resolve()
-      }
-
-      const timer = setTimeout(finish, delay)
-      child.once('exit', finish)
-    })
-
-  await wait(timeoutMs)
-
-  if (exited()) {
-    return
-  }
-
-  escalate(child)
-  await wait(1000)
-
-  if (!exited()) {
-    throw new Error(`Backend PID ${child.pid} did not exit after escalation`)
-  }
 }

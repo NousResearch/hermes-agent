@@ -2,11 +2,7 @@
 
 import * as path from 'node:path'
 
-import { clearStaleGitLocks } from '../gitlock'
-import { resolveBehindCount, shouldCountCommits } from '../update-count'
 import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from '../update-remote'
-import { classifyUpdateRoot } from '../update-root-policy'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
@@ -20,33 +16,23 @@ import {
 } from '../updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, stopSafeVenvBlockers } from '../venv-blocker-scan'
 
+import { checkCheckoutUpdates, type CheckoutCheckDeps } from './checkout-check'
+
 import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, UpdaterStrategy } from './index'
 
 /**
  * Everything the checkout flow needs from the app shell. These are the
  * impure edges only — all update logic lives here.
  */
-export interface CheckoutStrategyDeps {
+export interface CheckoutStrategyDeps extends CheckoutCheckDeps {
   hermesHome: string
   isWindows: boolean
   isMac: boolean
   defaultUpdateBranch: string
   updateHandoffDwellMs: number
   directoryExists: (filePath: string) => boolean
-  readCanonicalInstallStamp: () => { updateMechanism?: string } | null
-  readDesktopUpdateConfig: () => { branch: string }
-  resolveUpdateRoot: () => string
   resolveUpdaterBinary: () => string | null
-  resolveHealedBranch: (updateRoot: string, branch: string) => Promise<string>
-  getOriginUrl: (updateRoot: string) => Promise<string>
-  runGit: (args: string[], options?: { cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }>
   firstLine: (text: string) => string
-  readCommitLog: (
-    cwd: string,
-    branch: string,
-    isShallow: boolean
-  ) => Promise<{ sha: string; summary: string; author: string; at: number }[]>
-  fetchCompareBehindCount: (input: { currentSha: string; originUrl: string; targetSha: string }) => Promise<number | null>
   pathWithVenvBin: (...entries: string[]) => string
   venvHermesShimPath: (updateRoot: string) => string
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
@@ -81,8 +67,8 @@ export function buildManualUpdateCommand(currentBranch: string | null | undefine
 export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrategy {
   const mechanism: UpdaterMechanism = deps.isWindows ? 'windows-handoff' : 'posix-handoff'
 
-  async function check(): Promise<UpdaterStatusWire> {
-    const status = await checkBody()
+  async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
+    const status = await checkCheckoutUpdates(deps, opts)
     status.mechanism = mechanism
 
     return status
@@ -96,179 +82,6 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   }
 
   return { mechanism, check, apply }
-
-  async function checkBody(): Promise<UpdaterStatusWire> {
-  const updateRoot = deps.resolveUpdateRoot()
-  let { branch } = deps.readDesktopUpdateConfig()
-  const gitDir = path.join(updateRoot, '.git')
-
-  if (!deps.directoryExists(gitDir)) {
-    return {
-      supported: false,
-      reason: 'not-a-git-checkout',
-      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
-      hermesRoot: updateRoot,
-      branch
-    }
-  }
-
-  // The update-root policy (update-root-policy.ts): a `.git` tree the install
-  // contract does not manage with updateMechanism "self" (or one with no
-  // stamp at all — a dev checkout) is the only legitimate git-update
-  // territory. A steward-owned tree (external / electron-updater) must not be
-  // pulled into from the desktop.
-  const rootStamp = deps.readCanonicalInstallStamp()
-
-  const rootPolicy = classifyUpdateRoot({
-    isGitTree: true,
-    updateMechanism: (rootStamp?.updateMechanism as any) ?? null
-  })
-
-  if (!rootPolicy.updatable) {
-    return {
-      supported: false,
-      reason: `update-root-${rootPolicy.verdict}`,
-      message: rootPolicy.message || `${updateRoot} is not desktop-updatable.`,
-      advice: rootPolicy.advice,
-      hermesRoot: updateRoot,
-      branch
-    }
-  }
-
-  branch = await deps.resolveHealedBranch(updateRoot, branch)
-  const originUrl = await deps.getOriginUrl(updateRoot)
-
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      deps.runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-
-    const targetSha = deps.firstLine(target.stdout).split(/\s+/)[0] || ''
-
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: deps.firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-
-    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
-    // fabricate a "1 commit behind". Recover the exact count via the GitHub
-    // compare API when possible; otherwise behind stays null ("update
-    // available, count unknown") and updateAvailable carries the signal.
-    // ahead_by === 0 with differing tips means the remote tip is reachable
-    // from our HEAD — a local carried commit sitting AHEAD, not behind:
-    // flagging that as an update nudges the user into wiping their work.
-    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
-
-    const sshBehind = tipsEqual
-      ? 0
-      : await deps.fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
-
-    const upToDate = tipsEqual || sshBehind === 0
-
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: upToDate ? 0 : sshBehind,
-      updateAvailable: !upToDate,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
-
-  const fetched = await deps.runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-
-  if (fetched.code !== 0) {
-    return {
-      supported: true,
-      branch,
-      error: 'fetch-failed',
-      message: deps.firstLine(fetched.stderr) || 'git fetch failed.',
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
-  ])
-
-  const isShallow = shallowStr === 'true'
-
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
-
-  // A positive directional ancestry result remains trustworthy in a shallow
-  // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await deps.runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  let behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    targetIsAncestorOfHead
-  })
-
-  // Recover the exact count a shallow clone can't compute: the GitHub compare
-  // API knows the full graph regardless of local clone depth. Best-effort —
-  // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
-  if (behind === null) {
-    behind = await deps.fetchCompareBehindCount({ currentSha, originUrl, targetSha })
-  }
-
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone): still list what origin offers — resolveCommitLogSelection keeps
-  // the shallow log to the fetched tip so the range walk can't enumerate the
-  // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await deps.readCommitLog(updateRoot, branch, isShallow) : []
-
-  return {
-    supported: true,
-    branch,
-    currentBranch,
-    behind,
-    updateAvailable: behind === null || behind > 0,
-    currentSha,
-    targetSha,
-    commits,
-    dirty: dirtyStr.length > 0,
-    hermesRoot: updateRoot,
-    fetchedAt: Date.now()
-  }
-  }
 
   async function applyBody(opts: { stopSafeBlockers?: boolean } = {}): Promise<UpdaterApplyResultWire> {
   const updater = deps.resolveUpdaterBinary()

@@ -43,6 +43,15 @@ settings via `save_config_value()` in `cli.py`. **Adding an alias** = add to `al
 surface updates automatically. Commands that mutate system-prompt state default to deferred
 invalidation with `--now` opt-in (root invariant).
 
+### Shared goal commands
+
+`hermes_cli/goal_command.py::dispatch_goal_command` owns `/goal` parsing and manager
+mutations. CLI, messaging gateway, TUI/Desktop/dashboard and Desktop goal controls
+all delegate there; adapters only resolve sessions, authorize gate creation, render
+results, and schedule kickoff/continuation prompts. Async callers preserve ContextVars
+when running dispatch off-loop (drafting uses profile-scoped auxiliary credentials).
+Do not add a surface-specific goal parser. ACP has no goal command or goal loop yet.
+
 ## Config system (`hermes_cli/config.py`)
 
 - **config.yaml option:** add to `DEFAULT_CONFIG`. Bump `_config_version` ONLY to actively
@@ -121,3 +130,32 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`.
+
+## Nous free tier (`hermes_cli/anon_auth.py`)
+
+Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
+account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it moves a config on the
+welcome route to the account's host and the tier's recommended default
+(`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).
+
+The shared flow, states, and copy live in `anon_sign_in.py`; CLI rendering lives in
+`anon_sign_in_cli.py`. `anon_auth.py` keeps identity, promotion polling, and settlement, and
+re-exports the existing sign-in API. The flow resolves identity and persistence collaborators
+through `anon_auth` at call time to preserve module-attribute monkeypatch seams.
+
+The sign-in itself is one composition: `anon_auth.run_sign_in()` yields `SignInState`s (`Code`,
+`Waiting`, `Completed`, `Declined`, `Superseded`, `TimedOut`, `Retired`, `Failed`,
+`AlreadySignedIn`, `Unavailable`). It reads the current state itself, holds one absolute deadline
+across both waits, persists only after a completed promotion **and** a token grant, runs
+`settle_after_upgrade` exactly once per completion, and never lets a persist or settle failure
+escape as an exception — it becomes `Failed`. Every state carries its own `.copy` (the chat form,
+which never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller
+maps a reason to a string. `cancelled()` stops an attempt; `cancel_wins_after_promotion` decides
+what happens when the server had already completed the transfer — the desktop keeps `True` (a
+DELETE means "not on this machine"), the gateway passes `False` (a supersede must not discard a
+transfer the user actually approved). `scope` is entered only around the precondition and persist
+blocks, never across a `yield` or a network wait, because `run_in_executor` does not carry
+contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler and the desktop
+promotion poller are renderers over it; a surface that needs the cancel check and the save to be
+atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
+is a separate path (`_nous_plain_poller`) and must stay one.

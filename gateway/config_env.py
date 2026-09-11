@@ -341,13 +341,6 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
         )
 
 
-def _session_settings(config: GatewayConfig) -> None:
-    for env, attr in (("SESSION_IDLE_MINUTES", "idle_minutes"), ("SESSION_RESET_HOUR", "at_hour")):
-        if raw := getenv(env):
-            with contextlib.suppress(ValueError):
-                setattr(config.default_reset_policy, attr, int(raw))
-
-
 def _plugin_probe_seed(entry) -> Optional[dict]:
     """``env_enablement_fn()`` result as a non-empty dict, else None."""
     if entry.env_enablement_fn is None:
@@ -457,7 +450,11 @@ def _relay(config: GatewayConfig) -> None:
     relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip() if existing_relay else ""
     relay_url_val = relay_url_env or relay_url_yaml
     if relay_url_val:
-        _enable_from_env(config, Platform.RELAY).extra["relay_url"] = relay_url_val.rstrip("/")
+        relay_config = _enable_from_env(config, Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+        # An opted-out relay does not own this profile's native connections.
+        if not relay_config.enabled:
+            return
 
     if not relay_url_env or is_truthy_value(getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS")):
         return
@@ -623,7 +620,7 @@ _ENV_STEPS: tuple = (
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),
-    _session_settings,
+
     _enable_plugin_platforms_from_env,
     _relay,
     _scrub_explicit_markers,

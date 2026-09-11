@@ -272,13 +272,8 @@ def _finalize_child_env(env: dict) -> dict:
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
-    try:  # strip dispatcher-owned Kanban env from delegate_task child subprocesses
-        from agent.delegation_context import is_delegated_child_process_context, scrub_kanban_env
-        if is_delegated_child_process_context():
-            return scrub_kanban_env(env)
-    except Exception:
-        pass
-    return env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -338,7 +333,8 @@ def build_subprocess_env(
         _apply_profile_home(env)
     if extra:
         env.update(extra)
-    return env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
 
 
 # --- Shell discovery ---
@@ -691,6 +687,7 @@ class LocalEnvironment(BaseEnvironment):
     the session snapshot preserves env vars across calls; CWD persists via the
     stdout marker."""
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.

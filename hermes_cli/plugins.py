@@ -1127,6 +1127,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        # Fallback hooks registered by a memory provider before general discovery.
+        self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
@@ -1273,8 +1275,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if not enabled_names:
             return
         try:
-            reset_secret_source_cache()
-            load_hermes_dotenv()
+            # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
+            # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
+            # wiped their snapshots; a routed discovery must rebuild the profile it just dropped.
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            reset_secret_source_cache(home)
+            load_hermes_dotenv(hermes_home=home)
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
                          ", ".join(sorted(enabled_names)))
         except Exception as exc:

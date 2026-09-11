@@ -19,6 +19,7 @@ import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { FindBar } from '@/components/find-bar'
+import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -113,6 +114,7 @@ import {
   SETTINGS_ROUTE,
   syncWorkspaceRoute
 } from '../routes'
+import { SessionImportView } from '../session-import'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -1143,20 +1145,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
-  // against the static system cluster — in the tree layout the titlebar band
-  // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
-  // Count every button the static cluster actually renders: four systemTools
-  // (layout, haptics, keybinds, settings) PLUS the always-present
-  // right-sidebar toggle (see titlebar-controls.tsx). A shared width that
-  // under-counts leaves the find bar, the titlebar header padding, and the
-  // pane-cluster anchor overlapping the fifth button.
-  const SYSTEM_TOOL_COUNT = 5
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
+  // App controls live on the left; flip and the right toggle share the right.
+  const titlebarToolsWidth = titlebarToolsWidthCss(2)
 
-  const titlebarToolsWidth =
-    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
+  const leftToolsWidth = titlebarToolsWidthCss(
+    4 + [...leftTitlebarTools, ...rightTitlebarTools].filter(tool => !tool.hidden).length
+  )
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1166,10 +1160,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           {
             '--titlebar-controls-left': `${controlsPos.left}px`,
             '--titlebar-controls-top': `${controlsPos.top}px`,
+            '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
-            '--titlebar-tools-width': titlebarToolsWidth,
-            '--shell-preview-toolbar-gap': systemToolsWidth
+            '--titlebar-tools-width': titlebarToolsWidth
           } as CSSProperties
         }
       >
@@ -1201,6 +1195,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
+      {/* One host for every free-tier sign-in entry point (Settings › Billing,
+          the statusbar chip, the first-launch intro). It owns the flow; the
+          entry points only record the intent. */}
+      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}
@@ -1244,6 +1242,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             }}
           />
         </Suspense>
+      )}
+
+      {currentView === 'session-import' && (
+        <SessionImportView
+          key={`${activeConnectionId}:${activeGatewayProfile}`}
+          onClose={closeOverlayToPreviousRoute}
+          onOpenSession={sessionId => {
+            closeOverlayToPreviousRoute()
+            openSession(sessionId, navigate, 'stack')
+          }}
+          owner={{ connectionId: activeConnectionId || 'local', profile: activeGatewayProfile }}
+        />
       )}
 
       {commandCenterOpen && (

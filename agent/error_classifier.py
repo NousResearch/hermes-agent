@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
 
@@ -113,7 +114,8 @@ _BILLING_ERROR_CODES = frozenset({
 # contains an overflow phrase; rate limit is matched first so throttle wins.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
-    "tokens per minute", "requests per day", "try again in", "please retry after", "resource_exhausted",
+    "tokens per minute", "requests per day", "try again in", "please retry after",
+    "resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "rate increased too quickly", "throttlingexception", "too many concurrent requests",
     "servicequotaexceededexception", "throttling",
 )
@@ -124,6 +126,7 @@ _RATE_LIMIT_PATTERNS = (
 _OVERLOADED_PATTERNS = (
     "overloaded", "temporarily overloaded", "service is temporarily overloaded",
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
+    "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
     "at capacity", "over capacity",
 )
@@ -149,9 +152,14 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
 # exceeds size limit" #76039) — a specific 400 before the request hits 413. A
 # non-image media hit is harmless: the shrink pass finds no image parts.
+# "patches after processing": OpenAI Codex Responses rejects an image whose
+# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
+# with wording that names no image-size vocabulary — without this pattern it
+# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "patches after processing",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -168,8 +176,33 @@ _IMAGE_CORRUPT_PATTERNS = (
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
-    "tool_call.content must be string",
+    # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
+    "tool_call.content must be string", "tool.content.str", "input should be a valid string",
 )
+
+# Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
+# llama.cpp/vLLM OOM, Metal/CUDA allocation ceilings). The server aborts on a
+# prefill memory PEAK, not a window limit, yet its remediation tail says
+# "reduce context length" — so without this list the request routes into
+# compression, which cannot lower a prefill peak: it burns the compression
+# budget, re-hits the wedged server each attempt and ends in a session reset.
+# Every token names memory/allocation in BYTES, never a token count, so the
+# list is disjoint from _CONTEXT_OVERFLOW_PATTERNS. Must be checked BEFORE
+# both overflow AND the usage-limit disambiguation ("memory limit exceeded"
+# contains "limit exceeded", which would otherwise read as billing). oMLX
+# reworded the accounting sentence in 0.5.7 ("predicted peak would require /
+# exceed"); the 0.5.6 wording is still in the field, so both stay. (#52261)
+_MEMORY_CEILING_PATTERNS = (
+    "memory guard", "memory limit exceeded", "memory_guard_tier", "dynamic ceiling",
+    "memory ceiling", "available memory", "out of memory", "insufficient memory",
+    "prefill would require", "predicted peak would", "prefill safety cap", "metal_cap",
+)
+
+# Structured codes identifying the same rejection at the source, before an
+# OpenAI-compatible proxy flattens the body and drops the wording.
+_MEMORY_CEILING_ERROR_CODES = frozenset({
+    "prefill_memory_exceeded", "prefill_memory_aborted", "omlx_prefill_memory_exceeded",
+})
 
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
@@ -379,7 +412,8 @@ _IMAGE_TOOL_RULES = (
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
 # model-load OOM as 503). Empty-response advisories must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
-    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
+    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+    (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
 
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
@@ -397,7 +431,8 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 )
 
 # Status-less message path, head (before usage-limit disambiguation).
-_MESSAGE_HEAD_RULES = ((_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),) + _IMAGE_TOOL_RULES
+_MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE)) + _IMAGE_TOOL_RULES
 
 # Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
 # instead of rotating; policy block before model_not_found; timeout/connection
@@ -418,6 +453,7 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
     **dict.fromkeys(("model_not_found", "model_not_available", "invalid_model"), _V_MODEL_NOT_FOUND),
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
+    **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
 
@@ -479,13 +515,55 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
+    """The Nous inference gateway's welcome-tier (free tier) refusals, read from the structured body.
+
+    A 429 carrying a fairshare ``reason`` is either a tier gate (``model_not_free`` /
+    ``feature_not_free``: the model or feature is never served on the free tier, so retrying is
+    pointless — abort this route and fall back) or capacity (``at_capacity`` / ``admission_closed``
+    / ``rate_limited``: honour ``retry_after``, never rotate the free tier's only credential). A
+    400/403 whose message names the wrong host or a dark tier is deterministic for the request.
+    The parsed refusal rides ``error_context`` so the terminal copy can say what happened.
+    """
+    from hermes_cli.anon_auth import (
+        WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
+    status = c.status_code
+    if status == 429:
+        refusal = parse_welcome_refusal(c.body)
+        if refusal is None:
+            return None
+        ctx = {"welcome_refusal": refusal}
+        if refusal["reason"] in WELCOME_TIER_GATE_REASONS:
+            return _v(_R.model_not_found, retryable=False, should_fallback=True, error_context=ctx)
+        if refusal["retry_after"] > 0:
+            ctx["reset_at"] = time.time() + refusal["retry_after"]
+        return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
+    kind = welcome_route_refusal(status, c.msg)
+    if kind is None:
+        return None
+    ctx = {"welcome_route": kind}
+    if status == 403:
+        return _v(_R.auth_permanent, retryable=False, should_fallback=True, error_context=ctx)
+    return _v(_R.format_error, retryable=False, should_fallback=True, error_context=ctx)
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    welcome = _nous_welcome_tier(c)
+    if welcome is not None:
+        return welcome
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _V_CONTENT_BLOCKED
+    # ChatGPT Codex masks a rejected encrypted-reasoning replay behind the same bare
+    # ``invalid_prompt: Request blocked.`` it uses for real blocks (#92353). Exact envelope
+    # + provider only. The verdict keeps format_error's abort-and-fallback hints; the one
+    # extra thing it buys is turn_recovery's replay strip, which still requires cached
+    # ``codex_reasoning_items`` — a genuine block with nothing to strip behaves as before.
+    if _is_codex_masked_replay_rejection(c):
+        return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
@@ -681,7 +759,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
-    ) or "could not decrypt the provided encrypted_content" in msg:
+    ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
+        "conflicting authenticated continuation identities" in msg
+    ):
         return _V_INVALID_ENCRYPTED
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
@@ -705,6 +786,10 @@ def _classify_400(c: _Ctx) -> Verdict:
             "error=%.200s", c.num_messages, c.approx_tokens, msg,
         )
         return _V_FORMAT_ERROR
+    # Memory ceiling by code: _by_status runs before _by_error_code, so a
+    # 400 whose wording a proxy stripped would fall through to format_error.
+    if code in _MEMORY_CEILING_ERROR_CODES:
+        return _V_OVERLOADED
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict
@@ -724,6 +809,7 @@ def _classify_400(c: _Ctx) -> Verdict:
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
+    422: lambda c: _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR,
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
@@ -775,6 +861,22 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
         if error_msg and param in error_msg and any(w in error_msg for w in _PARAM_REJECTION_WORDS):
             return not any(sender in provider_slug for sender in senders)
     return False
+
+
+_CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
+
+
+def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
+    """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
+    ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
+    ``response.failed`` text ``"invalid_prompt: Request blocked."``."""
+    if c.provider_slug != "openai-codex" or c.status_code not in (None, 400):
+        return False
+    # The OpenAI SDK unwraps ``body["error"]`` on status errors; stream frames keep the envelope.
+    body_msg = next((str(m).strip().lower() for m in _body_message_candidates(c.body or {}) if m), "")
+    return (c.code == "invalid_prompt" and body_msg == _CODEX_MASKED_REPLAY_MESSAGE) or (
+        c.msg.strip() == f"invalid_prompt: {_CODEX_MASKED_REPLAY_MESSAGE}"
+    )
 
 
 def _error_obj(body: Any) -> dict:

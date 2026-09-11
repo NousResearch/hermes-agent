@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -295,6 +296,7 @@ class MemoryManager:
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
+        self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
@@ -340,6 +342,7 @@ class MemoryManager:
                 )
                 return
             self._has_external = True
+            self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
 
@@ -434,7 +437,15 @@ class MemoryManager:
                 self._external_prefetch_threads.pop(provider.name, None)
         if "error" in result_box:
             raise result_box["error"]
-        return result_box.get("value", "")
+        result = result_box.get("value", "")
+        if result and result.strip():
+            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
+            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            result = spill_if_oversized(
+                result, session_id=session_id, source=f"{provider.name} memory prefetch",
+                config=self._external_prefetch_spill_config,
+            )
+        return result
 
     def describe_recall(self) -> str:
         """Deterministic recall indicator line (e.g. ``"🧠 Provider — recalled 3 memories"``); ``""`` if none.
@@ -461,27 +472,31 @@ class MemoryManager:
         ), kind="prefetch")
 
     @staticmethod
-    def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
-        """Whether ``sync_turn`` accepts a ``messages`` keyword (uninspectable → assume yes)."""
+    def _provider_sync_accepts(provider: MemoryProvider, keyword: str) -> bool:
+        """Whether ``sync_turn`` accepts ``keyword`` (uninspectable → assume yes)."""
         params = _signature_params(provider.sync_turn)
-        return params is None or _has_var_kwargs(params) or "messages" in params
+        return params is None or _has_var_kwargs(params) or keyword in params
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
-                 messages: Optional[List[Dict[str, Any]]] = None) -> None:
+                 messages: Optional[List[Dict[str, Any]]] = None,
+                 turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
+        ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
-            if messages is not None and self._provider_sync_accepts_messages(provider):
-                kwargs["messages"] = messages
+            for keyword, value in optional_kwargs.items():
+                if value is not None and self._provider_sync_accepts(provider, keyword):
+                    kwargs[keyword] = value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 
         self._submit_background(
@@ -584,7 +599,13 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))
+        def _tick(p: MemoryProvider) -> None:
+            # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
+            params = _signature_params(p.on_turn_start)
+            accepted = kwargs if params is None or _has_var_kwargs(params) else {k: v for k, v in kwargs.items() if k in params}
+            p.on_turn_start(turn_number, message, **accepted)
+
+        self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
@@ -748,7 +769,7 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                self.on_memory_write(action, target, str(op.get("content") or ""), metadata=metadata)
+                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 

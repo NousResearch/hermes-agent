@@ -330,7 +330,23 @@ def load_permanent_allowlist() -> set:
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
-        patterns = set(config.get("command_allowlist", []) or [])
+        raw = config.get("command_allowlist")
+        legacy = isinstance(raw, str)
+        if legacy:
+            # Old config-set versions serialized list values as scalar strings.
+            import yaml
+            try:
+                raw = yaml.safe_load(raw)
+            except yaml.YAMLError:
+                raw = False
+        if raw is None and not legacy:
+            raw = []
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
+            return set()
+        if legacy:
+            logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
+        patterns = set(raw)
         if patterns:
             load_permanent(patterns)
         return patterns
@@ -857,6 +873,17 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 
 
+def _user_deny_block(command: str) -> dict | None:
+    """The operator's ``approvals.deny`` rules are documented as never bypassable — not by yolo,
+    not by mode=off, and not by an isolated container either: they express intent about what the
+    agent may DO, not what it can reach, so they are evaluated before the container fast path."""
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is None:
+        return None
+    logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
+    return _user_deny_block_result(deny_pattern)
+
+
 def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
@@ -871,11 +898,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
         if is_sudo_guess:
             logger.warning("Sudo stdin guard block: %s (command: %s)", sudo_guess_desc, command[:200])
             return _sudo_stdin_block_result(sudo_guess_desc)
-    deny_pattern = _match_user_deny_rule(command)
-    if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
-        return _user_deny_block_result(deny_pattern)
-    return None
+    return _user_deny_block(command)
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -885,7 +908,7 @@ def check_dangerous_command(command: str, env_type: str,
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
@@ -976,7 +999,7 @@ def check_all_command_guards(command: str, env_type: str,
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _user_deny_block(command) or _approved()
 
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:

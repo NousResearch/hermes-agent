@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextvars
 import hashlib
 import hmac
 import itertools
@@ -82,10 +83,11 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    BasePlatformAdapter, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -1896,8 +1898,11 @@ class FeishuAdapter(BasePlatformAdapter):
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             if self._enqueue_pending_inbound_event(data):
+                # Replayed events hop onto the loop from THIS thread's context; keep the WS thread's
+                # profile scope (see _connect_websocket) rather than starting from an empty one.
                 threading.Thread(
-                    target=self._drain_pending_inbound_events, name="feishu-pending-inbound-drainer", daemon=True,
+                    target=contextvars.copy_context().run, args=(self._drain_pending_inbound_events,),
+                    name="feishu-pending-inbound-drainer", daemon=True,
                 ).start()
             return
         self._submit_on_loop(loop, self._handle_message_event_data(data))
@@ -3715,7 +3720,14 @@ class FeishuAdapter(BasePlatformAdapter):
             # Without the "channel" UA tag Feishu won't push group @mention events over WS.
             extra_ua_tags=["channel"],
         )
-        self._ws_future = loop.run_in_executor(None, _run_official_feishu_ws_client, self._ws_client, self)
+        # The lark SDK owns this thread and fires every event/card callback on it; those hop back
+        # to the adapter loop via run_coroutine_threadsafe, which copies the CALLER's context — so
+        # whatever scope the WS thread carries is what pre-handler work (inbound media caching,
+        # .update_response marker, reactions env, drive comments) runs under. A bare executor
+        # thread has an empty context = launch profile. connect() runs inside the profile scope
+        # under multiplex (and the supervisor task inherits it), so snapshot it here.
+        self._ws_future = loop.run_in_executor(
+            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

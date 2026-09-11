@@ -23,7 +23,8 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override)
+    get_hermes_home, get_hermes_home_override, profile_name_for_home,
+    reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
@@ -34,7 +35,8 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
-from tui_gateway.transport import (StdioTransport, Transport, bind_transport, current_transport, reset_transport)
+from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
+                                   current_transport, reset_transport)
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount.
 _LONG_HANDLERS = frozenset({
+    "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
@@ -170,6 +173,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -441,9 +445,23 @@ def _profile_db(params: dict | None = None):
                 db.close()
 
 
+def _canonical_profile_request(name: str) -> str:
+    """Canonicalize profile basenames emitted by older session-info payloads.
+
+    ``Path(default_home).name`` was historically sent as a profile id. Those basenames are
+    installation details — unless a real named profile of that name exists (``hermes`` is a legal
+    id), in which case it wins; other unknown names keep failing closed in ``_profile_home``.
+    """
+    if name.casefold() in {".hermes", "hermes"}:
+        from hermes_cli import profiles as profiles_mod
+        if not Path(profiles_mod.get_profile_dir(name)).is_dir():
+            return "default"
+    return name
+
+
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
-    name = (profile or "").strip()
+    name = _canonical_profile_request((profile or "").strip())
     return name if name and _profile_home(name) is not None else _current_profile_name()
 
 
@@ -456,15 +474,14 @@ def _db_unavailable_error(rid, *, code: int):
 # override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
-    if not (name := (profile or "").strip()):
+    if not (name := _canonical_profile_request((profile or "").strip())):
         return None
-    try:
-        from hermes_cli import profiles as profiles_mod
-        home = Path(profiles_mod.get_profile_dir(name))
-    except Exception:
-        return None
-    if home.resolve() == Path(_hermes_home).resolve() or not home.exists():
-        return None  # already the launch profile (no override needed), or no such profile
+    from hermes_cli import profiles as profiles_mod
+    home = Path(profiles_mod.get_profile_dir(name))
+    if not home.is_dir():
+        raise FileNotFoundError(f"Profile '{name}' does not exist.")
+    if home.resolve() == Path(_hermes_home).resolve():
+        return None  # already the launch profile (no override needed)
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 
@@ -739,16 +756,20 @@ def handle_request(req: dict) -> dict | None:
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
     """Unforgeable steering authority for this RPC context: the public session id is only a lookup
-    hint; authority is the identity of BOTH the ContextVar-bound transport and the live in-memory
-    record under that id, so transport rebinding, removal or id reuse invalidates an earlier generation."""
+    hint; authority requires the ContextVar-bound transport to be ATTACHED to the live in-memory record
+    under that id, so transport detachment, session removal or id reuse invalidates an earlier generation."""
     transport = current_transport()
     if transport is None or not session_id:
         return None, None
     expected_session = _current_runtime_session_record.get()
     with _sessions_lock:
         session = _sessions.get(session_id)
+        # Membership, not slot identity: a mirrored session stores a FanoutTransport in the slot, so slot
+        # identity alone would reject every client, the peer that commissioned the subagent included.
+        # Authority is membership in the slot, which also grants it to any client attached to mirror the
+        # session (see tests/tui_gateway/test_multi_client_fanout.py).
         if (session is None or (expected_session is not None and session is not expected_session)
-                or session.get("transport") is not transport):
+                or not _session_transport_contains(session, transport)):
             return None, None
         return transport, session
 
@@ -1226,7 +1247,8 @@ def _enable_gateway_prompts() -> None:
 # Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
 # returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
 _EXPIRING_REQUESTS = frozenset({
-    "secret.request", "sudo.request", "clarify.request", "terminal.read.request",
+    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
+    "terminal.read.request",
     "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
     "tour.request",
 })
@@ -1900,25 +1922,8 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        # context_used is *current-window* occupancy — never usage["total"] (cumulative: an external engine
-        # showed 1.9m/120k clamped to 100%). Falsy last_prompt_tokens emits NO gauge; the -1 "compression
-        # just ran" sentinel clamps to 0 (matches cli.py _get_status_bar_snapshot).
-        # Do NOT fall back to usage["total"] (cumulative lifetime session_total_tokens): for an external
-        # context engine that doesn't report last_prompt_tokens that substitution showed lifetime totals as
-        # the live context fill, yielding impossible readings such as 1.9m/120k clamped to 100% (#50421).
-        # Per the issue, populate context_used/percent only from a *real* current-occupancy value and "leave
-        # it unknown otherwise" — so a falsy last_prompt_tokens (0 or missing, i.e. an engine that doesn't
-        # track per-window occupancy) intentionally emits no gauge rather than a fabricated 0% or the old
-        # cumulative reading. The built-in compressor always reports a real last_prompt_tokens once a turn
-        # runs, so it is unaffected. Clamp the -1 "compression just ran, awaiting real usage" sentinel
-        # (conversation_compression.py) to 0 so the transitional turn reads as unknown (no gauge) instead of
-        # leaking context_used=-1.
-        last_prompt = max(0, getattr(comp, "last_prompt_tokens", 0) or 0)
-        ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max and last_prompt:
-            usage.update(
-                context_used=last_prompt, context_max=ctx_max,
-                context_percent=max(0, min(100, round(last_prompt / ctx_max * 100))))
+        from agent.context_breakdown import context_usage_fields
+        usage.update(context_usage_fields(comp))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
     # data (Codex reports no latency; zero cache reads shows no hit% rather than an alarming 0).
@@ -2069,9 +2074,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": (
-            _response_profile_name(Path(session["profile_home"]).name)
-            if isinstance(session, dict) and session.get("profile_home") else _current_profile_name()),
+        "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__
@@ -2273,6 +2276,9 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
+    # Load hooks alongside the same profile config used to construct this agent.
+    from agent.shell_hooks import register_from_config
+    register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
@@ -2444,8 +2450,8 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         if live is not None:
             if lease is not None:
                 lease.release()
-            # The winner is being reattached: a pending ws-orphan reap must not fire against the reclaimed client.
-            _cancel_ws_orphan_reap(live[0])
+            # The reap is cancelled by the guarded reuse (_reattach_refusal), not here: a rejected
+            # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
             _sessions[sid] = record
@@ -2693,13 +2699,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
-            # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-            # viewer becomes the transport instead of the drop sentinel.
-            session.setdefault("viewers", {})[transport] = time.time()
-            # See #83716.
-            if transport is not _detached_ws_transport:
-                _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.
@@ -2714,9 +2714,12 @@ def _live_session_payload(
     else:
         with _session_db(session) as db:
             history = _live_visible_history(session, db, in_memory_history)
+    # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
+    # (a hidden seed row is in ``history`` but never on the wire).
+    messages = [] if omit_messages else _history_to_messages(history)
     payload = {
-        "info": _fallback_session_info(session), "message_count": len(history),
-        "messages": [] if omit_messages else _history_to_messages(history),
+        "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
+        "messages": messages,
         "messages_omitted": omit_messages, "running": running, "turn_started_at": turn_started_at,
         "session_id": sid, "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
@@ -3207,20 +3210,24 @@ from . import (  # noqa: E402
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
+    session_transports as _session_transports,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
-    methods_projects as _methods_projects)
+    methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
+    methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
+    methods_vault as _methods_vault, methods_free_tier as _methods_free_tier)
 
 for _m in (
-    _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
-    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects):
+    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier):
     _m.register(sys.modules[__name__])
 del _m

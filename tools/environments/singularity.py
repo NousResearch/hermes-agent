@@ -138,6 +138,8 @@ class SingularityEnvironment(BaseEnvironment):
     Session snapshot preserves env vars across calls; CWD persists via in-band stdout markers.
     """
 
+    _sudo_nopasswd_probe_supported = True
+
     def __init__(self, image: str, cwd: str = "~", timeout: int = 60, cpu: float = 0,
                  memory: int = 0, disk: int = 0, persistent_filesystem: bool = False,
                  task_id: str = "default"):

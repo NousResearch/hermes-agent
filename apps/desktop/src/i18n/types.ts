@@ -51,6 +51,39 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  sessionImport: {
+    title: string
+    subtitle: string
+    action: string
+    readingFrom: string
+    connectedComputer: string
+    destination: string
+    all: string
+    search: string
+    scanning: string
+    scanError: string
+    scanHelp: string
+    empty: string
+    emptyHelp: string
+    noMatches: string
+    searchHelp: string
+    skipped: string
+    more: string
+    messages: string
+    choose: string
+    chooseHelp: string
+    previewLoading: string
+    previewError: string
+    previewHelp: string
+    previewLimit: string
+    you: string
+    snapshot: string
+    copyNotice: string
+    importing: string
+    open: string
+    continue: string
+    importError: string
+  }
   common: {
     apply: string
     back: string
@@ -349,7 +382,7 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
+      vault: string
     }
     plugins: {
       title: string
@@ -363,29 +396,29 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agent: {
-        title: string
-        blurb: string
-        appliesTo: string
-        empty: string
-        loadFailed: string
-        portable: string
-        search: string
-        noMatches: string
-        toggleFailed: (name: string) => string
-        updateBackendToManage: string
-        sources: Record<string, string>
-      }
+      agentHalfMissing: string
+      agentHalfMissingTip: string
       installModal: {
+        installFromGit: string
+        reviewRepository: string
+        repoPlaceholder: string
         title: string
         description: string
         repoLabel: string
         includesHeading: string
         agentLabel: string
         desktopLabel: string
-        agentTargetLocal: (profile: string) => string
+        agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
+        catalogPinned: (name: string, sha: string) => string
+        reviewedHeading: string
+        reviewedIntro: string
+        restartToApply: string
+        restartNow: string
+        missingEnvAction: string
+        alreadyInstalled: (name: string) => string
         desktopTarget: string
+        desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -396,6 +429,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -407,6 +444,76 @@ export interface Translations {
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string
+      }
+    }
+    vault: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      loadFailed: string
+      empty: string
+      emptyDesc: string
+      add: string
+      addTitle: string
+      addDescription: string
+      added: string
+      adding: string
+      addConfirm: string
+      kindField: string
+      kinds: Record<'address' | 'login' | 'payment', string>
+      labelField: string
+      labelPlaceholder: string
+      labelRequired: string
+      originField: string
+      originPlaceholder: string
+      originPlaceholderCheckout: string
+      originInvalid: string
+      identifierTypeField: string
+      identifierTypes: Record<'email' | 'phone' | 'username', string>
+      identifierField: string
+      identifierShown: (identifier: string) => string
+      passwordField: string
+      loginFieldsRequired: string
+      cardNumberField: string
+      cardNameField: string
+      expMonthField: string
+      expYearField: string
+      cvcField: string
+      postalField: string
+      addressLine1Field: string
+      addressLine2Field: string
+      cityField: string
+      stateField: string
+      countryField: string
+      optional: string
+      createdOn: (date: string) => string
+      deleteAction: string
+      otpField: string
+      otpPlaceholder: string
+      otpHint: string
+      twoFactorBadge: string
+      deleteTitle: string
+      deleteDescription: (label: string) => string
+      deleteConfirm: string
+      sources: {
+        title: string
+        blurb: string
+        toggleFailed: string
+        notInstalled: (name: string) => string
+        disabledDesc: string
+        lockedDesc: string
+        unlockedDesc: string
+        statusLocked: string
+        statusNotDetected: string
+        statusOff: string
+        statusUnlocked: string
+        unlock: string
+        unlocking: string
+        lock: string
+        unlocked: (name: string) => string
+        unlockTitle: (name: string) => string
+        unlockDescription: string
+        masterPasswordPlaceholder: string
       }
     }
     notifications: {
@@ -753,6 +860,10 @@ export interface Translations {
       cloudNoAgents: { before: string; linkText: string; after: string }
       cloudRefresh: string
       cloudConnect: string
+      cloudSavedTitle: string
+      cloudSavedDesc: string
+      cloudUseSaved: string
+      cloudActive: string
       cloudConnecting: string
       cloudDiscoverFailed: string
       cloudConnectFailed: string
@@ -1280,6 +1391,45 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    tabPlugins: string
+    plugins: {
+      agentTitle: string
+      agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
+      empty: string
+      emptyHint: string
+      loadFailed: string
+      toggleFailed: (name: string) => string
+      legacyBackend: string
+      portableBadge: string
+      catalogTitle: string
+      catalogBrowse: string
+      catalogHide: string
+      catalogHint: string
+      alreadyInstalled: (name: string) => string
+      catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
+      tierOfficial: string
+      tierCommunity: string
+      updateToPin: (sha: string) => string
+      updateFailed: (name: string) => string
+      updated: (name: string) => string
+    }
     officialCatalog: string
     officialPill: string
     hub: {
@@ -1360,6 +1510,9 @@ export interface Translations {
     resetToMine: string
   }
   agents: {
+    extendedTranscript: string
+    transcriptTruncated: string
+    transcriptUnavailable: string
     close: string
     title: string
     subtitle: string
@@ -1371,6 +1524,14 @@ export interface Translations {
     streaming: string
     files: string
     moreFiles: (count: number) => string
+    moreAgents: (count: number) => string
+    queued: string
+    waitingActivity: string
+    steer: string
+    steerPlaceholder: string
+    steerQueued: string
+    stopRequested: string
+    requestRejected: string
     delegation: (index: number) => string
     workers: (count: number) => string
     workersActive: (count: number) => string
@@ -1619,6 +1780,38 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
+    restartNeeded: string
+    restartNow: string
+    restarting: string
+    restartFailedManual: string
+    telegramQr: {
+      title: string
+      subtitle: string
+      quickSetup: string
+      recommended: string
+      quickHelp: string
+      createWithQr: string
+      starting: string
+      replaceWarning: string
+      scanHint: string
+      waiting: string
+      expiresIn: (remaining: string) => string
+      expired: string
+      openTelegram: string
+      ready: string
+      allowedUsers: string
+      ownerDetected: string
+      addAtLeastOne: string
+      userIdPlaceholder: string
+      add: string
+      numericOnly: string
+      saveAndRestart: string
+      applying: string
+      pairingExpired: string
+      stillWaiting: (detail: string) => string
+      savedRestarting: string
+      savedRestartFailed: (detail: string) => string
+    }
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
   }
@@ -1972,6 +2165,17 @@ export interface Translations {
   }
 
   sidebar: {
+    gatewayGroups: {
+      grouping: string
+      rename: string
+      aliasLabel: string
+      aliasHint: string
+      resetName: string
+      moveUp: string
+      moveDown: string
+      reorder: string
+      actions: string
+    }
     nav: Record<string, string>
     searchAria: string
     searchPlaceholder: string
@@ -1991,11 +2195,14 @@ export interface Translations {
     shiftClickHint: string
     noWorkspace: string
     projectEmpty: string
+    projectLoadFailed: string
     noSessions: string
     noFilterMatches: string
     projects: {
+      showAllSessions: string
       sectionLabel: string
       home: string
+      autoDiscovered: string
       newButton: string
       createTitle: string
       createDesc: string
@@ -2261,6 +2468,7 @@ export interface Translations {
     agents: string
     background: (count: number) => string
     goalActive: string
+    goalBlocked: string
     goalDone: string
     goalPaused: string
     goalWaiting: string
@@ -2270,6 +2478,95 @@ export interface Translations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    control: {
+      goalActiveTurns: (turn: number, maxTurns: number) => string
+      goalDoneTurns: (turns: number) => string
+      goalTurn: (turn: number) => string
+      goalActions: string
+      viewDetails: string
+      addCriterion: string
+      addCriterionDialogTitle: string
+      addCriterionPlaceholder: string
+      criterionLabel: string
+      pauseGoal: string
+      resumeGoal: string
+      resumeNow: string
+      clearGoal: string
+      clearGoalConfirmTitle: string
+      clearGoalConfirmBody: string
+      copyCriterion: (index: number) => string
+      removeCriterion: (index: number) => string
+      removeCriterionConfirmTitle: (index: number) => string
+      removeCriterionConfirmBody: (index: number) => string
+      clearCriteria: string
+      clearCriteriaConfirmTitle: string
+      clearCriteriaConfirmBody: string
+      criteriaHeader: (count: number) => string
+      noCriteria: string
+      goalDetailsTitle: string
+      objectiveLabel: string
+      contractOutcome: string
+      contractVerification: string
+      contractConstraints: string
+      contractBoundaries: string
+      contractStopWhen: string
+      waitBarrierTitle: string
+      waitUntil: (target: string) => string
+      waitSession: (target: string) => string
+      waitPid: (pid: number) => string
+      qualityGatesTitle: string
+      gateCommand: string
+      gateAttempts: (attempts: number, max: number) => string
+      gateTimeout: (seconds: number) => string
+      gateLastExit: (code: number | null) => string
+      loopActive: string
+      loopPaused: string
+      loopDeferred: string
+      loopFinished: string
+      loopRuns: (runs: number) => string
+      loopRunCount: (current: number, total: number) => string
+      loopNext: (time: string) => string
+      loopEverySeconds: (seconds: number) => string
+      loopEveryMinutes: (minutes: number) => string
+      loopEveryHours: (hours: number) => string
+      loopSelfPaced: string
+      loopActions: string
+      pauseLoop: string
+      resumeLoop: string
+      stopLoop: string
+      stopLoopConfirmTitle: string
+      stopLoopConfirmBody: string
+      dismissLoop: string
+      loopPromptLabel: string
+      loopCadenceLabel: string
+      loopUntilLabel: string
+      loopDeferredNotice: string
+      loopAwaitingResponse: string
+      heartbeatActive: string
+      heartbeatPaused: string
+      heartbeatEveryMinutes: (minutes: number) => string
+      heartbeatEveryHours: (hours: number) => string
+      heartbeatEverySeconds: (seconds: number) => string
+      heartbeatNext: (time: string) => string
+      heartbeatDueWaitingForIdle: string
+      heartbeatActions: string
+      pauseHeartbeat: string
+      resumeHeartbeat: string
+      clearHeartbeat: string
+      clearHeartbeatConfirmTitle: string
+      clearHeartbeatConfirmBody: string
+      heartbeatFiredCount: (count: number) => string
+      actionFailed: (msg: string) => string
+      actionSucceeded: string
+      copySuccess: string
+      copyFailure: string
+      continuationFailed: string
+      continuationQueued: string
+      continuationBusy: string
+      controlUnavailable: (msg: string) => string
+      dismissError: string
+      add: string
+    }
     coding: {
       title: string
       noBranch: string
@@ -2503,6 +2800,53 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
+  freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
+    // First-launch introduction (ready screen + composer strip).
+    readyTitle: string
+    readyCaption: string
+    begin: string
+    signInInstead: string
+    otherProviders: string
+    stripTitle: string
+    stripBody: string
+    openModelPicker: string
+    dismiss: string
+    // Statusbar chip.
+    statusLabel: (model: string) => string
+    // Sign-in dialog.
+    signIn: string
+    signInHeading: string
+    settingUp: string
+    codeBody: string
+    copyLink: string
+    doNotShare: string
+    waiting: string
+    finishingHeading: string
+    finishingBody: string
+    signedInAs: (email: string) => string
+    signedIn: string
+    completedBody: string
+    defaultModel: string
+    change: string
+    done: string
+    notNow: string
+    tryAgain: string
+    startAgain: string
+    didNotComplete: string
+    rejectedBody: string
+    supersededBody: string
+    timedOutHeading: string
+    timedOutBody: string
+    retiredBody: string
+    errorBody: string
+    alreadySignedInHeading: string
+    alreadySignedInBody: string
+  }
+
   modelPicker: {
     title: string
     current: string
@@ -2627,6 +2971,7 @@ export interface Translations {
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
+      toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
@@ -2934,7 +3279,15 @@ export interface Translations {
         streaming: string
       }
       errorRetry: string
+      /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
+      errorStartNewSession: string
       errorSwitchProvider: string
+      /** One-click recovery for an expired/revoked OAuth grant: re-runs that
+       *  provider's sign-in flow (auth layer, authKind 'oauth'). */
+      errorSignInAgain: (provider: string) => string
+      /** Explains WHY the turn failed for an OAuth 401 — the raw body
+       *  ("HTTP 401: User not found.") doesn't say "sign in again". */
+      errorOauthExpired: (provider: string) => string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string
@@ -3077,6 +3430,28 @@ export interface Translations {
     secretTitle: string
     secretDesc: string
     secretPlaceholder: string
+    vaultUnlockSendFailed: string
+    vaultUnlockTitle: (name: string) => string
+    vaultUnlockDesc: (name: string) => string
+    vaultSaveSendFailed: string
+    vaultSaveTitle: (site: string) => string
+    vaultSaveDesc: (origin: string) => string
+    vaultSaveIdentifierLabel: string
+    vaultSaveIdentifierPlaceholder: string
+    vaultSavePasswordPlaceholder: string
+    vaultSaveFootnote: string
+    vaultSaveDecline: string
+    vaultSaveConfirm: string
+    vaultCodeSendFailed: string
+    vaultCodeTitle: (site: string) => string
+    vaultCodeDesc: (site: string) => string
+    vaultCodeLabel: string
+    vaultCodeFootnote: string
+    vaultCodeSkip: string
+    vaultCodeConfirm: string
+    vaultUnlockPlaceholder: string
+    vaultUnlockKeepLocked: string
+    vaultUnlockConfirm: string
   }
 
   desktop: {

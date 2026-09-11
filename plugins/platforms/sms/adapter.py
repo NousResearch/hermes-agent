@@ -9,6 +9,8 @@ validation — required), SMS_INSECURE_NO_SIGNATURE (true disables validation �
 SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import hashlib
@@ -20,9 +22,19 @@ import urllib.parse
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import redact_phone, strip_markdown
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+
+try:
+    import aiohttp
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:  # optional ([messaging] extra)
+    AIOHTTP_AVAILABLE = False
+    aiohttp = None  # type: ignore[assignment]
+    web = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +48,6 @@ _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 def _twiml_response(status: int = 200):
     """Empty TwiML reply — replies go out via the REST API, never inline TwiML."""
-    from aiohttp import web
-
     return web.Response(text=_EMPTY_TWIML, content_type="application/xml", status=status)
 
 
@@ -54,8 +64,6 @@ def _messages_endpoint(account_sid: str, auth_token: str) -> tuple:
 
 def _twilio_form(from_number: str, to_number: str, body: str):
     """Twilio Messages.json form payload (aiohttp FormData)."""
-    import aiohttp
-
     form_data = aiohttp.FormData()
     form_data.add_field("From", from_number)
     form_data.add_field("To", to_number)
@@ -64,22 +72,12 @@ def _twilio_form(from_number: str, to_number: str, body: str):
 
 
 def _new_session(**kwargs):
-    import aiohttp
-
     return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **kwargs)
-
-
-def _aiohttp_available() -> bool:
-    try:
-        import aiohttp  # noqa: F401
-    except ImportError:
-        return False
-    return True
 
 
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
-    return _aiohttp_available() and bool(
+    return AIOHTTP_AVAILABLE and bool(
         _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
 
 
@@ -92,18 +90,18 @@ class SmsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
         self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
-        self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
+        # Scoped like the sibling reads above: a secondary profile must not send from the default
+        # profile's TWILIO_PHONE_NUMBER (#98738 class).
+        self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
         self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "").strip()
         self._runner = None
-        self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._http_session: Optional[aiohttp.ClientSession] = None
 
     # -- Lifecycle -----------------------------------------------------------
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        from aiohttp import web
-
         insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
         fatal = None
         if not self._from_number:
@@ -228,7 +226,7 @@ class SmsAdapter(BasePlatformAdapter):
 
     # -- Inbound webhook -----------------------------------------------------
 
-    async def _handle_webhook(self, request) -> "aiohttp.web.Response":
+    async def _handle_webhook(self, request: web.Request) -> web.Response:
         try:
             content_length = request.content_length
             if content_length is not None and content_length > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
@@ -298,10 +296,10 @@ def _strip_markdown_for_sms(message: str) -> str:
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
     auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
-    if not _aiohttp_available():
+    if not AIOHTTP_AVAILABLE:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
     message = _strip_markdown_for_sms(message)

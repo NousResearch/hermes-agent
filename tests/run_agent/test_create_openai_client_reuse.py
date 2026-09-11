@@ -81,7 +81,7 @@ def test_second_create_does_not_wrap_closed_transport_from_first():
         "base_url": "https://api.example.com/v1",
     }
 
-    with patch("run_agent.OpenAI", fake_openai):
+    with patch("agent.process_bootstrap.OpenAI", fake_openai):
         # Call 1 — what _replace_primary_openai_client does at init/rebuild.
         client_a = agent._create_openai_client(
             agent._client_kwargs, reason="initial", shared=True
@@ -156,7 +156,7 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "base_url": "https://api.example.com/v1",
     }
 
-    with patch("run_agent.OpenAI", fake_openai):
+    with patch("agent.process_bootstrap.OpenAI", fake_openai):
         # Seed the initial client so _replace has something to tear down.
         agent.client = agent._create_openai_client(
             agent._client_kwargs, reason="seed", shared=True

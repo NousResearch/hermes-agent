@@ -7,6 +7,7 @@ import {
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
   pickPlaceholder,
+  shouldDisableComposerInput,
   slashArgStage,
   slashChipKindForItem,
   slashCommandToken,
@@ -15,6 +16,26 @@ import {
 
 const item = (group: string): Unstable_TriggerItem =>
   ({ id: 'x', type: 'slash', label: 'x', metadata: { group } }) as unknown as Unstable_TriggerItem
+
+describe('shouldDisableComposerInput', () => {
+  it.each(['idle', 'connecting', 'closed', 'error'] as const)(
+    'keeps the draft editable while the gateway is %s',
+    gatewayState => {
+      expect(shouldDisableComposerInput(true, gatewayState)).toBe(false)
+    }
+  )
+
+  it('fails closed when connection atoms disagree about an open gateway', () => {
+    expect(shouldDisableComposerInput(true, 'open')).toBe(true)
+  })
+
+  it.each(['idle', 'connecting', 'open', 'closed', 'error'] as const)(
+    'never disables an otherwise enabled composer while the gateway is %s',
+    gatewayState => {
+      expect(shouldDisableComposerInput(false, gatewayState)).toBe(false)
+    }
+  )
+})
 
 describe('slashArgStage', () => {
   it('is true only once the query is past the command name', () => {

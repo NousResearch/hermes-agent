@@ -18,6 +18,9 @@ from agent.lsp.client import LSPClient
 from agent.lsp.protocol import LSPProtocolError
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
@@ -36,7 +39,7 @@ def _client(workspace: Path, script: str = "clean") -> LSPClient:
 async def test_client_lifecycle_clean(tmp_path: Path):
     """Full lifecycle: spawn, initialize, open, get clean diagnostics, shutdown."""
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "clean")
     await client.start()
@@ -55,7 +58,7 @@ async def test_client_lifecycle_clean(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_client_receives_published_errors(tmp_path: Path):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "errors")
     await client.start()
@@ -98,7 +101,7 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
     tmp_path: Path, script: str
 ):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, script)
     await client.start()
@@ -124,3 +127,41 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
             )
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_client_handles_large_stderr_line(tmp_path: Path):
+    """LSP stderr drain must not crash or deadlock when the server emits a line
+    larger than asyncio's old 64 KiB default StreamReader limit."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "large_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        diags = client.diagnostics_for(str(f))
+        assert diags == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running
+
+
+@pytest.mark.asyncio
+async def test_client_handles_stderr_line_over_stream_limit(tmp_path: Path):
+    """An over-limit stderr line must not terminate the drain task."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "oversized_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        assert client.diagnostics_for(str(f)) == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running

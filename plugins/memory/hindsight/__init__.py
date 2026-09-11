@@ -35,7 +35,8 @@ from tools.registry import tool_error
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
     _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
-    _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _ensure_local_embedded_runtime, _export_port_health_grace_timeout,
+    _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
 )
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
@@ -674,6 +675,12 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local_embedded":
             # Must precede the daemon_embed_manager import, which reads it at import time.
             _export_port_health_grace_timeout(cfg)
+            # Auto-install the missing embedded runtime before the final check.
+            # _check_local_runtime() probes hindsight, hindsight_embed, and
+            # sentence_transformers — all bundled by the hindsight-all package,
+            # which plugin.yaml does NOT declare (its hindsight-client dep
+            # only covers cloud / local_external modes). See #7718.
+            _ensure_local_embedded_runtime()
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning("Hindsight local mode disabled because its runtime could not be imported: %s.%s",

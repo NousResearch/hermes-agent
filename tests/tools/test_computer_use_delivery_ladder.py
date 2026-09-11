@@ -368,3 +368,60 @@ def test_call_tool_restarts_a_dead_session(monkeypatch):
 
     sess.call_tool("click", {"pid": 1})
     assert started["count"] == 1, "dead session should have been restarted once"
+
+
+def test_closed_session_error_classifies_mcp_connection_closed():
+    """MCPError(CONNECTION_CLOSED) — what ClientSession.call_tool raises once the stdio
+    bridge child is dead after a cua-driver daemon restart — must count as a reconnectable
+    closed session (#108215); other MCPError codes are protocol errors a reconnect
+    cannot fix and must stay unclassified."""
+    from mcp.shared.exceptions import MCPError
+    from mcp_types.jsonrpc import CONNECTION_CLOSED, INVALID_PARAMS
+
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+    assert _CuaDriverSession._is_closed_session_error(
+        MCPError(code=CONNECTION_CLOSED, message="Connection closed"))
+    assert not _CuaDriverSession._is_closed_session_error(
+        MCPError(code=INVALID_PARAMS, message="bad params"))
+
+
+def test_call_tool_reconnects_on_mcp_connection_closed():
+    """A daemon restart kills the cached MCP session; the next read-only call must see
+    MCPError(CONNECTION_CLOSED), recreate the session once, and replay the tool instead
+    of wedging every later call (#108215)."""
+    import asyncio
+
+    from mcp.shared.exceptions import MCPError
+    from mcp_types.jsonrpc import CONNECTION_CLOSED
+
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+    sess = _CuaDriverSession.__new__(_CuaDriverSession)
+    sess._started = True
+    sess._timeout_suspect = False
+    sess._declared_session_id = None
+    recreates = {"count": 0}
+
+    def fake_recreate(name, timeout, log_msg, **kw):
+        recreates["count"] += 1
+    sess._recreate_session = fake_recreate  # type: ignore[method-assign]
+
+    calls = {"n": 0}
+
+    async def fake_call(name, args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MCPError(code=CONNECTION_CLOSED, message="Connection closed")
+        return {"isError": False, "data": {}, "structuredContent": {}}
+    sess._call_tool_async = fake_call  # type: ignore[method-assign]
+
+    class _Bridge:
+        def run(self, coro, timeout=None):
+            return asyncio.run(coro)
+    sess._bridge = _Bridge()
+
+    result = sess.call_tool("get_screen_size", {})
+    assert calls["n"] == 2, "the replay-safe tool should have been retried after reconnect"
+    assert recreates["count"] == 1, "the dead MCP session should have been recreated once"
+    assert result == {"isError": False, "data": {}, "structuredContent": {}}

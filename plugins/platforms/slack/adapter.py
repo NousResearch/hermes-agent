@@ -869,7 +869,8 @@ class SlackAdapter(BasePlatformAdapter):
     # Bounded-cache caps (instance assignment in tests overrides per adapter).
     _USER_NAME_CACHE_MAX = _CHANNEL_NAME_CACHE_MAX = _DM_CONVERSATION_CACHE_MAX = 5000
     _PROCESSED_MESSAGE_TS_MAX = _BOT_TS_MAX = _MENTIONED_THREADS_MAX = 5000
-    _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = 5000
+    _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = _THREAD_REHYDRATION_CHECKED_MAX = 5000
+    _PENDING_THREAD_UPDATES_MAX = 5000
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
@@ -944,8 +945,13 @@ class SlackAdapter(BasePlatformAdapter):
         # long retry loops used to spam threads with dozens of out-of-order status messages.
         self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
-        # Message IDs with reaction lifecycle (bounded: an exception between add and finalize
-        # would leak entries).
+        # Persistent sessions survive gateway restarts, so the first ordinary reply in each
+        # thread performs one bounded delta check. While running, dropped app/peer-bot events
+        # mark only their thread for another delta check.
+        self._thread_rehydration_checked: set = set()
+        self._pending_thread_updates: Dict[str, str] = {}
+        # Message IDs with reaction lifecycle (bounded: an exception between add and finalize would
+        # leak entries).
         self._reacting_message_ids: set = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
@@ -3994,10 +4000,9 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply: bool, is_mentioned: bool, is_dm: bool,
     ) -> Tuple[Optional[str], List[str], List[str]]:
         """``(channel_context, root_media_urls, root_media_types)`` for a thread reply. No session:
-        full thread + root images once, set watermark. Active sessions fetch the delta past the
-        watermark for every routed reply, including plain-language wakes, because app and peer-bot
-        messages may not have become agent turns. Context goes into the NEW turn only (prompt
-        caching)."""
+        full thread + root images once, set watermark. Active sessions fetch a paginated delta on
+        explicit mentions, once after restart, or after a dropped app/peer-bot event marks the
+        thread as pending. Context goes into the NEW turn only (prompt caching)."""
         # - Active thread + explicit @mention: refresh with only the delta since the last hydrate/refresh
         #   (#23918), bypassing the TTL cache. The delta is injected as part of the NEW turn (via
         #   ``channel_context``) — prior conversation history is never rewritten, so prompt caching is
@@ -4028,6 +4033,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         watermark_args = dict(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id)
+        advance_watermark = True
         if not has_active_thread_session:
             await _fetch()
             (
@@ -4035,14 +4041,33 @@ class SlackAdapter(BasePlatformAdapter):
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         else:
-            # A routed human reply can follow app/peer-bot messages that were deliberately not
-            # admitted as turns. Always recover the bounded delta before advancing the watermark;
-            # otherwise the next turn silently loses completion or incident evidence. This also
-            # covers the restart gap (#63530 / #33215) without a once-per-process shortcut.
+            rehydration_key = self._thread_rehydration_key(
+                channel_id, event_thread_ts, user_id, team_id)
+            pending_key = self._pending_thread_update_key(channel_id, event_thread_ts, team_id)
             watermark_ts = self._get_thread_watermark(**watermark_args)
-            if watermark_ts:
-                await _fetch(after_ts=watermark_ts, force_refresh=True)
-        self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+            pending_ts = self._pending_thread_updates.get(pending_key, "")
+            needs_delta = (
+                is_mentioned
+                or rehydration_key not in self._thread_rehydration_checked
+                or (
+                    pending_ts
+                    and self._slack_timestamp_sort_key(pending_ts)
+                    > self._slack_timestamp_sort_key(watermark_ts)
+                )
+            )
+            if needs_delta and watermark_ts:
+                channel_context, advance_watermark = await self._fetch_thread_delta(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    current_ts=ts,
+                    team_id=team_id,
+                    after_ts=watermark_ts,
+                )
+            if advance_watermark:
+                self._mark_thread_rehydration_checked(
+                    channel_id, event_thread_ts, user_id, team_id)
+        if advance_watermark:
+            self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
     @staticmethod
@@ -4107,8 +4132,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not sender_is_bot:
             return False
         allow_bots = self._slack_allow_bots()
-        if allow_bots == "none":
-            return True
+        should_drop = allow_bots == "none"
         if allow_bots == "mentions":
             # Mentions may live only in Block Kit, not the flat text.
             # See #52387.
@@ -4117,8 +4141,14 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.debug(
                     "[Slack] Dropping bot message under allow_bots=mentions: "
                     "no <@%s> mention in flat text or blocks", self._bot_user_id)
-                return True
-        return bool(msg_user and self._bot_user_id and msg_user == self._bot_user_id)
+                should_drop = True
+        team_id = str(event.get("team") or event.get("team_id") or "")
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        is_self = bool(msg_user and bot_uid and msg_user == bot_uid)
+        should_drop = should_drop or is_self
+        if should_drop and not is_self:
+            self._remember_pending_thread_update(event)
+        return should_drop
 
     async def _prefilter_inbound(
         self, event: dict, payload: Optional[dict]) -> Optional[Tuple[dict, str, str]]:
@@ -5442,14 +5472,70 @@ class SlackAdapter(BasePlatformAdapter):
         """First message whose ``ts`` is the thread root, else None."""
         return next((m for m in messages if m.get("ts", "") == thread_ts), None)
 
+    async def _fetch_thread_delta(
+        self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str, after_ts: str,
+    ) -> Tuple[str, bool]:
+        """Return the complete bounded delta and whether it is safe to advance the watermark."""
+        messages: List[dict] = []
+        cursor = ""
+        for _page in range(10):
+            try:
+                result = await self._conversations_replies_with_backoff(
+                    channel_id,
+                    thread_ts,
+                    100,
+                    team_id,
+                    oldest=after_ts,
+                    latest=current_ts,
+                    inclusive=False,
+                    cursor=cursor,
+                )
+            except Exception as exc:
+                logger.warning("[Slack] Failed to fetch thread delta: %s", exc)
+                return "", False
+            if result is None:
+                return "", False
+            messages.extend(result.get("messages", []))
+            metadata = result.get("response_metadata") or {}
+            cursor = str(metadata.get("next_cursor") or "")
+            if not cursor:
+                bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+                unseen = [
+                    msg
+                    for msg in messages
+                    if not (
+                        msg.get("user") == bot_uid
+                        or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
+                        in self._bot_message_ts
+                        or str(msg.get("ts") or "") in self._processed_message_ts
+                    )
+                ]
+                return (
+                    await self._format_thread_context(
+                        unseen,
+                        thread_ts=thread_ts,
+                        current_ts=current_ts,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        after_ts=after_ts,
+                    )
+                )[0], True
+        logger.warning(
+            "[Slack] Thread delta exceeded 10 pages; watermark retained for a later retry"
+        )
+        return "", False
+
     async def _conversations_replies_with_backoff(
-        self, channel_id: str, thread_ts: str, limit: int, team_id: str) -> Any:
+        self, channel_id: str, thread_ts: str, limit: int, team_id: str, **query: Any) -> Any:
         """``conversations.replies`` with 1s/2s backoff on Tier-3 rate limits (429)."""
         client = self._get_client(channel_id, team_id=team_id)
         for attempt in range(3):
             try:
-                return await client.conversations_replies(
-                    channel=channel_id, ts=thread_ts, limit=limit, inclusive=True)
+                params = dict(channel=channel_id, ts=thread_ts, limit=limit, inclusive=True)
+                params.update(query)
+                if not params.get("cursor"):
+                    params.pop("cursor", None)
+                return await client.conversations_replies(**params)
             except Exception as exc:
                 err_str = str(exc).lower()
                 is_rate_limit = (
@@ -5746,6 +5832,49 @@ class SlackAdapter(BasePlatformAdapter):
             platform=Platform.SLACK, chat_id=channel_id, chat_type=chat_type, user_id=user_id,
             thread_id=thread_ts, scope_id=team_id or None)
 
+    def _thread_rehydration_key(
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
+        """Per-process key for the restart delta check; per-user when sessions are per-user."""
+        key = f"{team_id}:{channel_id}:{thread_ts}"
+        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
+        return f"{key}:{user_id}" if getattr(store_cfg, "thread_sessions_per_user", False) else key
+
+    def _mark_thread_rehydration_checked(
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> None:
+        self._thread_rehydration_checked.add(
+            self._thread_rehydration_key(channel_id, thread_ts, user_id, team_id))
+        self._evict_oldest_by_ts(
+            self._thread_rehydration_checked,
+            self._THREAD_REHYDRATION_CHECKED_MAX,
+            lambda entry: entry.split(":")[2] if entry.count(":") >= 2 else "",
+        )
+
+    @staticmethod
+    def _pending_thread_update_key(channel_id: str, thread_ts: str, team_id: str = "") -> str:
+        return f"{team_id}:{channel_id}:{thread_ts}"
+
+    def _remember_pending_thread_update(self, event: dict) -> None:
+        """Remember a dropped external app/bot post so the next human turn recovers its delta."""
+        channel_id = str(event.get("channel") or "")
+        thread_ts = str(event.get("thread_ts") or "")
+        update_ts = str(event.get("ts") or "")
+        team_id = str(event.get("team") or event.get("team_id") or "")
+        if not channel_id or not thread_ts or not update_ts or thread_ts == update_ts:
+            return
+        key = self._pending_thread_update_key(channel_id, thread_ts, team_id)
+        previous = self._pending_thread_updates.get(key, "")
+        if (
+            not previous
+            or self._slack_timestamp_sort_key(update_ts)
+            > self._slack_timestamp_sort_key(previous)
+        ):
+            self._pending_thread_updates[key] = update_ts
+        self._evict_oldest_by_ts(
+            self._pending_thread_updates,
+            self._PENDING_THREAD_UPDATES_MAX,
+            lambda entry: self._pending_thread_updates.get(entry, ""),
+        )
+
     def _thread_watermark_io(
         self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any
     ) -> Any:
@@ -5765,8 +5894,9 @@ class SlackAdapter(BasePlatformAdapter):
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
         """Return the last Slack thread ts this session consumed (persisted)."""
         try:
-            return str(self._thread_watermark_io(
+            value = str(self._thread_watermark_io(
                 "get_session_metadata", channel_id, thread_ts, user_id, team_id, "") or "")
+            return value if re.fullmatch(r"\d+\.\d+", value) else ""
         except Exception:
             return ""
 

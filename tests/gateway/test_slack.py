@@ -3182,11 +3182,30 @@ class TestThreadReplyHandling:
         mock_session_store.set_session_metadata = MagicMock(
             side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
         )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+        await adapter_with_session_store._handle_slack_message({
+            "text": "Issue resolved; PR merged and deployment succeeded",
+            "user": "U_APP",
+            "bot_id": "B_APP",
+            "subtype": "bot_message",
+            "channel": "C123",
+            "ts": "123.200",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             return_value={
                 "messages": [
-                    {"ts": "123.000", "user": "U_PARENT", "text": "Original report"},
-                    {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                    {
+                        "ts": "123.150",
+                        "user": "U_BOT",
+                        "bot_id": "B_SELF",
+                        "subtype": "bot_message",
+                        "text": "My already-persisted answer",
+                    },
                     {
                         "ts": "123.200",
                         "user": "U_APP",
@@ -3217,8 +3236,135 @@ class TestThreadReplyHandling:
         adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
         assert "Issue resolved; PR merged and deployment succeeded" in msg_event.channel_context
+        assert "My already-persisted answer" not in msg_event.channel_context
         assert "Old context" not in msg_event.channel_context
         assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
+    @pytest.mark.asyncio
+    async def test_active_plain_reply_without_pending_update_uses_no_history_api(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "ordinary follow-up",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store._app.client.conversations_replies.assert_not_awaited()
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
+    @pytest.mark.asyncio
+    async def test_pending_thread_delta_paginates_before_advancing_watermark(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+        await adapter_with_session_store._handle_slack_message({
+            "text": "deployment update",
+            "user": "U_APP",
+            "bot_id": "B_APP",
+            "subtype": "bot_message",
+            "channel": "C123",
+            "ts": "123.300",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                {
+                    "messages": [{"ts": "123.200", "user": "U_APP", "text": "part one"}],
+                    "response_metadata": {"next_cursor": "page-2"},
+                },
+                {
+                    "messages": [{"ts": "123.300", "user": "U_APP", "text": "part two"}],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            ]
+        )
+        adapter_with_session_store._user_name_cache = {("T_TEAM", "U_APP"): "Release app"}
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "verify now",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        assert adapter_with_session_store._app.client.conversations_replies.await_count == 2
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert "part one" in msg_event.channel_context
+        assert "part two" in msg_event.channel_context
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
+    @pytest.mark.asyncio
+    async def test_failed_pending_delta_retains_watermark_for_retry(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+        adapter_with_session_store._pending_thread_updates[
+            "T_TEAM:C123:123.000"
+        ] = "123.200"
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            side_effect=RuntimeError("history unavailable")
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "verify now",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store.handle_message.assert_awaited_once()
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.100"
 
 
 # ---------------------------------------------------------------------------
@@ -4564,6 +4710,34 @@ class TestTrackingStructureBounds:
         # Newest entry survives; oldest was evicted.
         assert ("T1", "U49") in adapter._user_name_cache
         assert ("T1", "U0") not in adapter._user_name_cache
+
+    def test_rehydration_checked_evicts_oldest_thread_first(self, adapter):
+        adapter._THREAD_REHYDRATION_CHECKED_MAX = 4
+        for ts in [
+            "1000.000002",
+            "999.999999",
+            "1000.000004",
+            "1000.000001",
+            "1000.000003",
+        ]:
+            adapter._mark_thread_rehydration_checked("C1", ts, "U1", "T1")
+        assert adapter._thread_rehydration_checked == {
+            "T1:C1:1000.000003",
+            "T1:C1:1000.000004",
+        }
+
+    def test_pending_thread_updates_evict_oldest_update_first(self, adapter):
+        adapter._PENDING_THREAD_UPDATES_MAX = 4
+        for i in range(5):
+            adapter._remember_pending_thread_update({
+                "channel": "C1",
+                "thread_ts": f"1000.00000{i}",
+                "ts": f"2000.00000{i}",
+                "team": "T1",
+            })
+        assert len(adapter._pending_thread_updates) <= 4
+        assert "T1:C1:1000.000004" in adapter._pending_thread_updates
+        assert "T1:C1:1000.000000" not in adapter._pending_thread_updates
 
 
     @pytest.mark.asyncio

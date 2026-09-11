@@ -181,12 +181,22 @@
       # so they can update without recreation. Env vars go through $HERMES_HOME/.env.
       containerIdentity = builtins.hashString "sha256" (
         builtins.toJSON {
-          schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
+          schema = 5; # bump when identity inputs change (5: container.network / publish)
           image = cfg.container.image;
           extraVolumes = cfg.container.extraVolumes;
           extraOptions = cfg.container.extraOptions;
+          network = cfg.container.network;
+          publish = cfg.container.publish;
         }
       );
+
+      containerNetwork = cfg.container.network;
+      containerNetworkIsHost = containerNetwork == "host";
+      containerNetworkIsNamed = !(lib.elem containerNetwork [
+        "host"
+        "bridge"
+        "none"
+      ]);
 
       identityFile = "${cfg.stateDir}/.container-identity";
 
@@ -311,7 +321,33 @@
               extraOptions = mkOption {
                 type = types.listOf types.str;
                 default = [ ];
-                description = "Extra arguments passed to docker/podman run.";
+                description = ''
+                  Extra arguments passed to docker/podman create (e.g. --gpus all).
+                  Use container.network instead of passing --network here.
+                '';
+              };
+
+              network = mkOption {
+                type = types.str;
+                default = "host";
+                description = ''
+                  Passed as a single --network flag. "host" (default) shares the
+                  host namespace so 127.0.0.1 OAuth callbacks work. "bridge" and
+                  "none" are the runtime built-ins. Any other string is a
+                  user-defined network, created if missing. Do not also pass
+                  --network in extraOptions.
+                '';
+                example = "hermes";
+              };
+
+              publish = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                description = ''
+                  --publish entries (ip:hostPort:containerPort). Ignored when
+                  network is "host".
+                '';
+                example = [ "127.0.0.1:8642:8642" ];
               };
 
               image = mkOption {
@@ -393,6 +429,13 @@
                   assertion = !(cfg.container.enable && cfg.backend.mode != "none");
                   message = "services.hermes-agent: backend.mode is not supported together with container.enable — the container runs the gateway only.";
                 }
+                {
+                  assertion = !(
+                    cfg.container.enable
+                    && lib.any (opt: lib.hasPrefix "--network" opt) cfg.container.extraOptions
+                  );
+                  message = "services.hermes-agent.container.extraOptions must not include --network. Set container.network instead (a second --network is not an override).";
+                }
               ];
           }
 
@@ -421,6 +464,16 @@
               ];
             }
           )
+
+          (lib.mkIf (cfg.container.enable && containerNetworkIsHost && cfg.container.publish != [ ]) {
+            warnings = [
+              ''
+                services.hermes-agent: container.publish is ignored when
+                container.network is "host". Use a bridge or named network,
+                or drop publish.
+              ''
+            ];
+          })
 
           # ── Directories ───────────────────────────────────────────────────
           {
@@ -626,10 +679,22 @@
                   HERMES_UID=$(${pkgs.coreutils}/bin/id -u ${cfg.user})
                   HERMES_GID=$(${pkgs.coreutils}/bin/id -g ${cfg.user})
 
+                  ${lib.optionalString containerNetworkIsNamed ''
+                    if ! ${containerBin} network inspect ${lib.escapeShellArg containerNetwork} >/dev/null 2>&1; then
+                      echo "Creating network ${containerNetwork}..."
+                      ${containerBin} network create ${lib.escapeShellArg containerNetwork}
+                    fi
+                  ''}
+
                   echo "Creating container..."
                   ${containerBin} create \
                     --name ${containerName} \
-                    --network=host \
+                    --network ${lib.escapeShellArg containerNetwork} \
+                    ${lib.optionalString (!containerNetworkIsHost) (
+                      lib.concatMapStringsSep " " (
+                        p: "--publish ${lib.escapeShellArg p}"
+                      ) cfg.container.publish
+                    )} \
                     --entrypoint ${containerDataDir}/current-entrypoint \
                     --volume /nix/store:/nix/store:ro \
                     --volume ${cfg.stateDir}:${containerDataDir} \

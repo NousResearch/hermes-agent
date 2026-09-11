@@ -91,7 +91,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
+    _has_upstream_remote, _is_fork, _is_rate_limited, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
@@ -1272,6 +1272,51 @@ def _apply_pulled_update(
         node_failures=node_failures, update_complete=update_complete)
 
 
+def _fetch_with_throttle_recovery(
+    git_cmd, branch: str, *, attempts: int = 4, base_delay: float = 5.0
+):
+    """Scoped fetch with the installer's repo-scoped 429 resilience (#105857, parity with #99480).
+
+    A repo-scoped 429 throttles git's pack negotiation — the fetch dies mid-transfer with
+    "RPC failed; HTTP 429 / expected 'packfile'" — while small requests still succeed, and it
+    can outlast the "try again in 5 minutes" cadence, so retry with bounded backoff before
+    giving up. Non-rate-limit failures return immediately: retrying a DNS error or an auth
+    failure cannot help. Returns the last CompletedProcess."""
+    fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+    if fetch_result.returncode == 0 or not _is_rate_limited(fetch_result.stderr):
+        return fetch_result
+    for attempt in range(2, attempts + 1):
+        _time.sleep((attempt - 1) * base_delay)
+        print(
+            f"→ Still rate-limited — retrying fetch (attempt {attempt}/{attempts})..."
+        )
+        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        if fetch_result.returncode == 0 or not _is_rate_limited(fetch_result.stderr):
+            break
+    return fetch_result
+
+
+def _fallback_to_zip_after_throttled_fetch(
+    args,
+    *,
+    had_desktop_app_before_update: bool,
+    gateway_mode: bool,
+    _windows_gateway_resume,
+):
+    """Persistent repo-scoped 429: git's pack protocol stays throttled, but the codeload archive
+    download does not, so a healthy install need not stay behind upstream (#105857). Same guarded
+    path as the Windows ZIP mode — ``_update_via_zip`` refuses to overlay a dirty/untracked
+    checkout (#87304), so the fallback fails closed on local work."""
+    print("→ Git fetch stays rate-limited — falling back to the guarded ZIP update...")
+    try:
+        desktop_build_ok = _update_via_zip(
+            args, had_desktop_app_before_update=had_desktop_app_before_update)
+    finally:
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    if gateway_mode:
+        _write_gateway_update_exit_code(desktop_build_ok)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
@@ -1351,9 +1396,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_result = _fetch_with_throttle_recovery(git_cmd, branch)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
+            if _is_rate_limited(fetch_result.stderr):
+                _fallback_to_zip_after_throttled_fetch(
+                    args,
+                    had_desktop_app_before_update=had_desktop_app_before_update,
+                    gateway_mode=gateway_mode,
+                    _windows_gateway_resume=_windows_gateway_resume)
+                return
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)

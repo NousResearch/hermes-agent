@@ -11,8 +11,7 @@ def _write_audit(home: str, prompt: str, index: int) -> str:
     os.environ["HERMES_HOME"] = home
     from hermes_cli.oneshot_audit import OneShotAudit
 
-    audit = OneShotAudit.start(prompt, "query")
-    assert audit is not None
+    audit = OneShotAudit(prompt, "query")
     audit.bind_session(f"session-{index}")
     audit.finish(0)
     return audit.audit_id

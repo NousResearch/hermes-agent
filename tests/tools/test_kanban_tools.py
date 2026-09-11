@@ -429,6 +429,69 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_rejects_skill_missing_from_assignee_profile_without_persisting(
+    worker_env, tmp_path,
+):
+    """A default-profile skill must not validate for a named assignee."""
+    default_skill = tmp_path / ".hermes" / "skills" / "monitoring-incident-response"
+    default_skill.mkdir(parents=True)
+    (default_skill / "SKILL.md").write_text(
+        "---\nname: monitoring-incident-response\ndescription: Monitor incidents.\n---\n"
+    )
+    (tmp_path / ".hermes" / "profiles" / "foreman" / "skills").mkdir(parents=True)
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        before = len(kb.list_tasks(conn))
+    finally:
+        conn.close()
+
+    result = json.loads(kt._handle_create({
+        "title": "must not persist",
+        "assignee": "foreman",
+        "skills": ["monitoring-incident-response"],
+    }))
+
+    assert "error" in result
+    assert "monitoring-incident-response" in result["error"]
+    assert "foreman" in result["error"]
+    assert "hermes -p foreman skills list" in result["error"]
+    conn = kbc.connect()
+    try:
+        assert len(kb.list_tasks(conn)) == before
+    finally:
+        conn.close()
+
+
+def test_create_preserves_skill_resolvable_in_assignee_profile(worker_env, tmp_path):
+    skill = tmp_path / ".hermes" / "profiles" / "foreman" / "skills" / "review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review changes.\n---\n"
+    )
+
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "valid forced skill",
+        "assignee": "foreman",
+        "skills": ["review"],
+    }))
+
+    assert result["ok"] is True
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, result["task_id"]).skills == ["review"]
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

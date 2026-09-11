@@ -1218,6 +1218,48 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def _validate_task_skills_for_assignee(assignee: Optional[str], skills: Optional[list[str]]) -> None:
+    """Reject forced skills that the assigned profile cannot load at worker startup."""
+    if not skills:
+        return
+
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files, parse_frontmatter
+    from hermes_cli import profiles as profiles_mod
+
+    profile = profiles_mod.normalize_profile_name(assignee or "")
+    profile_home = profiles_mod.get_profile_dir(profile)
+    skills_dir = profile_home / "skills"
+    available: set[str] = set()
+    if skills_dir.is_dir():
+        for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            relative = skill_md.relative_to(skills_dir).parts[:-1]
+            if relative:
+                available.add(relative[-1])
+                available.add("/".join(relative))
+            try:
+                frontmatter, _body = parse_frontmatter(
+                    skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+                )
+                if frontmatter.get("name"):
+                    available.add(str(frontmatter["name"]))
+            except OSError:
+                continue
+        for flat_skill in skills_dir.rglob("*.md"):
+            if flat_skill.name != "SKILL.md" and not is_excluded_skill_path(flat_skill):
+                available.add(flat_skill.stem)
+
+    missing = [skill for skill in skills if skill not in available]
+    if missing:
+        quoted = ", ".join(repr(skill) for skill in missing)
+        raise ValueError(
+            f"forced skill(s) {quoted} are not installed for assignee profile {profile!r}. "
+            f"Install them in {skills_dir} or choose from `hermes -p {profile} skills list` "
+            "before creating the task."
+        )
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1280,6 +1322,7 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    _validate_task_skills_for_assignee(assignee, skills_list)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

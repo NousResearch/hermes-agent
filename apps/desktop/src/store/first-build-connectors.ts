@@ -9,6 +9,7 @@ import {
   connectorText,
   recordOf
 } from '@/lib/connector-tools'
+import { buildConnectionStartMessage } from '@/lib/first-build-start'
 import { readKey, writeKey } from '@/lib/storage'
 import type { ConnectorFlowDeps, ConnectorFlowRow } from '@/store/connector-flow'
 
@@ -21,6 +22,7 @@ export interface FirstBuildConnectorRow extends ConnectorFlowRow {
 export interface FirstBuildConnectorState {
   toolCallId: string
   rows: FirstBuildConnectorRow[]
+  started: boolean
 }
 
 export const $firstBuildConnections = map<Record<string, FirstBuildConnectorState>>({})
@@ -47,6 +49,7 @@ export async function openFirstBuildLinks(storedId: string, part: FirstBuildConn
 
   const entries = output.results.map(recordOf)
   const previous = $firstBuildConnections.get()[storedId]
+
   const rows = connectionRows(part.args, part.result).map((seed): FirstBuildConnectorRow => {
     const existing = previous?.rows.find(row => row.connector === seed.connector)
     const entry = entries.find(row => row.connector === seed.connector)
@@ -64,7 +67,12 @@ export async function openFirstBuildLinks(storedId: string, part: FirstBuildConn
       connectUrl: connectUrl ?? undefined
     }
   })
-  $firstBuildConnections.setKey(storedId, { toolCallId: part.toolCallId, rows })
+
+  $firstBuildConnections.setKey(storedId, {
+    toolCallId: part.toolCallId,
+    rows,
+    started: previous?.started ?? readKey(`hermes.onboarding.started.v1.${storedId}`) === '1'
+  })
 
   const links = entries.flatMap(entry => {
     const url = entry.status === 'initiated' ? connectorAuthorizationUrl(entry.connect_url) : null
@@ -72,6 +80,7 @@ export async function openFirstBuildLinks(storedId: string, part: FirstBuildConn
 
     return url && connector !== undefined ? [{ connector, url }] : []
   })
+
   const key = `hermes.onboarding.links-opened.v1.${part.toolCallId}`
 
   if (!deps.open || !links.length || readKey(key) === '1') {
@@ -108,6 +117,7 @@ export function watchFirstBuildWait(
   const connected = new Set(Array.isArray(output.connectors) ? output.connectors : [])
   const pending = new Set(Array.isArray(output.pending) ? output.pending : [])
   const previous = $firstBuildConnections.get()[storedId]
+
   const rows = connectionRows(part.args, part.result).map((seed): FirstBuildConnectorRow => {
     const existing = previous?.rows.find(row => row.connector === seed.connector)
     let phase = existing?.phase ?? 'waiting'
@@ -124,7 +134,12 @@ export function watchFirstBuildWait(
 
     return { ...seed, ...existing, phase }
   })
-  $firstBuildConnections.setKey(storedId, { toolCallId: part.toolCallId, rows })
+
+  $firstBuildConnections.setKey(storedId, {
+    toolCallId: part.toolCallId,
+    rows,
+    started: previous?.started ?? readKey(`hermes.onboarding.started.v1.${storedId}`) === '1'
+  })
 
   if (!polling) {
     return
@@ -145,6 +160,7 @@ export function watchFirstBuildWait(
       }
 
       const state = $firstBuildConnections.get()[storedId]
+
       const rows = state.rows.map((row): FirstBuildConnectorRow => {
         const live = result.connectors.find(item => item.connector === row.connector)
 
@@ -154,6 +170,7 @@ export function watchFirstBuildWait(
 
         return { ...row, ...live, phase: live.connected ? 'connected' : 'waiting', error: undefined }
       })
+
       $firstBuildConnections.setKey(storedId, { ...state, rows })
     } catch {
       if (!current()) {
@@ -177,5 +194,19 @@ export function watchFirstBuildWait(
   return () => {
     cancelled = true
     clearTimeout(timer)
+  }
+}
+
+export function startFirstBuild(storedId: string, submit: (text: string) => boolean): void {
+  const state = $firstBuildConnections.get()[storedId]
+  const key = `hermes.onboarding.started.v1.${storedId}`
+
+  if (!isFirstBuildSession(storedId) || !state || state.started || readKey(key) === '1') {
+    return
+  }
+
+  if (submit(buildConnectionStartMessage(state.rows))) {
+    writeKey(key, '1')
+    $firstBuildConnections.setKey(storedId, { ...state, started: true })
   }
 }

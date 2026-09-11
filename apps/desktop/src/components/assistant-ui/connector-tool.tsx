@@ -6,8 +6,8 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { isFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
-import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { FirstBuildConnectorOffer } from '@/components/assistant-ui/first-build-connectors'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, type ConnectorCardCopy } from '@/components/ui/connector-card'
 import { Loader } from '@/components/ui/loader'
@@ -94,6 +94,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     connectionId: null | string
     profile: string
   } | null>(null)
+
   const [ownerFailure, setOwnerFailure] = useState<string | null>(null)
 
   useEffect(() => {

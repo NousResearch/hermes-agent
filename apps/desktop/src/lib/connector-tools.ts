@@ -1,6 +1,19 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 
+import type { ChatMessage } from '@/lib/chat-messages'
+
+export function latestConnectorPart(messages: ChatMessage[]) {
+  return messages
+    .flatMap(message => message.parts)
+    .filter(
+      part =>
+        part.type === 'tool-call' &&
+        (part.toolName === 'manage_connections' || connectorCalls(part.toolName, part.args).length > 0)
+    )
+    .at(-1)
+}
+
 /** Connector names/results as presentation data, never authorization. */
 export interface ConnectorRow {
   connector: string

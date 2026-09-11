@@ -20,6 +20,7 @@ afterEach(() => {
 it('polls through a pending bounce, reconciles unavailable apps, and stops when the part is replaced', async () => {
   vi.useFakeTimers()
   markFirstBuildSession('build')
+
   const request = vi.fn().mockResolvedValue({
     available: true,
     connectors: [
@@ -27,6 +28,7 @@ it('polls through a pending bounce, reconciles unavailable apps, and stops when 
       { connector: 'googlecalendar', enabled: false, connected: false }
     ]
   })
+
   const stop = watchFirstBuildWait('build', 'runtime', part, request)
   await vi.advanceTimersByTimeAsync(0)
   expect(request).toHaveBeenCalledWith('connectors.list', { session_id: 'runtime' })
@@ -46,6 +48,7 @@ it('polls through a pending bounce, reconciles unavailable apps, and stops when 
     },
     request
   )
+
   request.mockResolvedValue({ available: true, connectors: [{ connector: 'gmail', enabled: true, connected: true }] })
   await vi.advanceTimersByTimeAsync(2000)
   expect($firstBuildConnections.get().build.rows[0].phase).toBe('connected')

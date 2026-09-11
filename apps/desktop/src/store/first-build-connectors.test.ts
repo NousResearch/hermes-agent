@@ -25,9 +25,11 @@ afterEach(() => {
 
 it('opens the entire first-build batch once and reports its links in result order', async () => {
   markFirstBuildSession('build')
+
   const open = vi.fn(async () => {
     expect(readKey(`hermes.onboarding.links-opened.v1.${part.toolCallId}`)).toBe('1')
   })
+
   const submit = vi.fn()
   const opening = openFirstBuildLinks('build', part, { open, submit })
 

@@ -162,6 +162,7 @@ export function useOnboardingHandoff({
             },
             personalize: async () => {
               const answers = $onboardingAnswers.get()
+
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',

@@ -296,9 +296,9 @@ function useSessionActions({
       }
     }),
     spec({
-      disabled: !sessionId,
+      disabled: !sessionId || sessionId !== $selectedStoredSessionId.get(),
       icon: 'sparkle',
-      label: r.regenerateTitle || (t.common?.regenerate ? `${t.common.regenerate} ${r.rename.replace('…', '')}` : 'Regenerate title'),
+      label: r.regenerateTitle,
       onSelect: async () => {
         triggerHaptic('selection')
         await runSessionRetitle({ sessionId, profile })

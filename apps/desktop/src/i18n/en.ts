@@ -2704,6 +2704,7 @@ export const en: Translations = {
       regenerateTitle: 'Regenerate title',
       regeneratingTitle: 'Regenerating session title...',
       regenerateTitleSuccess: 'Session title regenerated',
+      regenerateTitleFailed: 'Could not regenerate session title',
       archive: 'Archive',
       newWindow: 'New window',
       openInTerminal: 'Open in terminal',

@@ -2856,6 +2856,7 @@ export const zh: Translations = {
       regenerateTitle: '重新生成标题',
       regeneratingTitle: '正在重新生成标题...',
       regenerateTitleSuccess: '会话标题已重新生成',
+      regenerateTitleFailed: '重新生成会话标题失败',
       archive: '归档',
       newWindow: '新窗口',
       openInTerminal: '在终端中打开',

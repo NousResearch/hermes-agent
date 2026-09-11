@@ -100,11 +100,26 @@ class TestYoloMode:
         assert result["message"] is None
         assert called["value"] is False
 
-    def test_yolo_mode_not_set_by_default(self):
+    def test_yolo_mode_not_set_by_default(self, monkeypatch):
         """HERMES_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
+        # Drop any ambient value and mirror the import-time freeze of a process
+        # started without the env var, so the check is deterministic even when
+        # the test runner itself exports HERMES_YOLO_MODE.
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+
+        assert os.getenv("HERMES_YOLO_MODE") is None
+
+        # With yolo off by default the dangerous command is not auto-approved:
+        # it still goes through the approval gate and the deny callback wins.
+        result = check_dangerous_command(
+            "rm -rf /tmp/stuff", "local", approval_callback=lambda *a: "deny"
+        )
+        assert result["approved"] is False
 
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])

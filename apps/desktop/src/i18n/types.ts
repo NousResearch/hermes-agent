@@ -2324,6 +2324,9 @@ export interface Translations {
       export: string
       branchFrom: string
       rename: string
+      regenerateTitle?: string
+      regeneratingTitle?: string
+      regenerateTitleSuccess?: string
       archive: string
       newWindow: string
       openInTerminal: string

@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { runSessionRetitle } from '@/app/chat/actions/retitle-session'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { AskDirective } from '@/components/assistant-ui/ask-directive'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -285,6 +286,16 @@ registry.registerMany([
   }),
   // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
   // without relaunching (same-id reloads dispose the previous incarnation).
+  {
+    id: 'session.retitle',
+    area: PALETTE_AREA,
+    data: {
+      id: 'session.retitle',
+      label: 'Regenerate current session title',
+      keywords: ['title', 'retitle', 'rename', 'regenerate', 'session'],
+      run: () => void runSessionRetitle({})
+    } satisfies PaletteContribution
+  },
   {
     id: 'plugins.reload',
     area: PALETTE_AREA,

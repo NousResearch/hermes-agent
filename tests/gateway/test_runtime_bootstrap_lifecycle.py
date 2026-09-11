@@ -25,6 +25,9 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
     runner = GatewayRunner(GatewayConfig())
     try:
         await initialize_gateway_runtime(runner)
+        from gateway.control_socket import GatewayControlServer
+        runner.session_control_server = GatewayControlServer()
+        assert await runner.session_control_server.start()
         await start_gateway_runtime_api(runner)
         assert await runner.start()
         publish_gateway_runtime_ready(runner)
@@ -40,6 +43,7 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
             assert reply['result']['ok'] is True
     finally:
         await runner.stop()
+        await runner.session_control_server.stop()
         process_ownership.close()
         clear_providers()
 

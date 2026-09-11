@@ -18,6 +18,9 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
     waiter = None
     try:
         await run_runtime.initialize_gateway_runtime(runner)
+        from gateway.control_socket import GatewayControlServer
+        runner.session_control_server = GatewayControlServer()
+        assert await runner.session_control_server.start()
         await run_runtime.start_gateway_runtime_api(runner)
         assert await runner.start()
         run_runtime.publish_gateway_runtime_ready(runner)
@@ -37,6 +40,7 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
             waiter.cancel()
             await asyncio.gather(waiter, return_exceptions=True)
         await runner.stop()
+        await runner.session_control_server.stop()
         process_ownership.close()
 
 

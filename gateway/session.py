@@ -1150,8 +1150,9 @@ class SessionStore(
             entries = list(self._entries.values())
         if active_minutes is not None:
             cutoff = _now() - timedelta(minutes=active_minutes)
-            entries = [e for e in entries if e.updated_at >= cutoff]
-        entries.sort(key=lambda e: e.updated_at, reverse=True)
+            entries = [e for e in entries if e.updated_at.timestamp() >= cutoff.timestamp()]
+        # Legacy local timestamps and canonical UTC timestamps can coexist after recovery.
+        entries.sort(key=lambda e: e.updated_at.timestamp(), reverse=True)
         return entries
 
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:

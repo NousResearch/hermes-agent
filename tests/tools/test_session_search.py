@@ -1156,3 +1156,101 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+class TestSameLineageHiddenDisclosure:
+    """#103184: same-lineage hits dropped by the live-context skip must be
+    disclosed in the payload instead of silently vanishing."""
+
+    def test_unended_predecessor_hits_disclosed_not_silent(self, db):
+        """A gateway predecessor whose end-write was lost (unended, same
+        lineage) is still hidden, but the payload must say so instead of
+        returning 0 results with no signal."""
+        db.create_session("s_root", source="telegram", session_key="tg:user:1")
+        db.end_session("s_root", "session_reset")
+        db.create_session(
+            "s_lost", source="telegram",
+            parent_session_id="s_root", session_key="tg:user:1",
+            model_config={"_reset_from": "s_root"},
+        )
+        db.append_message(
+            "s_lost", role="user", content="published the zephyrwidgets repo link"
+        )
+        db.create_session(
+            "s_cur", source="telegram",
+            parent_session_id="s_lost", session_key="tg:user:1",
+            model_config={"_reset_from": "s_lost"},
+        )
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyrwidgets", db=db, current_session_id="s_cur",
+        ))
+        assert result["success"] is True
+        assert result["count"] == 0  # still hidden: unended == treated as live
+        hidden = result["hidden_same_lineage"]
+        assert hidden["count"] >= 1
+        sessions = [s["session_id"] for s in hidden["sessions"]]
+        assert "s_lost" in sessions
+        lost = next(s for s in hidden["sessions"] if s["session_id"] == "s_lost")
+        assert lost["end_reason"] is None  # the tell-tale of the lost end-write
+
+    def test_current_session_live_rows_not_disclosed_as_hidden(self, db):
+        """The current session's own live rows are already in context —
+        skipping them is expected and must NOT light up hidden_same_lineage."""
+        db.create_session("s_root", source="telegram", session_key="tg:user:1")
+        db.end_session("s_root", "session_reset")
+        db.create_session(
+            "s_cur", source="telegram",
+            parent_session_id="s_root", session_key="tg:user:1",
+            model_config={"_reset_from": "s_root"},
+        )
+        db.append_message("s_cur", role="user", content="zephyrwidgets note to self")
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyrwidgets", db=db, current_session_id="s_cur",
+        ))
+        assert result["count"] == 0
+        assert "hidden_same_lineage" not in result
+
+    def test_ended_predecessor_surfaces_without_disclosure(self, db):
+        """The normal /new path (ended predecessor) keeps returning results and
+        never grows a hidden_same_lineage note."""
+        _seed_gateway_new_reset_chain(db)
+        result = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today",
+        ))
+        assert result["count"] >= 1
+        assert "hidden_same_lineage" not in result
+
+
+class TestDiscoveryMetadataFromMatchedSession:
+    """#103184: when/title must describe the matched conversation, not the
+    (possibly months older) lineage root of a long-lived gateway chain."""
+
+    def _age_the_root(self, db):
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (1754956800, "MCP root servers", "s_aug12"),
+        )
+        db._conn.commit()
+
+    def test_fts_hit_metadata_from_matching_session(self, db):
+        _seed_gateway_new_reset_chain(db)
+        self._age_the_root(db)
+        result = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today",
+        ))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_night")
+        assert hit["title"] == "Night ibuprofen plan"
+        assert "2025" not in hit["when"]  # not the root's August-2025 started_at
+        assert hit["parent_session_id"] == "s_aug12"  # lineage still exposed
+
+    def test_title_match_metadata_from_matched_session(self, db):
+        _seed_gateway_new_reset_chain(db)
+        self._age_the_root(db)
+        result = json.loads(session_search(
+            query="Night ibuprofen plan", db=db, current_session_id="s_today",
+        ))
+        assert result["count"] >= 1
+        hit = next(r for r in result["results"] if r["session_id"] == "s_night")
+        assert hit["title"] == "Night ibuprofen plan"
+        assert "2025" not in hit["when"]

@@ -21,6 +21,21 @@ Hermes. ACP is a good fit when you want Hermes to keep its existing identity,
 provider setup, memory, skills, and tools while another application owns the
 conversation transport.
 
+## Optional progress and review notifications
+
+Clients supporting Hermes' optional commentary extension can show intermediate
+assistant messages while a task runs and Self-improvement review summaries when
+background work finishes. These are additional notifications: the normal streamed
+response and final answer remain unchanged and may repeat intermediate text.
+Reasoning and tool output are separate ACP events. With a Codex-backed Hermes
+provider, enabling this extension moves commentary out of the legacy thought-event
+fallback; real reasoning and the final response remain unchanged.
+
+The client controls notification delivery and its own toggle. A review can finish
+after the answer, so supporting clients associate it with the original request.
+Older clients retain their existing behavior. Adapter authors can find the
+negotiation and correlation contract in [ACP Internals](../../developer-guide/acp-internals.md#optional-commentary-extension).
+
 ## What Hermes exposes in ACP mode
 
 Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It includes:

@@ -444,6 +444,55 @@ def test_late_local_rpc_request_cannot_use_next_cell_session(monkeypatch):
     assert calls == []
 
 
+def test_reused_thread_pool_captures_each_cells_authority(monkeypatch):
+    probe_name = "execute_code_thread_pool_cell_probe"
+    calls = []
+    toolset = "plugin_execute_code_thread_pool_cell_probe"
+    registry.register(
+        name=probe_name,
+        toolset=toolset,
+        schema=_probe_schema(probe_name),
+        handler=lambda _args, **kwargs: calls.append(kwargs.get("session_id"))
+        or json.dumps({"ok": True}),
+    )
+    monkeypatch.setattr(
+        "tools.terminal_tool._get_env_config",
+        lambda: {"env_type": "local"},
+    )
+    common = {
+        "task_id": "execute-code-thread-pool-cell-task",
+        "enabled_tools": ["tool_call"],
+        "enabled_toolsets": [toolset],
+    }
+
+    try:
+        first = code_execution_tool.execute_code(
+            (
+                "from concurrent.futures import ThreadPoolExecutor\n"
+                "from hermes_tools import tool_call\n"
+                "pool = ThreadPoolExecutor(max_workers=1)\n"
+                f"print(pool.submit(tool_call, {probe_name!r}, {{}}).result())\n"
+            ),
+            session_id="cell-session-a",
+            **common,
+        )
+        second = code_execution_tool.execute_code(
+            f"print(pool.submit(tool_call, {probe_name!r}, {{}}).result())\n",
+            session_id="cell-session-b",
+            **common,
+        )
+    finally:
+        from tools.code_kernel import _REGISTRY
+
+        _REGISTRY.shutdown()
+        registry.deregister(probe_name)
+        model_tools._clear_tool_defs_cache()
+
+    assert json.loads(first)["status"] == "success", first
+    assert json.loads(second)["status"] == "success", second
+    assert calls == ["cell-session-a", "cell-session-b"]
+
+
 def test_local_rpc_serializes_structured_result_as_one_json_frame():
     result = {
         "_multimodal": True,
@@ -495,6 +544,81 @@ def test_local_rpc_serializes_structured_result_as_one_json_frame():
     assert json.loads(connection.sent) == result
 
 
+def test_local_rpc_binds_cell_authority_before_dispatch():
+    request = json.dumps(
+        {
+            "token": "rpc-token",
+            "cell_token": "cell-a",
+            "tool": "tool_call",
+            "args": {},
+        }
+    ).encode() + b"\n"
+
+    class Connection:
+        def __init__(self):
+            self.reads = [request, b""]
+            self.sent = bytearray()
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _size):
+            return self.reads.pop(0)
+
+        def sendall(self, payload):
+            self.sent.extend(payload)
+
+        def close(self):
+            return None
+
+    connection = Connection()
+
+    class Server:
+        def settimeout(self, _timeout):
+            return None
+
+        def accept(self):
+            return connection, None
+
+    kernel = SimpleNamespace(cell_authority=None)
+
+    class Authority:
+        def __init__(self, owner, token, *, replace_with=None):
+            self.owner = owner
+            self._token = token
+            self.replace_with = replace_with
+            self.active = True
+
+        @property
+        def rpc_cell_token(self):
+            if self.replace_with is not None:
+                kernel.cell_authority = self.replace_with
+            return self._token
+
+        def dispatch(self, _name, _args):
+            return {"owner": self.owner}
+
+    authority_b = Authority("B", "cell-b")
+    authority_a = Authority("A", "cell-a", replace_with=authority_b)
+    kernel.cell_authority = authority_a
+
+    from tools.code_kernel import _bind_cell_dispatch
+
+    code_execution_rpc._rpc_server_loop(
+        Server(),
+        "task-rpc",
+        [],
+        [0],
+        1,
+        frozenset({"tool_call"}),
+        threading.Event(),
+        "rpc-token",
+        bind_dispatch=lambda token: _bind_cell_dispatch(kernel, token),
+    )
+
+    assert json.loads(connection.sent) == {"owner": "A"}
+
+
 def test_remote_rpc_serializes_structured_result(monkeypatch):
     result = {
         "_multimodal": True,
@@ -542,6 +666,48 @@ def test_remote_rpc_serializes_structured_result(monkeypatch):
     )
 
     assert json.loads(environment.response) == result
+
+
+def test_remote_rpc_replies_when_cell_authority_is_stale():
+    request = {
+        "token": "rpc-token",
+        "cell_token": "cell-a",
+        "tool": "tool_call",
+        "args": {},
+        "seq": 7,
+    }
+    stop_event = threading.Event()
+
+    class Environment:
+        response = None
+
+        def execute(self, command, **_kwargs):
+            if command.startswith("ls -1"):
+                return {"output": "/rpc/req_000007\n"}
+            if command.startswith("cat "):
+                stop_event.set()
+                return {"output": json.dumps(request)}
+            if command.startswith("echo '"):
+                encoded = command.split("'", 2)[1]
+                self.response = base64.b64decode(encoded).decode()
+            return {"output": ""}
+
+    environment = Environment()
+    code_execution_rpc._rpc_poll_loop(
+        environment,
+        "/rpc",
+        "task-rpc",
+        [],
+        [0],
+        1,
+        frozenset({"tool_call"}),
+        stop_event,
+        "rpc-token",
+        cell_token="cell-b",
+    )
+
+    response = json.loads(environment.response)
+    assert "expired" in response["error"].lower()
 
 
 def test_remote_rpc_dispatch_forwards_parent_session_scope(monkeypatch):

@@ -25,6 +25,7 @@ import shlex
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -156,6 +157,17 @@ def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: froz
 # Registry + lock shared-shape with code_kernel; teardown runs outside the lock.
 _REGISTRY = KernelRegistry(lambda kernel: kernel.kill())
 _REMOTE_KERNELS: Dict[Tuple, RemoteKernel] = _REGISTRY.kernels
+_CELL_LOCKS: "weakref.WeakValueDictionary[Tuple, threading.Lock]" = weakref.WeakValueDictionary()
+
+
+def _cell_lock_for(key: Tuple):
+    """Return the stable per-key lock that serializes acquisition and cell execution."""
+    with _REGISTRY.lock:
+        lock = _CELL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CELL_LOCKS[key] = lock
+        return lock
 
 
 def shutdown_all_remote_kernels() -> None:
@@ -315,27 +327,33 @@ def execute_in_remote_kernel(
     per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
     from tools.code_kernel import _resolve_owner
     owner = _resolve_owner(task_env_id)
-    kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
-        env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
-    if kernel is None:
-        return None  # fail open to per-call
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
-    kernel.last_used = time.monotonic()
-    with _REGISTRY.lock:
-        kernel.attached += 1
-        evicted = _evict_over_cap_unlocked(keep=key)
-    for doomed in evicted:
-        doomed.kill()
-    try:
-        return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
-                                  sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                                  reused=reused, state_reset=state_reset, state_lost=state_lost,
-                                  session_id=session_id, enabled_toolsets=enabled_toolsets,
-                                  disabled_toolsets=disabled_toolsets)
-    finally:
+    with _cell_lock_for(key):
+        kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
+            env, env_type, owner, task_env_id, sandbox_tools,
+            reset=reset, idle_exit=idle_exit,
+        )
+        if kernel is None:
+            return None  # fail open to per-call
+        kernel.last_used = time.monotonic()
         with _REGISTRY.lock:
-            kernel.attached -= 1
-            kernel.last_used = time.monotonic()
+            kernel.attached += 1
+            evicted = _evict_over_cap_unlocked(keep=key)
+        for doomed in evicted:
+            doomed.kill()
+        try:
+            return _run_attached_cell(
+                kernel, key, code, env=env, task_env_id=task_env_id,
+                sandbox_tools=sandbox_tools, timeout=timeout,
+                max_tool_calls=max_tool_calls, reused=reused,
+                state_reset=state_reset, state_lost=state_lost,
+                session_id=session_id, enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
+        finally:
+            with _REGISTRY.lock:
+                kernel.attached -= 1
+                kernel.last_used = time.monotonic()
 
 
 def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task_env_id: str,
@@ -346,13 +364,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
                        disabled_toolsets: Optional[List[str]] = None) -> Dict[str, Any]:
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
-    # Clean stale tool-RPC requests from a previous cell before arming this cell's poll loop, so
-    # a background thread the last cell leaked cannot smuggle a call into this authority window.
-    q_rpc = shlex.quote(kernel.kernel_dir + '/rpc')
-    try:
-        kernel.sh(f"rm -f {q_rpc}/req_* {q_rpc}/res_*", timeout=10)
-    except Exception:
-        pass
+    # The per-key cell lock guarantees one poller per kernel. Leave prior requests in place so
+    # the next cell can return a structured stale-authority error to any late caller.
     tool_call_counter, stop_event = [0], threading.Event()
     rpc_cell_token = secrets.token_urlsafe(32)
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue

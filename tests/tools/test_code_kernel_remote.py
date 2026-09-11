@@ -137,6 +137,73 @@ class RemoteKernelBase(unittest.TestCase):
 
 
 class TestSpawnAndReuse(RemoteKernelBase):
+    def test_same_kernel_cells_are_serialized(self):
+        import threading
+
+        env = ScriptedEnv([])
+        kernel = RemoteKernel(
+            env=env,
+            env_type="ssh",
+            kernel_dir="/tmp/kernel",
+            pid="4242",
+            rpc_token="rpc-token",
+            owner="same-task",
+        )
+        kernel.cell_lock = threading.Lock()
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        count_lock = threading.Lock()
+        entered = 0
+
+        def run_cell(*_args, **_kwargs):
+            nonlocal entered
+            with count_lock:
+                entered += 1
+                ordinal = entered
+            if ordinal == 1:
+                first_entered.set()
+                release_first.wait(5)
+            else:
+                second_entered.set()
+            return {"status": "ok", "stdout": "", "stderr": "", "traceback": ""}
+
+        def invoke():
+            execute_in_remote_kernel(
+                "print('x')",
+                env=env,
+                env_type="ssh",
+                task_env_id="same-task",
+                sandbox_tools=frozenset(),
+                timeout=5,
+                max_tool_calls=1,
+                reset=False,
+            )
+
+        with patch(
+            "tools.code_kernel_remote._acquire_remote_kernel",
+            return_value=(kernel, True, False, False),
+        ), patch(
+            "tools.code_kernel_remote._run_attached_cell",
+            side_effect=run_cell,
+        ), patch(
+            "tools.code_kernel_remote._evict_over_cap_unlocked",
+            return_value=[],
+        ):
+            first = threading.Thread(target=invoke)
+            second = threading.Thread(target=invoke)
+            first.start()
+            self.assertTrue(first_entered.wait(2))
+            second.start()
+            second_ran_while_first_was_active = second_entered.wait(0.2)
+            release_first.set()
+            first.join(5)
+            second.join(5)
+
+        self.assertFalse(second_ran_while_first_was_active)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+
     def test_first_call_spawns_second_reuses(self):
         env = ScriptedEnv(_spawn_ok_handlers(
             [_cell(stdout="one\n"), _cell(stdout="two\n", execution_count=2)],

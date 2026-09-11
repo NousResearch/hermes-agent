@@ -472,30 +472,24 @@ def shutdown_kernels_for_owner(owner: str) -> None:
 atexit.register(shutdown_all_kernels)
 
 
+def _bind_cell_dispatch(kernel: SessionKernel, request_token: str):
+    """Bind one RPC request to the authority whose token it presented."""
+    authority = kernel.cell_authority
+    if authority is None or not authority.active:
+        return None
+    if not secrets.compare_digest(request_token.encode(), authority.rpc_cell_token.encode()):
+        return None
+    return authority.dispatch
+
+
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
-    """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
-    its 300s idle timeout, and a kernel idles longer between cells, so re-accept until teardown
-    (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO frozen
-    authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
+    """Serve tool RPC for the kernel's whole life without freezing one cell's authority."""
     from tools.code_execution_rpc import _rpc_server_loop
-    from tools.registry import tool_error
-    def _current_authority() -> Optional[CellAuthority]:
-        authority = kernel.cell_authority
-        return authority if authority is not None and authority.active else None
-
-    def _dispatch(tool_name: str, tool_args: dict) -> str:
-        authority = _current_authority()
-        if authority is None:
-            return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
-        return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch,
-                         cell_token=lambda: (
-                             _current_authority().rpc_cell_token if _current_authority() is not None else ""
-                         ))
+                         bind_dispatch=lambda token: _bind_cell_dispatch(kernel, token))
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:

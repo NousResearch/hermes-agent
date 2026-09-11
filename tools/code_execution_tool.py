@@ -227,6 +227,21 @@ def _rpc_cell_token():
     return os.environ.get("HERMES_RPC_CELL_TOKEN", "")
 
 
+def _run_with_rpc_cell_scope(fn, cell_token, args, kwargs):
+    previous = getattr(_rpc_cell_scope, "token", None)
+    _rpc_cell_scope.token = cell_token
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        if previous is None:
+            try:
+                del _rpc_cell_scope.token
+            except AttributeError:
+                pass
+        else:
+            _rpc_cell_scope.token = previous
+
+
 if _rpc_cell_scope is not None and not getattr(threading.Thread.start, "_hermes_rpc_cell_scope", False):
     _original_thread_start = threading.Thread.start
 
@@ -235,24 +250,27 @@ if _rpc_cell_scope is not None and not getattr(threading.Thread.start, "_hermes_
         original_run = thread.run
 
         def run_with_rpc_cell_scope():
-            previous = getattr(_rpc_cell_scope, "token", None)
-            _rpc_cell_scope.token = cell_token
-            try:
-                return original_run()
-            finally:
-                if previous is None:
-                    try:
-                        del _rpc_cell_scope.token
-                    except AttributeError:
-                        pass
-                else:
-                    _rpc_cell_scope.token = previous
+            return _run_with_rpc_cell_scope(original_run, cell_token, (), {})
 
         thread.run = run_with_rpc_cell_scope
         return _original_thread_start(thread, *args, **kwargs)
 
     _start_with_rpc_cell_scope._hermes_rpc_cell_scope = True
     threading.Thread.start = _start_with_rpc_cell_scope
+
+
+if _rpc_cell_scope is not None and not getattr(
+        concurrent.futures.ThreadPoolExecutor.submit, "_hermes_rpc_cell_scope", False):
+    _original_thread_pool_submit = concurrent.futures.ThreadPoolExecutor.submit
+
+    def _submit_with_rpc_cell_scope(executor, fn, /, *args, **kwargs):
+        cell_token = _rpc_cell_token()
+        return _original_thread_pool_submit(
+            executor, _run_with_rpc_cell_scope, fn, cell_token, args, kwargs,
+        )
+
+    _submit_with_rpc_cell_scope._hermes_rpc_cell_scope = True
+    concurrent.futures.ThreadPoolExecutor.submit = _submit_with_rpc_cell_scope
 
 # ---------------------------------------------------------------------------
 # Convenience helpers (avoid common scripting pitfalls)
@@ -297,6 +315,7 @@ def retry(fn, max_attempts=3, delay=2):
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs."""
+import concurrent.futures
 import json, os, socket, shlex, threading, time
 
 _sock = None
@@ -383,6 +402,7 @@ def _call(tool_name, args):
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
+import concurrent.futures
 import json, os, shlex, tempfile, threading, time
 
 _RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")

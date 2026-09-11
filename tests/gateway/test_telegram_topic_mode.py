@@ -6,7 +6,7 @@ Telegram topics act as independent Hermes session lanes.
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -698,6 +698,7 @@ async def test_restore_failure_is_visible_and_rolls_back_binding(tmp_path):
     topic_source = _make_source(thread_id="17585")
 
     runner = _make_runner(session_db=session_db)
+    runner.session_store.lookup_by_session_key.return_value = None
     runner.session_store.switch_session = MagicMock(
         side_effect=RuntimeError("store unavailable")
     )
@@ -707,10 +708,15 @@ async def test_restore_failure_is_visible_and_rolls_back_binding(tmp_path):
 
     assert "Session restored" not in response
     assert "restore failed" in response.lower()
+    assert runner.session_store.switch_session.call_count == 1  # no prior route to restore
     binding = session_db.get_telegram_topic_binding(
         chat_id="208214988", thread_id="17585",
     )
     assert binding is None  # no prior binding → rollback removed the row
+    # Rollback must not toggle the chat-wide topic mode (that is the deleted-topic prune path).
+    assert session_db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    )
 
 
 @pytest.mark.asyncio
@@ -739,14 +745,21 @@ async def test_restore_failure_restores_previous_binding(tmp_path):
     )
 
     runner = _make_runner(session_db=session_db)
+    runner.session_store.lookup_by_session_key.return_value = SimpleNamespace(
+        session_id="prev-session"
+    )
     runner.session_store.switch_session = MagicMock(
-        side_effect=RuntimeError("store unavailable")
+        side_effect=[RuntimeError("store unavailable"), None]
     )
     event = _make_event("/topic old-topic-session", thread_id="17585")
 
     response = await runner._restore_telegram_topic_session(event, "old-topic-session")
 
     assert "restore failed" in response.lower()
+    assert runner.session_store.switch_session.call_args_list == [
+        call(topic_key, "old-topic-session"),
+        call(topic_key, "prev-session"),  # failed switch rolled the route back too
+    ]
     binding = session_db.get_telegram_topic_binding(
         chat_id="208214988", thread_id="17585",
     )

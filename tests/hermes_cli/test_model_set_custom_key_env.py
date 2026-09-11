@@ -71,6 +71,42 @@ class TestModelSetCustomKeyEnv:
             for e in custom
         )
 
+    def test_set_model_main_named_custom_keeps_secret_out_of_config(self):
+        """The durable custom:<name> namespace has the same storage boundary."""
+        from hermes_cli.config import (
+            custom_endpoint_key_env,
+            get_config_path,
+            get_env_path,
+            get_env_value,
+            read_raw_config,
+        )
+
+        base_url = "https://litellm.example.com/v1"
+        secret = "sk-named-custom-secret"
+        response = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom:litellm",
+                "model": "ollama/glm-5.2",
+                "base_url": base_url,
+                "api_key": secret,
+                "confirm_expensive_model": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert secret not in get_config_path().read_text(encoding="utf-8")
+
+        model_cfg = read_raw_config()["model"]
+        key_env = custom_endpoint_key_env(base_url)
+        assert model_cfg["provider"] == "custom:litellm"
+        assert model_cfg["base_url"] == base_url
+        assert model_cfg["key_env"] == key_env
+        assert "api_key" not in model_cfg
+        assert get_env_value(key_env) == secret
+        assert secret in get_env_path().read_text(encoding="utf-8")
+
     def test_set_model_main_custom_endpoint_change_drops_stale_key_env(self):
         """Changing hosts without a new key must not reuse the old host's key."""
         from hermes_cli.config import load_config

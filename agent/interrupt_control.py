@@ -152,6 +152,7 @@ class InterruptControlMixin:
                 _fence(), when_in_flight=False, failure_log="Compression hard-cancel fence admission failed"
             )
             self._pending_redirect = None
+            self._pending_redirect_note = self._pending_redirect_mode = ""
 
         # Codex watches a private interrupt event rather than Hermes' per-thread flag.
         _request_interrupt = _ic_codex_method(self, "request_interrupt")
@@ -205,6 +206,7 @@ class InterruptControlMixin:
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
+                self._pending_redirect_note = self._pending_redirect_mode = ""
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
@@ -212,24 +214,50 @@ class InterruptControlMixin:
         # A hard interrupt supersedes any pending /steer — its target iteration will no longer happen.
         with _ic_lock(self, "_pending_steer_lock"):
             self._pending_steer = None
+            self._pending_steer_note = self._pending_steer_mode = ""
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, note: Optional[str] = None, mode: Optional[str] = None) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text. An optional
+        per-turn ``note`` (composer mode framing) rides the delivered row's ``api_content`` — model-side
+        bytes only — and the opaque ``mode`` label lands on its display_metadata for client badges."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            self._queue_correction_note("_pending_steer", note, mode)
         return True
 
-    def redirect(self, text: str) -> bool:
+    def _queue_correction_note(self, slot: str, note: Optional[str], mode: Optional[str]) -> None:
+        """Attach a per-turn model note (+ display-only mode label) to the pending ``slot`` correction:
+        notes concatenate, the label is last-wins. Call under the slot's own lock."""
+        note = (note or "").strip()
+        mode = (mode or "").strip()
+        if note:
+            existing_note = getattr(self, f"{slot}_note", "") or ""
+            setattr(self, f"{slot}_note", f"{existing_note}\n\n{note}" if existing_note else note)
+        if mode:
+            setattr(self, f"{slot}_mode", mode)
+
+    def _take_correction_note(self, slot: str) -> "tuple[str, str]":
+        """One-shot consume of the note/label queued for the pending ``slot`` correction."""
+        with _ic_lock(self, f"{slot}_lock"):
+            note = getattr(self, f"{slot}_note", "") or ""
+            mode = getattr(self, f"{slot}_mode", "") or ""
+            setattr(self, f"{slot}_note", "")
+            setattr(self, f"{slot}_mode", "")
+        return note, mode
+
+    def redirect(self, text: str, note: Optional[str] = None, mode: Optional[str] = None) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the
         correction is appended as a real user message, the loop retries); during tool execution it degrades
-        to ``steer()``; Codex app-server uses native ``turn/steer``. False when no live turn / empty text."""
+        to ``steer()``; Codex app-server uses native ``turn/steer``. False when no live turn / empty text.
+        Like ``steer``, an optional per-turn ``note``/``mode`` rides the correction (api_content /
+        display_metadata); the Codex native path carries neither (documented edge)."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
@@ -250,7 +278,7 @@ class InterruptControlMixin:
         # `sleep` poller, a build), so ask the tool workers to YIELD: terminal hands the live
         # process to the background registry and returns; tools that don't yield are unaffected.
         if getattr(self, "_executing_tools", False):
-            accepted = self.steer(cleaned)
+            accepted = self.steer(cleaned, note=note, mode=mode)
             if accepted:
                 tracker = getattr(self, "_tool_worker_threads", None)
                 tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
@@ -271,6 +299,7 @@ class InterruptControlMixin:
             self._pending_redirect = (
                 f"{existing}\n\n[Additional user correction]\n{cleaned}" if existing else cleaned
             )
+            self._queue_correction_note("_pending_redirect", note, mode)
             self._interrupt_requested = True
             self._interrupt_message = None
 

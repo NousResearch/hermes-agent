@@ -526,10 +526,16 @@ _CONTROL_STATE: Dict[str, Any] = {
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
     "_pending_steer_lock": threading.Lock,
+    # Optional per-turn model note (+ display-only mode label) queued with the steer above:
+    # the note rides the delivered row's api_content, the label its display_metadata.
+    "_pending_steer_note": "",
+    "_pending_steer_mode": "",
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,
     "_pending_redirect_lock": threading.Lock,
+    "_pending_redirect_note": "",
+    "_pending_redirect_mode": "",
     # Concurrent-tool worker tids: `_set_interrupt` on `_execution_thread_id` alone doesn't
     # reach ThreadPoolExecutor workers, so interrupt()/clear_interrupt() fan out to these.
     "_tool_worker_threads": set,

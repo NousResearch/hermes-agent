@@ -585,6 +585,9 @@ def finalize_turn(
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+        # Its per-turn note/label died with this turn: consume so they cannot leak into a
+        # later correction (the recycled message is a fresh next-turn submit, no sidecar).
+        agent._take_correction_note("_pending_steer")
     agent._response_was_previewed = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message

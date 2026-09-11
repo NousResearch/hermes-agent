@@ -3210,6 +3210,9 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return
+    # The per-turn note/label queued with this steer rides the delivered row: api_content
+    # (model-side bytes) carries the note, display_metadata the opaque mode label.
+    steer_note, steer_mode = agent._take_correction_note("_pending_steer")
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
@@ -3218,8 +3221,9 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # requeue so the fallback path delivers it as a normal next-turn
         # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
+        agent._queue_correction_note("_pending_steer", steer_note, steer_mode)
         return
-    messages.append(steer_user_row(steer_text))
+    messages.append(steer_user_row(steer_text, note=steer_note, mode=steer_mode))
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),

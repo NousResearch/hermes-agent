@@ -10,15 +10,56 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// Unquoted branch ends on a non-punctuation character so bold/prose markers
+// after the path (`**MEDIA:/tmp/a.pdf**`, `MEDIA:/tmp/a.pdf.`, whole-tag
+// backticks) stay outside the capture (#84361). Quoted forms remain the
+// escape hatch for odd names.
+const MEDIA_PATH_CAPTURE =
+  '(?<path>`[^`\\n]+`|"[^"\\n]+"|\'[^\'\\n]+\'|\\S*[^\\s*_`"\',;:.!?)\\]}>])'
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_LINE_RE = new RegExp(
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*${MEDIA_PATH_CAPTURE}[\`"']?[\\t ]*(\\n|$)`,
+  'g'
+)
+
+const MEDIA_TAG_RE = new RegExp(`[\`"']?MEDIA:\\s*${MEDIA_PATH_CAPTURE}[\`"']?`, 'g')
+
+const MEDIA_TRAILING_CLOSERS: Record<string, string> = {
+  ')': '(',
+  ']': '[',
+  '}': '{',
+  '>': '<'
+}
 
 function unquoteMediaPath(value: string): string {
-  const trimmed = value.trim()
+  let trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  // Drop unbalanced trailing closers so `(MEDIA:/tmp/a.png)` does not keep `)`,
+  // while `/tmp/(a).png` keeps its matching `)`.
+  while (trimmed.length > 1) {
+    const last = trimmed.at(-1) ?? ''
+    const open = MEDIA_TRAILING_CLOSERS[last]
+
+    if (!open) {
+      break
+    }
+
+    const opens = trimmed.split(open).length - 1
+    const closes = trimmed.split(last).length - 1
+
+    if (closes <= opens) {
+      break
+    }
+
+    trimmed = trimmed.slice(0, -1)
+  }
+
+  return trimmed
 }
 
 function mediaLink(value: string): string {

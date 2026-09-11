@@ -1,0 +1,13 @@
+[Unit]
+Description=WireGuard-peer SOCKS5 for browser egress
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.hermes/takeover/wg_socks5.py
+Restart=on-failure
+RestartSec=3
+EnvironmentFile=-%h/.hermes/takeover/env
+
+[Install]
+WantedBy=default.target

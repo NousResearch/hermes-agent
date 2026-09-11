@@ -999,6 +999,13 @@ class CLIStatusBarMixin:
             if count:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
+        # YOLO is pinned to the very front of the bar — ahead of the model marker — so the
+        # risky-mode state is the first thing the user sees at every width tier. Both
+        # renderers share this segment list, so the plain-text and prompt_toolkit bars
+        # cannot drift; the battery, when enabled, still prepends ahead of everything.
+        if yolo_active:
+            add("yolo", "class:status-bar-yolo", "⚠ YOLO")
+
         if _ok("model"):
             if styled:
                 segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
@@ -1052,8 +1059,6 @@ class CLIStatusBarMixin:
                     add(name, _DIM, label)
         if focus_label:
             add("focus", _STRONG, focus_label)
-        if yolo_active:
-            add("yolo", "class:status-bar-yolo", "⚠ YOLO")
         if wide:
             # Session token total (Σ) — opt-in only via an explicit fields list.
             total_tokens = snapshot.get("session_total_tokens", 0)

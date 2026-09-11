@@ -454,6 +454,9 @@ def continue_codex_incomplete(
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
     the turn loop, or the terminal ``partial`` result once retries are exhausted."""
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.turn_facade import completion_recovery_nudge
+
+    nudge = completion_recovery_nudge(agent, _CODEX_INCOMPLETE_NUDGE)
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
@@ -506,11 +509,11 @@ def continue_codex_incomplete(
             _last_msg = messages[-1] if messages else None
             if isinstance(_last_msg, dict):
                 _already_nudged = (
-                    _last_msg.get("role") == "user" and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                    _last_msg.get("role") == "user" and _last_msg.get("content") == nudge
                 )
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
-                    append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+                    append_message(messages, {"role": "user", "content": nudge})
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)")
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look

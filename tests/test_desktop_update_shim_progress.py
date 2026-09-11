@@ -130,11 +130,11 @@ exit "$(cat "$HERMES_TEST_EXITS.$n" 2>/dev/null || echo 0)"
 """
 
 
-def _run_handoff(tmp_path, exits: dict[int, int]) -> list[dict]:
+def _run_handoff(tmp_path, exits: dict[int, int], venv_dir: str = "venv") -> list[dict]:
     """Run the real hand-off end to end; return the stage seen at each call."""
     install_root = tmp_path / "hermes-agent"
-    (install_root / "venv" / "bin").mkdir(parents=True)
-    hermes = install_root / "venv" / "bin" / "hermes"
+    (install_root / venv_dir / "bin").mkdir(parents=True)
+    hermes = install_root / venv_dir / "bin" / "hermes"
     hermes.write_text(FAKE_HERMES)
     hermes.chmod(0o755)
 
@@ -197,3 +197,14 @@ def test_retry_gate_publishes_a_distinct_stage(tmp_path):
         "Updating code and dependencies",
         "Retrying update",
     ]
+
+
+@requires_posix_handoff
+def test_dot_venv_layout_is_not_told_it_needs_repair(tmp_path):
+    """Shared-venv checkouts (doctor-verified healthy) ship only `.venv`, no
+    `venv` directory. The hand-off must still find and run `hermes` instead
+    of aborting with "the install needs repair"."""
+    stages = _run_handoff(tmp_path, {1: 0}, venv_dir=".venv")
+
+    assert len(stages) == 1
+    assert stages[0]["message"] == "Updating code and dependencies"

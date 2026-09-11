@@ -23,8 +23,10 @@ export interface TranscriptTailState {
   /** The last hydration page was exactly the page limit, so older rows
    *  likely exist beyond what the in-memory store holds. */
   possiblyTruncated: boolean
-  /** Owning profile captured at hydration time, so a later backfill routes
-   *  its REST read to the same backend that served the tail. */
+  /** The request route captured at hydration time, replayed verbatim by a
+   *  later backfill so it reaches the backend that served the tail. The
+   *  resolved OWNER is the map key, not this field: an ambient read must stay
+   *  ambient even once the server has named its profile. */
   profile?: TranscriptProfileScope
 }
 
@@ -43,6 +45,8 @@ let transcriptTailOrder: string[] = []
 type TailPage = Pick<SessionMessagesResponse, 'messages' | 'pagination'>
 
 function normalizedScope(profile?: TranscriptProfileScope): { connectionId: string; profile: string } | null {
+  // A bare string is the legacy "named profile" spelling: it always names a
+  // profile, so empty means the default one.
   if (typeof profile === 'string') {
     return { connectionId: '', profile: profile.trim() || 'default' }
   }
@@ -53,7 +57,8 @@ function normalizedScope(profile?: TranscriptProfileScope): { connectionId: stri
 
   return {
     connectionId: String(profile.connectionId || '').trim(),
-    profile: String(profile.profile || '').trim() || 'default'
+    // An omitted profile targets the serving process, not necessarily default.
+    profile: String(profile.profile || '').trim()
   }
 }
 
@@ -114,14 +119,20 @@ function setTranscriptTailEntry(key: string, state: TranscriptTailState): void {
   $transcriptTailBySessionId.set(next)
 }
 
-/** Record the outcome of a tail hydration (`getLatestSessionMessages`). */
-export function recordTranscriptTail(storedSessionId: string, page: TailPage, profile?: TranscriptProfileScope): void {
+/** Record the outcome of a tail hydration (`getLatestSessionMessages`).
+ *  `route` is what the request was sent with; `owner` is the resolved backend
+ *  the entry is keyed under (defaults to the route when they coincide). */
+export function recordTranscriptTail(
+  storedSessionId: string,
+  page: TailPage,
+  route?: TranscriptProfileScope,
+  owner: TranscriptProfileScope | undefined = route
+): void {
   if (!storedSessionId) {
     return
   }
 
-  const key = transcriptTailKey(storedSessionId, profile)
-  setTranscriptTailEntry(key, tailStateFromPage(page, profile))
+  setTranscriptTailEntry(transcriptTailKey(storedSessionId, owner), tailStateFromPage(page, route))
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */
@@ -165,6 +176,13 @@ export function transcriptTailState(
   const matches = matchingTailEntries(storedSessionId)
 
   return matches.length === 1 ? matches[0][1] : undefined
+}
+
+/** Forget every tail: the backend behind the window changed and a recycled
+ *  stored id must not carry the previous backend's paging state. */
+export function clearAllTranscriptTails(): void {
+  transcriptTailOrder = []
+  $transcriptTailBySessionId.set({})
 }
 
 export function clearTranscriptTail(storedSessionId: string, profile?: TranscriptProfileScope): void {

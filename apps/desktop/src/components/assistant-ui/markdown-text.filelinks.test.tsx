@@ -42,6 +42,19 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(container.querySelector('a[href="/tmp/demo.mp4"]')).toBeNull()
   })
 
+  it('strips markdown emphasis wrappers from the href before resolving (#95713)', async () => {
+    // A bold-wrapped path whose emphasis markers bleed into the link
+    // destination (`[Open xyz.pdf](/home/user/xyz.pdf**)`) is path-relative,
+    // so rehype-harden lets it through and the '**' used to ride all the way
+    // into the on-disk path — Windows then refused to open '...xyz.pdf**'.
+    render(<MarkdownTextContent isRunning={false} text="Done: [Open xyz.pdf](/home/user/xyz.pdf**)" />)
+
+    // The preview attachment receives the bare path, not '...xyz.pdf**'.
+    await screen.findByText('xyz.pdf')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(document.querySelector('a[href="/home/user/xyz.pdf**"]')).toBeNull()
+  })
+
   it('leaves anchors and relative links out of the preview pipeline', () => {
     render(
       <MarkdownTextContent

@@ -17,6 +17,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { stripMarkdownPathWrappers } from '@hermes/shared/markdown-path'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -259,7 +260,13 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
-  const mediaPath = mediaPathFromMarkdownHref(href)
+  // Markdown emphasis / directive wrappers (`**`, `__`, `@url:`) leak from
+  // labels into targets (issue #95713): a link rendered from bold text keeps
+  // the asterisks in its href, and every downstream resolver — media path,
+  // preview target, filesystem open — would then chase a path with `**` in
+  // it. Strip the wrappers before anything interprets the href.
+  const cleanedHref = typeof href === 'string' ? stripMarkdownPathWrappers(href) : href
+  const mediaPath = mediaPathFromMarkdownHref(cleanedHref)
 
   if (mediaPath) {
     // A delivered markdown document is renderable content, not an opaque
@@ -283,19 +290,19 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <MediaAttachment path={mediaPath} />
   }
 
-  const previewTarget = previewTargetFromMarkdownHref(href)
+  const previewTarget = previewTargetFromMarkdownHref(cleanedHref)
 
   if (previewTarget) {
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
   }
 
-  const sessionRef = sessionRefFromMarkdownHref(href)
+  const sessionRef = sessionRefFromMarkdownHref(cleanedHref)
 
   if (sessionRef) {
     return <SessionRefLink value={sessionRef} />
   }
 
-  const target = href ? normalizeExternalUrl(href) : href
+  const target = cleanedHref ? normalizeExternalUrl(cleanedHref) : cleanedHref
 
   if (!target || !/^https?:\/\//i.test(target)) {
     // A plain filesystem href (`[report](/home/user/report.md)`, `file://…`,
@@ -307,7 +314,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // remote fetches it over the authenticated /api/fs bridge), so the same
     // transcript works from every machine that opens it. Media extensions
     // keep their richer inline player.
-    const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
+    const fileHref = cleanedHref && !cleanedHref.startsWith('#') && isFileMediaPath(cleanedHref) ? cleanedHref : null
 
     if (fileHref) {
       return mediaKind(fileHref) === 'file' ? (
@@ -320,7 +327,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return (
       <a
         className={cn('ref wrap-anywhere', className)}
-        href={href}
+        href={cleanedHref}
         rel="noopener noreferrer"
         target="_blank"
         {...props}
@@ -361,7 +368,9 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // conditional return inside it would have to sit after every hook call, which
 // would still fire an image resolve for media we never render as an image.
 export function MarkdownImage(props: ComponentProps<'img'>) {
-  const rawSrc = typeof props.src === 'string' ? props.src : ''
+  // Same wrapper-stripping as MarkdownLink (#95713): `![…](**clip.mp4**)`
+  // must not chase a media path with emphasis markers in it.
+  const rawSrc = typeof props.src === 'string' ? stripMarkdownPathWrappers(props.src) : ''
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
   if (kind === 'video' || kind === 'audio') {

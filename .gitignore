@@ -224,3 +224,9 @@ native/fts5_cjk/*.so
 
 # Disposable profile created by scripts/probe_active_session_exclusivity.py
 .probe-home/
+
+# Disposable directory written by a test run that resolved a MagicMock attribute
+# path into a real filesystem path (mock._session_db.db_path/<id>), together with
+# its *.fts_rebuild.lock / *.quarantine.lock companions. It slipped into f98cb00a8b
+# alongside unrelated vault changes and was removed again afterwards. Never commit it.
+MagicMock/

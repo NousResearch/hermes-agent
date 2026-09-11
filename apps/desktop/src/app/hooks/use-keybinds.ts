@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { focusRevealedTerminal } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
@@ -253,7 +254,19 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.showFiles': showFiles,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
-    'view.showTerminal': () => togglePaneVisible('terminal'),
+    'view.showTerminal': () => {
+      // The unhide direction is also the terminal's only focus affordance,
+      // and nothing else on the reveal path focuses xterm (the keep-alive
+      // terminals never re-run their activation effect), so it must claim
+      // keyboard focus itself.
+      const revealed = !isPaneVisible('terminal')
+
+      togglePaneVisible('terminal')
+
+      if (revealed) {
+        focusRevealedTerminal()
+      }
+    },
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
     'view.newTerminal': () => {

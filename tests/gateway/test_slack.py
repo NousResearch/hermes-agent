@@ -2881,9 +2881,9 @@ class TestReactions:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_processing_start_sends_immediate_thread_ack(self, adapter):
+    async def test_processing_start_sends_immediate_ack_only_once_per_gateway_start(self, adapter):
         adapter.send = AsyncMock()
-        adapter._reacting_message_ids.add("1234567890.000001")
+        adapter._reacting_message_ids.update({"1234567890.000001", "1234567890.000002"})
         from gateway.platforms.base import SessionSource
         from gateway.platforms.event import MessageEvent, MessageType
         from gateway.config import Platform
@@ -2892,11 +2892,16 @@ class TestReactions:
             platform=Platform.SLACK, chat_id="C123", chat_type="group",
             user_id="U_USER", thread_id="111.222",
         )
-        event = MessageEvent(
+        first = MessageEvent(
             text="do work", message_type=MessageType.TEXT, source=source,
             message_id="1234567890.000001",
         )
-        await adapter.on_processing_start(event)
+        second = MessageEvent(
+            text="do more work", message_type=MessageType.TEXT, source=source,
+            message_id="1234567890.000002",
+        )
+        await adapter.on_processing_start(first)
+        await adapter.on_processing_start(second)
 
         adapter.send.assert_awaited_once_with(
             "C123", "Getting started…",

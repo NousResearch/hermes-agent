@@ -951,6 +951,8 @@ class SlackAdapter(BasePlatformAdapter):
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
         self._reacting_message_ids: set = set()
+        # A startup acknowledgement is an intro, not a per-turn status message.
+        self._startup_ack_sent = False
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -2949,9 +2951,11 @@ class SlackAdapter(BasePlatformAdapter):
         return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Acknowledge immediately, then add the in-progress reaction."""
+        """Send one startup intro, then add the per-turn in-progress reaction."""
         channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
+        if channel_id and not self._startup_ack_sent:
+            # Claim before awaiting network I/O so concurrent first turns cannot each send it.
+            self._startup_ack_sent = True
             metadata: Dict[str, Any] = {"_interim_send": True}
             thread_id = getattr(event.source, "thread_id", None)
             if thread_id:

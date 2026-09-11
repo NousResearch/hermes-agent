@@ -765,6 +765,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     (unadvertised in the schema; the mirror rejection error teaches it — the
     cross-PROFILE guard it was named for no longer exists).
     """
+    # Defensive: reject any path that already has a duplicated drive prefix
+    # (e.g., ``C:\\Foo\\C:\\Foo`` from a cwd+path prepending bug). Better to
+    # fail closed than to silently land a file in the wrong place.
+    if re.search(r'^([A-Za-z]:[\\/]).*\1', path):
+        return tool_error(
+            f"write_file: path contains a duplicated drive prefix: {path!r}. "
+            f"This usually means a cwd+path prepending bug somewhere upstream. "
+            f"Use an absolute path that does not start with the same drive letter."
+        )
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)
            or _check_binary_document_write(path, task_id)

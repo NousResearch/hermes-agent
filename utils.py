@@ -480,12 +480,21 @@ def base_url_origin(base_url: str) -> tuple[str, str, int]:
     return (scheme, hostname, {"https": 443, "http": 80}.get(scheme, 0) if port is None else port)
 
 
+_LOCAL_HOST_ALIASES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
 def base_url_host_matches(base_url: str, domain: str) -> bool:
     """True when the base URL's hostname is ``domain`` or a subdomain.
 
     Safer than ``domain in base_url`` (``evil.com/moonshot.ai`` / ``moonshot.ai.evil`` must not
-    match). Accepts bare hosts, full URLs, and URLs with paths.
+    match). Accepts bare hosts, full URLs, and URLs with paths. Local endpoint aliases are
+    equivalent so a named provider configured on ``127.0.0.1`` can be used through ``localhost``
+    without weakening the off-host boundary.
     """
     hostname = base_url_hostname(base_url)
     domain = (domain or "").strip().lower().rstrip(".")
-    return bool(hostname and domain) and (hostname == domain or hostname.endswith("." + domain))
+    return bool(hostname and domain) and (
+        (hostname in _LOCAL_HOST_ALIASES and domain in _LOCAL_HOST_ALIASES)
+        or hostname == domain
+        or hostname.endswith("." + domain)
+    )

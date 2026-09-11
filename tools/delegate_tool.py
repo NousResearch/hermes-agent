@@ -12,6 +12,8 @@ tool calls or reasoning.
 """
 
 import logging
+from pathlib import Path
+import re
 import time
 import weakref
 from typing import Any, Dict, List, Optional
@@ -80,20 +82,15 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _open_child_session_db(parent_agent) -> Any:
+def _open_child_session_db(parent_agent, profile_dir: Optional[Path] = None) -> Any:
     """DEDICATED SessionDB handle for the child, or None: the parent's handle can be closed by its own lifecycle while
     a background child still flushes (transcript silently dropped). It MUST open the same db FILE as the parent's
     handle (non-launch profiles), else lineage / session_search break; released by the child's close() via
     _owns_session_db."""
-    # Each child gets a DEDICATED SessionDB connection instead of the parent's live object. The parent's
-    # handle is owned by the parent's lifecycle (cron run_job's finally block, gateway session end, /new)
-    # and can be closed while a fire-and-forget background child is still flushing on a daemon thread —
-    # every subsequent flush then hits the closed handle and the child's transcript is silently dropped
-    # (#81267). It MUST point at the same database FILE as the parent's handle: parents can hold non-default
-    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
-    # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
-    # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
-    # .db_path via __getattr__, so this works through them.
+    if profile_dir is not None and isinstance(profile_dir, (str, Path)):
+        with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
+            from hermes_state_registry import acquire
+            return acquire(Path(profile_dir) / "state.db")
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is None:
         return None
@@ -151,6 +148,90 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+def _detect_task_profile(task: Dict[str, Any]) -> Optional[str]:
+    """Detect whether a task targets a specific Hermes profile.
+
+    Supports:
+    1. Explicit task['profile'] field.
+    2. '@<profile>:' prefix in task['goal'].
+    """
+    from hermes_cli.profiles import profile_exists
+
+    explicit = (task.get("profile") or "").strip().lower()
+    if explicit and profile_exists(explicit):
+        return explicit
+
+    goal = task.get("goal") or ""
+    m = re.match(r"^\s*@([a-zA-Z0-9_\-]+)\s*:", goal)
+    if m:
+        cand = m.group(1).lower()
+        if profile_exists(cand):
+            return cand
+
+    return None
+
+
+def _resolve_profile_task_credentials(profile_name: str, parent_agent) -> Optional[Dict[str, Any]]:
+    """Resolve model and provider credentials configured for a profile.
+
+    Returns a dict with 'model', 'provider', 'base_url', 'api_key', 'api_mode',
+    'profile', 'profile_dir', and optional 'request_overrides', or None on error.
+    """
+    import yaml
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+
+    if not profile_exists(profile_name):
+        return None
+
+    try:
+        pdir = get_profile_dir(profile_name)
+        cfg_path = pdir / "config.yaml"
+        if not cfg_path.is_file():
+            return None
+
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict):
+            return None
+
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str):
+            model = model_cfg
+            provider = cfg.get("provider")
+        elif isinstance(model_cfg, dict):
+            model = model_cfg.get("default")
+            provider = model_cfg.get("provider") or cfg.get("provider")
+        else:
+            model = None
+            provider = cfg.get("provider")
+
+        if not (isinstance(model, str) and model.strip()) and not (isinstance(provider, str) and provider.strip()):
+            return None
+
+        providers = cfg.get("providers", {})
+        prov_cfg = providers.get(provider, {}) if (isinstance(providers, dict) and provider) else {}
+
+        base_url = prov_cfg.get("base_url")
+        api_key = prov_cfg.get("api_key")
+        api_mode = prov_cfg.get("api_mode")
+        req_overrides = prov_cfg.get("request_overrides")
+
+        return {
+            "model": model,
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+            "profile": profile_name,
+            "profile_dir": pdir,
+            "request_overrides": req_overrides,
+            "routing_cfg": cfg,
+        }
+    except Exception as exc:
+        logger.warning("Failed to resolve credentials for profile %s: %s", profile_name, exc)
+        return None
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -176,12 +257,22 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    profile_name: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
+
+    target_profile_dir = None
+    if profile_name:
+        try:
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+            if profile_exists(profile_name):
+                target_profile_dir = get_profile_dir(profile_name)
+        except Exception:
+            target_profile_dir = None
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -228,14 +319,16 @@ def _build_child_agent(
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
-    child_session_db = _open_child_session_db(parent_agent)
+    child_session_db = _open_child_session_db(parent_agent, profile_dir=target_profile_dir)
     with delegated_child_context():
         try:
             child = AIAgent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=False if target_profile_dir is not None else True,
+                skip_memory=False if target_profile_dir is not None else True,
+                clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None
@@ -252,6 +345,9 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    if target_profile_dir is not None:
+        child._profile_name = profile_name
+        child._profile_dir = target_profile_dir
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
@@ -366,26 +462,35 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        _task_profile = _detect_task_profile(t)
+        _task_creds = (
+            _resolve_profile_task_credentials(_task_profile, parent_agent)
+            if _task_profile
+            else None
+        ) or creds
+        task_overrides = {
+            "override_provider": _task_creds.get("provider"),
+            "override_base_url": _task_creds.get("base_url"),
+            "override_api_key": _task_creds.get("api_key"),
+            "override_api_mode": _task_creds.get("api_mode"),
+            "override_request_overrides": _task_creds.get("request_overrides"),
+            "override_acp_command": _task_creds.get("command"),
+            "override_acp_args": _task_creds.get("args"),
+            "routing_cfg": _task_creds.get("routing_cfg") or routing_cfg,
+            "profile_name": _task_profile,
+        }
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_task_creds.get("model") or creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **task_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -640,6 +745,12 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "profile": _p(
+                            "string",
+                            "Optional Hermes profile name (e.g. 'eeyore', 'piglet', 'tigger'). Automatically routes "
+                            "model, host endpoint, memory, and session database to that profile. Can also be "
+                            "auto-detected from an @<profile>: prefix in goal.",
                         ),
                     },
                     "required": ["goal"],

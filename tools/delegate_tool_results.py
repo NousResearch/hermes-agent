@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -301,14 +302,35 @@ def _build_child_preserving_parent_tools(**kwargs):
     """Build a child without leaking its resolved toolset into the parent."""
     from tools.delegate_tool import _build_child_agent
     import model_tools
-    with _CHILD_CONSTRUCTION_LOCK:
-        parent_tool_names = list(model_tools._last_resolved_tool_names)
+
+    _prof_name = kwargs.get("profile_name")
+    _prof_dir = None
+    if _prof_name:
         try:
-            child = _build_child_agent(**kwargs)
-        finally:
-            model_tools._last_resolved_tool_names = parent_tool_names
-    child._delegate_saved_tool_names = parent_tool_names
-    return child
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+            if profile_exists(_prof_name):
+                _prof_dir = get_profile_dir(_prof_name)
+        except Exception:
+            _prof_dir = None
+
+    _tok = None
+    if _prof_dir is not None and isinstance(_prof_dir, (str, Path)):
+        from hermes_constants import set_hermes_home_override
+        _tok = set_hermes_home_override(str(_prof_dir))
+
+    try:
+        with _CHILD_CONSTRUCTION_LOCK:
+            parent_tool_names = list(model_tools._last_resolved_tool_names)
+            try:
+                child = _build_child_agent(**kwargs)
+            finally:
+                model_tools._last_resolved_tool_names = parent_tool_names
+        child._delegate_saved_tool_names = parent_tool_names
+        return child
+    finally:
+        if _tok is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(_tok)
 
 def _parent_finalization_lock(parent_agent) -> threading.RLock:
     """Per-parent lock serializing lifecycle side effects (created once under the guard)."""

@@ -378,16 +378,15 @@ class GatewayTurnMixin:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
             prev_id = str(getattr(session_entry, "prev_session_id", None) or "")
-            if getattr(session_entry, "was_auto_reset", False) or (
-                prev_id and prev_id in {stored_session_id, bound_session_id}
-            ):
-                # The store's current conversation replaced the one this binding names: either the
-                # fresh auto-reset successor is current (was_auto_reset), or its predecessor
-                # matches the binding — the typed /model path consumes was_auto_reset early
-                # (#48031), so trust prev_session_id metadata too. Repoint the binding at the
-                # successor instead of switching back — switching would end the fresh successor
-                # and drop its reset metadata, silently undoing the reset (the stale-binding
-                # trap #31501 and the /new rebind already guard against).
+            if prev_id and prev_id in {stored_session_id, bound_session_id}:
+                # The binding names the exact conversation this entry replaced: it is the
+                # auto-reset leftover, so repoint it at the successor instead of switching back —
+                # switching would end the fresh successor and drop its reset metadata, silently
+                # undoing the reset. A binding naming anything else (e.g. a deliberate
+                # /topic <id> restore, which relies on this heal to switch) is followed, never
+                # overwritten. Keys off prev_session_id metadata because the typed /model path
+                # can consume was_auto_reset early (#48031); the stale-binding trap and the
+                # /new rebind are the same family (#31501).
                 await asyncio.to_thread(
                     self._sync_telegram_topic_binding, source, session_entry,
                     reason="auto-reset-repoint",

@@ -3138,17 +3138,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
-        if getattr(self, "tail_mode", "lean") != "lean":
-            return summary
-        for heading, build in (
-            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
-            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
-            (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
-        ):
-            if heading not in summary:
-                summary += build()
-        return summary
+        """Append lean-mode sections and keep delivery directives out of persisted summaries."""
+        if getattr(self, "tail_mode", "lean") == "lean":
+            for heading, build in (
+                (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
+                (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
+                (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
+            ):
+                if heading not in summary:
+                    summary += build()
+        # Both summary paths reach this point, after tool arguments and lean user text.
+        return _MEDIA_DIRECTIVE_RE.sub("[media attachment]", summary)
 
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:

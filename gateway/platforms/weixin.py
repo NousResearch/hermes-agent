@@ -482,7 +482,16 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
     if not 2 <= len(lines) <= 6:
         return False
     first = lines[0].strip()
-    if _HEADER_RE.match(first) or (len(first) <= 24 and first.endswith((":", "："))):
+    if _HEADER_RE.match(first) or (len(first) <= 24 and first.endswith(( ":", "："))):
+        return False
+    # Structured confirmations (e.g. `/model` switch) render as several
+    # ``Label: value`` lines and are short enough to look chatty
+    # (provider-dependent: ``Capabilities: reasoning, tools, open weights``
+    # is 42 chars vs 52 chars with vision). Keep the heuristic for genuine
+    # chat but suppress label-predominant blocks so the confirmation stays a
+    # single bubble (#107946).
+    label_lines = sum(1 for line in lines if re.match(r"^\S[^:]{0,23}: \S", line.strip()))
+    if label_lines >= 3:
         return False
     return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
 

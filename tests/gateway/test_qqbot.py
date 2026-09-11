@@ -5,6 +5,7 @@ import os
 from types import SimpleNamespace
 from unittest import mock
 
+import aiohttp
 import httpx
 import pytest
 
@@ -1258,7 +1259,12 @@ class TestCloseCodeClassification:
 class TestReadEventsClosedWsGuard:
     """Regression: a closed-but-non-None ws must raise on entry, not return
     normally, so _listen_loop goes through reconnect/backoff instead of
-    busy-looping at 100% CPU (issues #31193 / #31771)."""
+    busy-looping at 100% CPU (issues #31193 / #31771).
+
+    Also cover WSMsgType.CLOSING (issue #41872): unclean disconnects can
+    leave the socket half-closed so receive() returns CLOSING immediately
+    while ws.closed is still False — that must raise too, or the loop spins.
+    """
 
     def _make_adapter(self, **extra):
         from gateway.platforms.qqbot import QQAdapter
@@ -1269,5 +1275,16 @@ class TestReadEventsClosedWsGuard:
         adapter._running = True
         adapter._ws = SimpleNamespace(closed=True)
         with pytest.raises(RuntimeError):
+            asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_on_ws_closing_message(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = mock.AsyncMock()
+        adapter._ws.closed = False
+        adapter._ws.receive = mock.AsyncMock(
+            return_value=SimpleNamespace(type=aiohttp.WSMsgType.CLOSING)
+        )
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
             asyncio.run(adapter._read_events())
 

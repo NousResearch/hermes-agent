@@ -610,6 +610,15 @@ function CostsView({ doc, usage, days, setDays }) {
         </div>
         <div className="fm-legend"><span className="fm-lg fm-lg--money" /> billed $ <span className="fm-lg fm-lg--calls" /> calls <span className="fm-lg fm-lg--sub" /> of which subscription</div>
       </Section>
+      <div className="fm-two">
+        <Section title={`Spend by agent · ${usage.days === 1 ? "24 h" : usage.days + " days"}`} right={<span className="fm-muted fm-small">bar = billed $ · teal = subscription calls</span>}>
+          <BarList rows={Object.entries(byAgent).map(([p, rs]) => ({ label: (doc.agents[p] || {}).name || p,
+            billed: rs.reduce((a, r) => a + r.billed_usd, 0), calls: rs.reduce((a, r) => a + r.calls, 0), ma: rs.reduce((a, r) => a + (r.modelark ? r.calls : 0), 0) }))} />
+        </Section>
+        <Section title="Spend by model" right={<span className="fm-muted fm-small">old OpenRouter DeepSeek ids are history from before 09-11</span>}>
+          <BarList rows={Object.values(rows.reduce((acc, r) => { const k = idToShort[r.model] || r.model; const a = (acc[k] = acc[k] || { label: k, billed: 0, calls: 0, ma: 0 }); a.billed += r.billed_usd; a.calls += r.calls; if (r.modelark) a.ma += r.calls; return acc; }, {}))} />
+        </Section>
+      </div>
       <Section title="By agent, model and host">
         <div className="fm-table-wrap">
           <table className="fm-table">
@@ -631,6 +640,25 @@ function CostsView({ doc, usage, days, setDays }) {
         </div>
       </Section>
     </Fragment>
+  );
+}
+
+function BarList({ rows }) {
+  const sorted = rows.slice().sort((a, b) => b.billed - a.billed || b.calls - a.calls);
+  const max = Math.max(0.000001, ...sorted.map((r) => r.billed));
+  return (
+    <div className="fm-barlist">
+      {sorted.map((r) => (
+        <div key={r.label} className="fm-bl-row" title={`${r.label}: ${money(r.billed)} billed · ${r.calls} calls (${r.ma} on subscription)`}>
+          <span className="fm-bl-label">{r.label}</span>
+          <span className="fm-bl-track">
+            <span className="fm-bl-money" style={{ width: (100 * r.billed) / max + "%" }} />
+          </span>
+          <span className="fm-bl-val"><b>{money(r.billed, 2)}</b> <span className="fm-muted">· {num(r.calls)} calls{r.ma ? <Fragment> · <span className="fm-sub-txt">{num(r.ma)} sub</span></Fragment> : null}</span></span>
+        </div>
+      ))}
+      {!sorted.length ? <div className="fm-muted fm-small">No calls in this window.</div> : null}
+    </div>
   );
 }
 

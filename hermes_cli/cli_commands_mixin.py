@@ -1898,7 +1898,9 @@ class CLICommandsMixin:
         """Handle /init — generate or update AGENTS.md from a project scan performed by the
         live agent with its own read-only tools."""
         from hermes_cli.init_command import build_init_prompt_for_cwd
-        msg = build_init_prompt_for_cwd(extra=_command_arg(cmd))  # optional user emphasis
+        # session_key="" targets the single-session CLI's "default" cwd record, which tracks
+        # `cd` and workspace switches, so /init follows the directory the user works in.
+        msg = build_init_prompt_for_cwd(extra=_command_arg(cmd), session_key="")  # optional user emphasis
         verb = "Updating" if "UPDATE the existing AGENTS.md" in msg else "Generating"
         print(f"\n⚡ {verb} AGENTS.md from a project scan...")
         self._queue_prompt_turn(msg, "/init")

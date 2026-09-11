@@ -578,7 +578,24 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
 
 _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
-_cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
+
+
+def _cmd_init(rid, params, session, name, arg):
+    """/init: build the AGENTS.md prompt against the SESSION's active directory, then submit it
+    as a normal turn (the live agent does the scan and the write). The desktop app launches the
+    backend from the home directory, so a process-cwd fallback scans and updates the HOME's
+    AGENTS.md instead of the workspace attached to the session."""
+    from hermes_cli.init_command import build_init_prompt_for_cwd
+    from tools.terminal_tool import get_session_cwd
+
+    skey = session.get("session_key") if session else None
+    cwd = None
+    with contextlib.suppress(Exception):  # no record → the builder's ladder decides
+        cwd = get_session_cwd(skey) if skey else None
+    if not (cwd and os.path.isdir(cwd)):  # a deleted project/removed worktree must not win
+        cwd = _session_cwd(session) if session else None
+    return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(
+        extra=arg, cwd=cwd, session_key=skey)})
 
 
 def _cmd_moa(rid, params, session, name, arg):

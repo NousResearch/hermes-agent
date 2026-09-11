@@ -197,7 +197,7 @@ describe('settings helpers', () => {
 
     it('renders a dropdown for the STT provider including xAI (Grok)', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+      expect(opts).toEqual(['local', 'sensevoice', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
     })
 
     it('renders dropdowns for per-backend model/device sub-fields', () => {
@@ -319,6 +319,7 @@ describe('settings helpers', () => {
             // both are built-in STT names omitted from ENUM_OPTIONS['stt.provider']
             local_command: { type: 'command', command: 'curl …' },
             deepinfra: { type: 'command', command: 'curl …' },
+            SENSEVOICE: { type: 'command', command: 'llama-funasr-sensevoice …' },
             myasr: { type: 'command', command: 'curl …' }
           }
         }
@@ -327,6 +328,7 @@ describe('settings helpers', () => {
       const opts = enumOptionsFor('stt.provider', 'local', shadowing)
       expect(opts).not.toContain('local_command')
       expect(opts).not.toContain('deepinfra')
+      expect(opts).not.toContain('SENSEVOICE')
       expect(opts).toContain('myasr')
     })
   })

@@ -43,9 +43,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;
 # the dispatcher in ``transcribe_audio`` short-circuits them defensively as well.
 BUILTIN_STT_PROVIDERS = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
+    "local", "local_command", "sensevoice", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
 # Built-in providers that upload audio to a remote API.
-CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
+LOCAL_STT_PROVIDERS = frozenset({"local", "local_command", "sensevoice"})
+CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - LOCAL_STT_PROVIDERS)
 
 
 def _error_result(error: str, **extra: Any) -> Dict[str, Any]:

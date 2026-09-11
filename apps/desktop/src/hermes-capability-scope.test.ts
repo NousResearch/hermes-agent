@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  getElevenLabsVoices,
   getHermesConfigRecord,
+  getHermesConfigSchema,
   getMcpCatalog,
   getSkillContent,
   getSkills,
@@ -80,6 +82,8 @@ describe('capability helpers are connection-scoped', () => {
   it('object scopes pin every read and write to the named connection', () => {
     void getSkills({ connectionId: 'homelab', profile: 'inbox-bot' })
     void getToolsets({ connectionId: 'homelab', profile: 'inbox-bot' })
+    void getHermesConfigSchema({ connectionId: 'homelab', profile: 'inbox-bot' })
+    void getElevenLabsVoices({ connectionId: 'homelab', profile: 'inbox-bot' })
     void getSkillContent('arxiv', { connectionId: 'homelab', profile: 'inbox-bot' })
     void setSkillEnabled('arxiv', false, { connectionId: 'homelab', profile: 'inbox-bot' })
     void setToolsetEnabled('browser', true, { connectionId: 'homelab', profile: 'inbox-bot' })

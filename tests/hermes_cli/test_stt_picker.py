@@ -20,6 +20,7 @@ from hermes_cli.tools_config import (  # noqa: E402
     STT_MODEL_CATALOG,
     TOOL_CATEGORIES,
     _checklist_toolset_keys,
+    _configure_provider,
     _configure_stt_model,
     _is_provider_active,
     _write_provider_config,
@@ -74,6 +75,40 @@ class TestConfigWrites:
             )
             apply_provider_selection("stt", "OpenAI", config)
         assert config["stt"]["provider"] == "openai"
+
+    def test_sensevoice_is_selectable_as_local_stt(self):
+        config = {}
+        apply_provider_selection("stt", "SenseVoice", config)
+
+        assert config["stt"]["provider"] == "sensevoice"
+
+    def test_terminal_sensevoice_selection_requires_model_before_activation(self, capsys):
+        config = {}
+
+        with patch("hermes_cli.tools_config_providers._prompt", return_value=""):
+            _configure_provider(_stt_provider_named("SenseVoice"), config)
+
+        assert config.get("stt", {}).get("provider") is None
+        assert "GGUF model path is required" in capsys.readouterr().out
+
+    def test_terminal_sensevoice_selection_persists_local_runtime_settings(self):
+        config = {}
+
+        with patch(
+            "hermes_cli.tools_config_providers._prompt",
+            side_effect=["model.gguf", "sensevoice-bin", "vad.gguf"],
+        ), patch("hermes_cli.tools_config._prompt_choice", return_value=2):
+            _configure_provider(_stt_provider_named("SenseVoice"), config)
+
+        assert config["stt"] == {
+            "provider": "sensevoice",
+            "sensevoice": {
+                "model": "model.gguf",
+                "binary": "sensevoice-bin",
+                "vad_model": "vad.gguf",
+                "backend": "vulkan",
+            },
+        }
 
 
 class TestActiveDetection:

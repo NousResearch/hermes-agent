@@ -1064,8 +1064,8 @@ DEFAULT_CONFIG = {
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # ladder. Valid: "local" (faster-whisper) | "sensevoice" | "groq" | "openai" | "mistral" |
+        # "elevenlabs" | "deepinfra". Global language hint unless a per-provider language overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1085,6 +1085,13 @@ DEFAULT_CONFIG = {
             "no_speech_prob_threshold": 0.6,
             "logprob_threshold": -1.0,
             "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
+        },
+        "sensevoice": {
+            "binary": "llama-funasr-sensevoice",  # executable name on PATH or absolute path
+            "model": "",  # required path to sensevoice-small-*.gguf
+            "vad_model": "",  # optional path to fsmn-vad.gguf for long audio
+            "backend": "cpu",  # cpu, cuda, or vulkan (matching the installed runtime build)
+            "timeout_seconds": 300,
         },
         "groq": {
             # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en

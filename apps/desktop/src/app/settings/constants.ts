@@ -248,9 +248,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  'stt.sensevoice.backend': ['cpu', 'cuda', 'vulkan'],
   // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // hermes_cli/config.py (local/sensevoice/groq/openai/mistral/elevenlabs).
+  'stt.provider': ['local', 'sensevoice', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
   // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
@@ -370,7 +371,10 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'stt.sensevoice.binary',
+  'stt.sensevoice.model',
+  'stt.sensevoice.vad_model'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
@@ -736,6 +740,11 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.deepinfra.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.sensevoice.binary',
+      'stt.sensevoice.model',
+      'stt.sensevoice.vad_model',
+      'stt.sensevoice.backend',
+      'stt.sensevoice.timeout_seconds',
       'stt.openai.model',
       'stt.groq.model',
       'stt.mistral.model',

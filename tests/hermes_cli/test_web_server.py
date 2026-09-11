@@ -2859,6 +2859,25 @@ class TestNewEndpoints:
         else:
             assert data["active_provider"] is None
 
+    def test_sensevoice_requires_setup_before_api_activation(self):
+        """Capabilities exposes SenseVoice settings and cannot activate an unusable row."""
+        from hermes_cli.config import load_config
+
+        data = self.client.get("/api/tools/toolsets/stt/config").json()
+        sensevoice = next(p for p in data["providers"] if p["name"] == "SenseVoice")
+        assert sensevoice["stt_provider"] == "sensevoice"
+        assert sensevoice["status"] == "needs_setup"
+
+        before = load_config()["stt"].get("provider")
+        resp = self.client.put(
+            "/api/tools/toolsets/stt/provider",
+            json={"provider": "SenseVoice"},
+        )
+
+        assert resp.status_code == 400
+        assert "Configure SenseVoice before selecting it" in resp.json()["detail"]
+        assert load_config()["stt"].get("provider") == before
+
     def test_get_toolset_config_reports_truthful_provider_status(self, monkeypatch):
         """Each provider row carries a server-computed readiness `status`.
 

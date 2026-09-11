@@ -152,6 +152,15 @@ def _stt_row(config, feats):
     if stt_feature is not None and stt_feature.managed_by_nous:
         return ("Speech-to-Text (OpenAI via Nous subscription)", True, None)
     provider = _setup.cfg_get(config, "stt", "provider", default="local") or "local"
+    if provider == "sensevoice":
+        from hermes_cli.nous_subscription import _sensevoice_backend_available
+
+        ok = _sensevoice_backend_available(_setup.cfg_get(config, "stt", default={}) or {})
+        return (
+            "Speech-to-Text (SenseVoice local)" if ok else "Speech-to-Text (SenseVoice — not configured)",
+            ok,
+            None if ok else "set stt.sensevoice.binary and stt.sensevoice.model in config.yaml",
+        )
     return _voice_provider_status("Speech-to-Text", provider, _STT_SUMMARY_ROWS, _STT_SUMMARY_DEFAULT)
 
 

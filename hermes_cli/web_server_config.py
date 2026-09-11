@@ -104,8 +104,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     ),
     # "mistral" temporarily removed — mistralai PyPI package quarantined
     # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-    "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
+    "stt.provider": _select(
+        "Speech-to-text provider", "local", "sensevoice", "groq", "openai", "xai", "elevenlabs"
+    ),
     "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
+    "stt.sensevoice.backend": _select("SenseVoice execution backend", "cpu", "cuda", "vulkan"),
     "stt.groq.model": _select(
         "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
     ),

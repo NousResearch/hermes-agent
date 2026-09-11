@@ -3,6 +3,8 @@
 import shutil
 import sys
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
@@ -17,6 +19,24 @@ _POOL_COVERAGE = {
     "browser-use": True,
     "modal": True,
 }
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"vad_model": "missing-vad.gguf"},
+        {"backend": "bogus"},
+    ],
+)
+def test_sensevoice_readiness_rejects_runtime_invalid_config(tmp_path, extra):
+    binary = tmp_path / "llama-funasr-sensevoice"
+    binary.write_bytes(b"binary")
+    binary.chmod(0o755)
+    model = tmp_path / "sensevoice.gguf"
+    model.write_bytes(b"GGUF")
+    cfg = {"binary": str(binary), "model": str(model), **extra}
+
+    assert ns._sensevoice_backend_available({"sensevoice": cfg}) is False
 
 
 def _account(*, logged_in: bool, paid: bool | None = None) -> NousPortalAccountInfo:

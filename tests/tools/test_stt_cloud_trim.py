@@ -7,7 +7,7 @@ silence isn't uploaded, billed per audio-minute, or hallucinated on.
 
 Contract under test:
 
-1. Trim runs only for built-in CLOUD providers — never local/local_command,
+1. Trim runs only for built-in CLOUD providers — never local/local_command/sensevoice,
    never command-type or plugin providers.
 2. Best-effort semantics: disabled config, missing ffmpeg/ffprobe, trim
    failure, mostly-silence result, or <10% saving all mean "upload the
@@ -36,7 +36,7 @@ if "faster_whisper" not in sys.modules:
     faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
     sys.modules["faster_whisper"] = faster_whisper_stub
 
-from tools.transcription_common import BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS
+from tools.transcription_common import BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, LOCAL_STT_PROVIDERS
 from tools.transcription_audio import (
     _cloud_trim_settings,
     _CLOUD_TRIM_KEEP_MS_DEFAULT,
@@ -86,13 +86,12 @@ def _write_wav(path: Path, segments) -> str:
 
 class TestProviderGating:
     def test_cloud_set_excludes_local_providers(self):
-        assert "local" not in CLOUD_STT_PROVIDERS
-        assert "local_command" not in CLOUD_STT_PROVIDERS
+        assert not CLOUD_STT_PROVIDERS & LOCAL_STT_PROVIDERS
 
     def test_cloud_set_covers_every_remote_builtin(self):
         # Invariant: every built-in that is not local-ish uploads audio and
         # must get the trim. New built-ins are cloud unless proven otherwise.
-        assert CLOUD_STT_PROVIDERS == BUILTIN_STT_PROVIDERS - {"local", "local_command"}
+        assert CLOUD_STT_PROVIDERS == BUILTIN_STT_PROVIDERS - LOCAL_STT_PROVIDERS
 
     def test_local_provider_never_trims(self, tmp_path):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])

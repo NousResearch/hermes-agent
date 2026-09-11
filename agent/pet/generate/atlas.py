@@ -445,6 +445,42 @@ def _is_multi_pose_outlier(width: int, height: int, med_w: int, med_h: int) -> b
     return width > max(med_w * 3.0, med_w + 96) and height <= med_h * 1.6
 
 
+def row_frames_collapsed(frames: list, reference_size: tuple[int, int] | None = None) -> str | None:
+    """Describe a row whose frames are slivers of a body rather than whole poses, else ``None``.
+
+    Lenient slicing salvages a strip the strict pass rejected by cutting at gutters
+    or equal slots, which can yield thin vertical fragments that still pass
+    :func:`_validate_extracted_frames` (they match each other, so no frame is a
+    *relative* outlier) and only surface once compose's global-median collapse
+    guard rejects the whole atlas — after every row has been paid for. Comparing
+    each frame's aspect against the reference silhouette catches that per row.
+    """
+    boxes = [box for f in frames if (box := f.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0).getbbox()) is not None]
+    if not boxes:
+        return "row has no visible frames"
+    med_w, med_h = _median_box_size(boxes)
+    if reference_size is None:
+        return None
+    ref_w, ref_h = reference_size
+    if ref_w <= 0 or ref_h <= 0:
+        return None
+    # A pose may legitimately be narrower than the reference (a jump tucks the
+    # limbs in, a run leans); only a silhouette far thinner than the character
+    # at the SAME height is a sliver.
+    expected_w = med_h * (ref_w / ref_h)
+    if med_w < expected_w * 0.40:
+        return f"frames are {med_w}x{med_h}px slivers (expected ~{round(expected_w)}px wide for a {ref_w}x{ref_h}px character)"
+    return None
+
+
+def silhouette_box(image) -> tuple[int, int] | None:
+    """``(width, height)`` of the opaque silhouette in *image*, else ``None`` — the identity anchor's proportions."""
+    rgba = _load_rgba(image)
+    box = rgba.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0).getbbox()
+    return (box[2] - box[0], box[3] - box[1]) if box else None
+
+
+
 def _validate_extracted_frames(frames: list, frame_count: int) -> None:
     """Reject rows where one "frame" is really multiple poses (normalization would shrink the whole pet)."""
     if len(frames) != frame_count:

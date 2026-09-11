@@ -823,6 +823,16 @@ class GatewayNotificationsMixin:
         error = getattr(self, "_session_db_init_error", None)
         if not error:
             return
+        # Re-check the live store before warning: a startup `database is locked` routinely clears while
+        # the adapters are still connecting, and a borrowed store handle comes back once its owner
+        # releases it. The cache's opener clears ``_session_db_init_error`` on recovery, so a stale
+        # startup failure must not be broadcast as current (#108031).
+        if getattr(self, "_session_db_handle_cache", None) is not None:
+            self._open_session_db_for_active_scope()
+            error = self._session_db_init_error
+            if not error:
+                logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
+                return
         from hermes_constants import get_default_hermes_root
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
         if classify_persistence_error(error) == "corrupt":

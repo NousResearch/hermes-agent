@@ -582,17 +582,8 @@ class TestWebServerEndpoints:
         _web_server_lifecycle._eager_reconcile_own_session_db()
 
     def test_startup_eager_reconcile_opens_read_only(self, monkeypatch):
-        """A healthy store must NOT get a gratuitous second writable SessionDB open.
-
-        Regression for the concurrent-FTS-rebuild corruption vector: the
-        dashboard's startup reconcile used to call the unconditional writable
-        ``acquire()``, making it a second writable SessionDB owner on a
-        `state.db` shared with the gateway (hermes_state_common.py documents two
-        concurrent rebuilds corrupt state.db in production). The reconcile now
-        routes through the read-only ``_open_session_db_at_path`` so a healthy
-        store is opened read-only (the read path still heals a stale schema via
-        one writable open when the probe fails).
-        """
+        """A healthy store gets a read-only open (no second writable owner) and the handle is
+        released; the read path still heals a stale schema through its own single writable open."""
         from pathlib import Path
 
         import hermes_state

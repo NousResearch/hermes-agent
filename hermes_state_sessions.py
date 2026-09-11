@@ -53,10 +53,13 @@ def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
     # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
+    # A filesystem root already ends with its separator: adding another would
+    # search for //repo (or \\repo) instead of its direct descendants.
+    children = [_escape_like(prefix if prefix.endswith(sep) else prefix + sep) + "%"
+                for sep in ("/", "\\")]
     return (
         "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
+        [prefix, *children],
     )
 
 

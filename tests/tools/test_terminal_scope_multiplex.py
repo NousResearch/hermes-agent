@@ -240,3 +240,161 @@ def test_dotenv_json_strings_stay_json_strings(tmp_path):
     scope = build_profile_terminal_scope(home)
     assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
     assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]
+
+
+def test_launch_terminal_scope_preserves_ambient_env(tmp_path, monkeypatch):
+    """#107422 / Finding 3: launch scope preserves ambient process environment
+    (e.g. TERMINAL_ENV=ssh, TERMINAL_SSH_HOST) when launch config.yaml has no terminal
+    section, while secondary profile scopes never inherit ambient env."""
+    from tools.terminal_scope import (
+        build_launch_terminal_scope,
+        build_profile_terminal_scope,
+    )
+
+    launch_home = tmp_path / "launch-profile"
+    secondary_home = tmp_path / "profiles" / "sec"
+    launch_home.mkdir(parents=True, exist_ok=True)
+    secondary_home.mkdir(parents=True, exist_ok=True)
+    (launch_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (secondary_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "example.test")
+
+    launch_scope = build_launch_terminal_scope(launch_home)
+    assert launch_scope["TERMINAL_ENV"] == "ssh"
+    assert launch_scope["TERMINAL_SSH_HOST"] == "example.test"
+
+    # Secondary profile must NOT inherit ambient TERMINAL_ENV=ssh
+    sec_scope = build_profile_terminal_scope(secondary_home)
+    assert sec_scope["TERMINAL_ENV"] == "local"
+    assert sec_scope.get("TERMINAL_SSH_HOST", "") == ""
+
+    # Explicit launch config backend overrides ambient env
+    (launch_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n", encoding="utf-8"
+    )
+    launch_scope_docker = build_launch_terminal_scope(launch_home)
+    assert launch_scope_docker["TERMINAL_ENV"] == "docker"
+    assert launch_scope_docker["TERMINAL_SSH_HOST"] == "example.test"
+
+
+def test_prepare_turn_input_binds_launch_scope_once_multiplexing_is_active(
+    tmp_path, monkeypatch
+):
+    """#107422 / Finding 4: real prompt_turn._prepare_turn_input path binds the
+    launch profile's terminal scope once _served_profile_homes is non-empty."""
+    from tools.terminal_scope import get_terminal_scope, reset_terminal_scope, terminal_env
+    import tui_gateway.server as srv
+    from tui_gateway.prompt_turn import _TurnRun
+
+    launch_home = tmp_path / "launch-turn-home"
+    launch_home.mkdir(parents=True, exist_ok=True)
+    (launch_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(srv, "_hermes_home", str(launch_home), raising=False)
+
+    # Single profile mode: _served_profile_homes is empty
+    monkeypatch.setattr(srv, "_served_profile_homes", set(), raising=False)
+
+    import threading
+    session = {
+        "session_key": "test_launch_sess",
+        "profile_home": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+        "agent": None,
+    }
+    st_single = _TurnRun(
+        agent=None, one_turn_restore=True, terminal_callback=None, receipt_committed=False
+    )
+    # Monkeypatch helper dependencies that _prepare_turn_input runs
+    monkeypatch.setattr(srv, "_wire_callbacks", lambda sid: None, raising=False)
+    monkeypatch.setattr(srv, "_sync_bot_capabilities", lambda sid, s: None, raising=False)
+    monkeypatch.setattr(srv, "_session_cwd", lambda s: str(launch_home), raising=False)
+    monkeypatch.setattr(srv, "_register_session_cwd", lambda s: None, raising=False)
+    monkeypatch.setattr(srv, "make_stream_renderer", lambda cols: None, raising=False)
+    monkeypatch.setattr(srv, "_start_turn_voice", lambda: (None, None), raising=False)
+    monkeypatch.setattr(srv, "_turn_notes", lambda sid, s: [], raising=False)
+
+    srv._prepare_turn_input("sid1", session, st_single, "hello", [])
+    assert st_single.scopes.terminal is None
+    assert get_terminal_scope() is None
+
+    # Now activate multiplexing by registering a secondary served profile
+    sec_home = tmp_path / "profiles" / "sec"
+    sec_home.mkdir(parents=True, exist_ok=True)
+    served = {sec_home}
+    monkeypatch.setattr(srv, "_served_profile_homes", served, raising=False)
+
+    st_multi = _TurnRun(
+        agent=None, one_turn_restore=True, terminal_callback=None, receipt_committed=False
+    )
+    srv._prepare_turn_input("sid1", session, st_multi, "hello", [])
+    try:
+        assert st_multi.scopes.terminal is not None
+        assert get_terminal_scope() is not None
+        assert terminal_env("TERMINAL_ENV") == "local"
+    finally:
+        reset_terminal_scope(st_multi.scopes.terminal)
+    assert get_terminal_scope() is None
+
+
+def test_profile_build_scope_binds_terminal_scope(tmp_path):
+    """#107422 / Finding 2: _profile_build_scope binds the terminal scope for the
+    profile so eager resume and branch builds resolve routed terminal policy."""
+    from tui_gateway.methods_session import _profile_build_scope
+    from tools.terminal_scope import get_terminal_scope, terminal_env
+
+    sec_home = tmp_path / "profiles" / "docker-resume"
+    sec_home.mkdir(parents=True, exist_ok=True)
+    (sec_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n  docker_image: test/eager:1\n",
+        encoding="utf-8",
+    )
+
+    assert get_terminal_scope() is None
+    with _profile_build_scope(sec_home):
+        assert get_terminal_scope() is not None
+        assert terminal_env("TERMINAL_ENV") == "docker"
+        assert terminal_env("TERMINAL_DOCKER_IMAGE") == "test/eager:1"
+    assert get_terminal_scope() is None
+
+
+def test_spawn_side_agent_binds_terminal_scope_on_worker(tmp_path, monkeypatch):
+    """#107422 / Finding 1: _spawn_side_agent binds the secondary profile's terminal
+    scope for the full worker lifetime on daemon thread."""
+    import threading
+    import tui_gateway.server as srv
+    from tools.terminal_scope import get_terminal_scope, terminal_env
+
+    sec_home = tmp_path / "profiles" / "docker-worker"
+    sec_home.mkdir(parents=True, exist_ok=True)
+    (sec_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n", encoding="utf-8"
+    )
+
+    observed = {}
+    event_done = threading.Event()
+
+    def body():
+        observed["terminal_env"] = terminal_env("TERMINAL_ENV")
+        observed["scope_present"] = get_terminal_scope() is not None
+        event_done.set()
+        return "ok"
+
+    monkeypatch.setattr(srv, "_emit", lambda ev, parent, payload: None, raising=False)
+    monkeypatch.setattr(srv, "_session_cwd", lambda s: str(tmp_path), raising=False)
+
+    session = {"profile_home": str(sec_home), "session_key": "s-side"}
+    srv._spawn_side_agent("rid", session, "task_1", "parent_1", "event_1", body)
+
+    assert event_done.wait(timeout=5.0), "side agent worker timed out"
+    assert observed["scope_present"] is True
+    assert observed["terminal_env"] == "docker"
+
+

@@ -450,6 +450,11 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
         from tools.terminal_scope import install_profile_terminal_scope
         scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+    else:
+        from tui_gateway.server import _hermes_home, _served_profile_homes
+        if _served_profile_homes:
+            from tools.terminal_scope import install_launch_terminal_scope
+            scopes.terminal = install_launch_terminal_scope(Path(_hermes_home))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)

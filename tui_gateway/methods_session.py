@@ -5,7 +5,11 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+from pathlib import Path
 
+from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -69,17 +73,31 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
 
 @contextlib.contextmanager
 def _profile_build_scope(profile_home):
-    """Bind HERMES_HOME + secret scope for an agent build (home alone leaves get_secret() on the LAUNCH .env)."""
+    """Bind HERMES_HOME + secret + terminal scope for an agent build.
+
+    Home alone leaves get_secret() and terminal policy on the launch profile. Eager-resume and branch builds
+    run inside this scope, so tool availability discovery and prompt probing resolve the routed profile (#107422).
+    """
     if not profile_home:
         yield
         return
     home_token = set_hermes_home_override(str(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+    secret_token = None
+    with contextlib.suppress(Exception):
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+    terminal_token = None
+    with contextlib.suppress(Exception):
+        terminal_token = install_profile_terminal_scope(Path(str(profile_home)))
     try:
         yield
     finally:
+        if terminal_token is not None:
+            with contextlib.suppress(Exception):
+                reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            with contextlib.suppress(Exception):
+                reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
-        reset_secret_scope(secret_token)
 
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):

@@ -86,12 +86,15 @@ def terminal_env(name: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
-def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
+def build_profile_terminal_scope(
+    hermes_home: "Any", *, ambient_env: Optional[Dict[str, str]] = None
+) -> Dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
-    Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- profile
-    ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never widens back to
-    ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present file is unreadable.
+    Projection: ``DEFAULT_CONFIG['terminal']`` <- optional ambient_env (for launch profile)
+    <- profile ``.env`` TERMINAL_* <- profile ``config.yaml`` ``terminal:``. Total by
+    construction, so a bound scope never widens back to ambient authority. Raises
+    :class:`TerminalPolicyUnavailable` if a present file is unreadable.
     """
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
     from hermes_cli.config_defaults import DEFAULT_CONFIG
@@ -112,6 +115,8 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
                 scope[env_var] = _terminal_env_value(value)
 
     _apply({**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
+    if ambient_env:
+        scope.update((k, str(v)) for k, v in ambient_env.items() if k.startswith("TERMINAL_"))
     env_path = home / ".env"
     if env_path.exists():
         # load_env_file swallows OSError by design (secret scope fails soft); an unreadable
@@ -143,6 +148,28 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
         if isinstance(raw_terminal, dict):
             _apply(raw_terminal)
     return scope
+
+
+def build_launch_terminal_scope(launch_home: "Any" = None) -> Dict[str, str]:
+    """Build the effective ``TERMINAL_*`` policy for the launch profile, preserving ambient env.
+
+    Under multiplexing, launch-profile turns bind an authoritative scope so they never fall back
+    to an unmanaged environment. Ambient process env (e.g. TERMINAL_ENV=ssh set at startup) is
+    preserved unless explicitly overridden by launch_home's config.yaml (#107422).
+    """
+    from hermes_constants import get_process_hermes_home
+
+    home = Path(launch_home) if launch_home is not None else get_process_hermes_home()
+    return build_profile_terminal_scope(home, ambient_env=dict(os.environ))
+
+
+def install_launch_terminal_scope(launch_home: "Any" = None) -> Token:
+    """Build and install launch profile's policy; on failure install the refusal scope. Never raises."""
+    try:
+        return set_terminal_scope(build_launch_terminal_scope(launch_home))
+    except TerminalPolicyUnavailable as exc:
+        logger.warning("launch terminal policy unavailable: %s", exc)
+        return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))
 
 
 def install_profile_terminal_scope(hermes_home: "Any") -> Token:

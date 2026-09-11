@@ -5,6 +5,8 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+from pathlib import Path
+import threading
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -934,10 +936,33 @@ def _spawn_side_agent(
         # process for the task_id and tear down the very server the restart just started.
         profile_home = session.get("profile_home")
         home_token = set_hermes_home_override(profile_home) if profile_home else None
+        secret_token = None
+        terminal_token = None
+        if profile_home:
+            with contextlib.suppress(Exception):
+                from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+            with contextlib.suppress(Exception):
+                from tools.terminal_scope import install_profile_terminal_scope
+                terminal_token = install_profile_terminal_scope(Path(profile_home))
+        else:
+            with contextlib.suppress(Exception):
+                from tui_gateway.server import _hermes_home, _served_profile_homes
+                if _served_profile_homes:
+                    from tools.terminal_scope import install_launch_terminal_scope
+                    terminal_token = install_launch_terminal_scope(Path(_hermes_home))
         try:
             try:
                 text = body()
             finally:
+                if terminal_token is not None:
+                    with contextlib.suppress(Exception):
+                        from tools.terminal_scope import reset_terminal_scope
+                        reset_terminal_scope(terminal_token)
+                if secret_token is not None:
+                    with contextlib.suppress(Exception):
+                        from agent.secret_scope import reset_secret_scope
+                        reset_secret_scope(secret_token)
                 if home_token is not None:
                     reset_hermes_home_override(home_token)
             _emit(event, parent, {"task_id": task_id, **extra, "text": text})

@@ -546,6 +546,11 @@ def _ensure_terminal_env_bridged() -> None:
 
     if get_terminal_scope() is not None:
         return
+    # Never write a secondary profile's terminal.* into process-global env.
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is not None:
+        return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
         return

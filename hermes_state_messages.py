@@ -1027,9 +1027,41 @@ class SessionMessagesMixin:
             return [session_id], "active = 1"
         return self._resume_lineage_ids(session_id), "(active = 1 OR compacted = 1)"
 
+    def _count_resume_display_messages(self, session_ids: List[str], limit: Optional[int] = None) -> int:
+        """Count the deduped display identities a full resume materializes, without loading their rows."""
+        placeholders = _placeholders(session_ids)
+        args = "role, content, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata"
+
+        def identity(*values):
+            keys = ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name",
+                    "display_kind", "display_metadata")
+            return self._display_identity(self._display_dedupe_key(dict(zip(keys, values))))
+
+        with self._read_ctx() as conn:
+            conn.create_function("_hermes_display_identity", 8, identity, deterministic=True)
+            columns = set(self._message_column_names(conn))
+            visible = "(active = 1 OR compacted = 1)"
+            if "display_identity" in columns:
+                identities = f"""SELECT display_identity AS identity FROM messages
+                    WHERE session_id IN ({placeholders}) AND {visible} AND display_identity IS NOT NULL
+                    UNION
+                    SELECT _hermes_display_identity({args}) AS identity FROM messages
+                    WHERE session_id IN ({placeholders}) AND {visible} AND display_identity IS NULL"""
+                params: tuple = (*session_ids, *session_ids)
+            else:
+                identities = f"""SELECT _hermes_display_identity({args}) AS identity FROM messages
+                    WHERE session_id IN ({placeholders}) AND {visible} GROUP BY identity"""
+                params = tuple(session_ids)
+            bounded = f"SELECT identity FROM ({identities})" + (" LIMIT ?" if limit is not None else "")
+            if limit is not None:
+                params = (*params, limit)
+            return int(conn.execute(f"SELECT COUNT(*) FROM ({bounded})", params).fetchone()[0])
+
     def get_resume_message_count(self, session_id: str, *, tip_only: bool = False) -> int:
-        """Count the rows a resume would materialize (see ``_resume_count_scope``)."""
+        """Count the messages a resume would materialize (see ``_resume_count_scope``)."""
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
+        if not tip_only:
+            return self._count_resume_display_messages(session_ids)
         return int(self._read_one(
             f"SELECT COUNT(*) FROM messages WHERE session_id IN ({_placeholders(session_ids)}) AND {active_clause}",
             tuple(session_ids))[0])
@@ -1046,9 +1078,12 @@ class SessionMessagesMixin:
         if max_messages == 0:
             return 0
         session_ids, active_clause = self._resume_count_scope(session_id, tip_only)
-        message_count = int(self._read_one("SELECT COUNT(*) FROM ("
-            f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
-            f"AND {active_clause} LIMIT ?)", (*session_ids, max_messages + 1))[0])
+        if tip_only:
+            message_count = int(self._read_one("SELECT COUNT(*) FROM ("
+                f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
+                f"AND {active_clause} LIMIT ?)", (*session_ids, max_messages + 1))[0])
+        else:
+            message_count = self._count_resume_display_messages(session_ids, max_messages + 1)
         if message_count > max_messages:
             raise SessionResumeTooLargeError(
                 message_count, max_messages, scope="in its tip segment" if tip_only else "across its lineage")

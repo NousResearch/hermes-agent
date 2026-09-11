@@ -182,12 +182,18 @@ class TestAncestorPrefix:
 
 class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):
-        """The guard must not undercount: it bounds an in-memory materialization."""
+        """Compaction copies do not reject a display projection that fits the limit."""
         sid = _compact_in_place(db, "chat", epochs=4)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,)))
 
         _, display = db.get_resume_conversations(sid)
+        raw_count = db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1)", (sid,))[0]
 
-        assert db.get_resume_message_count(sid) >= len(display)
+        assert raw_count > len(display)
+        assert db.get_resume_message_count(sid) == len(display)
+        assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
 
     def test_guard_rejects_a_lineage_over_the_limit(self, db):
         from hermes_state import SessionResumeTooLargeError

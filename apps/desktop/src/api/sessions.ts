@@ -460,8 +460,10 @@ export function getLatestSessionMessages(
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
   const route = { ...connectionScoped(), ...sessionScoped(profile) }
-  // Normalize only the lookup key; backfill must replay the original route.
-  const owner = { ...route, connectionId: route.connectionId || ambientOwnerConnectionId() }
+  // Owner identity is resolved from the ambient state at REQUEST time; only
+  // the lookup key is normalized — backfill replays `route` verbatim.
+  const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
+  const ambientProfile = getApiRequestProfile() || 'default'
 
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
@@ -480,15 +482,18 @@ export function getLatestSessionMessages(
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    // A backend that predates the `profile` field cannot name itself; an
-    // untagged read there lands on the ambient profile (`'default'` when
-    // none is active). `null` is a custom HERMES_HOME and stays distinct.
-    const servedProfile = page.profile === undefined ? getApiRequestProfile() || 'default' : page.profile
-    const resolvedOwner = { ...owner, profile: owner.profile || servedProfile }
-    recordTranscriptTail(id, page, route, resolvedOwner)
+    // A backend that predates the `profile` field cannot name itself; its
+    // untagged read landed on the ambient profile.
+    const owner = {
+      ...route,
+      connectionId: ambientConnectionId,
+      profile: route.profile || page.profile || ambientProfile
+    }
+
+    recordTranscriptTail(id, page, route, owner)
 
     if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, route, resolvedOwner)
+      recordTranscriptTail(page.session_id, page, route, owner)
     }
 
     return page

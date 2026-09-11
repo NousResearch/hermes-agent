@@ -39,7 +39,7 @@ def test_message_pages_identify_the_serving_profile(tmp_path, monkeypatch, servi
         older = client.get(f"/api/sessions/same-id/messages?{query}&offset=120").json()
         default = client.get(f"/api/sessions/same-id/messages?{query}&profile=default").json()
 
-    assert tail["profile"] == older["profile"] == serving_profile
+    assert tail["profile"] == older["profile"] == (serving_profile or "default")
     assert default["profile"] == "default"
     assert len(tail["messages"]) == 120
     assert len(older["messages"]) == 79

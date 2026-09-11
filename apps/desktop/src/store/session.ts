@@ -1178,6 +1178,8 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
 
+  // Null descriptor = reconnect blip; keep the last resolved mode (same
+  // contract as rescopeConnectionScopedStores above).
   const mode = $connection.get()?.mode
 
   if (mode) {

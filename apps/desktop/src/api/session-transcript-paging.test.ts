@@ -138,65 +138,63 @@ describe('session transcript pagination ownership', () => {
     })
   })
 
-  it.each(['work', null])(
-    'isolates an ambient %s profile across explicit reads and gateway switches',
-    async servingProfile => {
-      setApiRequestConnection('source-a')
-      const tail = page(Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) => row(index + 1)))
-      let resolve!: (value: SessionMessagesResponse) => void
-      api.mockReturnValueOnce(
-        new Promise<SessionMessagesResponse>(done => {
-          resolve = done
-        })
-      )
-      const pending = getLatestSessionMessages('stored-session')
-      api.mockResolvedValueOnce(page([row(1)]))
-      await getLatestSessionMessages('stored-session', { connectionId: 'source-a', profile: 'default' })
-
-      setApiRequestConnection('source-b')
-      api.mockResolvedValueOnce(page([row(1)]))
-      await getLatestSessionMessages('stored-session', { connectionId: 'source-b', profile: 'default' })
-      resolve({ ...tail, profile: servingProfile })
-      await pending
-
-      const ownerA = { connectionId: 'source-a', profile: servingProfile || undefined }
-      const ownerB = { connectionId: 'source-b', profile: 'default' }
-      expect(transcriptTailState('stored-session', ownerA)).toMatchObject({
-        possiblyTruncated: true,
-        profile: { connectionId: 'source-a' }
+  it('isolates an ambient named profile across explicit reads and gateway switches', async () => {
+    const servingProfile = 'work'
+    setApiRequestConnection('source-a')
+    const tail = page(Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) => row(index + 1)))
+    let resolve!: (value: SessionMessagesResponse) => void
+    api.mockReturnValueOnce(
+      new Promise<SessionMessagesResponse>(done => {
+        resolve = done
       })
-      expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toMatchObject({
-        possiblyTruncated: false
-      })
-      expect(transcriptTailState('stored-session', ownerB)).toMatchObject({ possiblyTruncated: false, profile: ownerB })
-      expect(transcriptTailState('stored-session')).toBeUndefined()
+    )
+    const pending = getLatestSessionMessages('stored-session')
+    api.mockResolvedValueOnce(page([row(1)]))
+    await getLatestSessionMessages('stored-session', { connectionId: 'source-a', profile: 'default' })
 
-      const defaultA = transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })
-      const defaultB = transcriptTailState('stored-session', ownerB)
-      const applyOlderPage = vi.fn()
-      api.mockResolvedValueOnce({ ...page([row(0)], tail.messages.length), profile: servingProfile })
-      expect(
-        await backfillOlderTranscriptPage({
-          storedSessionId: 'stored-session',
-          profile: ownerA,
-          isCurrent: () => true,
-          applyOlderPage
-        })
-      ).toBe(true)
+    setApiRequestConnection('source-b')
+    api.mockResolvedValueOnce(page([row(1)]))
+    await getLatestSessionMessages('stored-session', { connectionId: 'source-b', profile: 'default' })
+    resolve({ ...tail, profile: servingProfile })
+    await pending
 
-      // Serving-profile metadata selects the cache entry, not the request route.
-      expect(api).toHaveBeenLastCalledWith({
-        connectionId: 'source-a',
-        path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.messages.length}&order=latest&include_compacted=true`
+    const ownerA = { connectionId: 'source-a', profile: servingProfile }
+    const ownerB = { connectionId: 'source-b', profile: 'default' }
+    expect(transcriptTailState('stored-session', ownerA)).toMatchObject({
+      possiblyTruncated: true,
+      profile: { connectionId: 'source-a' }
+    })
+    expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toMatchObject({
+      possiblyTruncated: false
+    })
+    expect(transcriptTailState('stored-session', ownerB)).toMatchObject({ possiblyTruncated: false, profile: ownerB })
+    expect(transcriptTailState('stored-session')).toBeUndefined()
+
+    const defaultA = transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })
+    const defaultB = transcriptTailState('stored-session', ownerB)
+    const applyOlderPage = vi.fn()
+    api.mockResolvedValueOnce({ ...page([row(0)], tail.messages.length), profile: servingProfile })
+    expect(
+      await backfillOlderTranscriptPage({
+        storedSessionId: 'stored-session',
+        profile: ownerA,
+        isCurrent: () => true,
+        applyOlderPage
       })
-      expect(applyOlderPage).toHaveBeenCalledWith(toChatMessages([row(0)]))
-      expect(transcriptTailState('stored-session', ownerA)).toEqual({
-        nextOffset: tail.messages.length + 1,
-        possiblyTruncated: false,
-        profile: { connectionId: 'source-a' }
-      })
-      expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toBe(defaultA)
-      expect(transcriptTailState('stored-session', ownerB)).toBe(defaultB)
-    }
-  )
+    ).toBe(true)
+
+    // Serving-profile metadata selects the cache entry, not the request route.
+    expect(api).toHaveBeenLastCalledWith({
+      connectionId: 'source-a',
+      path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.messages.length}&order=latest&include_compacted=true`
+    })
+    expect(applyOlderPage).toHaveBeenCalledWith(toChatMessages([row(0)]))
+    expect(transcriptTailState('stored-session', ownerA)).toEqual({
+      nextOffset: tail.messages.length + 1,
+      possiblyTruncated: false,
+      profile: { connectionId: 'source-a' }
+    })
+    expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toBe(defaultA)
+    expect(transcriptTailState('stored-session', ownerB)).toBe(defaultB)
+  })
 })

@@ -532,9 +532,11 @@ export default function App() {
           "bg-background-base",
         )}
         style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
+          // Same trap as the sidebar: this bar is `fixed`, so without a fallback the
+          // page content scrolling underneath showed straight through it.
+          background: "var(--component-header-background, var(--background-base))",
+          borderImage: "var(--component-header-border-image, none)",
+          clipPath: "var(--component-header-clip-path, none)",
         }}
       >
         <Button
@@ -591,9 +593,13 @@ export default function App() {
               collapsed && "lg:w-14",
             )}
             style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
+              // A theme that defines no `sidebar` bucket leaves these vars unset, and a
+              // bare var() in a shorthand invalidates the whole declaration — which used
+              // to paint the sidebar transparent over whatever sat behind it. Fall back
+              // to the theme's background so the shell is always readable.
+              background: "var(--component-sidebar-background, var(--background-base))",
+              clipPath: "var(--component-sidebar-clip-path, none)",
+              borderImage: "var(--component-sidebar-border-image, none)",
             }}
           >
             <div

@@ -1764,13 +1764,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
-            "[background:var(--component-sidebar-background)]",
-            "[clip-path:var(--component-sidebar-clip-path)]",
-            "[border-image:var(--component-sidebar-border-image)]",
             mobilePanelOpen
               ? "translate-x-0"
               : "pointer-events-none translate-x-full",
           )}
+          style={{
+            // Same trap as the desktop shell: with no `sidebar` bucket in the active
+            // theme the component vars are unset, a bare var() shorthand drops out, and
+            // the sheet painted transparent — vivid blue text on the dimmed terminal
+            // measured 1.05:1. Keep the theme value when present, else the theme bg.
+            background: "var(--component-sidebar-background, var(--background-base))",
+            clipPath: "var(--component-sidebar-clip-path, none)",
+            borderImage: "var(--component-sidebar-border-image, none)",
+          }}
         >
           <div
             className={cn(

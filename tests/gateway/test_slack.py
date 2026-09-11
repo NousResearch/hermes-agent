@@ -3527,6 +3527,34 @@ class TestThreadReplyHandling:
         assert call["inclusive"] is False
 
     @pytest.mark.asyncio
+    async def test_edit_refresh_uses_edit_time_but_excludes_edited_trigger(
+        self, adapter_with_session_store
+    ):
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.200", "user": "U_APP", "text": "edited trigger"},
+                    {"ts": "123.300", "user": "U_USER", "text": "intermediate reply"},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        )
+
+        context, complete = await adapter_with_session_store._fetch_complete_thread_context(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.200",
+            latest_ts="123.500",
+            team_id="T_TEAM",
+        )
+
+        assert complete is True
+        assert "intermediate reply" in context
+        assert "edited trigger" not in context
+        call = adapter_with_session_store._app.client.conversations_replies.await_args.kwargs
+        assert call["latest"] == "123.500"
+
+    @pytest.mark.asyncio
     async def test_failed_handler_releases_session_scoped_processed_marker(
         self, adapter_with_session_store
     ):

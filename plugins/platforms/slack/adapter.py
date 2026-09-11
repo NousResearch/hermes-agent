@@ -4019,7 +4019,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _hydrate_thread_context(
         self, *, channel_id: str, event_thread_ts, ts: str, user_id: str, team_id: str,
-        is_thread_reply: bool, is_mentioned: bool, is_dm: bool,
+        is_thread_reply: bool, is_mentioned: bool, is_dm: bool, latest_ts: str = "",
     ) -> Tuple[Optional[str], List[str], List[str]]:
         """``(channel_context, root_media_urls, root_media_types)`` for a thread reply. No session:
         full thread + root images once, set watermark. Active sessions fetch a paginated delta on
@@ -4100,6 +4100,7 @@ class SlackAdapter(BasePlatformAdapter):
                             channel_id=channel_id,
                             thread_ts=event_thread_ts,
                             current_ts=ts,
+                            latest_ts=latest_ts,
                             team_id=team_id,
                         )
                     )
@@ -4415,7 +4416,7 @@ class SlackAdapter(BasePlatformAdapter):
         ) = await self._hydrate_thread_context(
             channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
-            is_dm=is_dm)
+            is_dm=is_dm, latest_ts=str(event.get("_slack_changed_event_ts") or ts))
         # Thread-root media is delivered ahead of the trigger message's own files.
         media_urls, media_types, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
@@ -5557,6 +5558,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _fetch_complete_thread_context(
         self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str,
+        latest_ts: str = "",
     ) -> Tuple[str, bool]:
         """Fetch a complete bounded snapshot for restart/edit recovery.
 
@@ -5573,7 +5575,7 @@ class SlackAdapter(BasePlatformAdapter):
                     100,
                     team_id,
                     cursor=cursor,
-                    latest=current_ts,
+                    latest=latest_ts or current_ts,
                     inclusive=False,
                 )
             except Exception as exc:

@@ -1508,6 +1508,9 @@ def _supported_compression_kwargs(
     return {name: value for name, value in candidates.items() if name in parameters}
 
 
+_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
 class _CompressionActivityHeartbeat:
     """Refresh the agent inactivity tracker while compression blocks in an aux call."""
 
@@ -1521,13 +1524,19 @@ class _CompressionActivityHeartbeat:
         # so a later UNKNOWN rewrite cannot re-arm a detached zombie heartbeat.
         self._suppressed = False
         if interval_seconds is None:
-            interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
+            interval_seconds = getattr(
+                agent,
+                "_compression_activity_heartbeat_interval",
+                _COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL_SECONDS,
+            )
         try:
-            interval_seconds = float(interval_seconds or 60.0)
+            interval_seconds = float(
+                interval_seconds or _COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL_SECONDS
+            )
             if not math.isfinite(interval_seconds):
-                interval_seconds = 60.0
+                interval_seconds = _COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL_SECONDS
         except (TypeError, ValueError):
-            interval_seconds = 60.0
+            interval_seconds = _COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL_SECONDS
         self._interval_seconds = max(0.1, interval_seconds)
         # Only a compression that opened a VISIBLE compaction phase (the
         # routine start status was emitted) keeps it alive with heartbeats;

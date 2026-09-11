@@ -464,7 +464,7 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
 
     heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
 
-    assert heartbeat._interval_seconds == 60.0
+    assert heartbeat._interval_seconds == _CompressionActivityHeartbeat(agent)._interval_seconds
     heartbeat.start()
     heartbeat.stop()
     assert touch_calls == ["context compression started", "context compression completed"]
@@ -474,6 +474,17 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
         ActivityProvenance.AGENT_COMPRESSION,
         ActivityProvenance.AGENT_COMPRESSION,
     ]
+
+
+def test_compression_heartbeat_default_beats_client_silence_deadline() -> None:
+    """Busy compression must emit before the shared client's 45s silence deadline."""
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import _CompressionActivityHeartbeat
+
+    heartbeat = _CompressionActivityHeartbeat(SimpleNamespace())
+
+    assert heartbeat._interval_seconds < 45.0
 
 
 def test_compression_heartbeat_stop_persists_completed_over_in_progress(

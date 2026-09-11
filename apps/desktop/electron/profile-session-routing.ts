@@ -164,13 +164,40 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
   }
 }
 
+export type ProfileSessionAggregateRoute = 'global-remote' | 'primary'
+
+export interface ProfileSessionAggregateRouteOptions {
+  globalRemote: boolean
+  primaryProfileRemoteOverride: boolean
+}
+
+export interface ProfileSessionAggregateFetchOptions extends ProfileSessionAggregateRouteOptions {
+  fetchJsonForGlobalRemote: FetchJsonForProfile
+}
+
+// The primary backend normally owns aggregate profile reads. In mixed remote
+// mode, however, the active profile's explicit override owns that backend while
+// the app-global remote remains the authority for inherited/default profiles.
+export function resolveProfileSessionAggregateRoute({
+  globalRemote,
+  primaryProfileRemoteOverride
+}: ProfileSessionAggregateRouteOptions): ProfileSessionAggregateRoute {
+  return globalRemote && primaryProfileRemoteOverride ? 'global-remote' : 'primary'
+}
+
 /** Fetch the primary backend's profile-aware session slice, falling back to an empty result when unavailable. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
-  fetchJsonForProfile: FetchJsonForProfile
+  fetchJsonForProfile: FetchJsonForProfile,
+  aggregateOptions?: ProfileSessionAggregateFetchOptions
 ): Promise<ProfileSessionsResponse> {
+  const fetchJson =
+    aggregateOptions && resolveProfileSessionAggregateRoute(aggregateOptions) === 'global-remote'
+      ? aggregateOptions.fetchJsonForGlobalRemote
+      : fetchJsonForProfile
+
   try {
-    return (await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
+    return (await fetchJson(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
   } catch {
     return { sessions: [], total: 0, profile_totals: {} }
   }

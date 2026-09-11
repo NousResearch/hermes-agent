@@ -1120,6 +1120,11 @@ DEFAULT_CONFIG = {
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
+        # Desktop read-aloud debounce: with auto TTS on, speak only the last
+        # reply of a burst after this quiet window (ms) instead of every
+        # interim assistant message.
+        "tts_conclusion_only": False,
+        "tts_conclusion_grace_ms": 1500,
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,

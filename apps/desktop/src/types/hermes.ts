@@ -430,6 +430,8 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    tts_conclusion_only?: boolean
+    tts_conclusion_grace_ms?: number
   }
 }
 

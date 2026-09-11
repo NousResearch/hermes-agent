@@ -657,7 +657,9 @@ export const zhHant = defineLocale({
       voice: {
         recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
-        autoTts: '朗讀回覆'
+        autoTts: '朗讀回覆',
+        ttsConclusionOnly: '僅朗讀最終回覆',
+        ttsConclusionGraceMs: '最終回覆等待視窗（毫秒）'
       },
       stt: {
         enabled: '語音轉文字',
@@ -804,7 +806,9 @@ export const zhHant = defineLocale({
         enabled: '對話變大時摘要較早的上下文。'
       },
       voice: {
-        autoTts: '自動朗讀助手回覆。'
+        autoTts: '自動朗讀助手回覆。',
+        ttsConclusionOnly: '開啟朗讀後，僅朗讀一組回覆中的最後一條，而不是每條中間訊息。',
+        ttsConclusionGraceMs: '朗讀最終回覆前的靜默視窗（毫秒）。'
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',

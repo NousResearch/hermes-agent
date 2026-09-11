@@ -680,7 +680,9 @@ export const ja = defineLocale({
       voice: {
         recordKey: '音声ショートカット',
         maxRecordingSeconds: '最大録音時間',
-        autoTts: '応答を読み上げる'
+        autoTts: '応答を読み上げる',
+        ttsConclusionOnly: '最終応答のみ読み上げる',
+        ttsConclusionGraceMs: '最終応答の待機時間（ミリ秒）'
       },
       stt: {
         enabled: '音声認識',
@@ -828,7 +830,9 @@ export const ja = defineLocale({
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
       },
       voice: {
-        autoTts: 'アシスタントの応答を自動で読み上げます。'
+        autoTts: 'アシスタントの応答を自動で読み上げます。',
+        ttsConclusionOnly: '読み上げ有効時、一連の応答の最後の 1 件だけを読み上げます。',
+        ttsConclusionGraceMs: '最終応答を読み上げるまでの待機時間（ミリ秒）。'
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',

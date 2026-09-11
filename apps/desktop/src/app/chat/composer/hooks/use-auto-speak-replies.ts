@@ -5,7 +5,7 @@ import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $ttsConclusionGraceMs, $ttsConclusionOnly } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -56,7 +56,18 @@ export function useAutoSpeakReplies({
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
 
-    const speakLatest = () => {
+    // Conclusion-only mode: each newly completed reply restarts the quiet
+    // window, so a burst of interim messages collapses to its last entry.
+    let conclusionTimer: ReturnType<typeof setTimeout> | null = null
+
+    const cancelConclusionTimer = () => {
+      if (conclusionTimer !== null) {
+        clearTimeout(conclusionTimer)
+        conclusionTimer = null
+      }
+    }
+
+    const speakReply = () => {
       const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
@@ -82,10 +93,38 @@ export function useAutoSpeakReplies({
       })
     }
 
+    const speakLatest = () => {
+      if (!$ttsConclusionOnly.get()) {
+        speakReply()
+
+        return
+      }
+
+      const { conversationActive, pendingReply } = latest.current
+
+      if (conversationActive || $voicePlayback.get().status !== 'idle') {
+        return
+      }
+
+      const reply = pendingReply()
+
+      if (!reply || reply.pending) {
+        return
+      }
+
+      // markSpoken runs when the window actually closes, not now — otherwise
+      // an interim reply would consume the dedupe slot of the final one.
+      cancelConclusionTimer()
+      conclusionTimer = setTimeout(speakReply, $ttsConclusionGraceMs.get())
+    }
+
     // Re-check on a reply completing ($messages) and on the prior clip ending
     // ($voicePlayback → idle), which frees us to read the next held reply.
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
-    return () => stops.forEach(f => f())
+    return () => {
+      cancelConclusionTimer()
+      stops.forEach(f => f())
+    }
   }, [$messages, enabled, sessionId])
 }

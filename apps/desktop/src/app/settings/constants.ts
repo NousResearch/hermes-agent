@@ -437,7 +437,9 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    autoTts: 'Read Responses Aloud',
+    ttsConclusionOnly: 'Only Speak Final Reply',
+    ttsConclusionGraceMs: 'Conclusion Grace Window (ms)'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -598,7 +600,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    ttsConclusionOnly:
+      'With read responses aloud on, speak only the last reply of a burst instead of every interim message.',
+    ttsConclusionGraceMs: 'Quiet window in milliseconds before the final reply is spoken.'
   },
   tts: {
     xai: {
@@ -709,6 +714,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.echo_transcripts',
       'stt.provider',
       'voice.auto_tts',
+      'voice.tts_conclusion_only',
+      'voice.tts_conclusion_grace_ms',
       'tts.edge.voice',
       'tts.openai.model',
       'tts.openai.voice',

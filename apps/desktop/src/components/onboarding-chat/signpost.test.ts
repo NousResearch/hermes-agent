@@ -44,7 +44,9 @@ it.each(['width', 'height', 'pane'])('waits until the rail is visible when hidde
 
   expect(startTour).toHaveBeenCalledTimes(1)
   expect(vi.mocked(startTour).mock.calls[0][0].map(step => step.selector)).toEqual([
-    '[data-tour="profile-rail"]', '[data-tour="sessions-sidebar"]', '[data-tour="profile-rail"]'
+    '[data-tour="profile-rail"]',
+    '[data-tour="sessions-sidebar"]',
+    '[data-tour="profile-rail"]'
   ])
 })
 
@@ -58,6 +60,7 @@ it('shows the two rail steps when the sessions pane stays hidden', async () => {
 
   expect(startTour).toHaveBeenCalledTimes(1)
   expect(vi.mocked(startTour).mock.calls[0][0].map(step => step.text)).toEqual([
-    'handoffTour.profileText', 'handoffTour.stayText'
+    'handoffTour.profileText',
+    'handoffTour.stayText'
   ])
 })

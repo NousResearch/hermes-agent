@@ -14,8 +14,9 @@ export function latestConnectorPart(messages: ChatMessage[]) {
       if (part.toolName === 'manage_connections') {
         const input = recordOf(part.args)
 
-        return (input.action ?? 'status') !== 'status' ||
-          (Array.isArray(input.connectors) && input.connectors.length > 0)
+        return (
+          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
+        )
       }
 
       return connectorCalls(part.toolName, part.args).length > 0

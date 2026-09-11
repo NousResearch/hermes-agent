@@ -157,6 +157,7 @@ export function watchFirstBuildRows(
       return slug !== undefined && entry.connected !== false ? [slug] : []
     })
   )
+
   const pending = new Set(Array.isArray(output.pending) ? output.pending : [])
   const previous = $firstBuildConnections.get()[storedId]
 
@@ -191,11 +192,18 @@ export function watchFirstBuildRows(
   let failures = 0
   const deadline = Date.now() + 150000
   let timer: ReturnType<typeof setTimeout> | undefined
+
   const current = () => {
     const state = $firstBuildConnections.get()[storedId]
 
-    return !cancelled && failures < 3 && Date.now() < deadline && isFirstBuildSession(storedId) &&
-      !state?.started && state?.toolCallId === part.toolCallId
+    return (
+      !cancelled &&
+      failures < 3 &&
+      Date.now() < deadline &&
+      isFirstBuildSession(storedId) &&
+      !state?.started &&
+      state?.toolCallId === part.toolCallId
+    )
   }
 
   const poll = async () => {

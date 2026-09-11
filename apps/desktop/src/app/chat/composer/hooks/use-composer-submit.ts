@@ -152,11 +152,13 @@ export function useComposerSubmit({
             text.trim() &&
             !SLASH_COMMAND_RE.test(text.trim())
           ) {
-            void Promise.resolve(current.onSteer(text)).then(accepted => {
-              if (!accepted) {
-                enqueue()
-              }
-            }).catch(enqueue)
+            void Promise.resolve(current.onSteer(text))
+              .then(accepted => {
+                if (!accepted) {
+                  enqueue()
+                }
+              })
+              .catch(enqueue)
           } else {
             enqueue()
           }

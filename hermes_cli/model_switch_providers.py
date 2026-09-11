@@ -374,13 +374,16 @@ def _is_aws_sdk(pconfig) -> bool:
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True) -> list:
     """``cached_provider_model_ids`` (the SAME disk-cached list ``hermes model`` builds), falling
     back to the curated list (merged with models.dev for preferred providers) when live is empty."""
-    from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
+    from hermes_cli.models import (
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
+        model_id_is_obviously_non_chat,
+    )
     model_ids = cached_provider_model_ids(slug)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
-    return model_ids
+    return [model_id for model_id in model_ids if not model_id_is_obviously_non_chat(model_id)]
 
 
 def _first_curated(curated: dict, keys) -> list:

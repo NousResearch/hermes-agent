@@ -82,3 +82,33 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+def _mark_non_chat_model_rejected(agent, api_error) -> bool:
+    """Pin a fallback after a clearly non-chat model rejects a chat request with HTTP 400."""
+    if getattr(api_error, "status_code", None) != 400:
+        return False
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    model = str(getattr(agent, "model", "") or "").strip()
+    from hermes_cli.models import model_id_is_obviously_non_chat
+    if not provider or not model or not model_id_is_obviously_non_chat(model):
+        return False
+    rejected = getattr(agent, "_non_chat_rejected_models", None)
+    if rejected is None:
+        rejected = agent._non_chat_rejected_models = set()
+    rejected.add((provider, model))
+    logger.warning(
+        "Non-chat model rejection: %s via %s returned HTTP 400 to a chat request; "
+        "keeping the working fallback active for this session",
+        model, provider,
+    )
+    agent._buffer_status(
+        f"🚫 {model} via {provider} cannot handle chat requests; keeping the fallback model active "
+        "for this session. Use the image_gen toolset for generation models."
+    )
+    return True
+
+
+def _is_non_chat_rejected(agent, provider: str, model: str) -> bool:
+    rejected = getattr(agent, "_non_chat_rejected_models", None) or ()
+    return (provider, model) in rejected

@@ -820,6 +820,21 @@ def curated_models_for_provider(
     return [(m, "") for m in models]
 
 
+# Generic OpenAI-compatible ``/models`` endpoints often mix chat with generation surfaces but
+# expose no modality metadata. Keep this deliberately narrow: these separator-qualified tokens
+# identify a generation API, while names such as ``vision`` / ``vl`` remain valid chat models.
+_NON_CHAT_MODEL_ID_RE = re.compile(
+    r"(?:^|[/_.-])(?:image(?:[/_.-]gen(?:eration)?)?|text[/_.-]to[/_.-]image|"
+    r"video(?:[/_.-]gen(?:eration)?)?|text[/_.-]to[/_.-]video)(?=$|[/_.-])",
+    re.IGNORECASE,
+)
+
+
+def model_id_is_obviously_non_chat(model_id: str) -> bool:
+    """Whether an untyped catalog ID clearly names an image/video generation model."""
+    return bool(_NON_CHAT_MODEL_ID_RE.search(str(model_id or "").strip()))
+
+
 def _provider_keys(provider: str) -> set[str]:
     key = (provider or "").strip().lower()
     normalized = normalize_provider(provider)

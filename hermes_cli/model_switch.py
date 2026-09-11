@@ -1368,6 +1368,15 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
     st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
 
+    from hermes_cli.models import model_id_is_obviously_non_chat
+    if model_id_is_obviously_non_chat(st.new_model):
+        return st.fail(
+            f"`{st.new_model}` is an image/video generation model and cannot be used for chat. "
+            "Use the image_gen toolset for generation models.",
+            new_model=st.new_model, target_provider=st.target_provider,
+            provider_label=st.provider_label,
+        )
+
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())
     else:

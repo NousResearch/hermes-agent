@@ -6,7 +6,9 @@ and announce an unverified "Primary model restored" that would oscillate forever
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.fallback_cooldown import _mark_entitlement_rejected_model
+from agent.fallback_cooldown import (
+    _mark_entitlement_rejected_model, _mark_non_chat_model_rejected,
+)
 
 from run_agent import AIAgent
 
@@ -87,3 +89,23 @@ def test_restore_primary_runtime_is_gated_on_rejected_primary_slug():
     _, restored, emitted = _run("some-other-slug")
     assert restored is True
     assert any("Primary model restored" in n for n in emitted)
+
+
+def test_image_generation_400_keeps_working_fallback_active_for_session():
+    agent = _make_agent(fallback_model={"provider": "zai", "model": "glm-5.2"})
+    agent.provider, agent.model = "alibaba-token-plan", "wan2.7-image-pro"
+    agent._primary_runtime["provider"], agent._primary_runtime["model"] = agent.provider, agent.model
+
+    assert _mark_non_chat_model_rejected(
+        agent, SimpleNamespace(status_code=400, message="input.messages is invalid")) is True
+    assert any(
+        "cannot handle chat requests" in notice
+        for kind, notice in agent._retry_status_buffer if kind == "status"
+    )
+
+    fb_client = MagicMock()
+    fb_client.api_key, fb_client.base_url = "fallback-" + "key-1234", "https://fallback.example.com/v1"
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, None)):
+        assert agent._try_activate_fallback() is True
+    assert agent._restore_primary_runtime() is False
+    assert (agent.provider, agent.model, agent._fallback_activated) == ("zai", "glm-5.2", True)

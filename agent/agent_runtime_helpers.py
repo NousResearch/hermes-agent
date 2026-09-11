@@ -1120,11 +1120,14 @@ def restore_primary_runtime(agent) -> bool:
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
-    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
-        # The primary slug was rejected as unentitled for this account (#106475): restoring
-        # here would announce a recovery that was never verified and re-fail every turn.
-        # Stay on the fallback; the user sees the terminal entitlement error instead.
+    from agent.fallback_cooldown import _is_entitlement_rejected, _is_non_chat_rejected
+    if primary_model and (
+        _is_entitlement_rejected(agent, primary_provider, primary_model)
+        or _is_non_chat_rejected(agent, primary_provider, primary_model)
+    ):
+        # The primary slug was rejected as unavailable for this session: restoring here would
+        # announce a recovery that was never verified and re-fail every turn.
+        # Stay on the fallback; the user sees the rejection/fallback status instead.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 

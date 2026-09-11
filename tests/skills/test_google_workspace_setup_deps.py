@@ -1,141 +1,65 @@
-"""Regression test: google-workspace setup.py REQUIRED_PACKAGES must pin httplib2.
-
-GHSA-j5g9-f88f-gfj3 (HIGH) — Decompression Bomb DoS via unbounded gzip/deflate
-response handling.  Fixed in httplib2 0.32.0.
-
-There are two install paths for google-workspace dependencies:
-  1. pyproject.toml [project.optional-dependencies].google
-  2. skills/productivity/google-workspace/scripts/setup.py REQUIRED_PACKAGES
-
-This test ensures path 2 stays pinned and consistent with path 1.
-"""
+"""OAuth must not run against an unavailable or newly selected environment."""
 
 from __future__ import annotations
 
-import ast
+import importlib.util
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+from unittest.mock import Mock
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-SETUP_PY = REPO_ROOT / "skills/productivity/google-workspace/scripts/setup.py"
-PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
-
-# ---------------------------------------------------------------------------
-# Static parsers
-# ---------------------------------------------------------------------------
-
-_GOOGLE_EXTRA_KEY = "google"
+import pm
+import pytest
 
 
-def _parse_setup_py_required_packages() -> list[str]:
-    """Parse setup.py and return the REQUIRED_PACKAGES list."""
-    tree = ast.parse(SETUP_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "REQUIRED_PACKAGES":
-                    if isinstance(node.value, ast.List):
-                        return [elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)]
-    raise AssertionError("REQUIRED_PACKAGES not found in setup.py")
+SETUP_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "skills/productivity/google-workspace/scripts/setup.py"
+)
 
 
-def _parse_pyproject_google_extra() -> list[str]:
-    """Parse pyproject.toml and return the google extra dependency list."""
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
-    data = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))
-    optional_deps = data["project"]["optional-dependencies"]
-    return list(optional_deps[_GOOGLE_EXTRA_KEY])
+@pytest.mark.parametrize("command", ["--check", "--check-live", "--auth-url", "--auth-code", "--revoke"])
+def test_oauth_stops_at_pm_restart_boundary(command, monkeypatch, tmp_path, capsys):
+    monkeypatch.syspath_prepend(str(SETUP_PATH.parent))
+    spec = importlib.util.spec_from_file_location("google_workspace_setup", SETUP_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("TOKEN_PATH", "CLIENT_SECRET_PATH", "PENDING_AUTH_PATH"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"state": "pending-state", "code_verifier": "verifier"}))
+        monkeypatch.setattr(module, name, path)
+    before = {path: path.read_bytes() for path in tmp_path.glob("*.json")}
+    ensure = Mock(side_effect=pm.InstallError("venv", "google installed; restart Hermes to activate"))
+    monkeypatch.setattr(pm, "ensure_import", ensure)
+    monkeypatch.setattr("subprocess.check_call", Mock(side_effect=AssertionError("ambient install")))
+    monkeypatch.setattr(sys, "argv", [str(SETUP_PATH), command] + (["code"] if command == "--auth-code" else []))
+
+    with pytest.raises(SystemExit) as failure:
+        module.main()
+
+    assert failure.value.code == 1
+    ensure.assert_called_once_with("google")
+    assert "restart Hermes" in capsys.readouterr().out
+    assert {path: path.read_bytes() for path in tmp_path.glob("*.json")} == before
 
 
-def _extract_pins(packages: list[str]) -> dict[str, str]:
-    """Extract pinned versions: {package_name: version} for entries with == pin."""
-    pins: dict[str, str] = {}
-    for pkg in packages:
-        if "==" in pkg:
-            name, version = pkg.split("==", 1)
-            pins[name.strip()] = version.strip()
-    return pins
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-class TestGoogleWorkspaceSetupDepsPins:
-    """Security pin consistency across all three google-workspace install paths."""
-
-    def test_setup_py_pins_httplib2(self):
-        """setup.py REQUIRED_PACKAGES must pin httplib2 at or above the GHSA fix version."""
-        packages = _parse_setup_py_required_packages()
-        pins = _extract_pins(packages)
-        assert "httplib2" in pins, (
-            f"httplib2 not found in setup.py REQUIRED_PACKAGES.\n"
-            f"  Current entries: {packages}"
-        )
-        # GHSA-j5g9-f88f-gfj3 is fixed in 0.32.0 — floor invariant, not a snapshot,
-        # so future bumps don't break this test.
-        pinned = tuple(int(part) for part in pins["httplib2"].split("."))
-        assert pinned >= (0, 32, 0), (
-            f"httplib2 pin {pins['httplib2']} in setup.py is below 0.32.0, the "
-            f"GHSA-j5g9-f88f-gfj3 fix version.\n"
-            f"  Full REQUIRED_PACKAGES: {packages}"
-        )
-
-    def test_setup_py_pins_match_pyproject_toml(self):
-        """httplib2 pin in setup.py must match pyproject.toml google extra."""
-        required_packages = _parse_setup_py_required_packages()
-        pyproject_packages = _parse_pyproject_google_extra()
-
-        required_pins = _extract_pins(required_packages)
-        pyproject_pins = _extract_pins(pyproject_packages)
-
-        for pkg in ("httplib2", "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"):
-            setup_ver = required_pins.get(pkg)
-            toml_ver = pyproject_pins.get(pkg)
-            if setup_ver is None and toml_ver is None:
-                continue  # neither path pins it, skip
-            assert toml_ver is not None, (
-                f"{pkg} is pinned in setup.py ({setup_ver}) but NOT in pyproject.toml google extra.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  pyproject.toml google: {pyproject_pins}"
-            )
-            assert setup_ver is not None, (
-                f"{pkg} is pinned in pyproject.toml ({toml_ver}) but NOT in setup.py.\n"
-                f"  pyproject.toml google: {pyproject_pins}\n"
-                f"  setup.py: {required_pins}"
-            )
-            assert setup_ver == toml_ver, (
-                f"{pkg} pin mismatch: setup.py has {setup_ver}, pyproject.toml has {toml_ver}.\n"
-                f"  setup.py: {required_pins}\n"
-                f"  pyproject.toml google: {pyproject_pins}"
-            )
-
-    def test_all_google_packages_are_pinned_in_all_paths(self):
-        """Every google workspace package that is version-pinned in any path must appear in both."""
-        pyproject_packages = _parse_pyproject_google_extra()
-        setup_packages = _parse_setup_py_required_packages()
-
-        all_pins: dict[str, set[str]] = {}
-        for label, pkgs in [
-            ("pyproject.toml", pyproject_packages),
-            ("setup.py", setup_packages),
-        ]:
-            for pkg in pkgs:
-                if "==" in pkg:
-                    name, ver = pkg.split("==", 1)
-                    all_pins.setdefault(name.strip(), set()).add(f"{label}={ver.strip()}")
-
-        for pkg, entries in sorted(all_pins.items()):
-            versions = {e.split("=", 1)[1] for e in entries}
-            assert len(versions) == 1, (
-                f"{pkg} has inconsistent pins across install paths:\n"
-                + "\n".join(f"  {e}" for e in sorted(entries))
-            )
-            assert len(entries) == 2, (
-                f"{pkg} is not pinned in all install paths.  Found {len(entries)}/2:\n"
-                + "\n".join(f"  {e}" for e in sorted(entries))
-            )
+@pytest.mark.parametrize("command", ["--install-deps", "--auth-url"])
+def test_standalone_without_hermes_reports_setup_not_ambient_installs(command, tmp_path):
+    # -I -S excludes both the checkout and installed site packages, just as a
+    # copied skill run with an unrelated interpreter has no Hermes PM module.
+    (tmp_path / "google_client_secret.json").write_text("{}")
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(SETUP_PATH), command],
+        env={**os.environ, "HERMES_HOME": str(tmp_path), "PATH": ""},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 1
+    assert "Hermes environment" in result.stdout
+    assert "hermes setup" in result.stdout
+    assert "pip" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr

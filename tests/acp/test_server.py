@@ -461,6 +461,52 @@ class TestPrompt:
 
 
 
+    @pytest.mark.asyncio
+    async def test_prompt_cancelled_turn_does_not_drain_queued_prompts(self, agent):
+        """ACP cancel should not auto-run queued work after the current turn stops."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.queued_prompts.append("then run tests")
+        seen_messages = []
+
+        def mock_run(user_message, *args, **kwargs):
+            seen_messages.append(user_message)
+            state.cancel_event.set()
+            return {"final_response": "interrupted", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        prompt = [TextContentBlock(type="text", text="start long task")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "cancelled"
+        assert seen_messages == ["start long task"]
+        assert state.queued_prompts == ["then run tests"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_first_drained_prompt_preserves_remaining_queue(self, agent):
+        """A recursive queued turn must stop its ancestor's drain loop on cancel."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.queued_prompts.extend(["first queued", "second queued"])
+        seen_messages = []
+
+        def mock_run(user_message, *args, **kwargs):
+            seen_messages.append(user_message)
+            if user_message == "first queued":
+                state.cancel_event.set()
+            return {"final_response": "done", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="initial")],
+            session_id=new_resp.session_id,
+        )
+
+        assert seen_messages == ["initial", "first queued"]
+        assert state.queued_prompts == ["second queued"]
+
 
 # ---------------------------------------------------------------------------
 # on_connect

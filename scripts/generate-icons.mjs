@@ -29,16 +29,13 @@ export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env
   // Parent payload paths must not shadow the isolated build dependencies.
   delete childEnv.PYTHONPATH
   delete childEnv.PYTHONHOME
-  const result = run('uv', [
-    'run', '--isolated', '--locked', '--only-group', 'icon-build',
-    // PM copies its wheel cache into payloads. Keep build wheels outside it.
-    '--cache-dir', path.join(source, '.cache', 'icon-build'),
-    'python', path.join(root, 'scripts', 'generate_icons.py'), '--source', source, '--out', out,
+  const result = run(env.HERMES_PYTHON || 'python', [
+    path.join(root, 'scripts', 'build', 'icon_environment.py'), '--source', source, '--out', out,
     ...(values.check ? ['--check'] : [])
   ], { cwd: source, stdio: 'inherit', windowsHide: true, env: childEnv })
   if (result.error) {
     console.error('[generate-icons] failed to launch icon generator:', result.error.message)
-    console.error('[generate-icons] uv is required to run the isolated icon-build group')
+    console.error('[generate-icons] a prepared Python (HERMES_PYTHON or PATH) is required to run the PM build driver')
     return 1
   }
   return result.status ?? 1

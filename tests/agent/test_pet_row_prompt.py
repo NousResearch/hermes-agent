@@ -13,11 +13,7 @@ markers here — that is the contract, not the exact sentence.
 
 from __future__ import annotations
 
-import pytest
-
 from agent.pet.generate import atlas, prompts
-
-PIL = pytest.importorskip("PIL")
 
 # The incident phrase; see agent/pet/generate/prompts.py's POPULATION comment.
 _CLAUSE_MARKERS = ("EXACTLY ONE COMPLETE character", "duplicate")

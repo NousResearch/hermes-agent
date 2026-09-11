@@ -518,6 +518,26 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "Video Generation (Nous Subscription or FAL).")
 
 
+def _migrate_to_43(results: Dict[str, Any], quiet: bool) -> None:
+    # 42 → 43: bundled web backends auto-load unless listed in plugins.disabled. Plugin opt-in
+    # can park a still-configured vendor (web.backend / search_backend / extract_backend) on
+    # that deny-list, so web_search/web_extract fail. Unblock only the configured vendor(s).
+    try:
+        from hermes_cli.plugins_cmd import ensure_configured_web_backend_plugin_enabled_in_config
+
+        config = read_raw_config()
+        if ensure_configured_web_backend_plugin_enabled_in_config(config):
+            _commit(
+                config, results, quiet,
+                "unblocked configured web backend plugin(s) from plugins.disabled",
+                "  ✓ Re-enabled the configured web search/extract backend plugin "
+                "(it was listed in plugins.disabled). A later "
+                "`hermes plugins disable` still applies.",
+            )
+    except Exception:
+        return
+
+
 def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
@@ -637,6 +657,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
             "model/provider they were created under when the global default changes, instead "
             "of being skipped. Pin a job or set cron.model to move it."))),
+    (43, _migrate_to_43),
 )
 
 

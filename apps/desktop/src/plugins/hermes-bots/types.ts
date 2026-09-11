@@ -150,6 +150,8 @@ export interface GroupMessage {
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
+  /** Set on the ui_meta projection when `text` was cut to the sync budget. */
+  truncated?: boolean
 }
 
 export interface GroupHold {

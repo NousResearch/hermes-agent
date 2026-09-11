@@ -36,6 +36,7 @@ _VENV_NAME = "venv"
 _ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
 _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
+_PYTHON_BASENAMES = ("python", "python3", f"python3.{sys.version_info.minor}")
 
 _Provisioned = tuple[Path, Path, SQLiteRuntimeInfo]
 
@@ -86,7 +87,7 @@ def _macos_sign_managed_python(python: Path) -> bool:
         return False
     codesign = shutil.which("codesign")
     if not codesign:
-        logger.info("macOS codesign is unavailable; using the downloaded Python signature")
+        logger.warning("macOS codesign is unavailable; cannot stabilize interpreter identity for %s", python)
         return False
     requirement = f'=designated => identifier "{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
     try:
@@ -107,10 +108,114 @@ def _macos_sign_managed_python(python: Path) -> bool:
                 logger.warning(
                     warning, python, (result.stderr or result.stdout or fallback).strip())
                 return False
+        inspect = subprocess.run(
+            [codesign, "-dvvv", str(python)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        metadata = f"{inspect.stdout}\n{inspect.stderr}".splitlines()
+        identifier = next(
+            (
+                line.split("=", 1)[1].strip()
+                for line in metadata
+                if line.strip().startswith("Identifier=")
+            ),
+            "",
+        )
+        if inspect.returncode != 0 or identifier != _MACOS_MANAGED_PYTHON_IDENTIFIER:
+            detail = (inspect.stderr or inspect.stdout or "Identifier mismatch").strip()
+            logger.warning(
+                "managed Python identity verification failed for %s: expected Identifier=%s, got %r (%s)",
+                python,
+                _MACOS_MANAGED_PYTHON_IDENTIFIER,
+                identifier,
+                detail,
+            )
+            return False
         return True
     except Exception as exc:
         logger.warning("could not sign managed Python %s: %s", python, exc)
         return False
+
+
+def _collect_runtime_python_targets(
+    project_root: Path, *, live_venv: Path | None = None, generation_python: Path | None = None
+) -> list[Path]:
+    """Best-effort list of Python binaries Hermes may execute on this checkout.
+
+    Includes managed-runtime generations, live venv aliases (python/python3/python3.N), and the
+    currently running interpreter path. Symlink paths and their real targets are both considered.
+    """
+    targets: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path | None) -> None:
+        if path is None:
+            return
+        for candidate in (Path(path), Path(os.path.realpath(str(path)))):
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if candidate.is_file():
+                    targets.append(candidate)
+            except OSError:
+                continue
+
+    _add(generation_python)
+    _add(Path(sys.executable))
+
+    runtime_store = managed_python_install_dir(project_root)
+    with contextlib.suppress(OSError):
+        if runtime_store.is_dir():
+            for pattern in ("**/bin/python", "**/bin/python3", "**/bin/python3.*"):
+                for candidate in runtime_store.glob(pattern):
+                    _add(candidate)
+
+    venvs = [live_venv] if live_venv is not None else [project_root / _VENV_NAME, project_root / _ALT_VENV_NAME]
+    scripts_dir_name = "Scripts" if platform.system() == "Windows" else "bin"
+    for venv in venvs:
+        if venv is None:
+            continue
+        bindir = venv / scripts_dir_name
+        for name in _PYTHON_BASENAMES:
+            _add(bindir / name)
+    return targets
+
+
+def _macos_stabilize_runtime_python_identities(
+    *, project_root: Path | None = None, live_venv: Path | None = None,
+    generation_python: Path | None = None,
+) -> list[str]:
+    """Best-effort post-update/repair identity stabilization for all reachable Python paths.
+
+    Returns paths that could not be stabilized or verified; never raises.
+    """
+    if platform.system() != "Darwin":
+        return []
+    root = Path(project_root) if project_root is not None else _PROJECT_ROOT
+    failures: list[str] = []
+    for python in _collect_runtime_python_targets(
+        root, live_venv=live_venv, generation_python=generation_python
+    ):
+        if not _macos_sign_managed_python(python):
+            failures.append(str(python))
+    if failures:
+        logger.warning(
+            "macOS stable interpreter identity not verified for %d path(s): %s",
+            len(failures),
+            ", ".join(failures),
+        )
+    return failures
+
+
+def _emit_macos_identity_warnings(failures: list[str]) -> None:
+    for path in failures:
+        print(f"  ⚠ macOS stable interpreter identity not verified: {path}")
 
 
 @dataclass(frozen=True)
@@ -206,6 +311,9 @@ def _run_runtime_repair(
             repair_observer(repair)
         if repair.status == "failed":
             _report_runtime_repair_failure(repair)
+        failures = _macos_stabilize_runtime_python_identities(project_root=_PROJECT_ROOT)
+        if print_skip and failures:
+            _emit_macos_identity_warnings(failures)
     except Exception as exc:
         logger.warning("Managed Python runtime repair failed: %s", exc)
         if print_skip:
@@ -924,6 +1032,13 @@ def _repair_under_lock(
     print(
         "  ✓ Managed Python runtime repaired "
         f"(SQLite {current.sqlite_version_string} → {final_version})")
+    failures = _macos_stabilize_runtime_python_identities(
+        project_root=root,
+        live_venv=live,
+        generation_python=python,
+    )
+    if failures:
+        _emit_macos_identity_warnings(failures)
     if backup is not None and backup.exists():
         _remove_tree(backup, boundary=root)
     return _result("repaired", current, sqlite_after=final_version, backup_venv=backup)

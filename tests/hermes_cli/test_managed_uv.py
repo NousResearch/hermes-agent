@@ -94,6 +94,15 @@ class TestMacOSManagedPythonSigning:
 
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs))
+            if cmd[:2] == ["/usr/bin/codesign", "-dvvv"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="",
+                    stderr=(
+                        "Executable=/tmp/python3.11\n"
+                        "Identifier=com.nousresearch.hermes.managed-python\n"
+                    ),
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
@@ -121,6 +130,25 @@ class TestMacOSManagedPythonSigning:
             "--strict",
             str(python),
         ]
+        assert calls[2][0] == ["/usr/bin/codesign", "-dvvv", str(python)]
+
+    def test_fails_when_identifier_is_not_stable(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "generation" / "bin" / "python3.11"
+        python.parent.mkdir(parents=True)
+        python.touch()
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["/usr/bin/codesign", "-dvvv"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="Identifier=-\n")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        assert managed_uv._macos_sign_managed_python(python) is False
 
     def test_is_non_blocking_when_signing_fails(self, tmp_path, monkeypatch):
         import hermes_cli.managed_uv as managed_uv
@@ -326,9 +354,6 @@ class TestEnsureUvWindowsSafe:
 # ---------------------------------------------------------------------------
 
 class TestUpdateManagedUv:
-
-
-
     def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
         """A recent success stamp must skip `uv self update` entirely while the
         vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
@@ -351,9 +376,35 @@ class TestUpdateManagedUv:
             result = update_managed_uv()
 
         assert result == str(uv)
-        assert mock_run.call_count == 0, "fresh stamp must skip the network self-update"
+        assert all(
+            call.args[0] != [str(uv), "self", "update"]
+            for call in mock_run.call_args_list
+        ), "fresh stamp must skip the network self-update"
         mock_repair.assert_called_once_with(str(uv))
 
+
+    def test_stabilizes_macos_python_identities_on_update_path(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+
+        stabilized = []
+        monkeypatch.setattr(
+            managed_uv,
+            "_macos_stabilize_runtime_python_identities",
+            lambda **kwargs: stabilized.append(kwargs) or [],
+            raising=False,
+        )
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._uv_self_update_is_fresh", return_value=True), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
+            result = managed_uv.update_managed_uv()
+
+        assert result == str(uv)
+        assert stabilized, "macOS identity stabilization must run even when self-update is skipped"
 
     def test_stale_stamp_runs_self_update_and_refreshes_stamp(self, tmp_path):
         import os as _os

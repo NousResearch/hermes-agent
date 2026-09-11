@@ -1223,6 +1223,58 @@ class TestVisionClientFallback:
 
         assert "anthropic" in backends
 
+    def test_vision_main_fallback_skips_text_only_model(self):
+        """When falling back for vision, text-only main models are skipped."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="zai"),
+            patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"),
+            patch("agent.auxiliary_client._main_model_supports_vision", return_value=False),
+            patch("agent.auxiliary_client._resolve_provider_vision_default", return_value=None),
+        ):
+            client, model, label = _try_main_agent_model_fallback("nous", task="vision")
+            assert client is None
+            assert model is None
+            assert label == ""
+
+    def test_vision_configured_fallback_skips_text_only_model(self):
+        """When falling back for vision, fallback_chain entries without vision are skipped."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": [{"provider": "zai", "model": "glm-5.3"}]},
+            ),
+            patch("agent.auxiliary_client._resolve_fallback_entry", return_value=(fake_client, "glm-5.3")),
+            patch("agent.auxiliary_client._main_model_supports_vision", return_value=False),
+        ):
+            client, model, label = _try_configured_fallback_chain("vision", "nous")
+            assert client is None
+            assert model is None
+            assert label == ""
+
+    def test_upstream_capacity_429_does_not_rotate_credential_pool(self):
+        """A 429 carrying upstream capacity wording must not rotate/exhaust the credential pool."""
+        from agent.auxiliary_client import _is_upstream_capacity_error, _recover_provider_pool
+
+        class _RateLimit429(Exception):
+            status_code = 429
+
+        exc = _RateLimit429(
+            "The requested model is temporarily at capacity upstream. "
+            "This is not your API key's rate limit — please retry shortly."
+        )
+        assert _is_upstream_capacity_error(exc) is True
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        with patch("agent.auxiliary_client.load_pool", return_value=mock_pool):
+            recovered = _recover_provider_pool("nous", exc)
+            assert recovered is False
+            mock_pool.mark_exhausted_and_rotate.assert_not_called()
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
         from agent.auxiliary_client import AnthropicAuxiliaryClient

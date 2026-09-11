@@ -3042,6 +3042,17 @@ _RATE_LIMIT_BILLING_KEYWORDS = (
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
 )
+_UPSTREAM_CAPACITY_KEYWORDS = (
+    "temporarily at capacity", "at capacity", "over capacity",
+    "not your api key's rate limit", "not your api key",
+    "upstream overloaded", "server overloaded", "model is overloaded",
+)
+
+
+def _is_upstream_capacity_error(exc: Exception) -> bool:
+    """True when 429/503 signals an upstream server/model capacity overload rather than an account rate limit."""
+    err_lower = str(exc).lower()
+    return _contains_any(err_lower, _UPSTREAM_CAPACITY_KEYWORDS)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -3394,6 +3405,8 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     if _is_payment_error(exc):
         return _rotate(402)
     if _is_rate_limit_error(exc):
+        if _is_upstream_capacity_error(exc):
+            return False
         return _rotate(429)
     return False
 
@@ -3916,6 +3929,13 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
+    if task == "vision":
+        if main_provider in _PROVIDERS_WITHOUT_VISION:
+            return None, None, ""
+        provider_vision_default = _resolve_provider_vision_default(main_provider)
+        check_model = provider_vision_default or main_model
+        if not _main_model_supports_vision(main_provider, check_model):
+            return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
@@ -4025,6 +4045,10 @@ def _try_configured_fallback_chain(
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            if task == "vision":
+                if fb_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(fb_provider, resolved_model or fb_model):
+                    tried.append(f"{label} (no vision support)")
+                    continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None
@@ -4117,6 +4141,10 @@ def _try_main_fallback_chain(
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            if task == "vision":
+                if fb_norm in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(fb_provider, resolved_model or fb_model):
+                    tried.append(f"{label} (no vision support)")
+                    continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
             )

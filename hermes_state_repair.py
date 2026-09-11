@@ -788,7 +788,11 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                         # image is malformed") while reads of the FTS5 table itself parse fine.
                         return f"fts5 read probe failed on {fts_table}: {exc}"
             # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
-            # rolled back.
+            # rolled back. The trigger INSERT alone only buffers the row in FTS5's in-memory segment; the
+            # ``flush`` command writes that segment to ``<fts>_idx``/``_data`` exactly as a committed append
+            # would, so a stale ``_idx`` row at the next segid (IntegrityError "constraint failed", the #100227
+            # class: integrity_check and MATCH both clean, every real append fails) is hit here rather than
+            # by the user's next message.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -796,16 +800,24 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                              (probe_session_id, "user", "_fts_health_probe", time.time()))
-                conn.execute("ROLLBACK")
-            except sqlite3.OperationalError as exc:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("ROLLBACK")
+                for fts_table in _FTS_TABLES:
+                    try:
+                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
+                    except sqlite3.OperationalError as exc:
+                        if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
+                            raise
+            except sqlite3.DatabaseError as exc:
+                # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
+                # latter let the trigram-segment collision report "healthy".
                 # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
                 # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
                 # SessionDB drops the triggers itself.
                 if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
                     return None
-                return str(exc)
+                return f"fts5 write probe failed: {exc}"
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK")
             return None
     except sqlite3.DatabaseError as exc:
         return str(exc)

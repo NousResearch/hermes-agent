@@ -208,7 +208,18 @@ Each profile's sessions live under an `agent:<profile>:…` namespace so two
 profiles on the same platform/chat never collide in the shared session store.
 The **default** profile keeps the historical `agent:main:…` namespace
 byte-for-byte, so existing default-profile sessions are unaffected — no
-migration, no orphaned history.
+migration, no orphaned history. Every gateway path that reads a key back —
+delegation completions after a restart, shutdown notices, a per-user-thread
+`/stop` of a sibling's run, `/undo`, QQ approval buttons — accepts the
+`agent:<profile>:…` shape too, so secondary profiles get the same behaviour
+as the default one.
+
+Each profile's rows land in **its own** `state.db`: a named profile's under
+`profiles/<name>/state.db`, the default profile's under the launch home — even
+when the write happens inside another profile's routed turn or background tick.
+The Desktop/TUI backend's own store is likewise pinned to the home it launched
+under, and a Bot Chat's side agents (`prompt.background`) persist next to their
+parent conversation.
 
 #### 5. One PID/lock and one status surface
 

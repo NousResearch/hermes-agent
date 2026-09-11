@@ -4140,6 +4140,123 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 })
+
+describe('openNewSessionTile unlisted named-profile owner stamp', () => {
+  const STORED = 'stored-unlisted-named'
+  const RUNTIME = 'rt-unlisted-named'
+
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    $newChatRoute.set(null)
+    $activeGatewayProfile.set('default')
+    $profiles.set([])
+    $sessionTiles.set([])
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  async function createUnlistedNamedProfileTab() {
+    $profiles.set([{ name: 'default' } as never, { name: 'winefox' } as never])
+    $activeGatewayProfile.set('winefox')
+    $newChatProfile.set('winefox')
+    $newChatRoute.set(null)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME,
+          stored_session_id: STORED
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false })
+    })
+
+    return requestGateway
+  }
+
+  it('stamps a bare profile owner on an unlisted + tab without listing it in the sidebar', async () => {
+    const { knownOwnerForSession } = await import('@/store/session-states')
+
+    await createUnlistedNamedProfileTab()
+
+    expect($sessions.get().some(session => session.id === STORED)).toBe(false)
+    expect(getSessionOwnerHint(STORED)).toBeUndefined()
+    expect(sessionTileOwnerRoute(STORED)?.connectionId).toBeUndefined()
+    expect(knownOwnerForSession(STORED)).toBe('winefox')
+    expect(knownOwnerForSession(RUNTIME)).toBe('winefox')
+  })
+
+  it('keeps session-scoped RPCs on the profile door instead of failing closed', async () => {
+    const { knownOwnerForSession, requestForOwnedSession } = await import('@/store/session-states')
+    const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
+
+    await createUnlistedNamedProfileTab()
+
+    const ambient = vi.fn(async () => {
+      throw new Error('ambient must not receive session-scoped RPCs for a known owner')
+    })
+
+    await expect(
+      requestForOwnedSession(RUNTIME, ambient as never, 'session.control.read', { session_id: RUNTIME })
+    ).resolves.toBeUndefined()
+    expect(isSessionOwnerResolutionError(null)).toBe(false)
+    expect(knownOwnerForSession(RUNTIME)).toBe('winefox')
+    expect(ambient).not.toHaveBeenCalled()
+    expect(vi.mocked(requestGatewayForProfile).mock.calls[0].slice(0, 3)).toEqual([
+      'winefox',
+      'session.control.read',
+      { session_id: RUNTIME }
+    ])
+  })
+
+  it('keeps an explicit create route as the exact owner when the tab is unlisted', async () => {
+    const route = { connectionId: 'homelab', profile: 'omar' }
+    $profiles.set([{ name: 'default' } as never, { name: 'omar' } as never])
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set('omar')
+    $newChatRoute.set(route)
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME,
+          stored_session_id: STORED
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false })
+    })
+
+    const { knownOwnerForSession } = await import('@/store/session-states')
+
+    expect($sessions.get().some(session => session.id === STORED)).toBe(false)
+    expect(getSessionOwnerHint(STORED)).toEqual(expect.objectContaining(route))
+    expect(knownOwnerForSession(STORED)).toEqual(expect.objectContaining(route))
+    expect(requestGateway).not.toHaveBeenCalledWith('session.create', expect.anything())
+  })
+})
+
 describe('selectSidebarItem', () => {
   it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {
     const navigate = vi.fn()

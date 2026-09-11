@@ -117,6 +117,7 @@ import {
   patchSessionTile,
   publishSessionState,
   releaseSessionOwnerHold,
+  rememberProfileOnlySessionOwner,
   type SessionTileWorkspaceScope,
   type TileDock
 } from '@/store/session-states'
@@ -806,6 +807,18 @@ export function useSessionActions({
             // moment on, and its socket stays pinned until the tile mounts.
             setSessionOwnerHint(stored, capturedRoute)
             holdSessionOwnerUntilForeground(stored, capturedRoute)
+          } else if (stored) {
+            // Legacy profile-only door (named profile on explicit `local`):
+            // create rode ambient and left no exact route. Unlisted "+" tabs
+            // also skip the optimistic sidebar row, so stamp the bare profile
+            // on stored + runtime ids — otherwise session.resume /
+            // session.control.read fail closed in multi-profile installs.
+            const profileOnlyOwner = normalizeProfileKey(
+              $newChatProfile.get() || $activeGatewayProfile.get()
+            )
+            rememberProfileOnlySessionOwner(stored, profileOnlyOwner)
+            rememberProfileOnlySessionOwner(created.session_id, profileOnlyOwner)
+            holdSessionOwnerUntilForeground(stored, profileOnlyOwner)
           }
         } finally {
           releaseCreateLease()

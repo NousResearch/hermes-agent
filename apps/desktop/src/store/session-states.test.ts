@@ -25,6 +25,7 @@ import {
   focusedSessionNeedsRoute,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
+  forgetProfileOnlyRuntimeOwners,
   foregroundSessionScopes,
   isSessionRemote,
   knownOwnerForSession,
@@ -35,6 +36,7 @@ import {
   patchSessionTile,
   recordSessionEventScope,
   releaseSessionTranscript,
+  rememberProfileOnlySessionOwner,
   requestForOwnedSession,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
@@ -1291,6 +1293,48 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
 
     expect(ambient).toHaveBeenCalledTimes(1)
     expect(ambient.mock.calls[0]).toEqual(['approval.respond', { choice: 'once', session_id: 'unknown-session' }])
+  })
+})
+
+describe('rememberProfileOnlySessionOwner (unlisted named-profile mint)', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+  })
+  afterEach(() => {
+    forgetProfileOnlyRuntimeOwners('winefox')
+    $sessionTiles.set([])
+    setSessions([])
+  })
+
+  it('makes knownOwnerForSession resolve a bare profile with no row or tile route', () => {
+    rememberProfileOnlySessionOwner('stored-draft', 'winefox')
+    rememberProfileOnlySessionOwner('rt-draft', 'winefox')
+
+    expect(sessionTileOwnerRoute('stored-draft')).toBeUndefined()
+    expect(knownOwnerForSession('stored-draft')).toBe('winefox')
+    expect(knownOwnerForSession('rt-draft')).toBe('winefox')
+  })
+
+  it('lets a runtime id resolve via its stored-id ledger entry', () => {
+    $sessionTiles.set([{ runtimeId: 'rt-draft', storedSessionId: 'stored-draft' }])
+    rememberProfileOnlySessionOwner('stored-draft', 'winefox')
+
+    expect(knownOwnerForSession('rt-draft')).toBe('winefox')
+  })
+
+  it('does not outrank an exact tile owner route', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'homelab', profile: 'winefox' },
+        runtimeId: 'rt-1',
+        storedSessionId: 'stored-1'
+      }
+    ])
+    rememberProfileOnlySessionOwner('stored-1', 'winefox')
+    rememberProfileOnlySessionOwner('rt-1', 'winefox')
+
+    expect(knownOwnerForSession('rt-1')).toEqual({ connectionId: 'homelab', profile: 'winefox' })
   })
 })
 

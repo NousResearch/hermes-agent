@@ -118,6 +118,30 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   }
 }
 
+/**
+ * Stamp a legacy profile-only owner on a runtime and/or stored id.
+ *
+ * Used when session.create rode the ambient / profile-only door (named
+ * profile on the explicit `local` source: `resolveNewChatOwnerRoute()` is
+ * null) and the surface will not upsert a sidebar row — unlisted tab-strip
+ * "+" / ⌘T drafts. Without this stamp every later session-scoped RPC
+ * (`session.resume`, `session.control.read`) fails closed in multi-profile
+ * topology. A bare profile keeps the profile-pool door (remote override
+ * included) instead of inventing `{ connectionId: 'local', … }`, which
+ * would dial `requestGatewayForAgent` and skip that door.
+ *
+ * Exact connection routes still outrank this ledger in `knownOwnerForSession`.
+ */
+export function rememberProfileOnlySessionOwner(sessionId: string, profile: string): void {
+  const id = sessionId.trim()
+
+  if (!id) {
+    return
+  }
+
+  sessionOwnerByRuntimeId.set(id, normalizeProfileKey(profile))
+}
+
 /** Forget only profile-pool runtime owners during permanent LOCAL profile
  * teardown. These string routes came exclusively from the legacy secondary
  * producer; exact connection descriptors must survive a same-named remote
@@ -1018,10 +1042,14 @@ export function openTileGatewayScopes(): Set<string> {
  * Last rung: the owner recorded from the inbound runtime event itself
  * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
  * binding is absent or stale still routes through the exact
- * (connectionId, profile) or secondary socket's proven local profile. Every
- * durable rung above keeps outranking it, so a stored-id collision never
- * inherits a stale runtime ledger entry. Unproven profile fields record
- * nothing, so unknown owners in multi-profile topology still fail closed.
+ * (connectionId, profile) or secondary socket's proven local profile. The
+ * ledger is also how an unlisted profile-only mint (tab-strip "+" on a named
+ * local profile) names its owner before a sidebar row exists. Lookup tries
+ * the caller id then the translated stored id so a runtime control.read
+ * still hits a stored-id stamp. Every durable rung above keeps outranking
+ * it, so a stored-id collision never inherits a stale runtime ledger entry.
+ * Unproven profile fields record nothing, so unknown owners in multi-profile
+ * topology still fail closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
@@ -1036,7 +1064,8 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
     sessionTileOwnerRoute(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
     knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
-    sessionOwnerByRuntimeId.get(sessionId)
+    sessionOwnerByRuntimeId.get(sessionId) ??
+    sessionOwnerByRuntimeId.get(storedSessionId)
   )
 }
 

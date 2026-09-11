@@ -106,6 +106,14 @@ pub async fn start_bootstrap(
     tokio::spawn(async move {
         let result = run_bootstrap(app_for_task.clone(), args_for_task, cancel_rx).await;
 
+        // Some infrastructure errors propagate through `?` before run_bootstrap
+        // can emit a Failed event (for example, failure to spawn PowerShell).
+        // Always leave one terminal marker in the persistent log so headed E2E
+        // drivers and support diagnostics can distinguish failure from a hang.
+        if let Err(err) = &result {
+            tracing::error!(error = %err, "bootstrap FAILED");
+        }
+
         // Reflect terminal state into AppState so get_bootstrap_status()
         // can serve it after the task exits.
         let mut guard = state_for_task.bootstrap.lock().await;
@@ -1182,6 +1190,7 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&base);
     }
+
 
     #[test]
     fn abrupt_windows_stage_exit_is_retried_but_never_forever() {

@@ -4145,6 +4145,20 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
+            # _selfrestart_wait_for_replacement (local patch; upstream #108220):
+            # the kickstart branch below waits via _wait_for_launchd_service_pid,
+            # but this branch used to return the moment the request was
+            # delivered. The post-update fleet probe then opens its 30s window
+            # against a gateway that has not begun starting, reads zero rows and
+            # exits 1 on a successful update. Waiting here costs nothing when the
+            # respawn is quick and prevents the false failure when it is not.
+            if not _wait_for_launchd_service_pid(
+                label, old_pid=pid, timeout=90.0, domain=domain
+            ):
+                print(
+                    "  ⚠ Gateway restart requested but no replacement PID yet; "
+                    "post-update verification may report it as down."
+                )
             return
         if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
             # Event loop provably dead: it can't process a graceful shutdown, so a full drain wait

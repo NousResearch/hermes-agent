@@ -480,9 +480,9 @@ trainer.generate_completions(dataset[:1])
 
 ## Template
 
-A production-ready training script lives at **`../templates/basic_grpo_training.py`**. It uses Qwen 2.5-1.5B-Instruct with LoRA and three reward functions (incremental format, strict format, correctness) on GSM8K. Copy and adapt:
+A production-ready training script lives at **`../templates/basic_grpo_training.py`**. It uses Qwen 2.5-1.5B-Instruct with LoRA and three reward functions (incremental format, strict format, correctness) on GSM8K. A reusable reward-function library lives at **`../examples/reward_functions_library.py`**. Copy and adapt:
 1. `get_dataset()` — swap in your data loader
-2. Reward functions — tune to your task
+2. Reward functions — tune to your task or copy from `../examples/reward_functions_library.py`
 3. `SYSTEM_PROMPT` — match your output format
 4. `GRPOConfig` — adjust hyperparameters for your GPU
 

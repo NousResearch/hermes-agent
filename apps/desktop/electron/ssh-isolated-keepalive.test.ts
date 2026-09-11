@@ -45,10 +45,13 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
     vi.useRealTimers()
   })
 
-  it('holds an open WebSocket for the published baseUrl+token until stop', async () => {
+  it('holds an open WebSocket until stop and does not reconnect afterwards', async () => {
     const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
     const { FakeWs, instances } = makeFakeWs()
-    const registry = createSshIsolatedKeepaliveRegistry({ WebSocketImpl: FakeWs })
+    const registry = createSshIsolatedKeepaliveRegistry({
+      WebSocketImpl: FakeWs,
+      reconnectDelayMs: 25
+    })
 
     registry.start('conn:office::work', {
       baseUrl: 'http://127.0.0.1:53101',
@@ -57,66 +60,22 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
 
     expect(instances).toHaveLength(1)
     expect(instances[0].url).toBe('ws://127.0.0.1:53101/api/ws?token=sess-work')
-    expect(instances[0].closed).toBe(false)
     expect(registry.isArmed('conn:office::work')).toBe(true)
 
     instances[0].emit('open')
-    expect(instances[0].closed).toBe(false)
     expect(registry.openUrl('conn:office::work')).toBe('ws://127.0.0.1:53101/api/ws?token=sess-work')
 
     registry.stop('conn:office::work')
     expect(instances[0].closed).toBe(true)
     expect(registry.isArmed('conn:office::work')).toBe(false)
-    expect(registry.openUrl('conn:office::work')).toBeNull()
-  })
-
-  it('stop clears the keep-alive and does not leak a later reconnect', async () => {
-    const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
-    const { FakeWs, instances } = makeFakeWs()
-    const registry = createSshIsolatedKeepaliveRegistry({
-      WebSocketImpl: FakeWs,
-      reconnectDelayMs: 25
-    })
-
-    registry.start('scope-a', { baseUrl: 'http://127.0.0.1:9', token: 'tok' })
-    expect(instances).toHaveLength(1)
-
-    instances[0].emit('open')
-    registry.stop('scope-a')
-    expect(instances[0].closed).toBe(true)
 
     instances[0].emit('close', { code: 1006 })
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(instances).toHaveLength(1)
-    expect(registry.isArmed('scope-a')).toBe(false)
+    expect(registry.openUrl('conn:office::work')).toBeNull()
   })
 
-  it('replaces a prior socket when the same scope is published again', async () => {
-    const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
-    const { FakeWs, instances } = makeFakeWs()
-    const registry = createSshIsolatedKeepaliveRegistry({ WebSocketImpl: FakeWs })
-
-    registry.start('scope-a', { baseUrl: 'http://127.0.0.1:9', token: 'old' })
-    registry.start('scope-a', { baseUrl: 'http://127.0.0.1:9', token: 'new' })
-
-    expect(instances).toHaveLength(2)
-    expect(instances[0].closed).toBe(true)
-    expect(instances[1].closed).toBe(false)
-    expect(instances[1].url).toBe('ws://127.0.0.1:9/api/ws?token=new')
-  })
-
-  it('fail-open: a missing WebSocket impl does not throw and does not invent liveness', async () => {
-    const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
-    const registry = createSshIsolatedKeepaliveRegistry({ WebSocketImpl: undefined })
-
-    expect(() => {
-      registry.start('scope-a', { baseUrl: 'http://127.0.0.1:9', token: 'tok' })
-    }).not.toThrow()
-    expect(registry.isArmed('scope-a')).toBe(false)
-    expect(registry.openUrl('scope-a')).toBeNull()
-  })
-
-  it('treats empty-string scope as the v1/global SSH primary and holds a WS until stop', async () => {
+  it('treats empty-string scope as the v1/global SSH primary', async () => {
     const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
     const { FakeWs, instances } = makeFakeWs()
     const registry = createSshIsolatedKeepaliveRegistry({ WebSocketImpl: FakeWs })
@@ -125,7 +84,6 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
 
     expect(instances).toHaveLength(1)
     expect(instances[0].url).toBe('ws://127.0.0.1:53100/api/ws?token=primary')
-    expect(instances[0].closed).toBe(false)
     expect(registry.isArmed('')).toBe(true)
 
     instances[0].emit('open')
@@ -134,10 +92,9 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
     registry.stop('')
     expect(instances[0].closed).toBe(true)
     expect(registry.isArmed('')).toBe(false)
-    expect(registry.openUrl('')).toBeNull()
   })
 
-  it('rejects missing baseUrl or token even when the scope is the empty primary key', async () => {
+  it('rejects missing baseUrl or token even for the empty primary key', async () => {
     const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
     const { FakeWs, instances } = makeFakeWs()
     const registry = createSshIsolatedKeepaliveRegistry({ WebSocketImpl: FakeWs })

@@ -110,9 +110,7 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
       url = buildWsUrl(entry.target.baseUrl, entry.target.token)
       socket = new WebSocketImpl(url)
     } catch (error) {
-      log?.(
-        `[ssh] keep-alive WS failed to open for ${entry.scope}: ${error instanceof Error ? error.message : error}`
-      )
+      log?.(`[ssh] keep-alive WS failed to open for ${entry.scope}: ${error instanceof Error ? error.message : error}`)
       scheduleReconnect(entry)
       return
     }

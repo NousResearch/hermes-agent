@@ -79,6 +79,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
+| `prefetch_join_timeout` | `5.0` | Seconds to wait for background prefetch recall before using its result. Range: `0`–`60`; invalid values fall back to `5.0`. Set to `0` for non-blocking (prefetch still runs in background). |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
 >

@@ -15,6 +15,30 @@ from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
+RESUME_RECOVERY_NOTE_PREFIX = "[System note: The previous turn was interrupted by"
+_AUTO_CONTINUE_NOTE_PREFIXES = (
+    "[System note: Your previous turn", "[System note: A new message", RESUME_RECOVERY_NOTE_PREFIX,
+)
+
+
+def is_auto_continue_noise(content: Any) -> bool:
+    """Recognize persisted gateway recovery wrappers across their historical wordings."""
+    return isinstance(content, str) and content.startswith(_AUTO_CONTINUE_NOTE_PREFIXES)
+
+
+def strip_auto_continue_noise(content: Any) -> Any:
+    """Remove replay-only recovery wrappers, retaining any trailing human request."""
+    if not is_auto_continue_noise(content):
+        return content
+    text = content
+    while is_auto_continue_noise(text):
+        end = text.find("]")
+        if end < 0:
+            return ""
+        text = text[end + 1:].lstrip()
+    return text
+
+
 # Orphan-recovery notices: (side-effecting, read-only) for an interrupted block vs a dangling tail.
 _INTERRUPTED_NOTICES = (
     "[Orphan recovery: interrupted side-effecting tool may have executed; its effect is UNKNOWN. Inspect state before retrying.]",

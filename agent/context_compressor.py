@@ -21,6 +21,10 @@ from agent.auxiliary_client import (
     call_llm,
     extract_content_or_reasoning,
 )
+from agent.compression_tail_policy import (
+    LEAN_TAIL_KEEP_TOOL_ROUNDS,
+    has_long_inflight_tool_loop,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -760,9 +764,8 @@ _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
 _LEAN_RECOVERY_HEADING = "## Context Recovery"
-# Demote tool results older than the newest N rounds so the tail budget binds
-# (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
-_LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
+# Tool results beyond the shared working-set boundary are demoted so the tail
+# budget binds (tool-group alignment otherwise keeps ~32K of output alive).
 _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 
 
@@ -790,10 +793,12 @@ def _synthetic_user_row(content: str) -> bool:
 
 def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
     """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
+    from agent.conversation_compression import _is_real_user_message
+
     collected: list[str] = []
     used = 0
     for msg in reversed(turns):
-        if msg.get("role") != "user":
+        if not _is_real_user_message(msg):
             continue
         content = _content_text_for_contains(msg.get("content"))
         if _synthetic_user_row(content):
@@ -3110,7 +3115,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return self._augment_summary_lean(summary, turns_to_summarize)
 
     def _demote_stale_tail_tools(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
-        """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
+        """Lean mode: demote tail tool results older than the newest ``LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
         recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
         session_id = getattr(self, "_session_id", "") or ""
         rounds_seen = 0
@@ -3119,7 +3124,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for i in (i for i in range(len(messages) - 1, tail_start - 1, -1) if messages[i].get("role") == "tool"):
             rounds_seen += prev_idx is None or prev_idx - i > 1
             prev_idx = i
-            if rounds_seen > _LEAN_TAIL_KEEP_TOOL_ROUNDS:
+            if rounds_seen > LEAN_TAIL_KEEP_TOOL_ROUNDS:
                 break
             protected.add(i)
         result = list(messages)
@@ -3610,12 +3615,16 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     @classmethod
     def _is_synthetic_compression_user_turn(cls, message: Any) -> bool:
-        """Recognize internal user-role rows by content marker (SessionDB drops metadata)."""
+        """Recognize operational rows by durable provenance, with markers for older transcripts."""
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
-        if cls._is_context_summary_message(message):
+        display_kind = message.get("display_kind")
+        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
             return True
         text = _content_text_for_contains(message.get("content")).strip()
+        from agent.replay_cleanup import is_auto_continue_noise, strip_auto_continue_noise
+        if is_auto_continue_noise(text) and not strip_auto_continue_noise(text):
+            return True
         # Recovery nudges are scaffolding, not human turns; lazy import avoids an import cycle.
         from agent.conversation_loop import (
             _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
@@ -4257,18 +4266,19 @@ Write only the summary body. Do not include any preamble or prefix."""
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
         cut_idx = self._align_boundary_backward(messages, cut_idx)
-        # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
-        # anchors only walk backward, so chaining is monotonic.
-        # Ensure the most recent user message is always in the tail so the active task is never lost to
-        # compression (fixes #10896).
-        cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
-        cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+        # Short and completed turns keep their latest visible exchange verbatim.
+        # A long unfinished tool loop cannot keep its entire turn anchored or
+        # compaction makes no progress; the finalizer re-appends its exact task.
+        inflight_task = self._find_inflight_user_task(messages)
+        if not has_long_inflight_tool_loop(messages, inflight_task):
+            cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+            cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
-        # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
-        # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
-        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
-        if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
-            cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
+            # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
+            # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
+            _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+            if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
+                cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
         # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut
         # can't split a tool group (backward would give the floor's message back).

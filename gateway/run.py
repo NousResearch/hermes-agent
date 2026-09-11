@@ -41,6 +41,10 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.resume_recovery import (
+    build_resume_recovery_note as build_resume_recovery_note,
+    prepare_resume_pending_message as _prepare_resume_pending_message,
+)
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -1018,67 +1022,6 @@ def _is_fresh_gateway_interruption(
     return current - timestamp <= window
 
 
-def build_resume_recovery_note(
-    reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
-    """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
-
-    Interactive platforms report the restore and ask what next; non-interactive ones finish the work.
-
-    On non-interactive event platforms (webhook, API server — adapters with ``interactive_resume = False``)
-    nobody can answer; the resumed turn must instead complete the interrupted work, or the task is silently
-    abandoned behind a "restored" acknowledgement that goes nowhere (#57056).
-    """
-    reason_phrase = (
-        "a gateway restart" if reason == "restart_timeout"
-        else "a gateway shutdown" if reason == "shutdown_timeout" else "a gateway interruption")
-    if message:
-        resume_guidance = (
-            "Address the user's NEW message below FIRST and focus on what the user is asking now.")
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
-        )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next.")
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
-        )
-    else:
-        resume_guidance = (
-            "No user is present on this non-interactive platform, "
-            "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
-            "CONTINUE the interrupted task to completion.")
-        tail_guidance = (
-            "Do NOT re-run tool calls whose results already "
-            "appear in the history — resume from the first step that has no recorded result.")
-    return (
-        f"[System note: The previous turn was interrupted by "
-        f"{reason_phrase}; the gateway is now back online. "
-        f"Any restart/shutdown command in the history has already "
-        f"run — do NOT re-execute or verify it. {resume_guidance} {tail_guidance}]"
-        + (f"\n\n{message}" if message else ""))
-
-
-def _prepare_resume_pending_message(
-    reason: Optional[str], message: Optional[str], *, interactive: bool = True) -> tuple[str, str]:
-    """Return the recovery message and the user text to persist.
-
-    Empty original: persist the note (a "" user row trips the pre-call sanitizer). Real text: persist clean.
-
-    Resume turns replace the startup event's text with a recovery note before entering the agent. When the
-    original message is empty (the synthesized auto-resume turn), persist the note too — persisting the
-    empty string left a blank user row in state.db that the pre-call sanitizer re-healed on every later call
-    forever (#86580). When the user sent REAL text while the resume was pending, keep persisting their clean
-    words: the transcript stays scaffold-free (the model still receives the wrapped note), and a non-empty
-    row never trips the sanitizer.
-    """
-    recovery_message = build_resume_recovery_note(reason, message or "", interactive=interactive)
-    persist_message = message if isinstance(message, str) and message.strip() else recovery_message
-    return recovery_message, persist_message
-
-
 # Assistant fields that must survive replay for CLI parity (reasoning continuity, prefix-cache hits, provider
 # echo): unreconstructable thinking text (DeepSeek/Kimi), opaque signatures, Codex blobs (caching degrades).
 # ``reasoning`` and ``reasoning_details`` were the original three preserved by PR #2974 (schema v6).
@@ -1115,6 +1058,11 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    # Runtime notices remain runtime notices after a reload. Compaction uses this
+    # provenance to avoid turning a background/recovery event into the human task.
+    for key in ("display_kind", "display_metadata"):
+        if msg.get(key):
+            entry[key] = msg[key]
     # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
     # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
     _sidecar = msg.get("api_content")
@@ -1353,30 +1301,10 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image
 
 # Replay-tail sanitization lives in agent/replay_cleanup.py so every resume surface shares one implementation.
 from agent.replay_cleanup import (  # noqa: E402
+    is_auto_continue_noise as _is_auto_continue_noise,
+    strip_auto_continue_noise as _strip_auto_continue_noise,
     strip_interrupted_tool_tails, strip_dangling_tool_call_tail, strip_stale_dangerous_confirmations)
 
-
-_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
-_AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
-
-
-def _is_auto_continue_noise(content: Any) -> bool:
-    """Return True if this user-message content is a gateway-injected auto-continue note (never replay it)."""
-    return isinstance(content, str) and content.startswith(
-        (_AUTO_CONTINUE_NOTE_PREFIX, _AUTO_CONTINUE_FALLBACK_PREFIX))
-
-
-def _strip_auto_continue_noise(content: Any) -> Any:
-    """Strip leading persisted auto-continue notes from user text; the trailing real question is preserved."""
-    if not _is_auto_continue_noise(content):
-        return content
-    text = str(content)
-    while _is_auto_continue_noise(text):
-        end = text.find("]")
-        if end < 0:
-            return ""
-        text = text[end + 1 :].lstrip()
-    return text
 
 # Tools whose deliverable is a JSON payload with a local-file path field rather than a literal ``MEDIA:`` tag.
 _JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")

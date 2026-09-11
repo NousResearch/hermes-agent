@@ -96,6 +96,22 @@ def _resolve_inference() -> str:
         return ""
 
 
+def _config_has_explicit_model_pin() -> bool:
+    """Cheap on-disk pin only: a model dict with non-empty provider/base_url/api_key.
+
+    Mirrors the config.yaml branch of ``_has_any_provider_configured`` and nothing
+    else — no registry sweep, gh, or Claude Code. Fail-open on any exception.
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = load_config().get("model")
+        if not isinstance(model_cfg, dict):
+            return False
+        return any((model_cfg.get(k) or "").strip() for k in ("provider", "base_url", "api_key"))
+    except Exception:
+        return False
+
+
 def run_bootstrap(*, announce: bool = True) -> SetupRecord:
     """Inventory -> ensure identity (gate permitting) -> resolve inference -> record -> broadcast.
 
@@ -127,7 +143,8 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
             logger.info("Nous free tier not set up at boot: %s", exc)
     free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
     record = SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
+        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state))
+        or _config_has_explicit_model_pin(),
         inference_provider=_resolve_inference(),
         free_tier=free_tier,
         has_identity=bool(state),

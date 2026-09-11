@@ -97,7 +97,11 @@ class GatewayTurnMixin:
                 )
             }
             override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
-            if override_runtime.get("api_key"):
+            override_runtime["keyless"] = bool(override.get("keyless"))
+            # A keyless marker means the provider was validated to resolve without a credential
+            # (e.g. local Ollama resolves api_key='') — legitimate, unlike a stale credential-less
+            # override.
+            if override_runtime.get("api_key") or override_runtime.get("keyless"):
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
@@ -105,7 +109,8 @@ class GatewayTurnMixin:
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # No api_key on the override: env-based resolution below, override model/provider on top.
+            # No api_key on the override and not marked keyless: env-based resolution below,
+            # override model/provider on top.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,

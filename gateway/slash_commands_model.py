@@ -265,6 +265,9 @@ class GatewayModelCommandsMixin:
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
+            # The switch validated this provider; an empty api_key means it
+            # legitimately resolves without one (e.g. local Ollama).
+            "keyless": not result.api_key,
         }
         if one_turn:
             if not hasattr(self, "_pending_one_turn_model_restores"):

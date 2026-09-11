@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -38,15 +37,15 @@ def auth_json_path():
 
 
 def _read_nous_provider_state() -> Optional[dict]:
-    """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
-    with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
+    """The profile's Nous state, else the global-root profile's (the per-provider fallback
+    ``hermes_cli.auth._load_provider_state`` applies, so profile workers see globally-authed
+    providers), else None. A free-tier identity counts only while the free tier is on: with
+    ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
     attached to a request."""
     try:
-        path = auth_json_path()
-        if not path.is_file():
-            return None
-        providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
-        nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
+        from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+        nous_provider = _load_provider_state(_load_auth_store(), "nous")
         if not isinstance(nous_provider, dict):
             return None
         from hermes_cli.anon_auth import guest_enabled, is_guest_state

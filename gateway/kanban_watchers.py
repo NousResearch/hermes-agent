@@ -68,6 +68,18 @@ class GatewayKanbanWatchersMixin:
         dispatcher respawned a crashed task). All SQLite work runs in a thread;
         one tick's failure never stops the next.
         """
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            cfg = _load_config()
+            kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        except Exception as exc:
+            logger.warning("kanban notifier: cannot load config (%s); continuing enabled", exc)
+            kanban_cfg = {}
+        if not kanban_cfg.get("notify_in_gateway", True):
+            logger.info("kanban notifier: disabled via config kanban.notify_in_gateway=false")
+            return
+
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb

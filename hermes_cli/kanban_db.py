@@ -805,6 +805,11 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
 
+    # Refuse before changing the current-board pointer or filesystem.
+    with connect_closing(d / 'kanban.db') as history_conn:
+        from hermes_cli.kanban_history import reserve_removal
+        reserve_removal(history_conn)
+
     # If the user removed the currently-active board, revert to default.
     if get_current_board() == normed:
         clear_current_board()
@@ -1776,8 +1781,12 @@ def connect(
                     # process are cheap. The lock prevents same-process dispatcher
                     # threads from racing through the additive ALTER TABLE pass with
                     # stale PRAGMA snapshots during gateway startup.
+                    from hermes_cli.kanban_history import validate_existing
+                    validate_existing(conn)
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
+                    from hermes_cli.kanban_history import migrate as migrate_history
+                    migrate_history(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()
@@ -2306,6 +2315,15 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
+    """Owned, audited transaction; enrolled mutations cannot use raw BEGIN."""
+    from hermes_cli.kanban_history import owned_writer
+    with owned_writer(conn):
+        with _audited_write_txn(conn):
+            yield conn
+
+
+@contextlib.contextmanager
+def _audited_write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
@@ -2318,7 +2336,10 @@ def write_txn(conn: sqlite3.Connection):
     """
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
+        from hermes_cli.kanban_history import audit_start, audit_finish
+        history_before = audit_start(conn)
         yield conn
+        audit_finish(conn, history_before)
     except Exception:
         try:
             conn.execute("ROLLBACK")
@@ -3185,6 +3206,36 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     return att
 
 
+def authority_history_capability(conn: sqlite3.Connection):
+    """Return prospective durable-history enrollment, or None for ordinary boards."""
+    from hermes_cli.kanban_history import capability
+    return capability(conn)
+
+
+def enroll_authority_history(conn: sqlite3.Connection):
+    """Permanently enroll this board; does not backfill or enroll existing tasks."""
+    from hermes_cli.kanban_history import enroll
+    return enroll(conn)
+
+
+def bind_authority_task(conn: sqlite3.Connection, task_id: str, **kwargs):
+    """Permanently bind a prospectively enrolled task to repository/project IDs."""
+    from hermes_cli.kanban_history import bind_task
+    return bind_task(conn, task_id, **kwargs)
+
+
+def bind_authority_owner(conn: sqlite3.Connection, task_id: str, **kwargs):
+    """Precommit non-secret actor identity for an exact claim credential."""
+    from hermes_cli.kanban_history import bind_owner
+    return bind_owner(conn, task_id, **kwargs)
+
+
+def read_authority_history(conn: sqlite3.Connection, **kwargs):
+    """Strict globally ordered durable reader; see kanban_history.read."""
+    from hermes_cli.kanban_history import read
+    return read(conn, **kwargs)
+
+
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     rows = conn.execute(
         "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
@@ -3226,11 +3277,13 @@ def _append_event(
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    event = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    from hermes_cli.kanban_history import capture
+    capture(conn, task_id, kind, event.lastrowid, run_id)
 
 
 def _end_run(
@@ -3705,6 +3758,8 @@ def heartbeat_claim(
                     "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
                     (expires, run_id),
                 )
+            if conn.execute('SELECT 1 FROM authority_task_bindings WHERE task_id=?', (task_id,)).fetchone():
+                _append_event(conn, task_id, 'claim_renewed', run_id=run_id)
             return True
         return False
 
@@ -5579,6 +5634,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        if conn.execute('SELECT 1 FROM authority_task_bindings WHERE task_id=?', (task_id,)).fetchone():
+            _append_event(conn, task_id, 'deleted')
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -5602,9 +5659,16 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        if conn.execute('''SELECT 1 FROM tasks t JOIN authority_task_bindings b ON b.task_id=t.id
+                WHERE t.id=? AND (t.status='running' OR t.current_run_id IS NOT NULL OR t.claim_lock IS NOT NULL)''',
+                (task_id,)).fetchone():
+            from hermes_cli.kanban_history import AuthorityHistoryError
+            raise AuthorityHistoryError('cannot delete an enrolled active task')
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
+        if conn.execute('SELECT 1 FROM authority_task_bindings WHERE task_id=?', (task_id,)).fetchone():
+            _append_event(conn, task_id, 'deleted')
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))

@@ -584,11 +584,13 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-start-failure", "hello", history)
             assert called.wait(timeout=10), "auto-title retry never ran"
 
-    def test_skips_after_two_repeated_real_exchanges(self, tmp_path):
-        """Repeated user text still represents a separate completed turn."""
+    @pytest.mark.parametrize("existing_title", [None, "Existing title"])
+    def test_repeated_real_exchanges_respect_title_state(self, tmp_path, existing_title):
+        """Repeated turns skip named sessions but still title a nameless one."""
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-repeated-turn", source="cli")
-        db.set_session_title("sess-repeated-turn", "Existing title")
+        if existing_title is not None:
+            db.set_session_title("sess-repeated-turn", existing_title)
         history = [
             {"role": "user", "content": "repeat"},
             {"role": "assistant", "content": "response 1"},
@@ -598,10 +600,29 @@ class TestMaybeAutoTitle:
             {"role": "assistant", "content": "response 3"},
         ]
 
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
+        with patch("agent.title_generator.threading.Thread") as mock_thread, patch(
+            "agent.title_generator.generate_title", return_value="Repeated conversation"
+        ) as mock_generate:
             maybe_auto_title(db, "sess-repeated-turn", "repeat", history)
-            mock_auto.assert_not_called()
-        assert db.get_session_title("sess-repeated-turn") == "Existing title"
+            if existing_title is not None:
+                mock_thread.assert_not_called()
+                mock_generate.assert_not_called()
+                assert db.get_session_title("sess-repeated-turn") == existing_title
+                return
+
+            assert db.get_session_title("sess-repeated-turn") == "repeat"
+            assert db.get_session_title_source("sess-repeated-turn") == "derived"
+            mock_thread.assert_called_once()
+            mock_thread.return_value.start.assert_called_once_with()
+            # Run the actual worker synchronously; only scheduling and the model
+            # response are controlled, while title guards and persistence are real.
+            worker = mock_thread.call_args.kwargs
+            worker["target"](*worker.get("args", ()), **worker.get("kwargs", {}))
+            mock_generate.assert_called_once_with(
+                "repeat", failure_callback=None, main_runtime=None, runtime_validator=None
+            )
+        assert db.get_session_title("sess-repeated-turn") == "Repeated conversation"
+        assert db.get_session_title_source("sess-repeated-turn") == "llm"
 
 
 class TestAutoTitleDuplicateHandling:

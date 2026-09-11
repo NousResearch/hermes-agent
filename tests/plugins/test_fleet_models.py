@@ -214,7 +214,8 @@ def test_hand_edit_is_reported_as_drift(core, fleet):
 @pytest.fixture()
 def plugin(monkeypatch):
     from agent import auxiliary_client as ac
-    monkeypatch.setattr(ac, "_build_call_kwargs", ac._build_call_kwargs)
+    for name in ("_build_call_kwargs", "_call_fallback_candidate_sync", "_call_fallback_candidate_async"):
+        monkeypatch.setattr(ac, name, getattr(ac, name))
     mod = _load(PLUGIN_DIR / "__init__.py", "fleet_models_under_test")
     return mod
 
@@ -304,3 +305,60 @@ def test_pricing_reads_cap_rates_from_the_fleet_file(tmp_path, monkeypatch):
     mp = _load(ROOT / "plugins" / "modelark-pricing" / "__init__.py", "modelark_pricing_rates_under_test")
     r = mp.fleet_rates()
     assert float(r[FLASH][0]) == 1.0 and float(r["deepseek-v4-flash"][1]) == 2.0
+
+
+CHAIN = [{"provider": "custom", "model": "minimax/minimax-m3", "base_url": "http://127.0.0.1:9/v1"},
+         {"provider": "openrouter", "model": V41}]
+
+
+def _fake_candidate(calls):
+    def cand(fb_client, fb_model, fb_label, **kw):
+        calls.append(fb_label)
+        if fb_label.startswith("fallback_chain[0]"):
+            raise ConnectionError("connection refused")   # a capacity failure on the SECOND rung
+        return f"served by {fb_model}"
+    return cand
+
+
+def _chain_env(monkeypatch):
+    from agent import auxiliary_client as ac
+    monkeypatch.setattr(ac, "_get_auxiliary_task_config", lambda task: {"model": "z-ai/glm-5.3-flash", "fallback_chain": CHAIN})
+    monkeypatch.setattr(ac, "_resolve_fallback_entry", lambda e: (object(), e["model"]))
+    monkeypatch.setattr(ac, "_is_provider_unhealthy", lambda *a, **k: False)
+    return ac
+
+
+def test_negative_control_chain_stops_after_one_failed_rung(monkeypatch):
+    ac = _chain_env(monkeypatch)
+    calls = []
+    with pytest.raises(ConnectionError):
+        _fake_candidate(calls)(None, "minimax/minimax-m3", "fallback_chain[0](custom)", task="vision")
+    assert calls == ["fallback_chain[0](custom)"]   # Hermes alone: v4.1 is never tried
+
+
+def test_chain_walks_to_the_third_rung_on_capacity_errors(plugin, monkeypatch):
+    ac = _chain_env(monkeypatch)
+    calls = []
+    wrapped = plugin._wrap_candidate(_fake_candidate(calls), False)
+    assert wrapped(None, "minimax/minimax-m3", "fallback_chain[0](custom)", task="vision") == f"served by {V41}"
+    assert calls == ["fallback_chain[0](custom)", "fallback_chain[1](openrouter)"]
+
+
+def test_chain_walk_never_swallows_auth_or_unknown_errors(plugin, monkeypatch):
+    _chain_env(monkeypatch)
+    def cand(*a, **k):
+        raise ValueError("schema bug")  # not a capacity error: surfaces unchanged
+    with pytest.raises(ValueError):
+        plugin._wrap_candidate(cand, False)(None, "m", "fallback_chain[0](custom)", task="vision")
+
+
+def test_chain_walk_async(plugin, monkeypatch):
+    import asyncio
+    ac = _chain_env(monkeypatch)
+    monkeypatch.setattr(ac, "_to_async_client", lambda c, m, is_vision=False: (c, m))
+    calls = []
+    sync = _fake_candidate(calls)
+    async def cand(*a, **k):
+        return sync(*a, **k)
+    r = asyncio.run(plugin._wrap_candidate(cand, True)(None, "minimax/minimax-m3", "fallback_chain[0](custom)", task="vision"))
+    assert r == f"served by {V41}"

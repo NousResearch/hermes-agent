@@ -1,6 +1,6 @@
 """fleet-models — runtime half of the fleet's single model-settings file (``~/.hermes/fleet/models.yaml``).
 
-``core.py`` compiles models.yaml into each profile's config.yaml. Two things Hermes does not do on its own
+``core.py`` compiles models.yaml into each profile's config.yaml. Three things Hermes does not do on its own
 are closed here, at the plugin seam, so upstream stays untouched:
 
 1. **Auxiliary calls ignore provider_routing.** Compression, titles, vision, the decomposer… build their
@@ -11,7 +11,13 @@ are closed here, at the plugin seam, so upstream stays untouched:
    OpenRouter aux request gets: the destination MODEL's ``provider_routing.models.<id>`` pins, its
    ``agent.reasoning_overrides`` level, and ``data_collection: deny`` always (the no-training rule).
    Host pins written for a task's primary model are dropped when the request goes to a different model.
-2. **Cron has no chain of its own.** ``cron.scheduler`` uses the profile's main chain for every job; we
+2. **A helper's fallback_chain is walked only one rung per call.** Hermes tries the first healthy entry and,
+   if THAT fails for a non-auth reason, raises — so ``glm → m3 → v4.1`` never reached v4.1 when glm and m3
+   both failed (proved on the wire 2026-09-12). We wrap the candidate call: on a capacity-class failure
+   (the same predicates Hermes uses to start falling back — rate limit, connection, payment, model
+   mismatch, bad response; never auth, which keeps Hermes' own quarantine path) it walks on to the next
+   healthy entry of the task's chain.
+3. **Cron has no chain of its own.** ``cron.scheduler`` uses the profile's main chain for every job; we
    let ``cron.fallback_providers`` (written by the compiler) override it, inside cron.scheduler only.
 
 Bundled + ``kind: backend``: auto-loads in every profile, worker, cron job and the dashboard, which also
@@ -25,11 +31,12 @@ import importlib.abc
 import importlib.util
 import inspect
 import logging
+import re
 import sys
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 _MARK = "_fleet_models_wrapped"
 HOST_PIN_KEYS = ("only", "order", "ignore", "sort", "require_parameters", "quantizations")
 MODEL_SPECIFIC = ("only", "order", "ignore", "quantizations")
@@ -110,6 +117,88 @@ def _wrap_build_call_kwargs(orig):
     return _build_call_kwargs
 
 
+def _capacity_error(ac, err) -> bool:
+    try:
+        return any(pred(err) for pred, label in ac._FALLBACK_REASONS if label != "auth error")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remaining_chain(ac, task, fb_label):
+    """Healthy entries AFTER the one *fb_label* names, from the task's configured fallback_chain."""
+    m = re.match(r"fallback_chain\[(\d+)\]", str(fb_label or ""))
+    if not m or not task:
+        return []
+    chain = ac._get_auxiliary_task_config(task).get("fallback_chain") or []
+    out = []
+    for i in range(int(m.group(1)) + 1, len(chain)):
+        e = chain[i]
+        prov = str(e.get("provider") or "").strip() if isinstance(e, dict) else ""
+        if not prov:
+            continue
+        try:
+            if ac._is_provider_unhealthy(prov, ac._custom_health_base_url(prov, e.get("base_url"))):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        out.append((i, e))
+    return out
+
+
+def _wrap_candidate(orig, is_async: bool):
+    if is_async:
+        @functools.wraps(orig)
+        async def _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw):
+            try:
+                return await orig(fb_client, fb_model, fb_label, **kw)
+            except Exception as err:  # noqa: BLE001
+                from agent import auxiliary_client as ac
+                if not _capacity_error(ac, err):
+                    raise
+                task, last = kw.get("task"), err
+                for i, e in _remaining_chain(ac, task, fb_label):
+                    client, model = ac._resolve_fallback_entry(e)
+                    if client is None:
+                        continue
+                    client, _ = ac._to_async_client(client, model or "", is_vision=(task == "vision"))
+                    logger.info("fleet-models: aux %s: %s failed (%s) — walking on to fallback_chain[%d] %s",
+                                task, fb_label, type(last).__name__, i, model)
+                    try:
+                        return await orig(client, model, f"fallback_chain[{i}]({e['provider']})", **kw)
+                    except Exception as e2:  # noqa: BLE001
+                        if not _capacity_error(ac, e2):
+                            raise
+                        last = e2
+                raise last
+        setattr(_call_fallback_candidate_async, _MARK, True)
+        return _call_fallback_candidate_async
+
+    @functools.wraps(orig)
+    def _call_fallback_candidate_sync(fb_client, fb_model, fb_label, **kw):
+        try:
+            return orig(fb_client, fb_model, fb_label, **kw)
+        except Exception as err:  # noqa: BLE001
+            from agent import auxiliary_client as ac
+            if not _capacity_error(ac, err):
+                raise
+            task, last = kw.get("task"), err
+            for i, e in _remaining_chain(ac, task, fb_label):
+                client, model = ac._resolve_fallback_entry(e)
+                if client is None:
+                    continue
+                logger.info("fleet-models: aux %s: %s failed (%s) — walking on to fallback_chain[%d] %s",
+                            task, fb_label, type(last).__name__, i, model)
+                try:
+                    return orig(client, model, f"fallback_chain[{i}]({e['provider']})", **kw)
+                except Exception as e2:  # noqa: BLE001
+                    if not _capacity_error(ac, e2):
+                        raise
+                    last = e2
+            raise last
+    setattr(_call_fallback_candidate_sync, _MARK, True)
+    return _call_fallback_candidate_sync
+
+
 def cron_chain_patch(module) -> bool:
     """Make cron.scheduler honour ``cron.fallback_providers`` (else the profile's main chain)."""
     orig = getattr(module, "get_fallback_chain", None)
@@ -168,8 +257,13 @@ def install() -> list:
         if not getattr(ac._build_call_kwargs, _MARK, False):
             ac._build_call_kwargs = _wrap_build_call_kwargs(ac._build_call_kwargs)
             done.append("aux routing")
+        for name, is_async in (("_call_fallback_candidate_sync", False), ("_call_fallback_candidate_async", True)):
+            fn = getattr(ac, name, None)
+            if fn is not None and not getattr(fn, _MARK, False):
+                setattr(ac, name, _wrap_candidate(fn, is_async))
+                done.append("chain walk" + (" (async)" if is_async else ""))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("fleet-models: aux routing seam not installed (%s)", exc)
+        logger.warning("fleet-models: aux seams not installed (%s)", exc)
     mod = sys.modules.get("cron.scheduler")
     if mod is not None:
         if cron_chain_patch(mod):

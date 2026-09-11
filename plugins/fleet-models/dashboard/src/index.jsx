@@ -411,7 +411,7 @@ function HostTable({ model, market, onChange, onProbe, probes, minUptime }) {
                   <td className="r">{ep.tps ? Math.round(ep.tps) : "—"}</td>
                   <td>
                     <button className="fm-mini" onClick={() => onProbe(r.tag)} disabled={pr === "…"} title="one tiny call pinned to this host with fallbacks off — proves it routes">probe</button>
-                    {pr && pr !== "…" ? <div className={cls("fm-small", pr.routable ? "fm-good" : "fm-bad")}>{pr.routable ? `served by ${pr.served_by} · ${pr.latency_ms}ms` : (pr.status || "") + " " + (pr.error || "not routable").slice(0, 60)}</div> : pr === "…" ? <div className="fm-small fm-muted">probing…</div> : null}
+                    {pr && pr !== "…" ? <div className={cls("fm-small", pr.rate_limited ? "fm-warn-line" : pr.routable ? "fm-good" : "fm-bad")} title={pr.error || ""}>{pr.rate_limited ? "busy now · pin matches" : pr.routable ? `served by ${pr.served_by} · ${pr.latency_ms}ms` : (pr.status || "") + " " + (pr.error || "not routable").slice(0, 60)}</div> : pr === "…" ? <div className="fm-small fm-muted">probing…</div> : null}
                   </td>
                 </tr>
               );

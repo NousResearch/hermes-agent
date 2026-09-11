@@ -495,11 +495,9 @@ function SidebarSessionRowImpl({
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
                       <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
+                        className="line-clamp-2 break-words font-normal leading-none group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                       >
-                        <span className="hover-marquee-inner">{title}</span>
+                        {title}
                       </SidebarRowLabel>
                     </OverflowTip>
                     {/* Session-list density (#68119): comfortable adds one
@@ -555,10 +553,7 @@ function SidebarSessionRowImpl({
                 <div className="flex min-w-0 flex-col gap-[0.15rem]">
                   <OverflowTip label={title}>
                     <SidebarRowLabel
-                      className={cn(
-                        'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                        SIDEBAR_TRUNCATED_LEADING
-                      )}
+                      className="line-clamp-2 break-words text-[0.8125rem] font-medium leading-none text-(--ui-text-primary) group-data-[working=true]:text-foreground"
                       onPointerEnter={armMarquee}
                       onPointerLeave={disarmMarquee}
                     >

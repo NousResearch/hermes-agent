@@ -365,7 +365,7 @@ function CronJobSidebarRow({
                   )}
                 />
               </SidebarRowLead>
-              <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
+              <SidebarRowLabel className="truncate group-hover/cron:text-foreground">{label}</SidebarRowLabel>
               <DisclosureCaret
                 className={cn(
                   'shrink-0 text-(--ui-text-tertiary) transition',

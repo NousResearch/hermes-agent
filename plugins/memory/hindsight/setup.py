@@ -14,8 +14,8 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from . import templates as _hs_templates
 from .embedded import _embedded_profile_env_path, _load_simple_env, _materialize_embedded_profile_env
 from .settings import (
-    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT, _MIN_CLIENT_VERSION,
-    _PROVIDER_DEFAULT_MODELS,
+    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT, _LOCAL_EMBEDDED_DEPS,
+    _MIN_CLIENT_VERSION, _PROVIDER_DEFAULT_MODELS,
 )
 
 _MODE_VALUES = ["cloud", "local_embedded", "local_external"]
@@ -108,7 +108,7 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
     # Environment-aware install: sealed hosted venvs redirect to the durable data volume.
     from tools.lazy_deps import install_specs
 
-    deps = ["hindsight-all"] if mode == "local_embedded" else [f"hindsight-client>={_MIN_CLIENT_VERSION}"]
+    deps: list[str] = list(_LOCAL_EMBEDDED_DEPS) if mode == "local_embedded" else [f"hindsight-client>={_MIN_CLIENT_VERSION}"]
     outcome = install_specs(deps, timeout=120)
     if outcome.ok:
         print("  ✓ Dependencies up to date")

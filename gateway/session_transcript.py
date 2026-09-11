@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 from agent.turn_context import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -15,6 +16,9 @@ if TYPE_CHECKING:
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
+_MISSING_HERMES_FTS_TABLE_RE = re.compile(
+    r"no such table:\s+(?:main\.)?messages_fts(?:_trigram|_cjk)?$"
+)
 
 
 class TranscriptReadError(RuntimeError):
@@ -366,10 +370,18 @@ class SessionTranscriptMixin:
         canonical B-trees, not just the FTS shadow tables — treating it as FTS-only here made the store
         rebuild the index and retry transcript writes against a structurally corrupt database (#97940).
         """
-        if "messages_fts" in str(exc).lower():
-            return True
         import sqlite3
         from hermes_state import SessionDB
+        text = str(exc).lower()
+        if _MISSING_HERMES_FTS_TABLE_RE.fullmatch(text.strip()):
+            return True
+        # A live SQLite result code is stronger provenance than prose. In
+        # particular, a constraint failure can include an FTS table name
+        # without proving that the index itself is corrupt.
+        if getattr(exc, "sqlite_errorcode", None) is not None:
+            return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
+        if "messages_fts" in text:
+            return True
         return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
 
     def _rebuild_fts_once(self) -> bool:

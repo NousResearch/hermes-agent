@@ -354,6 +354,24 @@ class CLIInfoMixin:
 
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
+        # Slash workers have no late-refresh: join in-flight MCP discovery with
+        # the generous 30s bound so a slow stdio handshake doesn't silently omit
+        # a server from the catalog (#92330). Free when discovery is already
+        # finished; the TUI path late-refreshes and skips this via the marker.
+        # NOTE: keep this path in lockstep with tui_gateway.slash_worker's
+        # _SLASH_WORKER_MARKER (imported lazily there to avoid the cli import cycle).
+        import os as _os
+        import tempfile as _tempfile
+
+        marker = _os.path.join(_tempfile.gettempdir(), "hermes-slash-worker-marker")
+        if _os.path.exists(marker):
+            try:
+                from hermes_cli.mcp_startup import join_mcp_discovery
+
+                join_mcp_discovery(timeout=30.0)
+            except Exception:
+                pass
+
         from cli import get_tool_definitions
         from model_tools import get_toolset_for_tool
         # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog

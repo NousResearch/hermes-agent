@@ -618,6 +618,17 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalized body ``author``, None when absent or null, ValueError when not an object. It only labels memory."""
+    raw = body.get("author")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("author must be an object")
+    from agent.turn_author import parse_turn_author
+    return parse_turn_author(raw)
+
+
 _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
 
 
@@ -2986,6 +2997,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return None, err
+        try:
+            turn_author = _request_turn_author(body)
+        except ValueError as exc:
+            return None, _error_response(str(exc), 400, code="invalid_author")
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return None, _error_response("system_message must be a string", 400, code="invalid_system_message")
@@ -3024,7 +3039,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             gateway_session_key=gateway_session_key, route=route, session_model=session_model,
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
-            confirmed_runtime_lock=lock_active,
+            confirmed_runtime_lock=lock_active, turn_author=turn_author,
             # #98619: the client addresses this session by construction — the id is in the
             # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
             # the client will read it. The audited native-session opt-in.
@@ -3626,14 +3641,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
-        session_history_delivery: str = "") -> tuple:
+        session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
         provider/model must match or the turn fails; ``runtime`` metadata is attached.
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
         producers whose client can address the id again pass "1" (see
-        ``_bind_api_server_session``)."""
+        ``_bind_api_server_session``).
+        ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -3677,9 +3693,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     # two callers pass ``agent_ref``, and only /v1/runs has a run_id, so neither is a usable
                     # hook for the rest. See #63529.
                     self._shutdown_interruptible_agents[id(agent)] = agent
+                    # Passed only when set: a human turn keeps today's call shape.
+                    author_kwargs = {"turn_author": turn_author} if turn_author is not None else {}
                     result = agent.run_conversation(
                         user_message=user_message, conversation_history=conversation_history,
-                        task_id=effective_task_id)
+                        task_id=effective_task_id, **author_kwargs)
                     return self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

@@ -212,12 +212,16 @@ class TestClientShape:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
 
+        from anthropic._models import FinalRequestOptions
+
         assert client.auth_token == "portal-invoke-jwt"
-        assert client.api_key is None
-        assert "X-Api-Key" not in client.auth_headers
-        assert client.auth_headers.get("Authorization", "").startswith(
-            "Bearer portal-invoke-jwt"
-        )
+        # The guard is a copy-safe Omit() default header, so assert what reaches the wire —
+        # on the client and on a with_options() copy (which re-reads ANTHROPIC_API_KEY).
+        for wire_client in (client, client.with_options(timeout=30)):
+            headers = dict(wire_client._build_headers(
+                FinalRequestOptions(method="post", url="/v1/messages", json_data={})))
+            assert "x-api-key" not in headers
+            assert headers.get("authorization", "").startswith("Bearer portal-invoke-jwt")
 
 
 

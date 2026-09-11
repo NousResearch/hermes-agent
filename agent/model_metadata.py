@@ -1724,6 +1724,62 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     return ctx
 
 
+def _warn_catalog_context_length(
+    model: str, base_url: str, key: str, value: int, *, custom_endpoint: bool = False,
+) -> None:
+    """A hardcoded catalog match is a built-in *guess*, not a value the endpoint reported.
+
+    ``_longest_key_match`` matches on a substring of the model id, so ``deepseek_v41`` hits
+    ``"deepseek": 128000`` (the ``deepseek-v4-*`` entries are hyphenated and never match the
+    underscore spelling) while the provider may serve 1M — an 8x error that only surfaces as
+    compression firing far more often than before. Logging it at INFO hid the cause and left the
+    user with the symptom, so this is a WARNING.
+    """
+    logger.warning(
+        "Using hardcoded catalog context length %s for model %r (approximate substring match "
+        "on %r%s). This is a built-in guess, not a value the endpoint reported. Set "
+        "model.context_length in config.yaml, or add this model id under the matching "
+        "custom_providers[].models entry, to make the real window apply.",
+        f"{value:,}", model, key, f", custom endpoint {base_url}" if custom_endpoint else "",
+    )
+
+
+def _warn_custom_provider_models_key_missing(
+    model: str, base_url: str, custom_providers: Optional[list], resolved_ctx: Optional[int],
+) -> None:
+    """Warn when a route-matching ``custom_providers`` entry omits this model from its ``models``
+    mapping, so the per-model ``context_length`` sitting right next to it can never apply.
+
+    Observed failure mode: the entry lists sibling models but not the one actually in use, the
+    per-model lookup returns None, and the runtime silently drops to the hardcoded catalog
+    (``"deepseek"`` → 128,000 for ``deepseek_v41`` while the provider serves 1M). Nothing errors
+    — the user only notices that compression now fires at ~96K tokens instead of ~500K.
+    """
+    if not model or not base_url or not custom_providers:
+        return
+    target_url = str(base_url).strip().rstrip("/").lower()
+    target_model = str(model).strip().lower()
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("base_url", "") or "").strip().rstrip("/").lower() != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict) or not models:
+            continue
+        keys = [str(k).strip().lower() for k in models]
+        if target_model in keys:
+            return  # declared — nothing to warn about
+        logger.warning(
+            "custom_providers entry for %s declares models [%s] but has no %r key, so its "
+            "per-model context_length cannot apply — %r resolves to %s tokens from another "
+            "source instead. Add %r under that entry's models: mapping to make it apply.",
+            target_url, ", ".join(sorted(str(k) for k in models)), model, model,
+            f"{resolved_ctx:,}" if resolved_ctx else "the default", model,
+        )
+        return
+
+
 def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
     """Steps 2-3 for a truly custom endpoint: /models, local probes, Ollama /api/show, catalog, default."""
     context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
@@ -1749,7 +1805,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
-        logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
+        _warn_catalog_context_length(model, base_url, hit[0], hit[1], custom_endpoint=True)
         return hit[1]
     # Same silent-256K bug class as the step-9 fallback — warn here too.
     _warn_context_length_fallback(model, base_url)
@@ -1921,7 +1977,9 @@ def get_model_context_length(
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+        _custom_ctx = _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+        _warn_custom_provider_models_key_missing(model, base_url, custom_providers, _custom_ctx)
+        return _custom_ctx
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
@@ -1953,6 +2011,7 @@ def get_model_context_length(
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
+        _warn_catalog_context_length(model, base_url, hit[0], hit[1])
         return hit[1]
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.
     _warn_context_length_fallback(model, base_url)

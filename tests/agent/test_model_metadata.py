@@ -10,6 +10,7 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
+import logging
 import time
 
 import pytest
@@ -1934,3 +1935,128 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# custom_providers context_length misses must not be silent
+# =========================================================================
+
+class TestCustomProviderContextLengthMissIsLoud:
+    """A route-matching ``custom_providers`` entry that omits the model in use from its
+    ``models`` mapping used to fail silently: the per-model ``context_length`` next door never
+    applied, the runtime dropped to the hardcoded catalog (``"deepseek"`` → 128,000 for
+    ``deepseek_v41`` while the provider served 1M), and the only visible symptom was compression
+    firing at ~96K tokens instead of ~500K. Logging the cause at INFO left the user staring at
+    the symptom.
+    """
+
+    ENTRY_URL = "http://custom.invalid:48080/v1"
+    SIBLINGS = {
+        "ds-v4-flash": {"context_length": 1_048_576},
+        "glm-5_3": {"context_length": 600_000},
+    }
+
+    @staticmethod
+    def _offline(stack):
+        for target, kwargs in (
+            ("agent.model_metadata.get_cached_context_length", {"return_value": None}),
+            ("agent.model_metadata.fetch_model_metadata", {"return_value": {}}),
+            ("agent.model_metadata.fetch_endpoint_model_metadata", {"return_value": {}}),
+            ("agent.model_metadata._query_ollama_api_show", {"return_value": None}),
+            ("agent.models_dev.lookup_models_dev_context", {"return_value": None}),
+        ):
+            stack.enter_context(patch(target, **kwargs))
+
+    def _entry(self, models):
+        return [{
+            "base_url": self.ENTRY_URL,
+            "name": "deepseek_v41",
+            "model": "deepseek_v41",
+            "models": models,
+        }]
+
+    @staticmethod
+    def _warnings(caplog):
+        return " | ".join(r.getMessage() for r in caplog.records)
+
+    def test_missing_model_key_warns_and_falls_back_to_catalog(self, caplog):
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            self._offline(stack)
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                ctx = get_model_context_length(
+                    "deepseek_v41", base_url=self.ENTRY_URL,
+                    provider="custom:deepseek_v41", custom_providers=self._entry(self.SIBLINGS))
+
+        assert ctx == 128_000, "expected the hardcoded catalog substring match"
+        message = self._warnings(caplog)
+        assert "has no 'deepseek_v41' key" in message
+        assert "ds-v4-flash" in message and "glm-5_3" in message  # names the siblings it found
+        assert "128,000" in message
+
+    def test_declared_model_key_wins_and_stays_quiet(self, caplog):
+        from contextlib import ExitStack
+
+        models = dict(self.SIBLINGS, deepseek_v41={"context_length": 1_048_576})
+        with ExitStack() as stack:
+            self._offline(stack)
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                ctx = get_model_context_length(
+                    "deepseek_v41", base_url=self.ENTRY_URL,
+                    provider="custom:deepseek_v41", custom_providers=self._entry(models))
+
+        assert ctx == 1_048_576
+        assert "has no" not in self._warnings(caplog)
+
+    def test_catalog_fallback_is_logged_at_warning_not_info(self, caplog):
+        """The catalog guess can be several times smaller than the served window."""
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            self._offline(stack)
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                ctx = get_model_context_length(
+                    "deepseek_v41", base_url=self.ENTRY_URL, provider="custom:deepseek_v41")
+
+        assert ctx == 128_000
+        assert any(
+            "hardcoded catalog context length" in r.getMessage()
+            for r in caplog.records if r.levelno == logging.WARNING
+        ), "catalog fallback must be a WARNING, not INFO"
+
+    @pytest.mark.parametrize("model, base_url, custom_providers", [
+        ("", "http://x.invalid/v1", [{"base_url": "http://x.invalid/v1", "models": {"a": {}}}]),
+        ("m", "", [{"base_url": "", "models": {"a": {}}}]),
+        ("m", "http://x.invalid/v1", None),
+        ("m", "http://x.invalid/v1", []),
+        ("m", "http://other.invalid/v1", [{"base_url": "http://x.invalid/v1", "models": {"a": {}}}]),
+        ("m", "http://x.invalid/v1", ["not-a-dict"]),
+        ("m", "http://x.invalid/v1", [{"base_url": "http://x.invalid/v1"}]),
+        ("m", "http://x.invalid/v1", [{"base_url": "http://x.invalid/v1", "models": {}}]),
+    ])
+    def test_helper_stays_quiet_on_unrelated_inputs(self, caplog, model, base_url, custom_providers):
+        from agent.model_metadata import _warn_custom_provider_models_key_missing
+
+        with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+            _warn_custom_provider_models_key_missing(model, base_url, custom_providers, 128_000)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_step8_catalog_fallback_also_warns(self, caplog):
+        """Step 8 (provider-aware miss) matched the catalog with no log at all."""
+        from contextlib import ExitStack
+
+        from agent.model_metadata import _longest_key_match
+
+        with ExitStack() as stack:
+            self._offline(stack)
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                ctx = get_model_context_length("glm-5_3", base_url="", provider="")
+
+        _hit_key, expected = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "glm-5_3")
+        assert ctx == expected, "resolved via the hardcoded catalog"
+        assert any(
+            "hardcoded catalog context length" in r.getMessage()
+            for r in caplog.records if r.levelno == logging.WARNING
+        ), "step-8 catalog fallback must warn too"

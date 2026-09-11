@@ -1192,28 +1192,23 @@ def _apply_display_config(agent, _agent_cfg, platform):
 def _memory_provider_platform(platform) -> str:
     """Surface-scoping label for memory providers.
 
-    CLI one-shot integrations may set ``HERMES_SESSION_SOURCE`` to tag the
-    effective surface (for example ``hermes chat --source telegram -q ...``).
-    Session persistence already records that source through
-    ``run_agent._session_source_for_agent``; external memory providers need the
-    same label during initialisation so their turn-sync policy can match the
-    apparent surface instead of always seeing bare ``cli``.
+    Use the same source resolver as session persistence and prompt-cache scope,
+    so ``HERMES_SESSION_SOURCE`` / gateway ContextVars never split memory from
+    the logical conversation source.
     """
-    raw_platform = str(platform or "").strip() or "cli"
-    if raw_platform != "cli":
-        return raw_platform
     try:
-        from gateway.session_context import get_session_env
+        from run_agent import _session_source_for_agent
 
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
+        source = _session_source_for_agent(platform)
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or raw_platform
+        source = platform
+    return str(source or "").strip() or "cli"
 
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    raw_platform = str(platform or "").strip() or "cli"
     provider_platform = _memory_provider_platform(platform)
     kwargs = {
         "session_id": agent.session_id,
@@ -1221,7 +1216,9 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         "hermes_home": str(get_hermes_home()),
         "agent_context": "primary",
     }
-    if kwargs["platform"] == "cli":
+    # Memory scope follows the logical session source; CLI UI callbacks follow
+    # the actual process surface so source-tagged one-shots still show status.
+    if raw_platform == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
     # Session title (e.g. honcho derives chat-scoped session keys from it).

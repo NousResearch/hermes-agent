@@ -13,7 +13,7 @@ from tui_gateway import launch_profile_policy
 
 @pytest.fixture
 def two_profile_host(tmp_path, monkeypatch):
-    """Fake HOME so ``profiles/`` never resolves to the live install (see hermes-agent-dev)."""
+    """Fake HOME so ``profiles/`` never resolves to the live install."""
     home = tmp_path / "fakehome" / ".hermes"
     (home / "profiles" / "b").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))

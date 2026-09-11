@@ -113,6 +113,7 @@ def connect(
     from the journal-mode pragma is retried (it may ignore the busy timeout while another
     first opener initializes the DB, especially on Windows).
     """
+    from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
     from hermes_state_wal import apply_wal_with_fallback
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +123,7 @@ def connect(
         for attempt in range(lock_retries):
             try:
                 apply_wal_with_fallback(conn, db_label=db_label)
+                ensure_safe_sqlite_writer(conn)
                 break
             except sqlite3.OperationalError as exc:
                 if str(exc).lower() != "database is locked" or attempt + 1 == lock_retries:

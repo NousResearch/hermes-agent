@@ -23,6 +23,7 @@ from contextlib import closing, contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.sqlite_runtime import ensure_safe_sqlite_writer
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
@@ -157,6 +158,7 @@ def _connect() -> sqlite3.Connection:
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_wal import apply_wal_with_fallback
     apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
+    ensure_safe_sqlite_writer(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,

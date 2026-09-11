@@ -512,10 +512,26 @@ export function TreeGroup({
         >
           {stackedHeader && (
             <div
-              className="w-full shrink-0 [-webkit-app-region:drag]"
-              data-window-drag-handle=""
+              className="flex w-full shrink-0"
               style={{ height: TITLEBAR_HEIGHT }}
-            />
+            >
+              {leftEdge && (
+                <>
+                  <div
+                    className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]"
+                    data-window-drag-handle=""
+                  />
+                  <div
+                    className="w-(--titlebar-controls-width,96px) [-webkit-app-region:no-drag]"
+                    data-titlebar-controls-reservation=""
+                  />
+                </>
+              )}
+              <div className="min-w-0 flex-1 [-webkit-app-region:drag]" data-window-drag-handle="" />
+              {rightEdge && (
+                <div className="w-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,24px))] [-webkit-app-region:no-drag]" />
+              )}
+            </div>
           )}
           {topEdge && leftEdge && !stackedHeader && (
             <div className="flex shrink-0">

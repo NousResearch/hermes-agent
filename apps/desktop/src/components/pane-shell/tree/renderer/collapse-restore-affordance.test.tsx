@@ -145,6 +145,7 @@ describe('Sessions/Bots strip — #91223', () => {
     render(<TreeGroup leftEdge node={zoneAt(0)} parentAxis="row" topEdge />)
 
     expect(globalThis.document.querySelector<HTMLElement>('[data-panel-header]')?.style.height).toBe('62px')
+    expect(globalThis.document.querySelector('[data-titlebar-controls-reservation]')).toBeTruthy()
     expect(tabEl('sessions')).toBeTruthy()
     expect(tabEl('hermes-bots:pane')).toBeTruthy()
   })

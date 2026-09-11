@@ -1,0 +1,33 @@
+name: mcp_http-platform
+label: MCP HTTP
+kind: platform
+version: 2.0.0
+description: >
+  Inbound Streamable-HTTP MCP server so Claude Code (or any MCP client) on
+  another computer can chat with this Hermes — the long-lived gateway agent
+  with its memory, tools and skills — and get the reply. Tools: whoami,
+  new_conversation, chat, wait_reply (long-poll with live tool activity),
+  status, cancel, history.
+
+  Distinct from `hermes mcp serve`, which exposes Hermes' TOOLS to an MCP host;
+  this exposes the AGENT as a chat peer.
+
+  Security is on by default: no bearer token configured => 127.0.0.1-only
+  bind; bearer required for everything except /health; DNS-rebinding
+  protection; per-token identity; per-peer conversation namespacing; inbound
+  prompt-injection filtering; outbound credential redaction; audit log.
+author: Nous Research
+# Only SECRETS live in .env. Non-secret settings (port, host, public_url,
+# rate_limit, reply_timeout, allowed_hosts, trusted_peers) go under
+# platforms.mcp_http.extra in config.yaml; the matching MCP_HTTP_* env var
+# still overrides for installs that already use it.
+requires_env: []
+optional_env:
+  - name: MCP_HTTP_PEER_TOKENS
+    description: "Per-client bearer tokens ('alice:tok1,bob:tok2'). The matched name is the authenticated identity Hermes sees."
+    prompt: "MCP HTTP per-client tokens (name:token, comma-separated; or empty)"
+    password: true
+  - name: MCP_HTTP_BEARER_TOKEN
+    description: "Shared bearer token (identity falls back to caller IP). With no token of any kind => bind 127.0.0.1 only."
+    prompt: "MCP HTTP shared bearer token (or empty for localhost-only)"
+    password: true

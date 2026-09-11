@@ -408,6 +408,7 @@ gateway:
     last_activity: '**Poslední aktivita:** {timestamp}'
     model: '**Model:** `{model}`'
     model_provider: '**Model:** `{model}` ({provider})'
+    free_tier: 'Nous · tarif zdarma · nous/welcome · přihlaste se přes /login'
     context: '**Kontext:** {used} / {total} ({pct} %)'
     context_used: '**Kontext:** ~{used} tokeny'
     tokens: '**Kumulativní tokeny API (zasílat znovu každé volání):** {tokens}'

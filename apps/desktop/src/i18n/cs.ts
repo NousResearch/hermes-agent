@@ -92,7 +92,7 @@ export const cs = defineLocale({
       back: 'Zpět',
       openLogs: 'Otevřete protokoly',
       repairHint: 'Oprava znovu spustí instalační program a na novém počítači může trvat několik minut.',
-      remoteSignInHint: 'Otevře přihlašovací okno brány. Místo toho použijte místní bránu k přechodu na spojený backend.',
+      remoteSignInHint: signInLabel => `Odhlásí uloženou relaci vzdáleného prohlížeče a poté otevře ${signInLabel}. Místo toho použijte místní bránu k přechodu na spojený backend.`,
       signOutAndSignIn: 'Odhlásit se a přihlásit',
       remoteFailureHint: 'Zkontrolujte URL brány a přihlášení v Nastavení → Brána, nebo přepněte na místní bránu.',
       hideRecentLogs: 'Skrýt nedávné protokoly',
@@ -172,7 +172,6 @@ export const cs = defineLocale({
   },
   remoteDisplayBanner: {
     message: reason => `Softwarové vykreslování aktivní – detekován vzdálený displej (${reason}). Akcelerace GPU je deaktivována, aby se zabránilo blikání.`,
-    dismiss: 'Odmítnout'
   },
   billingBlock: {
     titleNous: 'Nedostatek kreditů Nous',
@@ -198,8 +197,6 @@ export const cs = defineLocale({
     exitHud: 'Ukončit režim HUD',
     layoutEditor: 'Editor rozvržení',
     layoutEditorTitle: mod => `Editor rozvržení — ${mod}-klik obnoví rozvržení`,
-    swapSidebarSidesTitle: 'Vyměňte relace a strany prohlížeče souborů',
-    openKeybinds: 'Klávesové zkratky'
   },
   keybinds: {
     title: 'Klávesové zkratky',
@@ -263,7 +260,6 @@ export const cs = defineLocale({
       'view.nextTerminal': 'Další terminál',
       'view.prevTerminal': 'Předchozí terminál',
       'view.closeTerminal': 'Zavřete terminál',
-      'view.terminalSelection': 'Odeslat výběr terminálu skladateli',
       'view.terminalCopy': 'Kopírovat výběr terminálu',
       'view.terminalPaste': 'Vložit do terminálu',
       'view.closeTab': 'Zavřít kartu',
@@ -306,7 +302,6 @@ export const cs = defineLocale({
       'composer.help': 'Rychlá pomoc',
       'composer.history': 'Cyklovat popover / historii',
       'composer.cancel': 'Zavřít vyskakovací okno · zrušit běh',
-      'view.closePreviewTab': 'Zavřít kartu náhledu'
     }
   },
   findInPage: {
@@ -336,7 +331,6 @@ export const cs = defineLocale({
       providerApiKeys: 'Klíče API',
       providerCustomEndpoints: 'Vlastní koncové body',
       gateway: 'Brána',
-      connections: 'Připojení',
       apiKeys: 'Nástroje a klíče',
       keybinds: 'Klávesové zkratky',
       keysTools: 'Nástroje',
@@ -346,7 +340,6 @@ export const cs = defineLocale({
       about: 'O',
       billing: 'Fakturace',
       notifications: 'Oznámení',
-      plugins: 'Pluginy'
     },
     plugins: {
       title: 'Desktop pluginy',
@@ -364,24 +357,6 @@ export const cs = defineLocale({
         disk: 'na disku',
         runtime: 'běhové'
       },
-      agent: {
-        title: 'Agent plugins',
-        blurb: 'Běží v backendu Hermes — nástroje, dovednosti, MCP servery, háky a příkazy. Přenosné jsou balíčky Agent Plugins (dovednosti + MCP balíčky, které fungují i v jiných agentech). Přepnutí se vztahuje na nové relace.',
-        empty: 'Zatím žádné agent plugins nainstalovány.',
-        loadFailed: 'Nelze načíst agent plugins',
-        portable: 'přenosný',
-        search: 'Hledat pluginy…',
-        noMatches: 'žádné pluginy odpovídají hledání.',
-        toggleFailed: (name) => `Nelze přepnout ${name}`,
-        updateBackendToManage: 'Aktualizujte backend Hermes pro správu tohoto pluginu z Desktopu.',
-        sources: {
-          bundled: 'zabudované',
-          user: 'uživatel',
-          git: 'git',
-          project: 'projekt',
-          entrypoint: 'pip'
-        }
-      }
     },
     notifications: {
       title: 'Oznámení',
@@ -623,8 +598,6 @@ export const cs = defineLocale({
       remove: 'Odebrat',
       getKey: 'Získejte klíč',
       saving: 'Ukládání',
-      or: 'nebo',
-      escToCancel: 'esc pro zrušení'
     },
     envActions: {
       actions: 'Akce',
@@ -635,8 +608,6 @@ export const cs = defineLocale({
       replace: 'Vyměňte',
       set: 'Set',
       clear: 'Jasný',
-      actionsFor: label => `Akce pro ${label}`,
-      credentialActions: 'Pověřovací akce'
     },
     connections: {
       title: 'Připojení',
@@ -686,17 +657,11 @@ export const cs = defineLocale({
       title: 'Připojení brány',
       envOverride: 'přepsání env',
       intro: 'Hermes Desktop ve výchozím nastavení spouští vlastní místní bránu. Pokud chcete, aby tato aplikace ovládala již běžící backend Hermes na jiném počítači nebo za důvěryhodným proxy serverem, použijte vzdálenou bránu. Níže vyberte profil a přidělte mu vlastního vzdáleného hostitele.',
-      appliesTo: 'Platí pro',
-      allProfiles: 'Všechny profily',
-      defaultConnection: 'Výchozí připojení pro každý profil, který nemá žádné vlastní přepsání.',
-      profileConnection: profile => `Připojení se používá pouze v případě, že je aktivním profilem „${profile}“. Chcete-li zdědit výchozí nastavení, nastavte jej na Místní.`,
       envOverrideTitle: 'Tuto relaci plochy řídí proměnné prostředí.',
       envOverrideDesc: 'Chcete-li použít níže uložené nastavení, zrušte nastavení HERMES_DESKTOP_REMOTE_URL a HERMES_DESKTOP_REMOTE_TOKEN.',
       modeTitle: 'Režim připojení',
       localTitle: 'Místní brána',
       localDesc: 'Spusťte soukromý backend Hermes na localhost. Toto je výchozí nastavení a funguje offline.',
-      inheritTitle: 'Použít výchozí bránu',
-      inheritDesc: 'Odstranit přepis tohoto profilu a použít výchozí spojení.',
       remoteTitle: 'Vzdálená brána',
       remoteDesc: 'Připojte tento desktopový shell ke vzdálenému backendu Hermes. Hostované brány používají OAuth nebo uživatelské jméno a heslo; samoobslužné mohou používat token relace.',
       remoteAuthHint: 'Hostované brány používají OAuth nebo uživatelské jméno a heslo; vlastní hostované mohou použít relační token.',
@@ -799,8 +764,6 @@ export const cs = defineLocale({
       sshHermesPathTitle: 'Cesta k Hermes (volitelné)',
       sshHermesPathDesc: 'Úplná cesta k bináři Hermes na vzdáleném hostiteli. Prázdné = automatické zjištění.',
       sshHermesPathPlaceholder: 'automatické zjištění',
-      sshRemoteProfileTitle: 'Vzdálený profil (volitelné)',
-      sshRemoteProfileDesc: 'Název profilu na vzdáleném hostiteli. Prázdné = použít název profilu Desktop.',
       sshTestConnection: 'Testovat SSH',
       sshConnect: 'Připojit',
       sshButtonsHint: 'Uložit se použije při dalším spuštění. Připojit se připojí okamžitě.',
@@ -909,10 +872,6 @@ export const cs = defineLocale({
         vision: {
           label: 'Vize',
           hint: 'Analýza obrazu'
-        },
-        web_extract: {
-          label: 'Webový extrakt',
-          hint: 'Shrnutí stránky'
         },
         compression: {
           label: 'Komprese',
@@ -1079,7 +1038,6 @@ export const cs = defineLocale({
     tabToolsets: 'Sady nástrojů',
     configuringProfile: 'Konfigurace:',
     tabMcp: 'MCP',
-    tabHub: 'Procházet centrum',
     all: 'všechny',
     searchSkills: 'Vyhledávací dovednosti...',
     searchToolsets: 'Hledat sady nástrojů...',
@@ -1167,7 +1125,7 @@ export const cs = defineLocale({
       policyBlock: 'Instalace blokována politikou',
       findings: count => `${count} nález${count === 1 ? "" : "y"}`,
       noFindings: 'Žádné bezpečnostní nálezy.',
-      installStarted: 'Instalace spuštěna',
+      installStarted: name => `Instalace ${name}...`,
       uninstallStarted: name => `Odinstalovávám ${name}...`,
       updateStarted: 'Aktualizuji instalované dovednosti...',
       actionFailed: 'Akce dovednosti selhala',
@@ -1176,37 +1134,7 @@ export const cs = defineLocale({
       previewFailed: 'Náhled se nezdařil',
       scanFailed: 'Bezpečnostní sken selhal',
       searchFailed: 'Hledání v centru selhalo',
-      title: 'Skill Hub',
-      refresh: 'Obnovit',
-      loading: 'Načítání…',
-      installFailed: 'Instalace se nezdařila',
-      uninstallFailed: 'Odinstalování se nezdařilo',
-      uninstallConfirm: name => `Odinstalovat ${name}?`,
-      by: 'od',
-      items: count => `${count} položek`,
-      browse: 'Procházet',
-      browseUrl: 'Otevřít v prohlížeči',
-      configureRepo: 'Konfigurovat repozitář',
-      repoUrl: 'URL repozitáře',
-      repoBranch: 'Větev',
-      save: 'Uložit',
-      saved: 'Uloženo',
-      saveFailed: 'Uložení se nezdařilo',
-      scanSecurity: 'Bezpečnostní kontrola',
-      securityScanning: 'Kontrola…',
-      securityScanFailed: 'Bezpečnostní kontrola selhala',
-      noSecurityResults: 'Žádné výsledky',
-      readme: 'README',
-      readmeLoadFailed: 'Načtení README se nezdařilo',
-      emptyCatalog: 'Prázdný katalog',
-      emptyCatalogDesc: 'Tento repozitář neobsahuje žádné dovednosti.',
-      installAnyway: 'Přesto instalovat',
-      readmeWarning: 'Před instalací si přečtěte README.'
     },
-    editSoul: 'Upravit SOUL.md…',
-    emptyActionLog: 'Zatím žádná aktivita.',
-    actionLog: 'Protokol akcí',
-    loadFailed: 'Načtení se nezdařilo'
   },
   starmap: {
     title: 'Graf paměti',
@@ -1260,11 +1188,10 @@ export const cs = defineLocale({
     ageSeconds: seconds => `Před ${seconds}s`,
     ageMinutes: minutes => `Před ${minutes}m`,
     ageHours: hours => `Před ${hours}h`,
-    ageDays: 'den',
+    ageDays: days => `před ${days} d`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} tok`,
-    tokensK: k => `${k}k tok`
   },
   commandCenter: {
     close: 'Zavřete velitelské centrum',
@@ -1297,7 +1224,7 @@ export const cs = defineLocale({
       installed: 'Instalováno',
       generatedTag: 'Vygenerováno',
       adoptFailed: 'Nemohl adoptovat toho mazlíčka.',
-      toggleFailed: 'Zvířátko se nepodařilo přepnout.',
+      toggleFailed: enabled => `Zvířátko se nepodařilo ${enabled ? 'zapnout' : 'vypnout'}.`,
       noneAvailable: 'Nejsou k dispozici žádná zvířátka – níže si vyberte jedno k instalaci.'
     },
     generatePet: {
@@ -1757,7 +1684,7 @@ export const cs = defineLocale({
     manageProfiles: 'Spravovat profily...',
     actions: 'Akce',
     color: 'Barva...',
-    colorFor: name => `Barva pro ${name}`,
+    colorFor: 'Barva',
     setColor: color => `Sada barvy ${color}`,
     autoColor: 'Auto',
     noProfiles: 'Zatím žádné profily.',
@@ -1819,7 +1746,6 @@ export const cs = defineLocale({
     failedSaveSoul: 'Nepodařilo se uložit SOUL.md',
     failedCreate: 'Vytvoření profilu se nezdařilo',
     failedRename: 'Přejmenování profilu se nezdařilo',
-    actionsFor: name => `Akce pro ${name}`
   },
   cron: {
     close: 'Zavřete cron',
@@ -1960,7 +1886,6 @@ export const cs = defineLocale({
       emptyTitle: 'Žádné modely k dispozici',
       emptyDesc: 'Na tomto backendu nejsou k dispozici žádné automatizační modely.'
     },
-    actionsFor: title => `Akce pro ${title}`
   },
   artifacts: {
     search: 'Hledat artefakty...',
@@ -2002,12 +1927,12 @@ export const cs = defineLocale({
       html: 'Interaktivní stránka',
       svg: 'Grafika'
     },
-    generating: 'generování',
+    generating: lines => `Generuji… ${lines} řádků`,
     versionBadge: count => `${count} verze`,
     open: 'Otevřít'
   },
   artifactPreview: {
-    versionOf: 'verze',
+    versionOf: (current, total) => `v${current} z ${total}`,
     olderVersion: 'Starší verze',
     newerVersion: 'Novější verze',
     latest: 'Nejnovější',
@@ -2165,7 +2090,6 @@ export const cs = defineLocale({
       ageDay: 'd',
       ageHour: 'h',
       ageMin: 'm',
-      actionsFor: title => `Akce pro ${title}`
     },
     dateDivider: {
       today: 'Dříve dnes',
@@ -2179,7 +2103,6 @@ export const cs = defineLocale({
       done: 'Hotovo'
     },
     markAllRead: 'Označit vše jako přečtené',
-    noProject: 'Žádný projekt'
   },
   composer: {
     message: 'Zpráva',
@@ -2383,7 +2306,7 @@ export const cs = defineLocale({
       scopeLastTurn: 'Poslední zatáčka',
       commit: 'Zavázat se',
       commitAndPush: 'Commit & Push',
-      commitPlaceholder: 'Zpráva (pro potvrzení ⌘↵)',
+      commitPlaceholder: shortcut => `Zpráva (${shortcut} pro potvrzení)`,
       generateCommitMessage: 'Vygenerovat zprávu o potvrzení',
       stopGenerating: 'Přestaňte generovat',
       createPr: 'Vytvořte PR',
@@ -2574,7 +2497,6 @@ export const cs = defineLocale({
       pkce: 'Otevře prohlížeč k přihlášení a poté pokračuje zde',
       device_code: 'Otevře ověřovací stránku ve vašem prohlížeči — Hermes se připojí automaticky',
       external: 'Jednou se přihlaste do svého terminálu a poté se vraťte k chatu',
-      loopback: 'Otevře váš prohlížeč pro přihlášení – Hermes se připojí automaticky'
     },
     startingSignIn: provider => `Spouštění přihlašování pro ${provider}...`,
     verifyingCode: provider => `Ověřování kódu pomocí ${provider}...`,
@@ -2637,7 +2559,6 @@ export const cs = defineLocale({
       editModels: 'Upravit modely…',
       refreshModels: 'Aktualizovat modely',
       fast: 'Rychle',
-      medium: 'Med'
     },
     modelOptions: {
       noOptions: 'Pro tento model nejsou žádné možnosti',
@@ -2763,9 +2684,6 @@ export const cs = defineLocale({
       modelPinned: 'připojeno vámi; nové chaty používají to místo výchozího nastavení',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`,
-      currentTurnElapsed: 'Aktuální zatáčka uplynula',
-      openContextUsage: 'Rozdělení použití otevřeného kontextu',
-      runtimeSessionElapsed: 'Uplynula běhová relace'
     }
   },
   rightSidebar: {
@@ -2889,14 +2807,8 @@ export const cs = defineLocale({
       openTarget: url => `Otevřete ${url}`,
       fallbackTitle: 'Náhled'
     },
-    closeTab: label => `Zavřete ${label}`,
-    closeOthers: 'Zavřete ostatní',
-    closeToRight: 'Blízko vpravo',
-    closeAll: 'Zavřete vše'
   },
   zones: {
-    showHeader: 'Zobrazit hlavičku',
-    hideHeader: 'Skrýt hlavičku',
     minimize: 'Minimalizovat',
     restore: 'Obnovit',
     closeRunningTitle: 'Zavřít běžící kartu?',
@@ -3191,7 +3103,6 @@ export const cs = defineLocale({
           pendingAction: 'Editace'
         }
       },
-      code: 'kód'
     }
   },
   prompts: {
@@ -3295,7 +3206,7 @@ export const cs = defineLocale({
     sidebar: {
       title: 'Postranní panel',
       description: 'Zobrazí postranní panel pro mobilní zařízení.',
-      toggle: 'Přepnout postranní panel'
+      toggle: open => `${open ? 'Zobrazit' : 'Skrýt'} postranní panel`
     }
   }
 })

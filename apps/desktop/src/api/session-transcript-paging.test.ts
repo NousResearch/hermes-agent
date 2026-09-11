@@ -13,7 +13,8 @@ import type { SessionMessagesResponse } from '@/types/hermes'
 import { setApiRequestConnection, setApiRequestProfile } from './client'
 import { getLatestSessionMessages, LATEST_SESSION_MESSAGES_LIMIT } from './sessions'
 
-const row = (id: number) => ({ id, role: 'user' as const, content: `message ${id}`, timestamp: id })
+// Zero timestamps use the conversion-time clock for IDs; keep fixtures stable.
+const row = (id: number) => ({ id, role: 'user' as const, content: `message ${id}`, timestamp: 1_000 + id })
 
 const page = (messages: ReturnType<typeof row>[], offset = 0): SessionMessagesResponse => ({
   session_id: 'stored-session',

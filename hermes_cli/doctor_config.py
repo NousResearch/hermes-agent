@@ -4,7 +4,6 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
-import re
 import shutil
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
@@ -368,16 +367,35 @@ def _drift_max_iterations_ghost(f: Finding, should_fix: bool, config_path) -> No
 # for this string-typed key; a blank value stringifies to "none" in the resolver).
 _DOCUMENTED_PRE_UPDATE_BACKUP_MODES = ("quick", "off", "full")
 
-# Every spelling PyYAML folds into a bool ("true"/"false"/"yes"/"no"/"on", any case) is a legacy
-# write — except "off", which is a documented mode string that must never be reported as legacy
-# drift, or doctor would rewrite a deliberate opt-out on every run. "y"/"n" are not folded by
-# PyYAML (they resolve as strings), so they are not listed; the `isinstance(value, bool)` branch in
-# `_pre_update_backup_legacy_form` is the other half of the gate.
-_PRE_UPDATE_BACKUP_BOOL_RE = re.compile(r"^\s*pre_update_backup\s*:\s*(true|false|yes|no|on)\s*(?:#.*)?$",
-                                       re.MULTILINE | re.IGNORECASE)
+
+def _pre_update_backup_scalar_node(config_text: str):
+    """The YAML node for ``updates.pre_update_backup`` as written, or ``None``.
+
+    The parsed value cannot tell the documented ``off`` from the legacy boolean — YAML folds both to
+    ``False`` — so the check needs the scalar *as written*. That has to be the node at the key's own
+    path: a text search over the file is satisfied by any matching line (another section, a block
+    scalar, a duplicate key) while missing the forms a real value takes (flow style, a quoted key, an
+    anchored alias). The walk mirrors PyYAML's loader, duplicates included, so the last ``updates:``
+    block wins exactly like the loaded config does.
+    """
+    import yaml
+
+    try:
+        root = yaml.compose(config_text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(root, yaml.MappingNode):
+        return None
+    node = None
+    for key_node, value_node in root.value:
+        if getattr(key_node, "value", None) == "updates" and isinstance(value_node, yaml.MappingNode):
+            for inner_key, inner_value in value_node.value:
+                if getattr(inner_key, "value", None) == "pre_update_backup":
+                    node = inner_value
+    return node
 
 
-def _pre_update_backup_legacy_form(value, config_text: str):
+def _pre_update_backup_legacy_form(value, scalar_node):
     """``(kind, written_form, mode)`` when *value* is a form the docs do not describe, else ``None``.
 
     ``kind`` is ``"bool"``, ``"alias"`` or ``"empty"``. The value is read from the raw file, so the
@@ -388,12 +406,15 @@ def _pre_update_backup_legacy_form(value, config_text: str):
     from hermes_cli.update_cmd_maint import _BACKUP_MODE_ALIASES
 
     if isinstance(value, bool):
-        # YAML folds unquoted ``off`` into a bool as well, so the parsed value alone cannot tell the
-        # legacy boolean from the documented ``off`` string — require a folded spelling that is not
-        # ``off`` to appear in the file, or doctor would "fix" a deliberate `off` on every run.
-        if not _PRE_UPDATE_BACKUP_BOOL_RE.search(config_text):
+        # ``off`` is documented and YAML folds it to False as well, so the parsed value cannot tell
+        # it from the legacy boolean: the scalar's own spelling can. A documented mode spelling
+        # (case-insensitively) is never drift, or doctor would rewrite a deliberate opt-out on every
+        # run. No readable scalar (alias to a non-scalar, or a file doctor cannot parse twice) is
+        # left alone rather than guessed at.
+        token = (getattr(scalar_node, "value", None) or "").strip()
+        if not token or token.lower() in _DOCUMENTED_PRE_UPDATE_BACKUP_MODES:
             return None
-        return "bool", str(value).lower(), ("full" if value else "off")
+        return "bool", token.lower(), ("full" if value else "off")
     if value is None:
         # A blank value (`pre_update_backup:`) is not "unset": the resolver stringifies it to
         # "none", which the alias map sends to "off" — no snapshot, and nothing says so.
@@ -428,8 +449,9 @@ def _drift_pre_update_backup_legacy_form(f: Finding, should_fix: bool, config_pa
     updates_cfg = raw_config.get("updates")
     if not isinstance(updates_cfg, dict) or "pre_update_backup" not in updates_cfg:
         return
-    legacy = _pre_update_backup_legacy_form(updates_cfg["pre_update_backup"],
-                                            config_path.read_text(encoding="utf-8"))
+    legacy = _pre_update_backup_legacy_form(
+        updates_cfg["pre_update_backup"],
+        _pre_update_backup_scalar_node(config_path.read_text(encoding="utf-8")))
     if legacy is None:
         return
     kind, written_form, mode = legacy

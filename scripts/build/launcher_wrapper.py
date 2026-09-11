@@ -17,7 +17,11 @@ The wrapper replaces everything the old rust shim + its sidecar did
     on sys.path (same order, same reason as the old shim: the repo's
     hermes_cli wins over anything stale in site-packages — the sealed
     payload's venv has no working editable install, its pointer names the
-    BUILD machine),
+    BUILD machine). The site entry goes through ``site.addsitedir()`` —
+    the only mechanism that runs ``.pth`` files — because pywin32.pth is
+    what puts win32\\lib on sys.path and therefore what makes
+    ``import pywintypes`` resolve on Windows bundles (portalocker's
+    Win32Locker → concurrent-log-handler → hermes_logging.py's files),
   * drop inherited PYTHONPATH / PYTHONHOME so foreign installs can never
     shadow the bundle,
   * default sys.pycache_prefix to the user-level cache (%LOCALAPPDATA%
@@ -31,6 +35,7 @@ directly (tests/scripts/test_desktop_cli_wrapper.py).
 
 import importlib
 import os
+import site
 import sys
 
 HERMES_ENTRY_MODULE = "__HERMES_ENTRY_MODULE__"
@@ -78,8 +83,21 @@ def configure(here, environ=None):
     # the stdlib entirely.
     environ.pop("PYTHONPATH", None)
     environ.pop("PYTHONHOME", None)
-    entries = payload_sys_paths(here)
-    sys.path[0:0] = entries
+    repo_entry, site_entry = payload_sys_paths(here)
+    # Repo snapshot first — its hermes_cli wins over anything stale in
+    # site-packages (the sealed payload has no working editable install).
+    sys.path.insert(0, repo_entry)
+    # addsitedir(), not a raw append: only it processes the venv's .pth
+    # files. pywin32.pth is load-bearing on Windows — it puts win32\lib
+    # on sys.path, which is what makes `import pywintypes` resolve, and
+    # without that portalocker's Win32Locker dies and
+    # concurrent-log-handler silently drops every file-log record (the
+    # same trap gateway/run.py's MCP venv bootstrap works around). Keep
+    # site-packages directly after the repo, ahead of .pth-added dirs.
+    site.addsitedir(site_entry)
+    if site_entry in sys.path:
+        sys.path.remove(site_entry)
+    sys.path.insert(1 if sys.path and sys.path[0] == repo_entry else 0, site_entry)
     if not environ.get("PYTHONPYCACHEPREFIX"):
         default = default_pycache_dir(environ)
         if default:
@@ -88,7 +106,7 @@ def configure(here, environ=None):
             # startup, but setting it in os.environ cannot retro-activate
             # it — sys.pycache_prefix is the live switch.
             sys.pycache_prefix = default
-    return entries
+    return [repo_entry, site_entry]
 
 
 def main(argv=None):

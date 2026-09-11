@@ -19,6 +19,33 @@ from typing import TextIO
 from pm.package import InstallError
 
 
+def prune_site_pth(venv_dir: Path) -> None:
+    """Drop .pth files that must never execute inside a shipped payload.
+
+    ``uv sync`` leaves two behind: ``_virtualenv.pth`` (repoints
+    ``sys.prefix`` at the venv) and the project's ``__editable__`` pointer
+    (names the BUILD machine — the payload wires the repo snapshot itself,
+    see scripts/build/launcher_wrapper.py). Bundled launchers process every
+    other .pth with ``site.addsitedir()``; pywin32.pth is load-bearing on
+    Windows (win32\\lib on sys.path is what makes ``import pywintypes``
+    resolve, which portalocker/concurrent-log-handler need to write logs).
+    """
+    if (venv_dir / "Scripts").is_dir():
+        sites = [venv_dir / "Lib" / "site-packages"]
+    else:
+        lib = venv_dir / "lib"
+        sites = sorted(lib.glob("python*/site-packages")) if lib.is_dir() else []
+    for site_dir in sites:
+        if not site_dir.is_dir():
+            continue
+        for pth in site_dir.glob("*.pth"):
+            if pth.name == "_virtualenv.pth" or pth.name.startswith("__editable__"):
+                try:
+                    pth.unlink()
+                except OSError:
+                    pass
+
+
 def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextIO) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""

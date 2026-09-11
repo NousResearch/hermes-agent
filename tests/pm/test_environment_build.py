@@ -34,6 +34,39 @@ def _run(command, *, cwd: Path, env: dict) -> str:
     return result.stdout.strip()
 
 
+def test_prune_site_pth_keeps_only_load_bearing_pth(tmp_path):
+    """The payload venv must not carry uv's venv-marker or editable-install
+    .pth files: the launcher addsitedirs the venv, and those two would repoint
+    sys.prefix / shadow the repo snapshot with build-machine paths. Everything
+    else (pywin32.pth!) must survive — it is what makes `import pywintypes`
+    resolve on Windows bundles."""
+    from pm.environment import prune_site_pth
+
+    # Windows layout (Scripts/ present).
+    win_venv = tmp_path / "win-venv"
+    (win_venv / "Scripts").mkdir(parents=True)
+    win_site = win_venv / "Lib" / "site-packages"
+    win_site.mkdir(parents=True)
+    # POSIX layout (bin/ present, versioned site-packages).
+    posix_venv = tmp_path / "posix-venv"
+    (posix_venv / "bin").mkdir(parents=True)
+    posix_site = posix_venv / "lib" / "python3.14" / "site-packages"
+    posix_site.mkdir(parents=True)
+
+    for site in (win_site, posix_site):
+        (site / "pywin32.pth").write_text("win32\nwin32\\lib\nimport pywin32_bootstrap\n", encoding="utf-8")
+        (site / "_virtualenv.pth").write_text("import _virtualenv\n", encoding="utf-8")
+        (site / "__editable__.hermes_agent-0.21.1.pth").write_text(
+            "import __editable___hermes_agent_0_21_1_finder\n", encoding="utf-8"
+        )
+
+    prune_site_pth(win_venv)
+    prune_site_pth(posix_venv)
+
+    assert sorted(p.name for p in win_site.glob("*.pth")) == ["pywin32.pth"]
+    assert sorted(p.name for p in posix_site.glob("*.pth")) == ["pywin32.pth"]
+
+
 @pytest.fixture
 def locked_project(tmp_path):
     uv = shutil.which("uv")

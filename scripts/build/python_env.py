@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 
-from pm.environment import PythonEnvironment
+from pm.environment import PythonEnvironment, prune_site_pth
 from pm.package import InstallError
 
 
@@ -44,6 +44,11 @@ def build_python_environment(
         environment.sync(source, extras=extras, all_extras=all_extras,
                          no_install_project=no_install_project)
         environment.check()
+        # The sealed payload must never process uv's venv-marker or
+        # editable-install .pth files (see pm.environment.prune_site_pth):
+        # the launcher addsitedirs the venv, and those two would repoint
+        # sys.prefix / shadow the repo snapshot with build-machine paths.
+        prune_site_pth(out)
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise

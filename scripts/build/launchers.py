@@ -42,7 +42,11 @@ export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
 export HERMES_RUNTIME_DIR="$root/tools"
 export PATH="$root/tools/npm/bin:$root/tools/node/data/data/com.termux/files/usr/bin:$root/tools/ffmpeg/data/data/com.termux/files/usr/bin:$root/tools/ripgrep:$PATH"
 '''
-    code = f"import sys; sys.argv[0]={name!r}; from {module} import {func}; sys.exit({func}())"
+    code = (
+        f"import os, site, sys; sys.argv[0]={name!r}; "
+        "site.addsitedir(os.environ['HERMES_SITE']); "
+        f"from {module} import {func}; sys.exit({func}())"
+    )
     return f'''{header}
 set -eu
 self="$0"
@@ -60,6 +64,11 @@ SITE={shell_path(site)}
 [ -x "$PYTHON" ] || {{ printf '%s\\n' 'Bundled interpreter missing; reinstall Hermes.' >&2; exit 2; }}
 unset PYTHONPATH PYTHONHOME
 export PYTHONPATH="$REPO:$SITE"
+# PYTHONPATH cannot process .pth files (only site.addsitedir() can), and
+# the venv's .pth files are load-bearing (pywin32.pth -> win32\\lib ->
+# `import pywintypes` on Windows bundles; the win32 wrapper mirrors this
+# in launcher_wrapper.py). The -c bootstrap below runs addsitedir() on it.
+export HERMES_SITE="$SITE"
 export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
 {extra}exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
 '''

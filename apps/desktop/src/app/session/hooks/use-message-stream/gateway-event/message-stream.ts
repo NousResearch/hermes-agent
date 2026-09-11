@@ -29,6 +29,18 @@ function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
 }
 
+// Legacy backends close interrupted turns with a synthetic status string as
+// the final text. Anchored EXACT patterns (not prefixes): a genuine answer
+// that merely opens with "Operation interrupted…" must survive; only the
+// whole-message sentinel is demoted to metadata (#63292).
+const LEGACY_INTERRUPT_STATUS_PATTERNS = [
+  /^Operation interrupted\.$/,
+  /^Operation interrupted: waiting for model response \(\d+\.\d+s elapsed\)\.$/,
+  /^Operation interrupted during retry \(.+, attempt \d+\/\d+\)\.$/,
+  /^Operation interrupted: handling API error \([^:\r\n]+: .*\)\.$/,
+  /^Operation interrupted: retrying API call after error \(retry \d+\/\d+\)\.$/
+] as const
+
 /**
  * A turn failed on a billing wall (out of credits / payment required). The
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
@@ -147,6 +159,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     flushQueuedDeltas,
     dropQueuedDeltas,
     nativeSubagentSessionsRef,
+    sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState
   } = deps
@@ -391,10 +404,21 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     flushQueuedDeltas(sessionId)
 
-    // Keyed by session so only one window beeps when several are open.
-    playCompletionSound(sessionId)
+    const completionInterrupted = payload?.status === 'interrupted' || sessionInterrupted(sessionId)
+    const completionText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-    const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+    // An interrupted completion whose text is just the legacy synthetic
+    // sentinel is metadata, not content — keep any real partial text.
+    const finalText =
+      completionInterrupted && LEGACY_INTERRUPT_STATUS_PATTERNS.some(pattern => pattern.test(completionText.trim()))
+        ? ''
+        : completionText
+
+    // Keyed by session so only one window beeps when several are open.
+    // Interruptions are cancellations, not completions — no fanfare.
+    if (!completionInterrupted) {
+      playCompletionSound(sessionId)
+    }
 
     completeAssistantMessage(
       sessionId,
@@ -405,7 +429,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
-      payload?.response_reused === true
+      payload?.response_reused === true,
+      completionInterrupted
     )
 
     reportOnboardingTurnComplete(ctx, sessionId)
@@ -428,18 +453,24 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     if (isActiveEvent) {
       setTurnStartedAt(null)
 
-      // Pet beat: a finished turn always celebrates — go straight to the
-      // jump, never linger on the run/reason pose. One atom update (clears
-      // toolRunning/reasoning AND sets celebrate together) so no stray "run"
-      // frame leaks to the sprite — including the popped-out overlay, which
-      // mirrors each activity change. The jump runs ~2 loops, then settles.
-      flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+      if (completionInterrupted) {
+        // Clear stale working poses without turning a cancellation into a
+        // completion celebration — and never flag the turn as unread.
+        setPetActivity({ reasoning: false, toolRunning: false })
+      } else {
+        // Pet beat: a finished turn always celebrates — go straight to the
+        // jump, never linger on the run/reason pose. One atom update (clears
+        // toolRunning/reasoning AND sets celebrate together) so no stray "run"
+        // frame leaks to the sprite — including the popped-out overlay, which
+        // mirrors each activity change. The jump runs ~2 loops, then settles.
+        flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
-      // Light up the pet's mail icon if the user wasn't looking when the turn
-      // finished — a glanceable "new message" hint on the popped-out overlay.
-      // Cleared when they open the app via the mail icon or refocus the window.
-      if (typeof document !== 'undefined' && !document.hasFocus()) {
-        markPetUnread()
+        // Light up the pet's mail icon if the user wasn't looking when the turn
+        // finished — a glanceable "new message" hint on the popped-out overlay.
+        // Cleared when they open the app via the mail icon or refocus the window.
+        if (typeof document !== 'undefined' && !document.hasFocus()) {
+          markPetUnread()
+        }
       }
     }
 

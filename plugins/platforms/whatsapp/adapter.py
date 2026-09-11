@@ -596,11 +596,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     @_needs_bridge
-    async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
+    async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None) -> SendResult:
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
         payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "filePath": file_path, "mediaType": media_type}
-        payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
+        payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name), ("replyTo", reply_to)) if v})
         return await self._post_bridge_message("send-media", payload, timeout=120)
 
     @_needs_bridge
@@ -635,22 +635,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Download image URL to cache, send natively via bridge (``metadata`` honors the base contract)."""
         try:
             local_path = await cache_image_from_url(image_url)
-            return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
+            return await self._send_media_to_bridge(chat_id, local_path, "image", caption, reply_to=reply_to)
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
+        return await self._send_media_to_bridge(chat_id, image_path, "image", caption, reply_to=reply_to)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
+        return await self._send_media_to_bridge(chat_id, video_path, "video", caption, reply_to=reply_to)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption, reply_to=reply_to)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path))
+        return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path), reply_to=reply_to)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         if await self._bridge_unavailable():

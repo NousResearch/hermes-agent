@@ -216,6 +216,157 @@ class TestQQWebSocketProxy:
         assert seen_session_kwargs.get("trust_env") is True
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
+    @pytest.mark.asyncio
+    async def test_open_ws_bypasses_proxy_when_no_proxy_matches_host(self, monkeypatch):
+        """NO_PROXY matching the resolved gateway host → direct (proxy=None)."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "api.sgroup.qq.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_ws_kwargs.get("proxy") is None
+
+    @pytest.mark.asyncio
+    async def test_open_ws_suffix_no_proxy_matches_gateway_host(self, monkeypatch):
+        """Domain-suffix NO_PROXY (qq.com) bypasses whatever gateway host Tencent returns."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "qq.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_ws_kwargs.get("proxy") is None
+
+    @pytest.mark.asyncio
+    async def test_open_ws_unrelated_no_proxy_entry_still_proxies(self, monkeypatch):
+        """NO_PROXY for another host (REST token host) must not bypass the WS gateway host."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "bots.qq.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+
+    @pytest.mark.asyncio
+    async def test_open_ws_honors_lowercase_wss_proxy(self, monkeypatch):
+        """Lowercase wss_proxy keeps working (pre-helper code read both cases)."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("wss_proxy", "http://127.0.0.1:8888")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("gateway.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:8888"
+
 # ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------

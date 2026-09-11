@@ -129,6 +129,16 @@ class TestResolveProxyUrl:
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
 
+    def test_platform_env_var_lowercase_form(self, monkeypatch):
+        """``wss_proxy`` (lowercase) is honored like ``WSS_PROXY`` (POSIX convention)."""
+        for key in ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "HTTP_PROXY",
+                    "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("wss_proxy", "http://127.0.0.1:8888")
+
+        assert resolve_proxy_url("WSS_PROXY") == "http://127.0.0.1:8888"
+
 
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""

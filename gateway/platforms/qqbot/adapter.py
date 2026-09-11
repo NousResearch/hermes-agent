@@ -39,7 +39,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, resolve_proxy_url,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -318,10 +318,12 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
+        # Shared proxy resolution so NO_PROXY is honored: an explicit proxy=
+        # opts out of aiohttp's env handling, so pre-check the dialed host.
+        # proxy=None falls through to the session's trust_env env lookup.
+        gateway_host = urlparse(gateway_url).hostname
+        ws_proxy = resolve_proxy_url("WSS_PROXY", target_hosts=gateway_host)
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
         self._ws = await self._session.ws_connect(
             gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
         )

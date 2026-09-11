@@ -335,7 +335,14 @@ def resolve_proxy_url(
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
     HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
     ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target."""
-    value = (os.environ.get(platform_env_var) or "").strip() if platform_env_var else ""
+    value = ""
+    if platform_env_var:
+        # POSIX convention treats lowercase proxy vars as equivalent
+        # (HTTPS_PROXY/https_proxy below get the same treatment).
+        for key in dict.fromkeys((platform_env_var, platform_env_var.lower())):
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                break
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None

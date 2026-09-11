@@ -51,6 +51,7 @@ class TestCoerceNumber:
 
 
 
+
 class TestCoerceBoolean:
     """Unit tests for _coerce_boolean."""
 
@@ -61,12 +62,10 @@ class TestCoerceBoolean:
 
 
 
-
     def test_one_zero_not_coerced(self):
         """'1' and '0' are not boolean values."""
         assert _coerce_boolean("1") == "1"
         assert _coerce_boolean("0") == "0"
-
 
 
 class TestCoerceValue:
@@ -79,15 +78,10 @@ class TestCoerceValue:
 
 
 
-
-
-
     def test_array_type_parsed_from_json_string(self):
         """Stringified JSON arrays are parsed into native lists."""
         assert _coerce_value('["a", "b"]', "array") == ["a", "b"]
         assert _coerce_value("[1, 2, 3]", "array") == [1, 2, 3]
-
-
 
 
 
@@ -120,7 +114,6 @@ class TestCoerceToolArgs:
 
 
 
-
     def test_leaves_already_correct_types(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
@@ -131,8 +124,6 @@ class TestCoerceToolArgs:
 
     def test_empty_args(self):
         assert coerce_tool_args("test_tool", {}) == {}
-
-
 
 
 
@@ -172,7 +163,6 @@ class TestSchemaAcceptsKind:
         assert _schema_accepts_kind({"type": "string"}, "array") is False
 
 
-
     def test_non_dict(self):
         assert _schema_accepts_kind(None, "array") is False
 
@@ -184,7 +174,6 @@ class TestNormalizeJsonStringsForSchema:
         schema = {"type": "array", "items": {"type": "string"}}
         out = _normalize_json_strings_for_schema('["git status", "bun test"]', schema)
         assert out == ["git status", "bun test"]
-
 
 
 
@@ -240,10 +229,110 @@ class TestCoerceToolArgsNested:
             assert result["items"][0]["content"] == '{"not": "parsed"}'
 
 
-
     def test_real_todo_schema_element_strings(self):
         """Against the real todo schema from the registry."""
         import json as _json
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Scalar-array single-key dict unwrapping (#99270) ──────────────────────
+
+
+class TestCoerceToolArgsSingleKeyDictArray:
+    """Models sometimes emit a scalar-array argument as a single-key dict
+    (``{"ids": {"item": 14}}``). With a scalar ``items`` schema the sole
+    value is unwrapped; every other shape keeps the legacy wrap behavior."""
+
+    def _schema(self, items_schema):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {"ids": {"type": "array", "items": items_schema}},
+            },
+        }
+
+    def test_integer_items_unwrapped(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": "integer"})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 14}})
+            assert result["ids"] == [14]
+
+    def test_string_items_unwrapped(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": "string"})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": "https://a.com"}})
+            assert result["ids"] == ["https://a.com"]
+
+    def test_enum_string_items_unwrapped(self):
+        """``array<enum>`` shape from a live MCP report (Firecrawl ``formats``):
+        the ``enum`` facet does not change the declared scalar item type."""
+        schema = self._schema({"type": "string", "enum": ["markdown", "html", "rawHtml"]})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": "markdown"}})
+            assert result["ids"] == ["markdown"]
+
+    def test_inner_list_not_double_wrapped(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": "integer"})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": [1, 2]}})
+            assert result["ids"] == [1, 2]
+
+    def test_object_items_schema_left_alone(self):
+        """``array<object>`` legitimately accepts single-key dict elements."""
+        schema = self._schema({"type": "object", "properties": {"item": {"type": "integer"}}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 1}})
+            assert result["ids"] == [{"item": 1}]
+
+    def test_multi_key_dict_left_alone(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": "integer"})):
+            result = coerce_tool_args("test_tool", {"ids": {"a": 1, "b": 2}})
+            assert result["ids"] == [{"a": 1, "b": 2}]
+
+    def test_missing_items_schema_left_alone(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {"type": "object", "properties": {"ids": {"type": "array"}}},
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 14}})
+            assert result["ids"] == [{"item": 14}]
+
+    def test_union_array_type_with_null_unwrapped(self):
+        """JSON-Schema union array form ``["integer", "null"]``: some MCP
+        servers emit it and ``strip_nullable_unions`` only folds ``anyOf``/
+        ``oneOf``, so the union form reaches the registry verbatim (#99270
+        live report: the unwrap branch never fired for an MCP tool)."""
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": ["integer", "null"]})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 14}})
+            assert result["ids"] == [14]
+
+    def test_union_array_type_all_scalar_unwrapped(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": ["string"]})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": "a"}})
+            assert result["ids"] == ["a"]
+
+    def test_union_array_type_with_object_left_alone(self):
+        """A union mixing in a non-scalar member can legitimately carry dict
+        elements — the unwrap must not apply."""
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": ["integer", "object"]})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 1}})
+            assert result["ids"] == [{"item": 1}]
+
+    def test_union_array_type_empty_left_alone(self):
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": []})):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 14}})
+            assert result["ids"] == [{"item": 14}]
+
+    def test_wrapped_dict_logs_keys_not_values(self, caplog):
+        """When the unwrap does not apply, the wrap logs the dict's KEYS so
+        the next live report shows what the model actually emitted — without
+        echoing values, which may carry user content."""
+        with patch("tools.arg_coercion.registry.get_schema", return_value=self._schema({"type": "integer"})):
+            with caplog.at_level("INFO", logger="model_tools"):
+                coerce_tool_args("test_tool", {"ids": {"item": 14, "extra": "secret-value"}})
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "keys: ['extra', 'item']" in joined
+        assert "secret-value" not in joined

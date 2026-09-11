@@ -4,6 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import model_tools
+import pytest
 from tools import code_execution_rpc, code_execution_tool
 from tools.registry import registry
 from tools.tool_search import ToolSearchConfig
@@ -75,6 +76,46 @@ def test_remote_execute_code_schema_hides_deferred_bridges(monkeypatch):
     assert "tool_call(name:" not in description
 
 
+def test_tool_definition_cache_tracks_effective_terminal_backend(monkeypatch):
+    probe_name = "execute_code_backend_cache_probe"
+    registry.register(
+        name=probe_name,
+        toolset="plugin_execute_code_backend_cache_probe",
+        schema=_probe_schema(probe_name),
+        handler=lambda _args, **_kwargs: json.dumps({"ok": True}),
+    )
+    monkeypatch.setattr(
+        "tools.tool_search.load_config",
+        lambda: ToolSearchConfig.from_raw({"enabled": "on"}),
+    )
+    terminal = {"env_type": "local"}
+    monkeypatch.setattr(
+        "tools.terminal_tool._get_env_config",
+        lambda: dict(terminal),
+    )
+    model_tools._clear_tool_defs_cache()
+
+    def execute_code_description():
+        definitions = model_tools.get_tool_definitions(quiet_mode=True)
+        return next(
+            item["function"]["description"]
+            for item in definitions
+            if item["function"]["name"] == "execute_code"
+        )
+
+    try:
+        execute_code_description()  # settle lazy plugin discovery before warming the cache
+        local_description = execute_code_description()
+        terminal["env_type"] = "ssh"
+        remote_description = execute_code_description()
+    finally:
+        registry.deregister(probe_name)
+        model_tools._clear_tool_defs_cache()
+
+    assert "tool_call(name:" in local_description
+    assert "tool_call(name:" not in remote_description
+
+
 def test_local_execute_code_calls_deferred_tool_in_session_scope(monkeypatch):
     probe_name = "execute_code_deferred_runtime_probe"
     registry.register(
@@ -141,7 +182,9 @@ def test_local_execute_code_calls_deferred_tool_in_session_scope(monkeypatch):
     ]
 
 
-def test_default_agent_can_call_advertised_deferred_bridge(monkeypatch):
+@pytest.mark.parametrize("dispatch_path", ["sequential", "concurrent"])
+def test_default_agent_can_call_advertised_deferred_bridge(monkeypatch, dispatch_path):
+    from agent.agent_runtime_helpers import invoke_tool
     from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
 
     probe_name = "execute_code_default_agent_deferred_probe"
@@ -189,7 +232,20 @@ def test_default_agent_can_call_advertised_deferred_bridge(monkeypatch):
     )
 
     try:
-        raw = _resolve_sequential_dispatch(agent, ref, []).execute(ref.args)
+        if dispatch_path == "sequential":
+            raw = _resolve_sequential_dispatch(agent, ref, []).execute(ref.args)
+        else:
+            raw = invoke_tool(
+                agent,
+                ref.name,
+                ref.args,
+                ref.task_id,
+                ref.call_id,
+                messages=[],
+                pre_tool_block_checked=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
     finally:
         from tools.code_kernel import _REGISTRY
 
@@ -331,6 +387,60 @@ def test_deferred_bridge_cannot_call_tool_outside_session_scope(monkeypatch):
     result = json.loads(raw)
     assert result["status"] == "success", raw
     assert "not available" in result["output"]
+    assert calls == []
+
+
+def test_late_local_rpc_request_cannot_use_next_cell_session(monkeypatch):
+    probe_name = "execute_code_late_cell_probe"
+    calls = []
+    toolset = "plugin_execute_code_late_cell_probe"
+    registry.register(
+        name=probe_name,
+        toolset=toolset,
+        schema=_probe_schema(probe_name),
+        handler=lambda _args, **kwargs: calls.append(kwargs.get("session_id"))
+        or json.dumps({"ok": True}),
+    )
+    monkeypatch.setattr(
+        "tools.terminal_tool._get_env_config",
+        lambda: {"env_type": "local"},
+    )
+    common = {
+        "task_id": "execute-code-late-cell-task",
+        "enabled_tools": ["tool_call"],
+        "enabled_toolsets": [toolset],
+    }
+
+    try:
+        first = code_execution_tool.execute_code(
+            (
+                "import threading\n"
+                "from hermes_tools import tool_call\n"
+                "late_call_gate = threading.Event()\n"
+                "late_call_done = threading.Event()\n"
+                "def late_call():\n"
+                "    late_call_gate.wait()\n"
+                f"    tool_call({probe_name!r}, {{}})\n"
+                "    late_call_done.set()\n"
+                "threading.Thread(target=late_call, daemon=True).start()\n"
+            ),
+            session_id="cell-session-a",
+            **common,
+        )
+        second = code_execution_tool.execute_code(
+            "late_call_gate.set()\nassert late_call_done.wait(2)\nprint('settled')\n",
+            session_id="cell-session-b",
+            **common,
+        )
+    finally:
+        from tools.code_kernel import _REGISTRY
+
+        _REGISTRY.shutdown()
+        registry.deregister(probe_name)
+        model_tools._clear_tool_defs_cache()
+
+    assert json.loads(first)["status"] == "success", first
+    assert json.loads(second)["status"] == "success", second
     assert calls == []
 
 

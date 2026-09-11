@@ -2158,7 +2158,8 @@ class TestConcurrentToolExecution:
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
                 enabled_toolsets=agent.enabled_toolsets,
-                disabled_toolsets=agent.disabled_toolsets,
+                # No configured filters means an explicit all-toolsets agent grant.
+                disabled_toolsets=[],
                 tool_request_middleware_trace=[],
             )
             assert result == "result"

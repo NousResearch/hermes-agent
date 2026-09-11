@@ -10,19 +10,52 @@ state_lost/state_reset reporting, fail-open, and owner isolation.
 """
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
     _REMOTE_KERNELS,
+    REMOTE_KERNEL_RUNNER_SOURCE,
     RemoteKernel,
     execute_in_remote_kernel,
     shutdown_all_remote_kernels,
     shutdown_remote_kernels_for_owner,
 )
+
+
+class TestGeneratedRunner(unittest.TestCase):
+    def test_remote_runner_starts_with_cell_authority_support(self):
+        with tempfile.TemporaryDirectory() as raw_dir:
+            kernel_dir = Path(raw_dir)
+            (kernel_dir / "cells").mkdir()
+            runner = kernel_dir / "kernel_runner.py"
+            from tools.code_execution_tool import MAX_STDOUT_BYTES
+            from tools.code_kernel import RUNNER_CELL_SOURCE
+
+            runner.write_text(
+                REMOTE_KERNEL_RUNNER_SOURCE.format(
+                    cell_source=RUNNER_CELL_SOURCE,
+                    capture_limit=MAX_STDOUT_BYTES,
+                    idle_exit=0,
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(runner)],
+                cwd=kernel_dir,
+                env={**os.environ, "HERMES_KERNEL_DIR": str(kernel_dir)},
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class ScriptedEnv:

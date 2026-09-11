@@ -60,6 +60,16 @@ def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
     )
 
 
+def _rpc_cell_token_ok(request: dict, expected) -> bool:
+    """Validate a persistent-kernel request against its immutable cell authority."""
+    if expected is None:
+        return True
+    expected_token = expected() if callable(expected) else expected
+    return bool(expected_token) and secrets.compare_digest(
+        str(request.get("cell_token") or "").encode(), str(expected_token).encode()
+    )
+
+
 def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_counter: list,
                         max_tool_calls: int, dispatch, tool_call_log: list, call_start: float,
                         where: str) -> str:
@@ -92,7 +102,8 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
                      stop_event: threading.Event, rpc_token: str, dispatch=None,
-                     session_id=None, enabled_toolsets=None, disabled_toolsets=None):
+                     session_id=None, enabled_toolsets=None, disabled_toolsets=None,
+                     cell_token=None):
     """Accept one client and serve newline-delimited JSON requests until it disconnects, idles
     300s, or the call limit is reached. ``tool_call_counter`` is a mutable ``[int]``. ``dispatch``
     overrides how an allowed, budgeted call runs: per-call sandboxes use the default (the thread
@@ -141,7 +152,10 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                         request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
                         max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                         call_start=call_start, where="sandbox",
-                    ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
+                    ) if (
+                        _rpc_token_ok(request, rpc_token)
+                        and _rpc_cell_token_ok(request, cell_token)
+                    ) else tool_error("Unauthorized RPC request")
                 conn.sendall((_serialize_rpc_result(resp) + "\n").encode())
     except socket.timeout:
         logger.debug("RPC listener socket timeout")
@@ -158,7 +172,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
 def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_call_counter: list,
                    max_tool_calls: int, allowed_tools: frozenset, stop_event: threading.Event,
                    rpc_token: str, session_id=None, enabled_toolsets=None,
-                   disabled_toolsets=None):
+                   disabled_toolsets=None, cell_token=None):
     """Poll the remote filesystem for request files and answer them. Background thread; each
     ``env.execute()`` is an independent process, so this is safe alongside the script-execution
     thread. Malformed or unauthorized requests are removed without a response."""
@@ -193,6 +207,10 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     continue
                 if not _rpc_token_ok(request, rpc_token):
                     logger.debug("Unauthorized RPC request in %s", req_file)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    continue
+                if not _rpc_cell_token_ok(request, cell_token):
+                    logger.debug("Stale-cell RPC request in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
                 tool_result = _handle_rpc_request(

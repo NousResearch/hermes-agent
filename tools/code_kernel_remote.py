@@ -46,6 +46,7 @@ import io
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -270,14 +271,19 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     return kernel, reused, state_reset, state_lost
 
 
-def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str, Dict[str, Any]]:
+def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int,
+                     rpc_cell_token: str = "") -> Tuple[str, Dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
     from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json.tmp",
-                         json.dumps({"id": seq, "code": code}, ensure_ascii=False))
+                         json.dumps({
+                             "id": seq,
+                             "code": code,
+                             "rpc_cell_token": rpc_cell_token,
+                         }, ensure_ascii=False))
     kernel.sh(f"mv {q_cells}/cell_req_{seq}.json.tmp {q_cells}/cell_req_{seq}.json", timeout=10)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -348,17 +354,20 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     except Exception:
         pass
     tool_call_counter, stop_event = [0], threading.Event()
+    rpc_cell_token = secrets.token_urlsafe(32)
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, [], tool_call_counter,
               max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id,
-              enabled_toolsets, disabled_toolsets))
+              enabled_toolsets, disabled_toolsets, rpc_cell_token))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:
-        cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
+        cell_status, cell_payload = _run_remote_cell(
+            kernel, code, timeout, rpc_cell_token=rpc_cell_token,
+        )
     finally:
         stop_event.set()
         rpc_thread.join(timeout=5)

@@ -218,6 +218,42 @@ def generate_hermes_tools_module(enabled_tools: List[str],
 
 _COMMON_HELPERS = '''\
 
+_rpc_cell_scope = getattr(__import__("builtins"), "_HERMES_RPC_CELL_SCOPE", None)
+
+
+def _rpc_cell_token():
+    if _rpc_cell_scope is not None:
+        return getattr(_rpc_cell_scope, "token", "")
+    return os.environ.get("HERMES_RPC_CELL_TOKEN", "")
+
+
+if _rpc_cell_scope is not None and not getattr(threading.Thread.start, "_hermes_rpc_cell_scope", False):
+    _original_thread_start = threading.Thread.start
+
+    def _start_with_rpc_cell_scope(thread, *args, **kwargs):
+        cell_token = _rpc_cell_token()
+        original_run = thread.run
+
+        def run_with_rpc_cell_scope():
+            previous = getattr(_rpc_cell_scope, "token", None)
+            _rpc_cell_scope.token = cell_token
+            try:
+                return original_run()
+            finally:
+                if previous is None:
+                    try:
+                        del _rpc_cell_scope.token
+                    except AttributeError:
+                        pass
+                else:
+                    _rpc_cell_scope.token = previous
+
+        thread.run = run_with_rpc_cell_scope
+        return _original_thread_start(thread, *args, **kwargs)
+
+    _start_with_rpc_cell_scope._hermes_rpc_cell_scope = True
+    threading.Thread.start = _start_with_rpc_cell_scope
+
 # ---------------------------------------------------------------------------
 # Convenience helpers (avoid common scripting pitfalls)
 # ---------------------------------------------------------------------------
@@ -302,6 +338,7 @@ def _call(tool_name, args):
         "tool": tool_name,
         "args": args,
         "token": os.environ.get("HERMES_RPC_TOKEN", ""),
+        "cell_token": _rpc_cell_token(),
     }) + "\\n"
     # Session kernels outlive the RPC server's 300s idle window, so their
     # connection can be legitimately gone by the next cell. The server
@@ -377,6 +414,7 @@ def _call(tool_name, args):
             "args": args,
             "seq": seq,
             "token": os.environ.get("HERMES_RPC_TOKEN", ""),
+            "cell_token": _rpc_cell_token(),
         }, f)
     os.rename(tmp, req_file)
 

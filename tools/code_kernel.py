@@ -44,6 +44,8 @@ _RUNNER_CAPTURE_BYTES = 1_000_000
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
 RUNNER_CELL_SOURCE = '''\
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+_RPC_CELL_SCOPE = getattr(__import__("builtins"), "_HERMES_RPC_CELL_SCOPE", threading.local())
+setattr(__import__("builtins"), "_HERMES_RPC_CELL_SCOPE", _RPC_CELL_SCOPE)
 
 
 def _clip(text):
@@ -54,13 +56,22 @@ def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    previous_cell_token = getattr(_RPC_CELL_SCOPE, "token", None)
+    _RPC_CELL_SCOPE.token = request.get("rpc_cell_token", "")
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
-    except SystemExit as exc:
-        status, trace = "exit", "SystemExit: " + repr(exc.code)
-    except BaseException:
-        status, trace = "error", traceback.format_exc()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
+        except SystemExit as exc:
+            status, trace = "exit", "SystemExit: " + repr(exc.code)
+        except BaseException:
+            status, trace = "error", traceback.format_exc()
+    finally:
+        if previous_cell_token is None:
+            with contextlib.suppress(AttributeError):
+                del _RPC_CELL_SCOPE.token
+        else:
+            _RPC_CELL_SCOPE.token = previous_cell_token
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
@@ -246,6 +257,7 @@ class CellAuthority:
         self.disabled_toolsets = disabled_toolsets
         self.ctx = contextvars.copy_context()
         self.active = True
+        self.rpc_cell_token = secrets.token_urlsafe(32)
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
@@ -468,15 +480,22 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
     authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
     from tools.code_execution_rpc import _rpc_server_loop
     from tools.registry import tool_error
-    def _dispatch(tool_name: str, tool_args: dict) -> str:
+    def _current_authority() -> Optional[CellAuthority]:
         authority = kernel.cell_authority
+        return authority if authority is not None and authority.active else None
+
+    def _dispatch(tool_name: str, tool_args: dict) -> str:
+        authority = _current_authority()
         if authority is None:
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
         return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+                         dispatch=_dispatch,
+                         cell_token=lambda: (
+                             _current_authority().rpc_cell_token if _current_authority() is not None else ""
+                         ))
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -805,7 +824,11 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             kernel.tool_call_counter[0] = 0
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            kernel.proc.stdin.write((json.dumps({
+                "id": uuid.uuid4().hex,
+                "code": code,
+                "rpc_cell_token": authority.rpc_cell_token,
+            }) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
             result = _cell_result(

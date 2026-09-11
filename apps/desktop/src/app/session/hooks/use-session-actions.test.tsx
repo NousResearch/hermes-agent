@@ -2466,6 +2466,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     cleanup()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
+    setSelectedStoredSessionId(null)
     setMessages([])
     setSessions([])
     vi.mocked(getSession).mockReset()
@@ -3585,6 +3586,96 @@ describe('resumeSession warm-cache mapping integrity', () => {
     const renderedMessages = JSON.stringify(resumedState?.messages)
     expect(renderedMessages).toContain('still here after wake')
     expect(renderedMessages).toContain('still here after wake too')
+  })
+
+  it('keeps the on-screen transcript across cold reconnect when REST returns empty (#100970)', async () => {
+    // Sleep/wake and VPS blips call resetTileRuntimeBindings, which drops the
+    // stored→runtime map and forces a cold session.resume. The concurrent REST
+    // prefetch can race a remote state.db and return []. That empty page must
+    // not wipe completed turns still painted in $messages, and omit_messages
+    // resume must graft onto that view instead of reconciling against [].
+    const liveMessages = [
+      {
+        id: 'user-completed',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'completed turn before disconnect' }]
+      },
+      {
+        id: 'assistant-completed',
+        role: 'assistant' as const,
+        parts: [{ type: 'text' as const, text: 'completed answer before disconnect' }]
+      },
+      {
+        id: 'user-active',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'active turn still running' }]
+      },
+      {
+        id: 'assistant-stream-1',
+        role: 'assistant' as const,
+        pending: true,
+        parts: [{ type: 'text' as const, text: 'partial tool output before lid close' }]
+      }
+    ]
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 4, title: 'VPS chat' })])
+    setSelectedStoredSessionId('stored-A')
+    setMessages(liveMessages)
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'rt-A-reborn',
+          session_key: 'stored-A',
+          resumed: params?.session_id,
+          message_count: 4,
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          inflight: {
+            user: 'active turn still running',
+            assistant: 'partial tool output before lid close',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-A"
+        runtimeIdByStoredSessionIdRef={{ current: new Map() }}
+        sessionStateByRuntimeIdRef={{ current: new Map() }}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ omit_messages: true, session_id: 'stored-A' })
+    )
+
+    const painted = JSON.stringify($messages.get())
+    const cached = JSON.stringify(resumedState?.messages)
+    expect(painted).toContain('completed turn before disconnect')
+    expect(painted).toContain('completed answer before disconnect')
+    expect(painted).toContain('partial tool output before lid close')
+    expect(cached).toContain('completed turn before disconnect')
+    expect(cached).toContain('completed answer before disconnect')
+    expect($activeSessionId.get()).toBe('rt-A-reborn')
+    expect($resumeFailedSessionId.get()).toBeNull()
   })
 
   it('keeps the complete persisted transcript when activating a compressed running session', async () => {

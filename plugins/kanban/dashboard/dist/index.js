@@ -3167,7 +3167,13 @@
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
-    const [skills, setSkills] = useState("");
+    // One skill picked from the assignee's installed set ("" = none).
+    const [skill, setSkill] = useState("");
+    // The assignee-scoped skill roster for the dropdown. Refetched whenever
+    // the assignee changes (blank = the resolved default profile), so the
+    // options always match the profile that will actually run the task.
+    const [profileSkills, setProfileSkills] = useState([]);
+    const [skillsLoadErr, setSkillsLoadErr] = useState(false);
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
     // without one keep scratch for disposable research and ops tasks.
@@ -3183,6 +3189,31 @@
     const [goalMode, setGoalMode] = useState(false);
     const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
+    // Assignee-scoped skills roster. Debounced (assignee is typed free-text)
+    // and race-guarded: only the latest fetch's result lands. A failed fetch
+    // (unknown profile name, network) degrades to an empty roster with an
+    // inline hint — the task still creates fine without an extra skill.
+    useEffect(function () {
+      const profile = assignee.trim();
+      const timer = setTimeout(function () {
+        SDK.fetchJSON(`${API}/profiles/${encodeURIComponent(profile || "default")}/skills`)
+          .then(function (d) {
+            if (cancelled) return;
+            setProfileSkills((d && d.skills) || []);
+            setSkillsLoadErr(false);
+          })
+          .catch(function () {
+            if (cancelled) return;
+            setProfileSkills([]);
+            setSkillsLoadErr(true);
+          });
+      }, 250);
+      var cancelled = false;
+      return function () { cancelled = true; clearTimeout(timer); };
+    }, [assignee]);
+    // A pick left over from a previous assignee must never ride along.
+    const selectedSkill = profileSkills.indexOf(skill) >= 0 ? skill : "";
+
     const submit = function () {
       const trimmed = title.trim();
       if (!trimmed) return;
@@ -3193,14 +3224,10 @@
         triage: props.columnName === "triage",
       };
       if (parent) body.parents = [parent];
-      // Parse comma-separated skills into a clean list. Blank = no
+      // One skill picked from the assignee's installed set. Blank = no
       // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
-      const skillList = skills
-        .split(",")
-        .map(function (s) { return s.trim(); })
-        .filter(function (s) { return s.length > 0; });
-      if (skillList.length > 0) body.skills = skillList;
+      // always auto-loads kanban-worker; this is an extra on top.
+      if (selectedSkill) body.skills = [selectedSkill];
       // Only send workspace_kind when it's non-default. Keeps the request
       // shape small and interoperable with older dispatcher versions.
       if (workspaceKind && workspaceKind !== "scratch") {
@@ -3216,7 +3243,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkill("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -3297,15 +3324,26 @@
           ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "skillsLabel", "Skills"),
-              tx(t, "skillsLabelHint", "(optional, comma-separated)")),
-            h(Input, {
-              value: skills,
-              onChange: function (e) { setSkills(e.target.value); },
-              placeholder: tx(t, "skillsPlaceholder",
-                "skills (optional, comma-separated): translation, github-code-review"),
-              title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
+              tx(t, "skillsLabelHint", "(from the assignee's profile)")),
+            h(Select, Object.assign({
+              value: selectedSkill,
               className: "h-8 text-sm",
-            }),
+              title: "Force-load this skill into the worker (in addition to the built-in kanban-worker). Options are the skills installed for the chosen assignee.",
+            }, selectChangeHandler(setSkill)),
+              h(SelectOption, { value: "" },
+                tx(t, "noSkill", "— none —")),
+              profileSkills.map(function (name) {
+                return h(SelectOption, { key: name, value: name }, name);
+              }),
+            ),
+            // Empty roster / failed fetch are states, not errors — the task
+            // still creates fine without an extra skill.
+            h("div", { className: "text-[0.625rem] text-muted-foreground" },
+              skillsLoadErr
+                ? tx(t, "skillsLoadFailed", "Could not load this profile's skills.")
+                : profileSkills.length === 0
+                  ? tx(t, "noSkillsForProfile", "No skills installed for this profile.")
+                  : ""),
           ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "workspace", "Workspace")),

@@ -691,21 +691,6 @@ class SessionCompressionMixin:
                 break
             root = parent
             ancestors.add(root["id"])
-        lineage = [root["id"]]
-        seen = {root["id"]}
-        current = root
-        while current.get("end_reason") == "compression":
-            rows = self._read_all(
-                """
-                SELECT * FROM sessions
-                WHERE parent_session_id = ?
-                ORDER BY started_at ASC
-                """, (current["id"],))
-            next_child = next((dict(row) for row in rows if self._is_compression_child_row(dict(row))), None)
-            if not next_child or next_child["id"] in seen:
-                break
-            lineage.append(next_child["id"])
-            seen.add(next_child["id"])
-            current = next_child
+        lineage = self.get_compression_chain(root["id"])
         # Later tips are included only when the requested session itself was compacted.
         return lineage if session_id in lineage else [session_id]

@@ -217,6 +217,23 @@ class TestLogicalDisplayLineage:
             ("assistant", "branch-tip turn"),
         ]
 
+    def test_live_continuation_ignores_stale_compression_sibling(self, db):
+        db.create_session("parent", source="desktop")
+        db.append_message("parent", "user", "parent prefix")
+        db.end_session("parent", "compression")
+        db.create_session("stale", source="desktop", parent_session_id="parent")
+        db.append_message("stale", "assistant", "stale sibling")
+        db.end_session("stale", "ws_orphan_reap")
+        db.create_session("live", source="desktop", parent_session_id="parent")
+        db.append_message("live", "assistant", "live tip")
+
+        display = db.get_display_messages("live")
+
+        assert _texts(display) == [
+            ("user", "parent prefix"),
+            ("assistant", "live tip"),
+        ]
+
 
 class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):

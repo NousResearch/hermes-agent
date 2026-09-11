@@ -15,8 +15,12 @@ export function runPython(args, options = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     runPython(process.argv.slice(2))
-  } catch (error) {
-    console.error('[python build]', error.message)
-    process.exitCode = Number.isInteger(error.status) && error.status !== 0 ? error.status : 1
+  } catch (/** @type {unknown} */ error) {
+    // execFileSync throws a child_process exception carrying .status; anything
+    // else is reported as-is so a missing Python still prints a useful line.
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error('[python build]', detail)
+    const status = typeof (/** @type {any} */ (error).status) === 'number' ? /** @type {any} */ (error).status : 0
+    process.exitCode = status !== 0 ? status : 1
   }
 }

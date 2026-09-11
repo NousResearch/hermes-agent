@@ -3126,6 +3126,29 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return agent_result.get("completed") is not False
 
 
+def _should_continue_goal_after_turn(agent_result, final_text) -> bool:
+    """Return True only when a standing goal may be continued after this turn.
+
+    A continuation must be gated on *real* progress. ``final_text`` alone is not
+    enough: the post-turn text deliberately stays non-empty for
+    ``failed``/``partial``/interrupted/errored results (user-facing error text),
+    so a provider failure still yields a non-empty final response. Feeding that
+    to the goal judge makes it answer "continue", which re-enqueues the same
+    synthetic ``[Continuing toward your standing goal]`` prompt and loops on the
+    failure.
+
+    Require non-empty text *and* the same success semantics used by
+    ``_should_clear_resume_pending_after_turn`` so only genuinely completed turns
+    advance the goal. Non-dict results (bare string replies) are treated as
+    successful, matching the legacy text-only behaviour.
+    """
+    if not str(final_text or "").strip():
+        return False
+    if not isinstance(agent_result, dict):
+        return True
+    return _should_clear_resume_pending_after_turn(agent_result)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict, followup_result: dict) -> dict:
     """Carry the outer history offset through queued follow-up drains.

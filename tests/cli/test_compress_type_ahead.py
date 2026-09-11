@@ -33,7 +33,6 @@ runs; the gateway already resolves the concurrent-mutation race via the
 
 from __future__ import annotations
 
-import ast
 import queue as queue_mod
 import threading
 from types import SimpleNamespace

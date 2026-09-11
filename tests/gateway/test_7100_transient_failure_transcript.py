@@ -73,3 +73,38 @@ class TestSuccessfulResultUnaffected:
         failed, ctx_overflow = _classify(agent_result, history_len=10)
         assert not failed
         assert not ctx_overflow
+
+
+class TestMovedClassifierStillClassifies:
+    """Regression guard for the mixin split: ``_hmwa_classify_turn_failure`` now
+    lives in ``gateway.run_turn_hmwa`` and must resolve
+    ``is_context_overflow_failure_result`` from ``gateway.run_turn`` at call time
+    (the split briefly dropped that import, raising ``NameError`` on every
+    finished-turn classification)."""
+
+    @staticmethod
+    def _classify_via_mixin(agent_result: dict):
+        from types import SimpleNamespace
+
+        from gateway.run_turn_hmwa import GatewayTurnHmwaMixin
+
+        entry = SimpleNamespace(session_id="split-import-test")
+        mixin = GatewayTurnHmwaMixin()
+        failed, _hidden, overflow = mixin._hmwa_classify_turn_failure(
+            agent_result, [], entry
+        )
+        return failed, overflow
+
+    def test_transient_failure_classified(self):
+        failed, overflow = self._classify_via_mixin(
+            {"failed": True, "error": "429 Too Many Requests"}
+        )
+        assert failed
+        assert not overflow
+
+    def test_context_overflow_classified(self):
+        failed, overflow = self._classify_via_mixin(
+            {"failed": True, "compression_exhausted": True}
+        )
+        assert failed
+        assert overflow

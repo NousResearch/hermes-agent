@@ -9,7 +9,7 @@ import time
 from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from typing import Any, Optional, Tuple
 logger = logging.getLogger("gateway.run")

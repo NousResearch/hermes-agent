@@ -17,9 +17,24 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, _session_key_namespace
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from utils import base_url_hostname
+
+if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
+    from gateway.run import GatewayRunner  # noqa: F401
+
+# Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+_CONTEXT_OVERFLOW_ERROR_PHRASES = (
+    "context length", "context size", "context window",
+    "maximum context", "token limit", "too many tokens",
+    "reduce the length", "exceeds the limit",
+    "request entity too large", "prompt is too long",
+    "payload too large", "input is too long",
+)
+
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence

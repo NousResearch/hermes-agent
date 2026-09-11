@@ -20,7 +20,12 @@ from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
+    from gateway.run import GatewayRunner  # noqa: F401
+    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+
 logger = logging.getLogger("gateway.run")
 
 class GatewayInboundMixin(GatewayInboundHmMixin, GatewayInboundEnrichMixin, GatewayInboundPrependMixin):

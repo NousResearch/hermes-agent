@@ -1266,6 +1266,7 @@ class GatewayTurnHmwaMixin:
         Context-overflow failures must NOT persist the user message (session would grow and
         reproduce the failure forever); transient failures (429/timeout/5xx) DO."""
         from gateway.run import _is_gateway_hidden_reasoning_incomplete_turn
+        from gateway.run_turn import is_context_overflow_failure_result
         # Save the full conversation to the transcript, including tool calls. This preserves the complete
         # agent loop (tool_calls, tool results, intermediate reasoning) so sessions can be resumed with full
         # context and transcripts are useful for debugging and training data. IMPORTANT: For

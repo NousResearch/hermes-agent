@@ -978,7 +978,8 @@ def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | Non
     uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
     global HermesOAuthClientProvider
     if not _OAUTH_AVAILABLE or _sdk_class("OAuthClientProvider") is None:
-        logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Install with: pip install 'mcp>=1.26.0'", server_name)
+        logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Run: "
+                       "python -c \"from pm import sync_venv; sync_venv(['mcp'], explicit=True)\"", server_name)
         return None
     from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
 

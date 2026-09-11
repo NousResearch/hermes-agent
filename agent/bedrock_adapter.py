@@ -54,8 +54,7 @@ def _require_boto3():
     except ImportError:
         raise ImportError(
             "The 'boto3' package is required for the AWS Bedrock provider. "
-            "Install it with: pip install boto3\n"
-            "Or install Hermes with Bedrock support: pip install -e '.[bedrock]'"
+            "Run: python -c \"from pm import sync_venv; sync_venv(['bedrock'], explicit=True)\""
         )
     try:
         version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
@@ -64,7 +63,7 @@ def _require_boto3():
     if version < _MIN_BOTO3_VERSION:
         raise RuntimeError(
             f"boto3 {boto3.__version__} does not support converse_stream "
-            f"(minimum 1.34.59 required). Upgrade with: pip install --upgrade boto3"
+            f"(minimum 1.34.59 required). Run: hermes pm repair"
         )
     return boto3
 

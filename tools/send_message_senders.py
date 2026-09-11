@@ -304,7 +304,8 @@ async def _send_telegram(
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
     except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
+        return {"error": "python-telegram-bot not installed. Run: "
+                "python -c \"from pm import sync_venv; sync_venv(['telegram'], explicit=True)\""}
     except Exception as e:
         return _error(f"Telegram send failed: {e}")
 
@@ -366,7 +367,8 @@ async def _resolve_slack_user_target(token, chat_id):
     try:
         import aiohttp
     except ImportError:
-        return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return None, {"error": "aiohttp not installed. Run: "
+                      "python -c \"from pm import sync_venv; sync_venv(['messaging'], explicit=True)\""}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
@@ -538,7 +540,8 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
-        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+        return {"error": "Matrix dependencies not installed. Run: "
+                "python -c \"from pm import sync_venv; sync_venv(['matrix'], explicit=True)\""}
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
@@ -619,7 +622,7 @@ async def _send_qqbot(pconfig, chat_id, message):
     try:
         import httpx
     except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
+        return _error("QQBot direct send requires httpx. Run: hermes pm repair")
 
     # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
     from gateway.config import _getenv

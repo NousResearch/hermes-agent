@@ -173,7 +173,8 @@ _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittent
 # Predicates/generator names resolve module globals at call time so test monkeypatches apply.
 _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "elevenlabs": (lambda: _importable(_import_elevenlabs), "ElevenLabs", "_generate_elevenlabs",
-                   "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"),
+                   "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: "
+                   "python -c \"from pm import sync_venv; sync_venv(['tts-premium'], explicit=True)\""),
     "openai": (lambda: _importable(_import_openai_client), "OpenAI TTS", "_generate_openai_tts",
                "OpenAI provider selected but 'openai' package not installed."),
     "deepinfra": (lambda: _importable(_import_openai_client), "DeepInfra TTS", "_generate_deepinfra_tts",
@@ -186,15 +187,13 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "gemini": (None, "Google Gemini TTS", "_generate_gemini_tts", None),
     "neutts": (lambda: _check_neutts_available(), "NeuTTS (local)", "_generate_neutts",
                "NeuTTS provider selected but neutts is not installed. "
-               "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."),
+               "Run hermes setup tts and choose NeuTTS; espeak-ng is also required."),
     "kittentts": (lambda: _importable(_import_kittentts), "KittenTTS (local, ~25MB)", "_generate_kittentts",
                   "KittenTTS provider selected but 'kittentts' package not installed. "
-                  "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
-                  "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"),
+                  "Run 'hermes setup tts' and choose KittenTTS."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
-              "Run 'hermes tools' and select Piper under TTS, or install manually: "
-              "pip install piper-tts")}
+              "Run 'hermes tools' and select Piper under TTS.")}
 
 
 def _error_json(message: str) -> str:
@@ -225,8 +224,9 @@ def _select_builtin_engine(provider: str) -> tuple:
         logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
         return "neutts", None
     return provider, _error_json(
-        "No TTS provider available. Install edge-tts (pip install edge-tts) "
-        "or set up NeuTTS for local synthesis.")
+        "No TTS provider available. Enable Edge TTS with: "
+        "python -c \"from pm import sync_venv; sync_venv(['edge-tts'], explicit=True)\" "
+        "or run 'hermes setup tts' and choose NeuTTS for local synthesis.")
 
 
 def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str]) -> None:

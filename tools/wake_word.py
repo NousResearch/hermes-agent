@@ -389,7 +389,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
-        hint = f"uv sync --frozen --extra {feature}"
+        hint = f"python -c \"from pm import sync_venv; sync_venv(['{feature}'], explicit=True)\""
     elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
     elif not stt_ok or not tts_ok:

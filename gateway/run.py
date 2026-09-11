@@ -3246,7 +3246,7 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
     Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
                      "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
     Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
-                       "Yuanbao: websockets not installed. Run: pip install websockets")}
+                       "Yuanbao: websockets not installed. Run: hermes pm repair")}
 
 
 def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:

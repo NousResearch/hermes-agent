@@ -355,7 +355,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+                           "Use an HTTP proxy instead.", proxy_url)
         return None
 
 

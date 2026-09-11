@@ -34,7 +34,7 @@ SCOPE_AI_AZURE_DEFAULT = "https://ai.azure.com/.default"
 _AZURE_IDENTITY_FEATURE = "azure-identity"
 _INSTALL_MSG = "The 'azure-identity' package is required for Azure AI Foundry Entra ID authentication. "
 _LAZY_INSTALL_HINT = (
-    "pip install azure-identity manually, or enable lazy installs (security.allow_lazy_installs: true in config.yaml)."
+    "Run: python -c \"from pm import sync_venv; sync_venv(['azure-identity'], explicit=True)\""
 )
 _AUTH_HEADERS = ("Authorization", "authorization", "Api-Key", "api-key", "X-Api-Key", "x-api-key")
 
@@ -57,7 +57,7 @@ def _require_azure_identity():
         try:
             from pm import InstallError, ensure_import
         except ImportError as exc:
-            raise ImportError(_INSTALL_MSG + "Install it with: pip install azure-identity") from exc
+            raise ImportError(_INSTALL_MSG + "Run: hermes pm repair") from exc
         try:
             ensure_import(_AZURE_IDENTITY_FEATURE)
         except InstallError as exc:
@@ -118,7 +118,7 @@ def _install_failure(allow_install: bool) -> Optional[Dict[str, Any]]:
     if has_azure_identity_installed():
         return None
     if not allow_install:
-        return {"error": "azure-identity not installed", "hint": "pip install azure-identity (or rely on lazy install at first use)"}
+        return {"error": "azure-identity not installed", "hint": _LAZY_INSTALL_HINT}
     try:
         _require_azure_identity()
     except ImportError as exc:

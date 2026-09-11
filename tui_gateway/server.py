@@ -793,6 +793,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
         ctx = contextvars.copy_context()  # the pool worker must see the bound transport
+        if normalized[1] in _CONNECTOR_RPC_METHODS:
+            ctx.run(_capture_connector_rpc_owner, normalized[2])
 
         def run():
             try:
@@ -1953,7 +1955,8 @@ from . import (  # noqa: E402
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
-    methods_vault as _methods_vault, methods_free_tier as _methods_free_tier)
+    methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
+    methods_connectors as _methods_connectors)
 
 for _m in (
     _session_registry, _agent_factory,
@@ -1964,6 +1967,6 @@ for _m in (
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
     _m.register(sys.modules[__name__])
 del _m

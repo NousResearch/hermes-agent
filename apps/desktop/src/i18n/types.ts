@@ -219,6 +219,35 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  connectors: {
+    title: string
+    connect: string
+    skip: string
+    cancel: string
+    retry: string
+    grant: string
+    connected: string
+    skipped: string
+    disabled: string
+    failed: string
+    needsAuth: string
+    opening: string
+    waiting: string
+    timeout: string
+    keepWaiting: string
+    refresh: string
+    statusError: string
+    connectError: string
+    unavailable: string
+    ownerMissing: string
+    search: string
+    empty: string
+    continue: string
+    continueBusy: string
+    continueFailed: string
+    disclaimer: string
+    execution: string
+  }
   sessionImport: {
     title: string
     subtitle: string
@@ -2855,6 +2884,15 @@ export interface Translations {
     }
   }
 
+  /** The guided first run's pre-written opening line — banked, not generated,
+   *  so the first paint costs no model time. Translated per locale because the
+   *  model is told to speak the user's language from its first real turn, and
+   *  an English opener above a Japanese reply reads as two different agents.
+   *  `nameSuggestion` offers the OS account name as a default. */
+  guidedGreeting: {
+    line: string
+    nameSuggestion: (name: string) => string
+  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -2992,6 +3030,8 @@ export interface Translations {
     openModelPicker: string
     dismiss: string
     // Statusbar chip.
+    /** The status-bar chip's label: the provider name alone; the model id and the sign-in follow it. */
+    providerName: string
     statusLabel: (model: string) => string
     // Sign-in dialog.
     signIn: string

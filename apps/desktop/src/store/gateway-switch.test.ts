@@ -18,7 +18,12 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
-import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
+import {
+  $transcriptTailBySessionId,
+  clearTranscriptTailPaging,
+  recordTranscriptTail,
+  transcriptTailState
+} from '@/store/transcript-tail'
 
 import {
   $gatewaySwitching,
@@ -65,6 +70,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     $stalledSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
+    clearTranscriptTailPaging()
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
@@ -99,7 +105,6 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     recordTranscriptTail('recycled-id', page, { connectionId: 'remote-1', profile: 'default' })
     expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(1)
     expect(transcriptTailState('recycled-id')?.possiblyTruncated).toBe(true)
-    $transcriptTailBySessionId.set({})
   })
 
   it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {

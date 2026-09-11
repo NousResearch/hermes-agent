@@ -499,7 +499,8 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     """Resolve a room/user list from config.extra[key], else the env var."""
     raw = config.extra.get(key)
     if raw is None:
-        raw = os.getenv(env_name, "")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
+        raw = _startup_env_secret(env_name)
     return _csv_set(raw)
 
 
@@ -882,10 +883,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._allowed_user_ids: Set[str] = _csv_set(os.getenv("MATRIX_ALLOWED_USERS", ""))
+        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
+        # allowlist, which must not decide who approves tool calls on a secondary bot.
+        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in os.getenv("MATRIX_IGNORE_USER_PATTERNS", "").split(",") if p.strip()):
+        for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -2410,7 +2413,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_authorized_user(self, user_id: str) -> bool:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
-        return _env_truthy("GATEWAY_ALLOW_ALL_USERS") or bool(
+        # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
+        return _startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(

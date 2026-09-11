@@ -3,6 +3,36 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import type { Translations } from './types'
 
 export const zh: Translations = {
+  connectors: {
+    title: '连接你的应用',
+    connect: '连接',
+    skip: '暂不连接',
+    cancel: '停止等待',
+    retry: '重试',
+    grant: '重新连接',
+    connected: '已连接',
+    skipped: '已跳过',
+    disabled: '不可用',
+    failed: '连接失败',
+    needsAuth: '授权已过期',
+    opening: '正在打开登录…',
+    waiting: '请在浏览器中完成连接…',
+    timeout: '仍在等待授权。',
+    keepWaiting: '继续等待',
+    refresh: '刷新状态',
+    statusError: '无法检查连接，请刷新重试。',
+    connectError: '无法开始授权，请重试。',
+    unavailable: '此会话暂时无法使用连接器。',
+    ownerMissing: '请重新打开此对话以管理连接。',
+    search: '查找应用',
+    empty: '没有匹配的应用',
+    continue: '在对话中继续',
+    continueBusy: '等待当前操作完成',
+    continueFailed: '无法继续，请重试。',
+    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    execution: '连接器工具'
+  },
+
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -1705,18 +1735,18 @@ export const zh: Translations = {
       submitLocalNotice: '确认后将上传此确切的软件包供组织审核。审核完成前不会发布。',
       reloadReview: '重新加载审核内容',
       notificationPreferences: {
-        title: "通知设置",
-        scope: "管理此组织中跨客户端的主动通知。手动浏览和分享仍可使用。",
-        on: "通知已开启",
-        muted: "通知已静音",
-        day: "1 天",
-        week: "1 周",
-        month: "30 天",
-        forever: "无限期",
-        pending: "选择已保存在本地，正在等待同步。",
-        failed: "同步失败。请刷新设置后重新选择。",
-        conflict: "其他客户端更改了偏好。请刷新查看。",
-        expired: "此选择已过期。请刷新设置后重试。",
+        title: '通知设置',
+        scope: '管理此组织中跨客户端的主动通知。手动浏览和分享仍可使用。',
+        on: '通知已开启',
+        muted: '通知已静音',
+        day: '1 天',
+        week: '1 周',
+        month: '30 天',
+        forever: '无限期',
+        pending: '选择已保存在本地，正在等待同步。',
+        failed: '同步失败。请刷新设置后重新选择。',
+        conflict: '其他客户端更改了偏好。请刷新查看。',
+        expired: '此选择已过期。请刷新设置后重试。'
       },
       title: '集体智慧',
       loading: '正在加载集体智慧…',
@@ -3465,6 +3495,10 @@ export const zh: Translations = {
     }
   },
 
+  guidedGreeting: {
+    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
+    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3623,7 +3657,8 @@ export const zh: Translations = {
     stripBody: '打开模型选择器试用，或登录 Nous 账户。',
     openModelPicker: '打开模型选择器',
     dismiss: '关闭',
-    statusLabel: model => `Nous · 免费层 · ${model}`,
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
     signIn: '登录',
     signInHeading: '登录 Nous 账户以解锁更多模型和工具。',
     settingUp: '正在设置免费推理…',

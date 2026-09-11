@@ -363,7 +363,6 @@ export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> =
 export const getWisdomEntitlement = (profile?: ProfileScope): Promise<WisdomEntitlement> =>
   request('/api/wisdom/entitlement', profile)
 
-
 export const getWisdomSync = (profile?: ProfileScope): Promise<WisdomSyncSnapshot> =>
   request('/api/wisdom/sync', profile)
 export const retryWisdomSync = (profile?: ProfileScope): Promise<WisdomSyncSnapshot> =>

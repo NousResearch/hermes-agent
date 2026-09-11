@@ -122,6 +122,7 @@ describe('system message timestamp text separation', () => {
     const { container } = render(
       <Harness text={'slash:/wisdom\nCollective Wisdom commands\n\n/wisdom browse — Search team skills'} />
     )
+
     const row = container.querySelector('[data-role="system"]')
 
     expect(row?.className).toContain('w-[min(92%,56rem)]')
@@ -132,6 +133,7 @@ describe('system message timestamp text separation', () => {
 
   it('opens Wisdom browse results in an in-app skill preview', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
+
     const api = vi.fn().mockImplementation(({ path }: { path: string }) => {
       if (path.endsWith('/versions/1')) {
         return Promise.resolve({
@@ -199,6 +201,7 @@ describe('system message timestamp text separation', () => {
     })
 
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, openExternal } })
+
     const { container } = render(
       <Harness
         text={

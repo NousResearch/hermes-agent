@@ -178,9 +178,8 @@ export function transcriptTailState(
   return matches.length === 1 ? matches[0][1] : undefined
 }
 
-/** Forget every tail: the backend behind the window changed and a recycled
- *  stored id must not carry the previous backend's paging state. */
-export function clearAllTranscriptTails(): void {
+/** Drops the LRU order as well as the atom. */
+export function clearTranscriptTailPaging(): void {
   transcriptTailOrder = []
   $transcriptTailBySessionId.set({})
 }

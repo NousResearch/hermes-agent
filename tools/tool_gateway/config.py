@@ -4,11 +4,13 @@ Mirrors the ``ToolSearchConfig`` idiom in ``tools/tool_search.py``: a frozen
 dataclass built by a tolerant ``from_raw`` so a typo in user config degrades
 to defaults instead of breaking the agent.
 
-Availability is a two-leg AND that fails closed:
-    connectors_available() = config flag AND managed_nous_tools_enabled()
-The config flag is the user's off switch; the entitlement leg is the portal
-sign-in every managed tool already gates on. The gateway remains authoritative:
-404 routes degrade to local-only, and execution refusals reach the caller.
+Availability fails closed:
+    connectors_available() = config flag AND (free-tier identity OR managed_nous_tools_enabled())
+The config flag is the user's off switch. An existing free-tier identity may
+attempt connector routes without a subscription preflight (the gateway enforces
+its actual grant); every other identity keeps the portal sign-in every managed
+tool already gates on. The gateway remains authoritative: 404 routes degrade to
+local-only, and execution refusals reach the caller.
 """
 
 from __future__ import annotations
@@ -98,7 +100,14 @@ def connectors_available(
         if not resolved_loader().enabled:
             return False
         if entitlement_check is None:
+            from hermes_cli.anon_auth import is_guest_state
+            from tools.managed_tool_gateway import _read_nous_provider_state
             from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+            # Availability must not mint or refresh an identity. The shared reader
+            # already hides free-tier identities when nous.guest is disabled.
+            if is_guest_state(_read_nous_provider_state()):
+                return True
 
             entitlement_check = managed_nous_tools_enabled
         return bool(entitlement_check())

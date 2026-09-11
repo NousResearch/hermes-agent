@@ -3,6 +3,36 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  connectors: {
+    title: 'Connect your apps',
+    connect: 'Connect',
+    skip: 'Not now',
+    cancel: 'Stop waiting',
+    retry: 'Try again',
+    grant: 'Reconnect',
+    connected: 'Connected',
+    skipped: 'Skipped',
+    disabled: 'Unavailable',
+    failed: 'Could not connect',
+    needsAuth: 'Access expired',
+    opening: 'Opening sign-in…',
+    waiting: 'Finish connecting in your browser…',
+    timeout: 'Still waiting for authorization.',
+    keepWaiting: 'Keep waiting',
+    refresh: 'Refresh status',
+    statusError: 'Could not check connections. Try refreshing.',
+    connectError: 'Could not start authorization. Try again.',
+    unavailable: 'Connectors are unavailable for this session.',
+    ownerMissing: 'Reopen this conversation to manage its connections.',
+    search: 'Find an app',
+    empty: 'No matching apps',
+    continue: 'Continue in chat',
+    continueBusy: 'Waiting for this turn to finish',
+    continueFailed: 'Could not continue. Try again.',
+    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    execution: 'Connector tools'
+  },
+
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -1531,18 +1561,19 @@ export const en: Translations = {
   skills: {
     collective: {
       notificationPreferences: {
-        title: "Notification settings",
-        scope: "Your proactive notifications across clients in this organization. Manual browsing and sharing remain available.",
-        on: "Notifications on",
-        muted: "Notifications muted",
-        day: "1 day",
-        week: "1 week",
-        month: "30 days",
-        forever: "Indefinitely",
-        pending: "Your choice is saved locally and waiting to sync.",
-        failed: "Sync failed. Refresh settings before choosing again.",
-        conflict: "Your preference changed on another client. Refresh to review it.",
-        expired: "This choice expired. Refresh settings to try again.",
+        title: 'Notification settings',
+        scope:
+          'Your proactive notifications across clients in this organization. Manual browsing and sharing remain available.',
+        on: 'Notifications on',
+        muted: 'Notifications muted',
+        day: '1 day',
+        week: '1 week',
+        month: '30 days',
+        forever: 'Indefinitely',
+        pending: 'Your choice is saved locally and waiting to sync.',
+        failed: 'Sync failed. Refresh settings before choosing again.',
+        conflict: 'Your preference changed on another client. Refresh to review it.',
+        expired: 'This choice expired. Refresh settings to try again.'
       },
       title: 'Collective Wisdom',
       loading: 'Loading Collective Wisdom…',
@@ -1615,8 +1646,10 @@ export const en: Translations = {
       readEvery: 'Read every file. Approval is bound to the exact three hashes below.',
       publishToTeam: 'Publish to team',
       submitForApproval: 'Submit for approval',
-      publishLocalNotice: 'Confirming uploads this exact package and publishes it to your team after the required checks.',
-      submitLocalNotice: 'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
+      publishLocalNotice:
+        'Confirming uploads this exact package and publishes it to your team after the required checks.',
+      submitLocalNotice:
+        'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
       reloadReview: 'Reload review',
       editReview:
         'Edit the description, SKILL.md, or declarative manifest here. Saving creates a new private revision, reruns scans, and returns new hashes; it does not rewrite your local source skill.',
@@ -1642,7 +1675,8 @@ export const en: Translations = {
       share: 'Share',
       reviewPreviousPage: 'Previous review page',
       reviewNextPage: 'Next review page',
-      sharePreparationNotice: 'Share prepares a local handoff package. You will review it and approve separately before anything is uploaded or published.',
+      sharePreparationNotice:
+        'Share prepares a local handoff package. You will review it and approve separately before anything is uploaded or published.',
       muteNotificationsSoon: 'Mute notifications (coming soon)',
       unmuteNotificationsSoon: 'Unmute notifications (coming soon)',
       openCollective: 'Open Collective',
@@ -3322,6 +3356,10 @@ export const en: Translations = {
     }
   },
 
+  guidedGreeting: {
+    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
+    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  },
   install: {
     stageStates: {
       pending: 'Pending',
@@ -3488,7 +3526,8 @@ export const en: Translations = {
     stripBody: 'Open the model picker to try them, or sign in with a Nous account.',
     openModelPicker: 'Open model picker',
     dismiss: 'Dismiss',
-    statusLabel: model => `Nous · free tier · ${model}`,
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
     signIn: 'Sign in',
     signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',

@@ -22,7 +22,9 @@ function SyncStatus({ profile }: { profile?: ProfileScope }) {
   const controller = useRef<ReturnType<typeof createWisdomSyncController> | null>(null)
   // eslint-disable-next-line no-restricted-syntax -- Effect-owned controller, disposed on close/profile change.
   useEffect(() => {
-    if (!open) {return}
+    if (!open) {
+      return
+    }
 
     const next = createWisdomSyncController({
       read: () => getWisdomSync(scope),
@@ -34,7 +36,9 @@ function SyncStatus({ profile }: { profile?: ProfileScope }) {
     void next.refresh()
 
     const poll = () => {
-      if (document.visibilityState !== 'hidden') {void next.refresh()}
+      if (document.visibilityState !== 'hidden') {
+        void next.refresh()
+      }
     }
 
     const timer = window.setInterval(poll, 15_000)

@@ -94,12 +94,22 @@ describe('Hermes REST helpers', () => {
     }
 
     expect(api).toHaveBeenNthCalledWith(1, expect.objectContaining({ path: '/api/wisdom/mute' }))
-    expect(api).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      path: '/api/wisdom/mute/prepare', method: 'POST', body: {}
-    }))
-    expect(api).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      path: '/api/wisdom/mute/choose', method: 'POST', body: { control_id: controlId, duration: null }
-    }))
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/wisdom/mute/prepare',
+        method: 'POST',
+        body: {}
+      })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        path: '/api/wisdom/mute/choose',
+        method: 'POST',
+        body: { control_id: controlId, duration: null }
+      })
+    )
   })
 
   it('reads Wisdom entitlement from the dedicated scoped endpoint', async () => {
@@ -107,9 +117,7 @@ describe('Hermes REST helpers', () => {
 
     await getWisdomEntitlement(scope)
 
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({ ...scope, path: '/api/wisdom/entitlement' })
-    )
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ ...scope, path: '/api/wisdom/entitlement' }))
   })
 
   it('uses a longer timeout for the all-profile session list', async () => {

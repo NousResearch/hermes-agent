@@ -438,6 +438,44 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
 
+    # ``--args`` is argparse.REMAINDER: everything after it lands in cmd_args,
+    # including Hermes' own flags the user appended there by mistake or by
+    # habit (--env/--connect-timeout AFTER the child argv). Rescue those into
+    # their proper slots instead of writing them into the child command line,
+    # where the MCP server silently ignores them (and a rescued --env KEY=VALUE
+    # would otherwise leak a literal secret into config args).
+    rescued_env = list(raw_env or [])
+    rescued_timeout = raw_connect_timeout
+    cleaned_args = []
+    i = 0
+    while i < len(cmd_args):
+        tok = cmd_args[i]
+        if tok == "--env" and i + 1 < len(cmd_args) and "=" in cmd_args[i + 1]:
+            rescued_env.append(cmd_args[i + 1])
+            i += 2
+            continue
+        if tok.startswith("--env=") and "=" in tok[6:]:
+            rescued_env.append(tok[6:])
+            i += 1
+            continue
+        if tok == "--connect-timeout" and i + 1 < len(cmd_args):
+            try:
+                rescued_timeout = float(cmd_args[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                pass  # belongs to the child argv — keep it
+        cleaned_args.append(tok)
+        i += 1
+    if rescued_env or rescued_timeout is not None:
+        _warning(
+            "--env/--connect-timeout after --args were moved to their proper "
+            "slots (--args is a command-argv passthrough and must come last)"
+        )
+    cmd_args = cleaned_args
+    raw_env = rescued_env or None
+    raw_connect_timeout = rescued_timeout
+
     server_config: Dict[str, Any] = {}
     try:
         explicit_env = _parse_env_assignments(getattr(args, "env", None))

@@ -164,7 +164,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
@@ -178,7 +178,12 @@ def _blank_slate_minimal_toolsets(config: dict):
             # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
             # Blank Slate surface (#57315).
             all_keys.add(k)
-        disabled = sorted(all_keys - keep)
+        # Disabling a bundle subtracts its tools even if another kept bundle owns them.
+        kept_tools = {tool for name in keep for tool in resolve_toolset(name)}
+        disabled = sorted(
+            name for name in all_keys - keep
+            if kept_tools.isdisjoint(resolve_toolset(name))
+        )
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:

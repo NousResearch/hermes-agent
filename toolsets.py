@@ -14,10 +14,12 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     "vision_analyze", "image_generate",
     "skills_list", "skill_view", "skill_manage",
+    "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent",  # Service-gated on Wisdom setup.
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
     "todo_list", "memory",
@@ -100,7 +102,11 @@ TOOLSETS = {
     "skills": _ts(
         "Access, create, edit, and manage skill documents with specialized "
         "instructions and knowledge",
-        ["skills_list", "skill_view", "skill_manage"],
+        ["skills_list", "skill_view", "skill_manage", "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent"],
+    ),
+    "wisdom_consent": _ts(
+        "Present Collective Wisdom consent in the main user-facing conversation",
+        ["present_wisdom_consent"],
     ),
     # web_search belongs to `web`/`search` only. Listing it here too let
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip

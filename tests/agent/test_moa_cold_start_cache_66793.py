@@ -14,6 +14,8 @@ import types  # noqa: F401  (used by _fake_response)
 
 import pytest
 
+from hermes_constants import hermes_home_key
+
 
 def _make_preset_config() -> dict:
     return {
@@ -181,7 +183,7 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     assert calls["n"] == 1
 
     # Age the entry past the TTL and confirm re-resolution.
-    key = ("openai", "gpt-5")
+    key = (hermes_home_key(), "openai", "gpt-5")
     stamped_at, cached = moa._runtime_cache[key]
     moa._runtime_cache[key] = (
         stamped_at - moa._RUNTIME_CACHE_TTL_SECONDS - 1, cached
@@ -224,3 +226,33 @@ def _fake_response():
     ns = types.SimpleNamespace()
     ns.usage = None
     return ns
+
+
+def test_slot_runtime_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
+    """Under a multiplex gateway two profiles can share (provider, model) with different
+    accounts; a cached api_key/base_url must never cross the per-turn HERMES_HOME override."""
+    import agent.moa_loop as moa
+    import hermes_constants
+
+    moa._runtime_cache.clear()
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+
+    import hermes_cli.runtime_provider as rt_mod
+    monkeypatch.setattr(
+        rt_mod, "resolve_runtime_provider",
+        lambda **kw: {"provider": "openai", "model": "gpt-5",
+                      "api_key": f"key-{hermes_constants.get_hermes_home().name}",
+                      "base_url": "https://x", "api_mode": None})
+
+    slot = {"provider": "openai", "model": "gpt-5"}
+    tok = hermes_constants.set_hermes_home_override(str(a))
+    try:
+        assert moa._slot_runtime(slot)["api_key"] == "key-a"
+    finally:
+        hermes_constants.reset_hermes_home_override(tok)
+    tok = hermes_constants.set_hermes_home_override(str(b))
+    try:
+        assert moa._slot_runtime(slot)["api_key"] == "key-b"
+    finally:
+        hermes_constants.reset_hermes_home_override(tok)

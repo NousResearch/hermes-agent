@@ -1475,7 +1475,7 @@ class GatewayAdapterLifecycleMixin:
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
-            is_bot: bool = False, thread_id: Optional[str] = None,
+            is_bot: bool = False, thread_id: Optional[str] = None, command: Optional[str] = None,
         ) -> bool:
             if not user_id:
                 return False
@@ -1492,9 +1492,13 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                return self._is_user_authorized(source)
-            source._authorization_profile_home = transport_home
-            if not self._stamp_routed_profile(source):
-                return False  # fail-closed, like the ``_handle_message`` ingress gate
-            return self._is_user_authorized_for_source(source)
+                allowed = self._is_user_authorized(source)
+            else:
+                source._authorization_profile_home = transport_home
+                if not self._stamp_routed_profile(source):
+                    return False  # fail-closed, like the ``_handle_message`` ingress gate
+                allowed = self._is_user_authorized_for_source(source)
+            if not allowed:
+                return False
+            return self._check_slash_access(source, command) is None if command else allowed
         return check

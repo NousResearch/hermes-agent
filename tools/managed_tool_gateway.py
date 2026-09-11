@@ -38,13 +38,22 @@ def auth_json_path():
 
 
 def _read_nous_provider_state() -> Optional[dict]:
+    """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
+    with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
+    attached to a request."""
     try:
         path = auth_json_path()
         if not path.is_file():
             return None
         providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
         nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
-        return nous_provider if isinstance(nous_provider, dict) else None
+        if not isinstance(nous_provider, dict):
+            return None
+        from hermes_cli.anon_auth import guest_enabled, is_guest_state
+
+        if is_guest_state(nous_provider) and not guest_enabled():
+            return None
+        return nous_provider
     except Exception:
         return None
 
@@ -87,10 +96,18 @@ def peek_nous_access_token() -> Optional[str]:
 
 
 def read_nous_access_token() -> Optional[str]:
-    """Read a Nous Subscriber OAuth access token from auth store or env override."""
+    """Read a Nous Subscriber OAuth access token from auth store or env override.
+
+    A read: with no Nous identity there is no bearer and the answer is None. The free-tier identity
+    is created by the boot bootstrap (``hermes_cli.free_tier_bootstrap``), never on a token-read
+    path (NS-845 Q1.2). A retired free-tier credential IS replaced here, once: that is the explicit
+    dead-credential rule, shared with inference.
+    """
     if explicit := _read_user_token_override():
         return explicit
     nous_provider = _read_nous_provider_state() or {}
+    if not nous_provider:
+        return None
     cached_token = peek_nous_access_token()
     if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
         return cached_token
@@ -100,8 +117,28 @@ def read_nous_access_token() -> Optional[str]:
         if refreshed_token := _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
             return refreshed_token
     except Exception as exc:
+        # Same dead-credential rule as inference (one place decides it: anon_auth): a retired free-tier
+        # identity is replaced once, here, instead of handing back its stale token forever.
+        from hermes_cli.anon_auth import AnonCredentialDead
+
+        if isinstance(exc, AnonCredentialDead):
+            return _replace_dead_guest_token(nous_provider)
         logger.debug("Nous access token refresh failed: %s", exc)
     return cached_token
+
+
+def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
+    from hermes_cli.anon_auth import clear_dead_guest, ensure_portal_identity
+    from hermes_cli.auth import resolve_nous_access_token
+
+    clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
+    try:
+        if ensure_portal_identity(explicit=True) is None:
+            return None
+        return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
+    except Exception as exc:
+        logger.debug("Nous free tier replacement after a retired credential failed: %s", exc)
+        return None
 
 
 def get_tool_gateway_scheme() -> str:

@@ -1,5 +1,6 @@
-"""Tests for TUI gateway slash_worker profile_home propagation (#40677)."""
+"""Tests for TUI gateway slash_worker launch environment."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -35,4 +36,35 @@ def test_slash_worker_accepts_profile_home():
             assert "env" in call_kwargs
             assert call_kwargs["env"]["HERMES_HOME"] == "/home/luke/.hermes/profiles/work"
 
+
+def test_slash_worker_uses_the_parent_hermes_source_tree():
+    """A source-backed Desktop must not dispatch through an older install."""
+    preserved_user_path = "/tmp/user-pythonpath"
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "hermes_constants": MagicMock(
+                get_hermes_home=MagicMock(return_value=Path("/tmp/hermes_test")),
+            ),
+        },
+    ):
+        from tui_gateway import server
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_popen.return_value.stdout = MagicMock()
+            mock_popen.return_value.stderr = MagicMock()
+
+            with patch(
+                "tools.environments.local.build_subprocess_env",
+                return_value={"PATH": "/usr/bin", "PYTHONPATH": preserved_user_path},
+            ):
+                server._SlashWorker(session_key="test_key", model="test-model")
+
+    child_pythonpath = mock_popen.call_args.kwargs["env"]["PYTHONPATH"].split(
+        os.pathsep
+    )
+    expected_source_root = str(Path(server.__file__).resolve().parent.parent)
+
+    assert child_pythonpath == [expected_source_root, preserved_user_path]
 

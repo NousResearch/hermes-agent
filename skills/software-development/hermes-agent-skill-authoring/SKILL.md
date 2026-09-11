@@ -63,6 +63,8 @@ license: MIT
 platforms: [linux, macos, windows]   # audit, don't guess — see Platform Gating
 metadata:
   hermes:
+    editorial_name: My Skill Name
+    editorial_description: Human-readable summary for skill browsing surfaces.
     tags: [Short, Descriptive, Tags]
     related_skills: [other-in-repo-skill]
 ---
@@ -200,6 +202,7 @@ A skill exists to make the agent's process more predictable — the agent reliab
 - [ ] File at `skills/<category>/<name>/SKILL.md` or `optional-skills/<category>/<name>/SKILL.md`
 - [ ] Frontmatter starts at byte 0 with `---`, closes with `\n---\n`
 - [ ] `name`, `description`, `version`, `author`, `license`, `platforms`, `metadata.hermes.{tags, related_skills}` all present
+- [ ] New skills include `metadata.hermes.{editorial_name, editorial_description}`; legacy skills may omit them
 - [ ] Description ≤ 60 chars, one sentence, ends with a period, no marketing words
 - [ ] `author` credits the human contributor first
 - [ ] `platforms:` audited against actual prose/scripts, not copied from a sibling

@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from contextlib import nullcontext, suppress
+from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -328,6 +328,12 @@ class GatewayGoalsMixin:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+        try:
+            await self._defer_wisdom_candidate_notice_after_delivery(
+                source, str(session_entry.session_id), user_activity=not is_internal,
+            )
+        except Exception as exc:
+            logger.debug("Wisdom candidate notification hook failed: %s", exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
@@ -365,8 +371,11 @@ class GatewayGoalsMixin:
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
-    async def _loop_wakeup_fire_one(self, sid: str, state: Any, now: float, warned_no_route: set) -> None:
-        """Inject one due /loop wakeup into its session, applying every deferral rule."""
+    async def _loop_wakeup_fire_one(
+        self, sid: str, state: Any, now: float, warned_no_route: set, profile: Optional[str] = None,
+    ) -> None:
+        """Inject one due /loop wakeup into its session, applying every deferral rule. ``profile`` is
+        the store being scanned (None = default); a ``profile`` persisted in the route wins."""
         from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
 
         if state.awaiting_response or now < state.next_due_at:
@@ -376,12 +385,17 @@ class GatewayGoalsMixin:
         chat_id = route.get("chat_id", "")
         if not platform_name or not chat_id:
             return  # CLI / TUI-owned loop — their own schedulers drive it.
-        adapter = next((a for p, a in self.adapters.items() if p.value == platform_name), None)
+        profile = route.get("profile") or profile
+        # The loop's OWN profile's adapter map, fail closed: ``self.adapters`` is the default profile's,
+        # so a secondary session's wakeup would inject via the default bot on a bare chat_id (a
+        # Telegram DM lands in the user's chat with the other bot).
+        adapters = self._adapters_for_profile(profile)
+        adapter = next((a for p, a in adapters.items() if p.value == platform_name), None)
         if adapter is None:
             if sid not in warned_no_route:
                 warned_no_route.add(sid)
                 logger.debug(
-                    "loop wakeup: no adapter for platform %r (session %s)", platform_name, sid,
+                    "loop wakeup: no adapter for platform %r (session %s, profile %s)", platform_name, sid, profile,
                 )
             return
 
@@ -393,6 +407,8 @@ class GatewayGoalsMixin:
         })
         if source is None:
             return
+        if profile and not getattr(source, "profile", None):
+            source.profile = profile  # session key + runtime scope of the injected turn
         session_key = None
         with suppress(Exception):
             session_key = self._session_key_for_source(source)
@@ -435,21 +451,37 @@ class GatewayGoalsMixin:
         """Fire due /loop wakeups for idle gateway sessions: a coarse ticker scans persisted loops
         (SessionDB ``loop:*`` rows) and injects each due prompt via the synthetic-message path.
         Deferrals: session running a turn (FIFO would race the live turn); active non-parked /goal
-        (goal owns the idle boundary); no routing metadata (one-time warning)."""
+        (goal owns the idle boundary); no routing metadata (one-time warning).
+
+        Multiplex: one gateway-wide task, so ``list_active_loops`` alone reads only the launch home's
+        store — a ``/loop`` set from a secondary profile's chat would never fire. Every served
+        profile's store is scanned under its own runtime scope (same shape as ``_handoff_watcher``),
+        and each hit is fired against that profile's adapters."""
+        from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes
         await asyncio.sleep(5)  # let platforms finish connecting
         warned_no_route: set = set()
+
+        def _scope(profile_home):
+            return (_async_profile_runtime_scope(profile_home) if profile_home is not None
+                    else nullcontext())
+
+        async def _scan_one_store(profile_name: Optional[str]) -> None:
+            from hermes_cli.loops import list_active_loops
+
+            # Warm once per scan: the scan reads every persisted loop and a cold cache would
+            # run the state.db init on the loop thread before the first read.
+            await self._warm_goals_session_db("loop wakeup")
+            # Off-loop too: the read is lock-free under WAL but convoys on the writer lock without it.
+            active_loops = await self._run_in_executor_with_context(list_active_loops)
+            now = time.time()
+            for sid, state in active_loops:
+                await self._loop_wakeup_fire_one(sid, state, now, warned_no_route, profile_name)
+
         while self._running:
             try:
-                from hermes_cli.loops import list_active_loops
-
-                # Warm once per scan: the scan reads every persisted loop and a cold cache would
-                # run the state.db init on the loop thread before the first read.
-                await self._warm_goals_session_db("loop wakeup")
-                # Off-loop too: the read is lock-free under WAL but convoys on the writer lock without it.
-                active_loops = await self._run_in_executor_with_context(list_active_loops)
-                now = time.time()
-                for sid, state in active_loops:
-                    await self._loop_wakeup_fire_one(sid, state, now, warned_no_route)
+                for profile_name, profile_home in _handoff_watch_scopes(self):
+                    async with _scope(profile_home):
+                        await _scan_one_store(profile_name)
             except Exception as exc:
                 logger.debug("loop wakeup watcher error: %s", exc)
             await asyncio.sleep(interval)

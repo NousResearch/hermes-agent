@@ -33,8 +33,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
-                   tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   tool_call_uid, interrupted_tool_tail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -283,7 +283,8 @@ class SessionMessagesMixin:
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
             message_uid_or_none(msg), _absorbed_uids_json(msg),
-            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
+            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg),
+            1 if (msg.get("_interrupted_tool_tail") or msg.get("interrupted_tool_tail")) else 0)
 
     @staticmethod
     def _stamp_tool_call_uids(msg: Dict[str, Any], tool_calls: Any, batch_index: Dict[str, str]) -> None:
@@ -410,6 +411,30 @@ class SessionMessagesMixin:
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def mark_tool_tail_interrupted(
+        self,
+        session_id: str,
+        tool_call_id: str,
+    ) -> bool:
+        """Persist interruption provenance on an already-written tool result."""
+        if not session_id or not tool_call_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE messages SET interrupted_tool_tail = 1
+                   WHERE id = (
+                       SELECT id FROM messages
+                       WHERE session_id = ? AND active = 1
+                         AND role = 'tool' AND tool_call_id = ?
+                       ORDER BY id DESC LIMIT 1
+                   )""",
+                (session_id, tool_call_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
 
     def append_delegation_delivery(self, session_id: str, content: str, metadata: Dict[str, Any]) -> int:
         """Record a detached API result once, between client turns, including replay after rotation.
@@ -1583,6 +1608,8 @@ class SessionMessagesMixin:
                 msg["_compressed_summary"] = True
             msg.update(
                 (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+            if row["interrupted_tool_tail"]:
+                msg["_interrupted_tool_tail"] = True
             if row["tool_calls"]:
                 msg["tool_calls"] = _json_or(
                     row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

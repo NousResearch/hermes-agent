@@ -2954,7 +2954,16 @@ class SlackAdapter(BasePlatformAdapter):
         """Send one startup intro, then add the per-turn in-progress reaction."""
         channel_id = getattr(event.source, "chat_id", None)
         thread_id = getattr(event.source, "thread_id", None)
-        conversation_key = (str(channel_id), str(thread_id or ""))
+        own_message_id = getattr(event, "message_id", None)
+        # In Slack's Agent messaging view (flat DM, no real threads), thread_id is set to
+        # the message's OWN ts for every top-level message (see _resolve_thread_ts comment
+        # above) — i.e. it's synthetic and unique per message, not per conversation. Using
+        # it verbatim in the dedup key made "Getting started…" fire on every single turn
+        # instead of once. Normalize: a synthetic thread_id collapses to "no thread" so the
+        # dedup key is per-channel, matching a real conversation.
+        is_synthetic_thread = bool(thread_id) and own_message_id and str(thread_id) == str(own_message_id)
+        effective_thread_id = None if is_synthetic_thread else thread_id
+        conversation_key = (str(channel_id), str(effective_thread_id or ""))
         if channel_id and conversation_key not in self._startup_ack_sent_for:
             # Claim before awaiting network I/O so concurrent first turns cannot each send it.
             self._startup_ack_sent_for.add(conversation_key)

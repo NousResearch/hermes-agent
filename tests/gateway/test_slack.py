@@ -2924,6 +2924,35 @@ class TestReactions:
         )
 
     @pytest.mark.asyncio
+    async def test_processing_start_dedupes_synthetic_thread_ids_in_agent_view(self, adapter):
+        """Slack's Agent messaging view (flat DM) sets thread_id == the message's own ts
+        for every top-level message, so each new turn gets a distinct-looking thread_id.
+        The dedup key must collapse these synthetic per-message thread_ids back to a
+        single per-channel conversation, or "Getting started..." fires on every turn."""
+        adapter.send = AsyncMock()
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.config import Platform
+
+        def make_event(ts: str) -> MessageEvent:
+            source = SessionSource(
+                platform=Platform.SLACK, chat_id="C123", chat_type="im",
+                user_id="U_USER", thread_id=ts,
+            )
+            return MessageEvent(
+                text="hi", message_type=MessageType.TEXT, source=source, message_id=ts,
+            )
+
+        await adapter.on_processing_start(make_event("1111.000001"))
+        await adapter.on_processing_start(make_event("2222.000002"))
+        await adapter.on_processing_start(make_event("3333.000003"))
+
+        adapter.send.assert_awaited_once_with(
+            "C123", "Getting started\u2026",
+            metadata={"thread_id": "1111.000001", "_interim_send": True},
+        )
+
+    @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
         """Reactions should be bracketed around actual processing via hooks."""
         adapter._app.client.reactions_add = AsyncMock()

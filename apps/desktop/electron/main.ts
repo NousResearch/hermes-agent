@@ -51,7 +51,7 @@ import {
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv } from './backend-env'
 import {
   isReauthRequiredError,
   makeNousCloudBackendDownError,
@@ -162,6 +162,7 @@ import {
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -478,10 +479,10 @@ import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './work
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
-const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
+const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
-if (USER_DATA_OVERRIDE) {
-  const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
+if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
+  const resolvedUserData: string = resolveDesktopUserData(app.getPath('userData'))
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
 }
@@ -718,61 +719,11 @@ if (INSTALL_STAMP) {
   )
 }
 
-// HERMES_HOME — the user-facing root for everything Hermes-related. Mirrors
-// scripts/install.ps1's $HermesHome and scripts/install.sh's $HERMES_HOME.
-//
-// Defaults:
-//   Windows: %LOCALAPPDATA%\hermes (matches install.ps1)
-//   macOS / Linux: ~/.hermes (matches install.sh)
-//
-// Special case for Windows: if the user has a legacy ~/.hermes directory
-// (e.g., from a prior pip install or a manual setup) AND no
-// %LOCALAPPDATA%\hermes yet, prefer the legacy path so we don't orphan their
-// existing config / sessions / .env. New installs go to %LOCALAPPDATA%.
-//
-// HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
-// HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
-// touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
-function resolveHermesHome() {
-  if (process.env.HERMES_HOME) {
-    return normalizeHermesHomeRoot(process.env.HERMES_HOME)
-  }
-
-  if (USER_DATA_OVERRIDE) {
-    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
-  }
-
-  if (IS_WINDOWS) {
-    // A GUI app launched from Explorer inherits the environment block captured
-    // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
-    // process.env even though the CLI (a fresh shell) sees it. Without this the
-    // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
-    // inference provider configured" despite a valid configured home (#45471).
-    // Consult the live User-scoped registry value before the default below.
-    const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
-
-    if (fromRegistry) {
-      return normalizeHermesHomeRoot(fromRegistry)
-    }
-  }
-
-  if (IS_WINDOWS && process.env.LOCALAPPDATA) {
-    const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
-    const legacy = path.join(app.getPath('home'), '.hermes')
-
-    // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
-    // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) {
-      return legacy
-    }
-
-    return localappdata
-  }
-
-  return path.join(app.getPath('home'), '.hermes')
-}
-
-const HERMES_HOME = resolveHermesHome()
+const HERMES_HOME: string = resolveDesktopHermesHome({
+  home: app.getPath('home'),
+  directoryExists,
+  readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
+})
 
 // The spawned `hermes update` / updater children compose managed-tool env
 // (node, git, uv) in-process via pm. Electron only prepends the explicit

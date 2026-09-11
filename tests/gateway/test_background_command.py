@@ -159,6 +159,11 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
+        # /bg is a messaging-gateway route but upstream never timestamped its
+        # standalone agent prompt, so global direct-agent policy must not leak in.
+        mock_agent_instance.run_conversation.assert_called_once_with(
+            user_message="say hello", task_id="bg_test", message_timestamp_handling="disabled"
+        )
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

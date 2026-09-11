@@ -499,7 +499,11 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool")},
                         quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
-        result = agent.run_conversation(prompt, conversation_history=history or None)
+        result = agent.run_conversation(
+            prompt,
+            conversation_history=history or None,
+            message_timestamp_handling="disabled",
+        )
         response = (result.get("final_response") or "").strip()
         logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s", result.get("api_calls", 0), len(response), response[:200])
         if session_key and result.get("messages", []):

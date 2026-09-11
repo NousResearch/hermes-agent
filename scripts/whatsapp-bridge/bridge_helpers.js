@@ -578,19 +578,52 @@ export function pollCreationMessageFromPayload(payload) {
  */
 export function createReconnectScheduler(startFn, {
   retryDelayMs = 5000,
+  maxDelayMs = 60000,
   log = console.log,
   setTimeoutFn = setTimeout,
+  random = Math.random,
 } = {}) {
+  // Backoff state (2026-09-11). Fixed 3s/5s timers turned every network gap
+  // into a reconnect storm: 7,526 fixed-3s reconnects observed, 313 of them in
+  // 19m20s. Consecutive attempts without a successful open now grow
+  // exponentially (x2, full jitter after the first retry, capped at
+  // maxDelayMs) and a single in-flight timer is enforced so overlapping
+  // 'close' events cannot stack timers. scheduleReconnect.reset() is called
+  // on 'open' to return to the fast path.
+  let streak = 0;        // consecutive scheduled attempts since the last reset()
+  let pending = false;   // a timer is armed or startFn is running
+
+  function backoff(baseMs, attempt) {
+    // Attempts 1 and 2 of a streak keep the caller's hint verbatim (1s for
+    // 515, 3s for a plain close, retryDelayMs after a failed start); from the
+    // third on the hint doubles per attempt with jitter in [ceiling/2, ceiling].
+    if (attempt <= 2) return Math.min(maxDelayMs, baseMs);
+    const ceiling = Math.min(maxDelayMs, baseMs * Math.pow(2, attempt - 2));
+    return Math.round(ceiling / 2 + random() * (ceiling / 2));
+  }
+
   function scheduleReconnect(delayMs) {
+    if (pending) {
+      log(`↻ Reconnect already pending; ignoring duplicate request (streak ${streak}).`);
+      return;
+    }
+    streak += 1;
+    const wait = backoff(delayMs, streak);
+    pending = true;
     setTimeoutFn(() => {
       Promise.resolve()
         .then(startFn)
+        .then(() => { pending = false; })
         .catch((err) => {
-          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
+          pending = false;
+          const preview = backoff(retryDelayMs, streak + 1);
+          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ~${Math.round(preview / 1000)}s (attempt ${streak + 1})...`);
           scheduleReconnect(retryDelayMs);
         });
-    }, delayMs);
+    }, wait);
   }
+  scheduleReconnect.reset = () => { streak = 0; };
+  scheduleReconnect.state = () => ({ streak, pending });
   return scheduleReconnect;
 }
 

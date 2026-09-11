@@ -458,6 +458,8 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      // A successful open ends the backoff streak: the next close reconnects fast again.
+      if (typeof scheduleReconnect.reset === 'function') scheduleReconnect.reset();
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,

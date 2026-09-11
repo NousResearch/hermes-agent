@@ -13,6 +13,71 @@ from contextlib import suppress
 from typing import Optional
 
 
+# Shell startup files are execution-bearing user configuration. Keep this
+# inventory shared with the terminal approval detector so file writes and
+# shell commands cannot silently drift into different allowlists.
+SHELL_RC_RELATIVE_PATHS: tuple[str, ...] = (
+    ".bashrc",
+    ".bash_aliases",
+    ".profile",
+    ".bash_profile",
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/config.fish",
+)
+SHELL_RC_ZSH_FILENAMES: tuple[str, ...] = (
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+)
+
+
+def _resolve_configured_path(value: str, home: str) -> str:
+    """Resolve a path-valued shell environment variable against ``home``."""
+    expanded = os.path.expanduser(os.path.expandvars(value))
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(home, expanded)
+    return os.path.realpath(expanded)
+
+
+def build_shell_rc_approval_paths(home: str) -> set[str]:
+    """Return default and environment-relocated shell startup file paths."""
+    paths = {
+        os.path.realpath(os.path.join(home, relative))
+        for relative in SHELL_RC_RELATIVE_PATHS
+    }
+
+    zdotdir = os.getenv("ZDOTDIR")
+    if zdotdir:
+        zsh_dir = _resolve_configured_path(zdotdir, home)
+        paths.update(
+            os.path.join(zsh_dir, filename)
+            for filename in SHELL_RC_ZSH_FILENAMES
+        )
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        paths.add(
+            os.path.join(
+                _resolve_configured_path(xdg_config_home, home),
+                "fish",
+                "config.fish",
+            )
+        )
+
+    for variable in ("BASH_ENV", "ENV"):
+        configured = os.getenv(variable)
+        if configured:
+            paths.add(_resolve_configured_path(configured, home))
+
+    return {os.path.realpath(path) for path in paths}
+
+
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
     try:
@@ -123,7 +188,10 @@ def build_write_approval_paths(home: str) -> set[str]:
     (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
     non-interactive callers (ACP shims, background jobs) fail closed.
     """
-    return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
+    return {
+        os.path.realpath(os.path.join(home, ".ssh", "config")),
+        *build_shell_rc_approval_paths(home),
+    }
 
 
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
@@ -178,10 +246,32 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
 
 
 def is_write_approval_required(path: str) -> bool:
-    """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
-    prompt, callers without a channel treat it as a block (fail closed)."""
+    """Return True if ``path`` is an approval-gated write target.
+
+    These paths (``~/.ssh/config`` and login shell rc files) are not
+    credentials and are not hard-denied, but a write to them must be
+    confirmed by a human because they can influence process execution
+    (SSH ``ProxyCommand``, or commands in ``~/.bashrc``). Callers with
+    an interactive/gateway channel should prompt; callers without one
+    should treat this as a block (fail closed).
+    """
     home, resolved = _home_and_resolved(path)
     return resolved in build_write_approval_paths(home)
+
+
+def is_shell_rc_path(path: str) -> bool:
+    """Return True if ``path`` is a login shell startup file.
+
+    The approval-gated set is the union of ``~/.ssh/config`` and the shell
+    startup inventory from ``build_shell_rc_approval_paths``. The two
+    classes carry different execution risks (SSH ``ProxyCommand`` /
+    ``Match exec`` versus login-time sourcing) and callers gate them with
+    independent approval keys so a session approval given for one class
+    cannot silently authorize the other. This predicate lets the caller
+    select the right key without re-resolving the inventory.
+    """
+    home, resolved = _home_and_resolved(path)
+    return resolved in build_shell_rc_approval_paths(home)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

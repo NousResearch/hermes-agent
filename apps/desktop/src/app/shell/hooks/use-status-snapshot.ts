@@ -25,7 +25,7 @@ export function useStatusSnapshot(
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
-    let sharedProfileWarning = ''
+    let sharedProfileWarning: string = ''
     let sharedProfileNoticeId: string | undefined
 
     // Status and inference readiness belong to one backend. A source switch
@@ -110,7 +110,7 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           setStatusSnapshot(statusResult.value)
-          const warning = statusResult.value.shared_profile_warning || ''
+          const warning: string = statusResult.value.shared_profile_warning || ''
 
           // Keep dismissal until the conflict clears. A new overlap can warn again.
           if (warning !== sharedProfileWarning) {

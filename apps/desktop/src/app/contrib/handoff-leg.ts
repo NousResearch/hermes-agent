@@ -1,6 +1,5 @@
-/** Stored-id recovery and per-session brief painting adapted from alt-glitch's
- * 487823507711c2d26da8fd1684be78f12966d14d. Failed/uncertain submits retain the
- * original session; they must never close it or start a second build. */
+/** Failed/uncertain submits retain the original session;
+ * they must never close it or start a second build. */
 import { JsonRpcGatewayError } from '@hermes/shared'
 
 import type { ClientSessionState } from '@/app/types'

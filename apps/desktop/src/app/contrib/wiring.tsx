@@ -157,6 +157,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
+import { useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -640,13 +641,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const kickoffFirstChat = useOnboardingHandoff({
+  const kickoffFirstChat = useOnboardingKickoff({
+    createBackendSessionForSend,
+    requestGateway,
+    resumeSession,
+    runCreatePinnedTo
+  })
+
+  useOnboardingHandoff({
     activeSessionIdRef,
     ensureSessionState,
     updateSessionState,
     createBackendSessionForSend,
     requestGateway,
-    resumeSession,
     runCreatePinnedTo
   })
 

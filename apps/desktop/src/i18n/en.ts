@@ -15,7 +15,7 @@ export const en: Translations = {
     waitingSignIn: 'Waiting for you to finish signing in…',
     notConnected: "Didn't connect",
     notAvailable: 'Not available',
-    startWith: count => `Start the task with ${count} apps connected`,
+    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
     startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',

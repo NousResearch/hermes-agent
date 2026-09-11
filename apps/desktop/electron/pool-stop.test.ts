@@ -89,6 +89,14 @@ test('stop of an unknown key resolves without signalling anything', async () => 
   assert.equal(stopper.inFlight('ghost'), undefined)
 })
 
+test('a remote pooled descriptor without a local child does not require quit deferral', () => {
+  const { pool, stopper } = harness()
+
+  pool.set('remote', {})
+
+  assert.equal(stopper.hasPending(), false)
+})
+
 test('stopAll stops every pooled backend and resolves after all exits', async () => {
   const { addChild, exitResolvers, pool, stopper } = harness()
   const a = addChild('a')
@@ -111,6 +119,31 @@ test('stopAll stops every pooled backend and resolves after all exits', async ()
   exitResolvers.get(b)?.()
   await all
   assert.equal(settled, true)
+})
+
+test('stopAll joins a stop whose pool entry was already evicted', async () => {
+  const { addChild, exitResolvers, pool, stopper } = harness()
+  const child = addChild('already-stopping')
+
+  const first = stopper.stop('already-stopping')
+
+  assert.equal(pool.size, 0)
+  assert.equal(stopper.hasPending(), true)
+
+  let settled = false
+
+  const all = stopper.stopAll().then(() => {
+    settled = true
+  })
+
+  await Promise.resolve()
+
+  assert.equal(settled, false)
+
+  exitResolvers.get(child)?.()
+  await Promise.all([first, all])
+  assert.equal(settled, true)
+  assert.equal(stopper.hasPending(), false)
 })
 
 test('a respawn can await the in-flight stop before reusing the key', async () => {

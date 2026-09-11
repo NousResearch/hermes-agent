@@ -1,3 +1,4 @@
+import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
@@ -68,6 +69,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+      // Onboarding's first build paces its check-ins off real work done
+      // (no-op in every other session).
+      reportFirstBuildToolComplete(sessionId)
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })

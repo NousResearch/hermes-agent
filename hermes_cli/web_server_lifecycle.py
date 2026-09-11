@@ -1,6 +1,7 @@
 """Serve-process lifecycle: parent death watchdog, port-conflict preflight, READY announcement, browser open, trusted proxies.
 """
 
+import asyncio
 import logging
 import ipaddress
 import json
@@ -75,7 +76,9 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    if result.returncode == 1 and not marker:
+    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
+    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
+    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 
@@ -187,6 +190,30 @@ def _eager_reconcile_own_session_db() -> None:
         )
 
 
+async def _wisdom_checker_loop(interval: int = 300) -> None:
+    """Run pending reviews and reconcile the typed feed off the request loop."""
+    while True:
+        try:
+            from hermes_cli.config import load_config
+
+            wisdom = (load_config() or {}).get("wisdom") or {}
+            if isinstance(wisdom, dict) and wisdom.get("enabled"):
+                def reconcile_wisdom():
+                    from hermes_wisdom.service import WisdomService
+
+                    service = WisdomService()
+                    service.require_setup()
+                    service.process_professionalism_reviews(max_jobs=4)
+                    return service.check(apply_automatic=False)
+
+                await asyncio.to_thread(reconcile_wisdom)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.debug("Collective Wisdom background reconciliation failed", exc_info=True)
+        await asyncio.sleep(interval)
+
+
 def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     """Read the OS-assigned port from the live uvicorn socket (ephemeral port-0 discovery)."""
     if server.servers and server.servers[0].sockets:
@@ -278,20 +305,25 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            actual_marker = probe(int(desktop_pid))
-            if _parent_start_markers_match(actual_marker, expected_start_marker):
-                return False
-            if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+            try:
+                actual_marker = probe(int(desktop_pid))
+            except ProcessLookupError:
                 return True
-            # Inconclusive marker: degrade to PID liveness instead of exiting.
+            except Exception:
+                actual_marker = None
+
+            if actual_marker is not None:
+                if _parent_start_markers_match(actual_marker, expected_start_marker):
+                    return False
+                if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+                    return True
+                # Inconclusive marker: degrade to PID liveness instead of exiting.
 
         if pid_exists is None:
             from gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
-    except ProcessLookupError:
-        return True
     except Exception:
         return False
 

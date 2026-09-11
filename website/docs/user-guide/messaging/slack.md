@@ -305,6 +305,49 @@ For backward compatibility with older manifests, you can still type
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 
+### Manage Collective Wisdom from Slack
+
+`/wisdom` is a native Slack command and opens an interactive Block Kit control
+surface for shared skills. Common starting points are:
+
+```text
+/wisdom browse [query]
+/wisdom show <skill>
+/wisdom candidates
+/wisdom drafts
+/wisdom installed
+/wisdom notifications
+```
+
+Discovery commands can be used in a channel. Private candidate, draft,
+installation, update, and notification state moves to a direct message with
+the user who selected the control. The continuation is short-lived and bound
+to that user, channel, Hermes profile, and Collective organization; opening the
+DM never silently performs a mutation.
+
+Buttons recalculate the authoritative install/update plan before applying it.
+Anything with local modifications, sensitive requirements, partial
+compatibility, or a policy block remains unchanged and points to the full
+Collective review surface. Successful actions update the existing card while
+preserving the skill details and exact Nous Portal link.
+
+When a locally created skill qualifies after a Slack turn, Hermes sends its
+review card to the originating user's DM—even if the turn happened in a public
+channel. Nothing is uploaded until the user explicitly chooses **Draft in
+Collective** or **Approve & publish**.
+
+Wisdom feed notifications use the configured Slack home channel. A DM home may
+include install/update controls and device-local status. A public home channel
+receives only team publication notices and Portal links; device and owner state
+stays private and remains available through `/wisdom notifications` in DM.
+
+After upgrading Hermes, regenerate and apply the Slack manifest so Slack knows
+about the native `/wisdom` command:
+
+```bash
+hermes slack manifest --write
+```
+
 ### Using commands inside threads (the `!cmd` prefix)
 
 Slack itself blocks native slash commands inside thread replies — try

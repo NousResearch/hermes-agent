@@ -627,8 +627,9 @@ DEFAULT_CONFIG = {
         # path.
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
-        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. The <512K floor (0.75) still
-        # applies raise-only on top.
+        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
+        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
+        # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
         # up front, before the first reply. Time-based complement to `threshold`; skipped when
@@ -1363,6 +1364,36 @@ DEFAULT_CONFIG = {
         # See #79686.
         "ledger": True,
     },
+
+    # Collective Wisdom — local qualification plus owner-consented sharing.
+    # The sync.base_url transport and existing Nous OAuth token are reused;
+    # no Gateway secret or URL is exposed to renderer clients.
+    "wisdom": {
+        "enabled": False,
+        "portal_url": "https://portal.nousresearch.com",
+        "request_timeout": 30,
+        "notifications": {
+            "delivery_mode": "agent",  # Use fixed to opt out of agent-written advice.
+            "decisions": "immediate",
+            "installed_updates": "immediate",
+            "new_skills": "daily",
+        },
+        # Agent-led sharing: a weekly agent review of real 7-day usage
+        # proposes at most a few bespoke skills to share, with fixed copy and
+        # native buttons. When disabled, only the deterministic qualification
+        # triggers (consecutive-day / refinement) surface candidates.
+        # Active only with notifications.delivery_mode: agent. Server policy
+        # controls eligibility and frequency, never the local rollout choice.
+        "agent_led": {
+            "window_days": 7,
+            "min_aggregate_count": 3,
+            "max_candidates": 3,
+            "dismiss_suppression_days": 30,
+            "popular_install_threshold": 10,
+            "review_interval_hours": 24 * 7,
+        },
+    },
+
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
     # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
     # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron

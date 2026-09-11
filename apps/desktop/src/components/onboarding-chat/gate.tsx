@@ -22,17 +22,36 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       return
     }
 
+    // The guide is the free tier's introduction, whichever way it opens: the
+    // film, or the guided chat directly when the film is skipped. Ack the
+    // one-time notice as soon as either takes the screen, or a readiness
+    // round mid-guide raises the ready screen over the conversation.
+    const ack = () => {
+      clearFreeTierIntro()
+      void ackFreeTierNotice(requestGateway).then(acked => {
+        if (acked) {
+          clearFreeTierIntro()
+        }
+      })
+    }
+
     // subscribe also sees an intro started by the preceding sibling's effect.
-    return $introReveal.subscribe(state => {
+    const offIntro = $introReveal.subscribe(state => {
       if (state.phase === 'playing') {
-        clearFreeTierIntro()
-        void ackFreeTierNotice(requestGateway).then(acked => {
-          if (acked) {
-            clearFreeTierIntro()
-          }
-        })
+        ack()
       }
     })
+
+    const offGate = $onboardingGate.subscribe(state => {
+      if (state.phase === 'guided') {
+        ack()
+      }
+    })
+
+    return () => {
+      offIntro()
+      offGate()
+    }
   }, [enabled, requestGateway])
 
   useEffect(() => {

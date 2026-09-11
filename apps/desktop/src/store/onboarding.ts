@@ -731,6 +731,15 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
   setFreeTierRoute(runtime.freeTier)
   const status = await refreshFreeTierStatus(ctx.requestGateway)
 
+  // The guided first launch IS the introduction. Raising the ready screen on
+  // top of it (a readiness round fires when the layout pick assembles the
+  // window) covered the guide mid-conversation, and dismissing it remounted
+  // the card the user had just answered. The guide acks the notice itself
+  // when it hands off.
+  if (guidedOnboardingActive()) {
+    return
+  }
+
   if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
     patch({ freeTierReady: true })
   }

@@ -125,9 +125,11 @@ describe('TreeGroup', () => {
     const minimize = container!.querySelector('button[aria-label="Minimize"]')
     const strip = header.querySelector<HTMLElement>('[data-zone-tabstrip]')
     const tablist = tab.closest('[role="tablist"]')
+
     const clusterSpacer = [...header.querySelectorAll('div')].some(el =>
       el.className.includes('--titlebar-controls-width')
     )
+
     const titlebarStrip = Boolean(strip?.className.includes('h-full'))
     const tablistScrolls = Boolean(tablist?.className.includes('overflow-x-auto'))
     const truncates = Boolean(tab.querySelector('.truncate'))
@@ -136,6 +138,7 @@ describe('TreeGroup', () => {
     // Left-edge titlebar must not host a truncated overflow-x-auto tablist in
     // the same flex row as the in-flow --titlebar-controls-width spacer.
     expect(clusterSpacer && titlebarStrip && tablistScrolls && truncates).toBe(false)
+
     if (minimize && strip?.contains(minimize)) {
       expect(titlebarStrip && clusterSpacer).toBe(false)
     }
@@ -157,6 +160,7 @@ describe('TreeGroup', () => {
     )
 
     const header = container!.querySelector('[data-panel-header]')!
+
     const filler =
       header.querySelector('[data-titlebar-drag-fill]') ??
       [...header.querySelectorAll('div')].find(

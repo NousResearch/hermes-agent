@@ -191,7 +191,10 @@ _LEGACY_TOOLSET_MAP = {
 # non-quiet path prints). Hot callers (gateway runner, AIAgent.__init__) hit it
 # every turn; a miss costs ~7 ms of registry walk + check_fn probing. The key
 # includes registry._generation (bumped on register/deregister/alias) so
-# invalidation is transparent; check_fn drift is handled by registry.py's 30 s TTL.
+# invalidation is transparent; check_fn drift is handled by registry.py's 30 s
+# TTL. The key intentionally does not include environment state: callers that
+# reload environment files in a long-lived process, such as cron, must
+# explicitly call _clear_tool_defs_cache() after the reload.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 # FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
@@ -204,7 +207,11 @@ _TOOL_DEFS_CACHE_MAX = 8
 
 
 def _clear_tool_defs_cache() -> None:
-    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode)."""
+    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode).
+
+    Callers that also changed environment-backed availability probes must
+    invalidate the registry's separate check-function cache explicitly.
+    """
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
 

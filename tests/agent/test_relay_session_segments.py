@@ -39,7 +39,7 @@ class _FakeScopeModule:
     def __init__(self, wedge_pop: threading.Event | None = None) -> None:
         self._wedge = wedge_pop
         self._seq = 0
-        self.pushes: list[dict[str, Any]] = []  # {name, metadata, handle}
+        self.pushes: list[dict[str, Any]] = []  # {name, metadata, handle, input}
         self.pops: list[_ScopeHandle] = []
 
     def push(self, name: str, scope_type: Any, **kwargs: Any) -> _ScopeHandle:
@@ -49,6 +49,7 @@ class _FakeScopeModule:
                 "name": name,
                 "metadata": dict(kwargs.get("metadata") or {}),
                 "parent": kwargs.get("handle"),
+                "input": dict(kwargs.get("input") or {}),
                 "seq": self._seq,
             }
         )
@@ -143,7 +144,7 @@ def coordinator() -> RelaySessionCoordinator:
     return RelaySessionCoordinator()
 
 
-def _acquire(coordinator, runtime, session_id="sess-1"):
+def _acquire(coordinator, runtime, session_id="sess-1", **kwargs):
     class _Registry:
         def for_profile(self, key):
             return runtime
@@ -154,6 +155,7 @@ def _acquire(coordinator, runtime, session_id="sess-1"):
         profile_key=runtime.profile_key,
         session_id=session_id,
         platform="test",
+        **kwargs,
     )
 
 
@@ -184,6 +186,33 @@ class TestDefaultsNeverRotate:
             "defaults off must never rotate the session scope — "
             "today's behavior is the contract"
         )
+
+
+class TestCwdProjection:
+    def test_distinct_session_and_turn_cwds_survive_segment_rotation(self, coordinator):
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        lease = _acquire(
+            coordinator, runtime,
+            session_cwd="/workspace/session", turn_cwd="/workspace/task",
+        )
+
+        turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task1")
+
+        assert _session_pushes(fake)[-1]["input"] == {"cwd": "/workspace/session"}
+        assert fake.scope.pushes[-1]["input"] == {"cwd": "/workspace/task"}
+        coordinator.end_turn(turn, outcome="success")
+
+        lease = _acquire(
+            coordinator, runtime,
+            session_cwd="/workspace/moved", turn_cwd="/workspace/next-task",
+        )
+        runtime.rotate_session_scope(lease.session, reason="compaction")
+        turn = coordinator.begin_turn(lease, turn_id="t2", task_id="task2")
+
+        assert _session_pushes(fake)[-1]["input"] == {"cwd": "/workspace/moved"}
+        assert fake.scope.pushes[-1]["input"] == {"cwd": "/workspace/next-task"}
+        coordinator.end_turn(turn, outcome="success")
 
 
 class TestCompactionRotation:

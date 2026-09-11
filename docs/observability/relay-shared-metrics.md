@@ -94,6 +94,20 @@ Both defaults preserve one session scope for the full session. Rotated spans
 retain the same `session_id` and add `hermes.session.segment` plus
 `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
+## Working-Directory Scope Data
+
+When Hermes knows a session or task's logical working directory, its
+`hermes.session` and `hermes.turn` start scopes include it as `data.cwd` in
+ATOF. A turn running in a task worktree can therefore differ from its owning
+session. Unknown directories are omitted, and scope-end data remains reserved
+for the outcome.
+
+The working directory is Relay scope input, so it is visible to every enabled
+Relay subscriber, not only ATOF. Paths can reveal usernames, repository names,
+or mount layouts. Relay does not filter events by working directory; if a path
+must not leave the host, use a trusted local collector or do not enable a remote
+exporter for that process.
+
 ## Process-Wide Plugin Policy and Profile Isolation
 
 Relay plugin configuration is a process-level deployment choice, not a Hermes

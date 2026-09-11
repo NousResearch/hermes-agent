@@ -17,6 +17,13 @@ from hermes_state_common import _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
 
+
+def _heartbeats_write_lock(db_path):
+    """Cross-process write lock for gateway_heartbeats (deferred import: this mixin cannot import
+    hermes_state at module level — cycle). Fail-open: callers proceed whether or not it is held."""
+    from hermes_state import _gateway_heartbeats_write_lock
+    return _gateway_heartbeats_write_lock(db_path)
+
 # Recursive CTE naming a session plus its compression ancestors (rows a
 # resume must keep on one routing peer); branch/delegate/tool rows stop it.
 _COMPRESSION_LINEAGE_CTE = """
@@ -585,20 +592,22 @@ class SessionGatewayMixin:
         if not backend_id:
             return
         ts = time.time() if last_heartbeat is None else float(last_heartbeat)
-        self._write_sql(
-            "INSERT INTO gateway_heartbeats (backend_id, pid, started_at, last_heartbeat, profile, host)"
-            " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(backend_id) DO UPDATE SET pid = excluded.pid,"
-            " started_at = excluded.started_at, last_heartbeat = excluded.last_heartbeat,"
-            " profile = excluded.profile, host = excluded.host",
-            (str(backend_id), int(pid), float(started_at), ts, str(profile), str(host)))
+        with _heartbeats_write_lock(self.db_path):
+            self._write_sql(
+                "INSERT INTO gateway_heartbeats (backend_id, pid, started_at, last_heartbeat, profile, host)"
+                " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(backend_id) DO UPDATE SET pid = excluded.pid,"
+                " started_at = excluded.started_at, last_heartbeat = excluded.last_heartbeat,"
+                " profile = excluded.profile, host = excluded.host",
+                (str(backend_id), int(pid), float(started_at), ts, str(profile), str(host)))
 
     def clear_backend_heartbeat(self, backend_id: str) -> bool:
         """Remove this backend's heartbeat row (from ``atexit``); True if removed. A crashed
         backend's row is reclaimed later by ``prune_stale_heartbeats``."""
         if not backend_id:
             return False
-        return self._write_rowcount(
-            "DELETE FROM gateway_heartbeats WHERE backend_id = ?", (str(backend_id),)) > 0
+        with _heartbeats_write_lock(self.db_path):
+            return self._write_rowcount(
+                "DELETE FROM gateway_heartbeats WHERE backend_id = ?", (str(backend_id),)) > 0
 
     def prune_stale_heartbeats(self, *, max_age_seconds: float) -> List[str]:
         """Drop heartbeat rows older than the staleness window; return removed backend ids.
@@ -611,7 +620,8 @@ class SessionGatewayMixin:
                 "DELETE FROM gateway_heartbeats WHERE last_heartbeat < ? RETURNING backend_id",
                 (cutoff,))
             return [str(r[0]) for r in cur.fetchall()]
-        return list(self._execute_write(_do) or [])
+        with _heartbeats_write_lock(self.db_path):
+            return list(self._execute_write(_do) or [])
 
     def list_backend_heartbeats(self) -> List[Dict[str, Any]]:
         """Snapshot of every backend heartbeat (diagnostics/tests); fields mirror the table."""

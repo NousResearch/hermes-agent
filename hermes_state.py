@@ -20,14 +20,18 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    _IS_WINDOWS, _acquire_db_flock, _acquire_msvcrt_lock, _clear_lock_holder_record,
+    _describe_lock_holder, _read_lock_holder_record,
+    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -323,6 +327,85 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 # release / close_all / release_or_close). Long-lived in-process callers (gateway, tui_gateway, cron,
 # in-process tools) share ONE writer connection per resolved path via hermes_state_registry.acquire(); CLI
 # one-shots, recovery flows, and read-only cross-profile opens use SessionDB() directly with their own close().
+
+
+# ── Read-connection poisoning eviction (2026-09-01 state.db corruption) ── A connection that takes a
+# transient I/O error mid-read ('disk I/O error' from WAL/shm coordination racing between two long-lived
+# processes) keeps raising that same error on EVERY later use, even though a fresh connection to the same
+# file succeeds. Recycling such a handle turned one transient failure into identical read failures until
+# the whole process was restarted. _read_ctx evicts instead; genuine permanent corruption still fails
+# every read, correctly surfaced on the next call.
+_CALLER_LEVEL_DATABASE_ERRORS = (
+    sqlite3.ProgrammingError, sqlite3.IntegrityError, sqlite3.DataError,
+    sqlite3.NotSupportedError, sqlite3.InternalError,
+)
+
+
+def _is_connection_poisoning_error(exc: BaseException) -> bool:
+    """True when *exc* means the CONNECTION is suspect, not the statement: an I/O-class failure
+    (OperationalError, or a DatabaseError such as 'database disk image is malformed') is sticky per
+    handle, so the connection must be evicted rather than reused. Caller-level DatabaseError subclasses
+    (a violated constraint, a closed-handle misuse) say nothing about connection health."""
+    return isinstance(exc, sqlite3.DatabaseError) and not isinstance(exc, _CALLER_LEVEL_DATABASE_ERRORS)
+
+
+# ── gateway_heartbeats cross-process write lock (2026-09-01 state.db corruption) ── The default-profile
+# `hermes serve` backend and the `gateway run` daemon each write a heartbeat row into the same table
+# roughly every 60s forever, and that table's pages corrupted with only those two writers active, despite
+# BEGIN IMMEDIATE — something raced outside the transaction boundary in WAL/shm coordination between
+# long-lived processes. This short-held flock serializes just those writes. It is NOT a refuse-to-start
+# lock like serve.lock / STATE_DB_SINGLE_WRITER: every legitimate writer must still get a turn, so a
+# bounded acquire that times out proceeds WITHOUT the lock (logged) — a missed heartbeat degrades
+# gracefully, a wedged heartbeat refresher does not.
+_GATEWAY_HEARTBEATS_LOCK_TIMEOUT_SECONDS = 5.0
+_GATEWAY_HEARTBEATS_LOCK_POLL_SECONDS = 0.1
+
+
+@contextmanager
+def _gateway_heartbeats_write_lock(db_path, *, timeout_seconds=None) -> Iterator[bool]:
+    """Serialize gateway_heartbeats writes on *db_path* across processes. Yields True while the flock is
+    held, False when it could not be acquired within the bounded wait — the caller proceeds EITHER WAY
+    (fail open): heartbeats are a liveness hint, so a writer must never hang behind a wedged peer."""
+    timeout = (_GATEWAY_HEARTBEATS_LOCK_TIMEOUT_SECONDS if timeout_seconds is None
+               else max(float(timeout_seconds), 0.0))
+    lock_path = f"{db_path}.gateway_heartbeats.lock"
+    try:
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        logger.warning("Could not open gateway heartbeats lock %s (%s) — writing without it.",
+                       lock_path, exc)
+        yield False
+        return
+    acquired = False
+    try:
+        if _IS_WINDOWS:
+            acquired = _acquire_msvcrt_lock(lock_path, handle, timeout)
+        else:
+            acquired, handle = _acquire_db_flock(
+                lock_path, handle, timeout,
+                _GATEWAY_HEARTBEATS_LOCK_POLL_SECONDS, "gateway heartbeats lock")
+        if acquired is None:
+            # Non-contention error, already logged by the acquire helper.
+            acquired = False
+        elif not acquired:
+            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
+            logger.warning("gateway heartbeats lock %s held by another process for more than %.0fs — writing "
+                           "without it rather than hanging a heartbeat refresh. Recorded holder: %s.",
+                           lock_path, timeout, _describe_lock_holder(record))
+        yield acquired
+    finally:
+        try:
+            with suppress(OSError):  # best-effort release
+                if acquired and _IS_WINDOWS:
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                elif acquired:
+                    import fcntl
+                    _clear_lock_holder_record(handle)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 class SessionDB(
@@ -716,29 +799,63 @@ class SessionDB(
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
-        degradation: slower beats EMFILE, which the supervisor cannot see."""
+        degradation: slower beats EMFILE, which the supervisor cannot see.
+        A connection-poisoning error (see _is_connection_poisoning_error)
+        evicts the handle on EITHER branch instead of recycling it."""
         conn = self._checkout_read_conn()
         if conn is not None:
+            poisoned = False
             try:
                 yield conn
+            except BaseException as exc:
+                poisoned = _is_connection_poisoning_error(exc)
+                raise
             finally:
-                returned = False
-                with self._read_conns_lock:
-                    if not self._read_conns_closed:
-                        try:
-                            self._read_pool.put_nowait(conn)
-                            returned = True
-                        except queue.Full:
-                            pass
-                if not returned:
-                    # close() drained the pool (or queue.Full: unreachable while
-                    # permits == maxsize, load-bearing if they drift): surplus.
+                if poisoned:
+                    # Sticky per handle: returning it to the pool would fail
+                    # every later read with this same transient error.
                     self._close_read_conn(conn)
+                else:
+                    returned = False
+                    with self._read_conns_lock:
+                        if not self._read_conns_closed:
+                            try:
+                                self._read_pool.put_nowait(conn)
+                                returned = True
+                            except queue.Full:
+                                pass
+                    if not returned:
+                        # close() drained the pool (or queue.Full: unreachable while
+                        # permits == maxsize, load-bearing if they drift): surplus.
+                        self._close_read_conn(conn)
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
                 self._reopen_after_close_locked(context="read")
-            yield cast(sqlite3.Connection, self._conn)
+            try:
+                yield cast(sqlite3.Connection, self._conn)
+            except BaseException as exc:
+                if _is_connection_poisoning_error(exc) and self._conn is not None:
+                    self._evict_poisoned_writer_conn_locked()
+                raise
+
+    def _evict_poisoned_writer_conn_locked(self) -> None:
+        """Close and reopen the shared writer connection after a read raised a connection-poisoning
+        error on it (a transient 'disk I/O error' is sticky per handle, so keeping the connection
+        would fail every later read identically even though a fresh connection to the same file
+        succeeds). Caller holds self._lock. A failed reopen leaves self._conn None so the next caller
+        rebuilds it through the normal reopen path instead of reusing the poisoned handle; genuine
+        permanent corruption still fails every read, surfaced on that next call."""
+        conn, self._conn = self._conn, None
+        self._close_conn_logged(conn, "poisoned writer conn")
+        if self._read_conns_closed:
+            return  # close() is draining; do not mint a connection nobody will close again
+        try:
+            self._conn = self._open_writer_conn()
+        except Exception:
+            logger.warning(
+                "state.db writer connection for %s was poisoned by a transient I/O error and the "
+                "evict-reopen failed; the next caller reopens it", self.db_path, exc_info=True)
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner

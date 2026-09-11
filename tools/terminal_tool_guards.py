@@ -13,8 +13,6 @@ import json
 import logging
 import re
 import shlex
-import stat
-from pathlib import Path
 from typing import Any, Optional
 
 from tools.shell_heredoc import strip_inert_heredoc_bodies
@@ -141,25 +139,15 @@ def _foreground_background_guidance(command: str) -> str | None:
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 
-def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:
-    """Best-effort script read: host filesystem first, then a bounded
+def _read_script_for_guard(env: Any, env_type: str, script_path: str, max_bytes: int) -> Optional[str]:
+    """Leave local reads to the native scanner; use a bounded
     ``env.execute('head -c ... < path')`` for remote backends. Binary content
     (NUL byte) is not a script: feeding it to the guard tokenizes machine code
     into bogus paths and crashes the scanner, so it yields None."""
     if env is None:
         return None
-    try:
-        local_path = Path(script_path).expanduser()
-        if not local_path.is_absolute():
-            local_path = Path(guard_cwd) / local_path
-        if local_path.is_file():
-            metadata = local_path.stat()
-            if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= max_bytes:
-                data = local_path.read_bytes()
-                if len(data) <= max_bytes:
-                    return None if b"\x00" in data else data.decode("utf-8", errors="replace")
-    except Exception:
-        pass
+    if env_type == "local":
+        return ""
     # Remote backend: bound the read at the source with `head -c` so an
     # oversized binary never crosses the wire (an unbounded `cat` once
     # pinned the gateway's tool thread for 30+ min on a shlex scan). One
@@ -232,7 +220,13 @@ def gateway_lifecycle_block(
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
-        read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
+        read_remote_script=(
+            None
+            if env_type == "local"
+            else lambda p: _read_script_for_guard(
+                env, env_type, p, _MAX_REFERENCED_SCRIPT_BYTES
+            )
+        ),
     )
     if unsafe and refusal:
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
@@ -255,7 +249,7 @@ def gateway_lifecycle_block(
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
             "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the running gateway.",
+            "separate shell outside the gateway process.",
             "error",
         )
     return None

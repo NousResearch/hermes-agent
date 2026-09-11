@@ -313,7 +313,15 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     Top-level ``require_mention`` → Telegram when the ``telegram:`` section has none: users write it
     alongside ``group_sessions_per_user`` expecting it to work, and the telegram plugin's hook only
     runs when a telegram block exists. Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
+
+    Both values are ALWAYS seeded into the owning platform's ``extra`` (the adapters read extra first);
+    the process-env write is skipped while a multiplexed secondary profile's scope is active — the
+    loader runs inside ``_profile_runtime_scope`` for every secondary, and a first-writer-wins write
+    there would make the secondary's mention policy the DEFAULT profile's (#80099 class).
     """
+    from gateway.platforms._shared import profile_scoped
+
+    skip_env_bridge = profile_scoped()
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
@@ -323,7 +331,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
-        if not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
             os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
@@ -331,8 +339,11 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # WhatsApp settings → env vars: migrated to the whatsapp plugin's apply_yaml_config_fn hook
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
-    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-        os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
+        sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
+        sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
+        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
+            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 
 
 def read_yaml_layers(home: Path) -> dict:

@@ -16,27 +16,31 @@ from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_loop as _loop
 from tools import mcp_tool_registration as _registration
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from tools.mcp_tool_scope import _key_name, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
 
 
 def _record_connect_failure(server_name: str) -> None:
     """Stamp a geometric, capped retry cooldown after a failed connect (under ``_lock``)."""
-    n = _core._server_connect_failures.get(server_name, 0) + 1
-    _core._server_connect_failures[server_name] = n
+    key = _server_key(server_name)
+    n = _core._server_connect_failures.get(key, 0) + 1
+    _core._server_connect_failures[key] = n
     backoff = min(_core._CONNECT_RETRY_BASE_BACKOFF_SEC * (2 ** (n - 1)), _core._CONNECT_RETRY_MAX_BACKOFF_SEC)
-    _core._server_connect_retry_after[server_name] = time.monotonic() + backoff
+    _core._server_connect_retry_after[key] = time.monotonic() + backoff
 
 
 def _clear_connect_failure(server_name: str) -> None:
     """Clear the connect-cooldown state after a successful connection."""
-    _core._server_connect_failures.pop(server_name, None)
-    _core._server_connect_retry_after.pop(server_name, None)
+    key = _server_key(server_name)
+    _core._server_connect_failures.pop(key, None)
+    _core._server_connect_retry_after.pop(key, None)
 
 
 def _connect_cooldown_active(server_name: str) -> bool:
-    """True if ``server_name`` is still within its retry cooldown."""
-    deadline = _core._server_connect_retry_after.get(server_name)
+    """True if ``server_name`` is still within its retry cooldown (this scope's connection: one
+    profile's failing ``x`` must not shadow another profile's healthy ``x``)."""
+    deadline = _core._server_connect_retry_after.get(_server_key(server_name))
     return deadline is not None and time.monotonic() < deadline
 
 
@@ -111,8 +115,9 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
     """Record a failed connect (under ``_lock``): error text for status, cooldown stamp."""
     message = _errors._format_connect_error(exc)
     with _core._lock:
-        _core._server_connecting.discard(name)
-        _core._server_connect_errors[name] = message
+        key = _server_key(name)
+        _core._server_connecting.discard(key)
+        _core._server_connect_errors[key] = message
         _record_connect_failure(name)
     return message
 
@@ -120,16 +125,18 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
 def _note_connect_success(name: str) -> None:
     """Clear connecting/error/cooldown state after a successful connect (under ``_lock``)."""
     with _core._lock:
-        _core._server_connecting.discard(name)
-        _core._server_connect_errors.pop(name, None)
+        key = _server_key(name)
+        _core._server_connecting.discard(key)
+        _core._server_connect_errors.pop(key, None)
         _clear_connect_failure(name)
 
 
 def _adopt_server(name: str, server: _core.MCPServerTask) -> None:
-    """Publish *server* into ``_servers`` with its owning registry scope (under ``_lock``)."""
+    """Publish *server* into ``_servers`` under the connecting scope's key (under ``_lock``)."""
     with _core._lock:
-        _core._servers[name] = server
-        _core._server_scope_keys[name] = _core._mcp_registry_scope()
+        key = _server_key(name)
+        _core._servers[key] = server
+        _core._server_scope_keys[key] = _core._mcp_registry_scope()
 
 
 def _ensure_lazy_server_connected(server_name: str) -> bool:
@@ -140,15 +147,16 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
     See #50394.
     """
     with _core._lock:
-        server = _core._servers.get(server_name)
+        key = _resolve_server_key(server_name)
+        server = _core._servers.get(key)
         if server is not None and server.session is not None:
             return True
-        config = _core._lazy_server_configs.get(server_name)
+        config = _core._lazy_server_configs.get(key)
         if (not config or _connect_cooldown_active(server_name)
-                or server_name in _core._server_connecting):
+                or key in _core._server_connecting):
             return False
-        _core._server_connecting.add(server_name)
-        _core._server_connect_errors.pop(server_name, None)
+        _core._server_connecting.add(key)
+        _core._server_connect_errors.pop(key, None)
     logger.info("MCP server '%s': lazy start on first use", server_name)
     _loop._ensure_mcp_loop()
     connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
@@ -160,16 +168,16 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         return False
     _note_connect_success(server_name)
     with _core._lock:
-        _core._lazy_server_configs.pop(server_name, None)
-        stale_fingerprint = _core._lazy_server_fingerprints.pop(server_name, None)
-        cached_names = _core._lazy_server_tool_names.pop(server_name, None) or []
-        server = _core._servers.get(server_name)
+        _core._lazy_server_configs.pop(key, None)
+        stale_fingerprint = _core._lazy_server_fingerprints.pop(key, None)
+        cached_names = _core._lazy_server_tool_names.pop(key, None) or []
+        server = _core._servers.get(key)
         live_names = set(getattr(server, "_registered_tool_names", []) or [])
     # The cached manifest may advertise tools the live server no longer serves.
     phantom_names = [n for n in cached_names if n not in live_names]
     if phantom_names:
         for tool_name in phantom_names:
-            _registration._deregister_mcp_tool_all_scopes(server_name, tool_name)
+            _registration._deregister_mcp_tool_all_scopes(key, tool_name)
         logger.info("MCP server '%s': deregistered %d phantom cached tool(s) not served live (stale schema-cache "
                     "fingerprint %s): %s", server_name, len(phantom_names), stale_fingerprint, ", ".join(phantom_names))
     return server is not None and server.session is not None
@@ -183,8 +191,9 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
     AND the resource/prompt utility handlers all trigger the deferred spawn (#56832).
     """
     with _core._lock:
-        server = _core._servers.get(server_name)
-        is_lazy = server_name in _core._lazy_server_configs
+        key = _resolve_server_key(server_name)
+        server = _core._servers.get(key)
+        is_lazy = key in _core._lazy_server_configs
     if is_lazy and (server is None or server.session is None):
         _ensure_lazy_server_connected(server_name)
     elif server is not None and server.session is None and server._is_recycled_stdio():
@@ -192,7 +201,7 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
     else:
         return server
     with _core._lock:
-        return _core._servers.get(server_name)
+        return _core._servers.get(key)
 
 
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
@@ -217,8 +226,9 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     finally:
         _core._connect_server_claim.reset(claim_token)
     with _core._lock:
-        _core._server_connecting.discard(name)
-        _core._server_connect_errors.pop(name, None)
+        key = _server_key(name)
+        _core._server_connecting.discard(key)
+        _core._server_connect_errors.pop(key, None)
     _adopt_server(name, server)
     registered_names = _registration._register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
@@ -232,21 +242,25 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     refresh per-server bookkeeping. Known servers without a live session are parked or
     mid-reconnect with tools deregistered, so nothing else can nudge them: signal a reconnect."""
     with _core._lock:
-        connecting = set(_core._server_connecting)
+        current_scope = _core._mcp_registry_scope()
+        # This scope's own connections OR shared ones it adopted (``register_connected_into_current_scope``
+        # ran first): a same-named server owned by ANOTHER profile with other credentials is not
+        # "connected" for us and must be a candidate, or this profile ends up silently tool-less.
+        keys = {k: _resolve_server_key(k, current_scope, current=False) for k in servers}
         # Only attempt servers that aren't already connected (or currently connecting) and are enabled.
         # Checking ``_server_connecting`` prevents duplicate subprocess spawns when ``discover_mcp_tools()``
         # is called from multiple entry-points before the first batch finishes (#58862).
         new_servers = {
             k: v for k, v in servers.items()
-            if k not in _core._servers and k not in connecting and k not in _core._lazy_server_configs
+            if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
+            and keys[k] not in _core._lazy_server_configs
             and _enabled(v) and not _connect_cooldown_active(k)}
-        stale_cached = [_core._servers[k] for k in servers
-                        if k in _core._servers and getattr(_core._servers[k], "session", None) is None]
-        _core._server_connecting.update(new_servers)
-        current_scope = _core._mcp_registry_scope()
+        stale_cached = [_core._servers[keys[k]] for k in servers
+                        if keys[k] in _core._servers and getattr(_core._servers[keys[k]], "session", None) is None]
         for srv_name in new_servers:
-            _core._server_scope_keys[srv_name] = current_scope
-            _core._server_connect_errors.pop(srv_name, None)
+            _core._server_connecting.add(keys[srv_name])
+            _core._server_scope_keys[keys[srv_name]] = current_scope
+            _core._server_connect_errors.pop(keys[srv_name], None)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
@@ -278,13 +292,13 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
         if not entry:
             continue
         with _core._lock:
-            _core._server_connecting.discard(name)
+            _core._server_connecting.discard(_server_key(name))
         try:
             names = _registration._register_from_cache_sync(name, cfg, entry)
         except Exception as exc:
             logger.warning("Failed lazy MCP registration for '%s': %s", name, exc)
             with _core._lock:
-                _core._server_connecting.add(name)
+                _core._server_connecting.add(_server_key(name))
             continue
         eager_servers.pop(name, None)
         lazy_registered += len(names)
@@ -321,13 +335,14 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
         # Stranded _server_connecting entries would block future reconnects.
         how = "timed out" if isinstance(_e, TimeoutError) else "interrupted"
         with _core._lock:
-            stale = [n for n in new_servers if n in _core._server_connecting]
+            stale = [n for n in new_servers if _server_key(n) in _core._server_connecting]
             if stale:
                 logger.warning("MCP discovery %s while %d server(s) were still connecting; clearing stale "
                                "connecting set: %s", how, len(stale), ", ".join(stale))
-                _core._server_connecting.difference_update(stale)
                 for _sn in stale:
-                    _core._server_connect_errors.setdefault(_sn, f"Connection attempt {how} during discovery")
+                    _core._server_connecting.discard(_server_key(_sn))
+                    _core._server_connect_errors.setdefault(
+                        _server_key(_sn), f"Connection attempt {how} during discovery")
         raise
     finally:
         if _was_interrupted:
@@ -337,8 +352,10 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
 def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> Tuple[int, int, int]:
     """(tool count, connected count, failed count) for candidate names, plus lazy servers."""
     with _core._lock:
-        connected = [n for n in names if n in _core._servers and n not in _core._server_connect_errors]
-        tool_count = sum(len(getattr(_core._servers[n], "_registered_tool_names", [])) for n in connected)
+        keys = {n: _server_key(n) for n in names}
+        connected = [n for n in names
+                     if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
+        tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)
     failed = len(names) - len(connected)
     return tool_count + lazy_tools, len(connected) + lazy_servers, failed
 
@@ -360,6 +377,15 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
     servers = _config._filter_suspicious_mcp_servers(servers)
+    try:
+        return _register_mcp_servers(servers)
+    finally:
+        # An owner's scoped reload orphaned adopters of its shared connections: now that this
+        # pass (its rediscovery) is done, give them their tools back under their own scope.
+        _lifecycle._reregister_orphaned_adopters()
+
+
+def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     scoped_healed = _registration.register_connected_into_current_scope(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
@@ -434,9 +460,10 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     cookie = _acquire_discovery_lock_with_retry()
     try:
         with _core._lock:
-            connecting = set(_core._server_connecting)
+            keys = {name: _resolve_server_key(name) for name in servers}
             new_server_names = [name for name, cfg in servers.items()
-                                if name not in _core._servers and name not in connecting and _enabled(cfg)]
+                                if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
+                                and _enabled(cfg)]
         tool_names = register_mcp_servers(servers)
         if new_server_names:
             _log_summary("  MCP:", new_server_names)
@@ -465,15 +492,15 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
         return []
     current_scope = _core._mcp_registry_scope()
     with _core._lock:
-        def visible(name: str) -> bool:
+        def visible(key) -> bool:
             # Runtime state belongs to the profile that adopted it; under a multiplexer only that
             # profile's view may show it, and ``include_runtime=False`` hides the launch profile's
             # servers from a status read scoped to a different profile.
-            return include_runtime and _core._server_visible_in_scope(name, current_scope)
+            return include_runtime and _core._server_visible_in_scope(key, current_scope)
 
-        active_servers = {n: s for n, s in _core._servers.items() if visible(n)}
-        connecting = {n for n in _core._server_connecting if visible(n)}
-        connect_errors = {n: e for n, e in _core._server_connect_errors.items() if visible(n)}
+        active_servers = {_key_name(k): s for k, s in _core._servers.items() if visible(k)}
+        connecting = {_key_name(k) for k in _core._server_connecting if visible(k)}
+        connect_errors = {_key_name(k): e for k, e in _core._server_connect_errors.items() if visible(k)}
 
     result: List[dict] = []
     for name, cfg in configured.items():

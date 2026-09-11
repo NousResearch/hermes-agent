@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
+from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
 
 try:
     from mautrix.types import (
@@ -853,12 +854,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
-        self._auto_thread: bool = _env_truthy("MATRIX_AUTO_THREAD", "true")
+        # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
+        # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
+        self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
-        self._dm_mention_threads: bool = _env_truthy("MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
+        self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
+        raw_session_scope = str(config.extra.get("session_scope") or os.getenv("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
-        self._process_notices: bool = _env_truthy("MATRIX_PROCESS_NOTICES", "false")
+        self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = os.getenv("MATRIX_REACTIONS", "true").lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
@@ -905,6 +908,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
+        """``config.extra[key]`` (YAML-bridged, per profile) else the env var, true/1/yes semantics."""
+        configured = config.extra.get(key)
+        if configured is None:
+            return _env_truthy(env_name, default)
+        return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
 
     @staticmethod
     def _configured_bool(config, key: str) -> Optional[bool]:
@@ -3033,25 +3044,28 @@ _YAML_LIST_KEYS = (
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins). Returns None. Lowercased
-    flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
+    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins) + ``PlatformConfig.extra``.
+    Lowercased flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy matrix_cfg block from
-    gateway/config.py::load_gateway_config(). Env vars take precedence over YAML. Returns None — everything
-    flows through env.
+    gateway/config.py::load_gateway_config(). The env write is skipped under a multiplexed secondary
+    profile's scope; the seeded ``extra`` is what its adapter reads (extra-first readers).
     """
+    _set_env = _yaml_env_setter()
+    seeded: dict = {}
     for key, env_name in _YAML_LOWER_KEYS:
-        if key in matrix_cfg and not os.getenv(env_name):
-            os.environ[env_name] = str(matrix_cfg[key]).lower()
+        if key in matrix_cfg:
+            seeded[key] = matrix_cfg[key]
+            _set_env(env_name, str(matrix_cfg[key]).lower())
     for key, env_name in _YAML_LIST_KEYS:
         value = matrix_cfg.get(key)
-        if value is not None and not os.getenv(env_name):
-            if isinstance(value, list):
-                value = ",".join(str(v) for v in value)
-            os.environ[env_name] = str(value)
-    if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
-        os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
-    return None
+        if value is not None:
+            seeded[key] = value
+            _set_env(env_name, value)
+    if "max_message_length" in matrix_cfg:
+        seeded["max_message_length"] = matrix_cfg["max_message_length"]
+        _set_env("MATRIX_MAX_MESSAGE_LENGTH", str(matrix_cfg["max_message_length"]))
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

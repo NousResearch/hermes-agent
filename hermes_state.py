@@ -1122,10 +1122,13 @@ class SessionDB(
             return False
         return True
 
-    def _pin_connection(self) -> None:
-        """Retain the exact quarantined connection past GC and interpreter teardown (once per handle)."""
+    def _pin_connection(self, conn) -> None:
+        """Retain the exact quarantined connection past GC and interpreter teardown (once per handle).
+
+        Takes the connection as a parameter: callers are lock-held close paths, and the
+        writer-conn thread-safety audit flags self._conn in functions outside `with self._lock`."""
         if not self._connection_pinned:
-            self._retire_connection(self._conn)
+            self._retire_connection(conn)
             self._connection_pinned = True
 
     def _settle_lost_generation_locked(self) -> bool:
@@ -1143,7 +1146,7 @@ class SessionDB(
             artifact = self._capture_retired_generation("close")
         except RetiredGenerationCaptureError as exc:
             if retire_without_close:
-                self._pin_connection()
+                self._pin_connection(self._conn)
             logger.error(
                 "Could not capture the retired WAL generation of %s at close: %s. The handle stays open "
                 "and close() retries the capture; those frames are NOT yet preserved.", self.db_path, exc,
@@ -1285,7 +1288,7 @@ class SessionDB(
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
                 if retire_without_close:
-                    self._pin_connection()
+                    self._pin_connection(self._conn)
                     self._conn = None
                 else:
                     conn, self._conn = self._conn, None

@@ -228,8 +228,8 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
-async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
-    """Quote-replies should stay in-channel instead of trying to create a thread."""
+async def test_discord_reply_in_free_response_channel_skips_auto_thread(adapter, monkeypatch):
+    """Free-response policy, not the quote-reply type, keeps a reply inline."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
@@ -250,6 +250,33 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     assert event.text == "reply without mention"
     assert event.source.chat_id == "123"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_reply_message_auto_threads_in_parent_channel(adapter, monkeypatch):
+    """Quote-replies in a normal parent channel must retain thread isolation."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=999)
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="reply without mention",
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "999"
+    assert event.source.chat_type == "thread"
+    assert event.source.parent_chat_id == "123"
 
 
 @pytest.mark.asyncio

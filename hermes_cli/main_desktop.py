@@ -35,8 +35,12 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 
 
 def _compute_desktop_content_hash(project_root: Path) -> str:
-    """SHA-256 of ``apps/desktop/`` (minus .gitignore matches) plus root workspace config."""
-    return _hash_source_tree(project_root, project_root / "apps" / "desktop")
+    """SHA-256 of Desktop and its shared workspace sources plus root workspace config."""
+    return _hash_source_tree(
+        project_root,
+        project_root / "apps" / "desktop",
+        project_root / "apps" / "shared",
+    )
 
 
 def _desktop_stamp_path() -> Path:

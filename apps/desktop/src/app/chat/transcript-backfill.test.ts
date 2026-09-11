@@ -8,14 +8,16 @@ import {
   backfillOlderTranscriptPage,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
-  transcriptBackfillAvailable
+  transcriptBackfillAvailable,
+  unhideOpeningUserRows
 } from './transcript-backfill'
 
 vi.mock('@/hermes', () => ({
-  getOlderSessionMessages: vi.fn()
+  getOlderSessionMessages: vi.fn(),
+  getSessionMessages: vi.fn()
 }))
 
-const { getOlderSessionMessages } = await import('@/hermes')
+const { getOlderSessionMessages, getSessionMessages } = await import('@/hermes')
 
 const chat = (id: string, rowId?: number): ChatMessage => ({
   id,
@@ -164,6 +166,11 @@ describe('backfillOlderTranscriptPage', () => {
     $transcriptTailBySessionId.set({})
     _resetTranscriptBackfillForTests()
     vi.mocked(getOlderSessionMessages).mockReset()
+    vi.mocked(getSessionMessages).mockReset()
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [],
+      session_id: 'stored-1'
+    } as never)
   })
 
   afterEach(() => {
@@ -195,7 +202,6 @@ describe('backfillOlderTranscriptPage', () => {
 
     expect(applied).toBe(true)
     expect(getOlderSessionMessages).toHaveBeenCalledWith('stored-1', undefined, 120)
-    expect(applyOlderPage).toHaveBeenCalledTimes(1)
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
@@ -352,5 +358,66 @@ describe('backfillOlderTranscriptPage', () => {
 
     expect(applied).toBe(false)
     expect(transcriptBackfillAvailable('stored-1')).toBe(true)
+  })
+
+  it('prepends the opening user from the oldest page once paging is exhausted', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(10, 'first-assistant-visible')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        {
+          id: 1,
+          role: 'user',
+          content: '你感觉我们的 Hermes Relay Manager 怎么样？',
+          display_kind: 'hidden',
+          timestamp: 1
+        },
+        row(10, 'first-assistant-visible')
+      ],
+      pagination: { limit: 20, offset: 0, order: 'oldest', returned: 2 },
+      session_id: 'stored-1'
+    } as never)
+
+    const applyOlderPage = vi.fn()
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })
+
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+      includeCompacted: true,
+      limit: 20,
+      offset: 0,
+      order: 'oldest'
+    })
+    const originPage = applyOlderPage.mock.calls[1][0] as ChatMessage[]
+    expect(originPage[0].role).toBe('user')
+    expect(originPage[0].parts[0]).toMatchObject({
+      type: 'text',
+      text: '你感觉我们的 Hermes Relay Manager 怎么样？'
+    })
+  })
+})
+
+describe('unhideOpeningUserRows', () => {
+  it('clears hidden on the first user so toChatMessages keeps the greeting', () => {
+    const messages = unhideOpeningUserRows([
+      {
+        id: 1,
+        role: 'user',
+        content: 'hello there',
+        display_kind: 'hidden',
+        timestamp: 1
+      }
+    ])
+
+    expect(messages[0].display_kind).toBeUndefined()
+    expect(messages[0].display_content).toBe('hello there')
   })
 })

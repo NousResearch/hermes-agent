@@ -806,6 +806,9 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)
+    if ctx_sent:
+        # The legacy root alias must not restore the override during save canonicalization.
+        config.pop("context_length", None)
     if not isinstance(ctx_override, int):
         try:
             ctx_override = int(ctx_override)

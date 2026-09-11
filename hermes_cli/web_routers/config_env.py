@@ -122,8 +122,9 @@ async def update_config(
             # full-replace — the frontend can only overwrite what it sends.
             with _CONFIG_MUTATION_LOCK:
                 existing = read_raw_config()
-                incoming = _denormalize_config_from_web(body.config)
-                merged = _deep_merge(existing, incoming)
+                merged = _deep_merge(existing, body.config)
+                # Apply removals after merging so a context reset cannot restore the old value.
+                merged = _denormalize_config_from_web(merged)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page
                 # PUTs the defaulted GET record while disk holds sparse YAML (a

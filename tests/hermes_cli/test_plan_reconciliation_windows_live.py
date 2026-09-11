@@ -14,7 +14,12 @@ reconciliation. No mocks on the components under test.
 import io, contextlib, json, os, subprocess, sys, tempfile, time
 from pathlib import Path
 
-WORKTREE = Path(__file__).resolve().parents[1]
+# parents[2]: this file lives at tests/hermes_cli/, so parents[1] would be
+# <root>/tests — inserting that puts the repo's own tests/acp/ package on
+# sys.path ahead of any installed `acp` SDK, breaking importorskip("acp")
+# gates. Collection imports every module in the directory even under `-k`
+# deselection, so a top-level insert here pollutes the whole shard.
+WORKTREE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(WORKTREE))
 
 import pytest

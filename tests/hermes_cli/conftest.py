@@ -2,7 +2,48 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+
+@pytest.fixture
+def purged_hermes_modules():
+    """Purge hermes_cli/hermes_state/hermes_constants from sys.modules, then
+    RESTORE the original module objects on teardown.
+
+    Fixtures that spin up a fresh HERMES_HOME historically did a bare
+    ``del sys.modules[mod]`` for these prefixes with no restore. Every
+    ``hermes_cli`` module imported later in the same pytest process (later
+    test files' mid-test imports, conftest fixture lookups) then produced
+    brand-new module objects, while code imported earlier held the
+    originals — one module-identity split per purge. Monkeypatches and
+    guards landed on whichever copy the patcher saw (the kanban write
+    guard, hook subscriber lists, ``profile_exists`` stubs), while the
+    code under test called into the re-imported copies, so every one of
+    those patches silently no-ops downstream (t_63128384: 15 kanban-shard
+    tests failing only in multi-file runs, all passing in isolation).
+
+    Teardown evicts whatever the test re-imported (those modules resolved
+    paths against the fixture's temporary HERMES_HOME and must not leak
+    either) and then restores the pre-purge originals.
+    """
+    def _matched(name: str) -> bool:
+        return (
+            name.startswith("hermes_cli")
+            or name.startswith("hermes_state")
+            or name == "hermes_constants"
+        )
+
+    saved = {n: m for n, m in sys.modules.items() if _matched(n)}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        yield
+    finally:
+        for name in [n for n in list(sys.modules) if _matched(n)]:
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 @pytest.fixture

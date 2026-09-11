@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,14 +17,18 @@ import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
+def isolated_kanban_home(monkeypatch, purged_hermes_modules):
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    ``purged_hermes_modules`` (conftest) forces a re-import of hermes_cli
+    against the fixture's HERMES_HOME below and — unlike the bare
+    ``del sys.modules[...]`` this fixture used to do — restores the original
+    module objects on teardown, so later files in a multi-file pytest run
+    don't get split module identities (t_63128384).
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
     yield test_home
 
 

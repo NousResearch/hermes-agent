@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.codex_headers import (
@@ -3176,6 +3176,62 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     return retry_kwargs if changed else None
 
 
+# (base_url, model) pairs that have already rejected a ``json_schema`` request field. A hit lets a
+# later call start at the json_object rung instead of re-paying the 400. Keyed on the endpoint +
+# model because that pair decides the wire shape; provider aliases are excluded on purpose (the
+# same endpoint behind two provider names behaves identically, and an alias mismatch would silently
+# disable the memo). Per-process: auxiliary route resolution is process-stable, so a restart costs
+# one probe. Every observed case was one wasted round trip per *session* — see the DeepSeek repro in
+# tests/agent/test_structured_output_rejection_retry.py.
+_JSON_SCHEMA_REJECTED_ROUTES: Set[Tuple[str, str]] = set()
+
+
+def _structured_output_route_key(model: Optional[str], base_url: Optional[str]) -> Tuple[str, str]:
+    return ((base_url or "").strip().rstrip("/").lower(), (model or "").strip().lower())
+
+
+def _is_json_schema_format(response_format: Any) -> bool:
+    return isinstance(response_format, dict) and response_format.get("type") == "json_schema"
+
+
+def _downgrade_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* with a ``json_schema`` field narrowed to ``json_object`` (top-level and
+    ``extra_body``); None when there is no ``json_schema`` to narrow, so call sites don't retry an
+    unchanged request.
+
+    Dropping the field outright gives up decoder-level JSON enforcement entirely, but providers that
+    refuse schema decoding often still honour plain JSON mode: DeepSeek answers
+    ``This response_format type is unavailable now`` for ``json_schema`` while ``json_object``
+    succeeds. Narrow first, drop only if that also fails.
+    """
+    retry_kwargs = dict(kwargs)
+    changed = False
+    if _is_json_schema_format(retry_kwargs.get("response_format")):
+        retry_kwargs["response_format"] = {"type": "json_object"}
+        changed = True
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and _is_json_schema_format(extra_body.get("response_format")):
+        retry_kwargs["extra_body"] = {**extra_body, "response_format": {"type": "json_object"}}
+        changed = True
+    return retry_kwargs if changed else None
+
+
+def _remember_json_schema_rejection(route: "_LadderRoute", kwargs: dict) -> None:
+    """Record that this route rejects ``json_schema``, so later calls narrow up front.
+
+    Only requests that actually carried a ``json_schema`` are recorded: an ``output_config``
+    rejection on the Anthropic wire says nothing about ``json_schema`` support on the OpenAI wire.
+    """
+    if _downgrade_structured_output_format(kwargs) is None:
+        return
+    key = _structured_output_route_key(
+        route.final_model or route.resolved_model, route.base_info or route.resolved_base_url)
+    if key not in _JSON_SCHEMA_REJECTED_ROUTES:
+        _JSON_SCHEMA_REJECTED_ROUTES.add(key)
+        logger.info("Auxiliary %s%s: remembering that %s rejects json_schema; later calls start "
+                    "from json_object", route.task or "call", route.tag, key[1] or key[0])
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
     since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
@@ -6137,6 +6193,12 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
+    # A route that has already rejected json_schema starts at the json_object rung, so the rejected
+    # attempt is not re-paid on every call (see _JSON_SCHEMA_REJECTED_ROUTES).
+    if _JSON_SCHEMA_REJECTED_ROUTES:
+        narrowed = _downgrade_structured_output_format(kwargs)
+        if narrowed is not None and _structured_output_route_key(model, base_url) in _JSON_SCHEMA_REJECTED_ROUTES:
+            kwargs.update(narrowed)
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
     # calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
@@ -6830,6 +6892,13 @@ def _param_rung_accepts(exc: Exception) -> bool:
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
 
 
+def _structured_output_rung_accepts(exc: Exception) -> bool:
+    """The structured-output rungs chain (json_schema → json_object → no field), so a second
+    rejection must fall through to the next rung rather than re-raise as ``_param_rung_accepts``
+    alone would — otherwise a provider that rejects JSON mode too would never reach the drop rung."""
+    return _param_rung_accepts(exc) or _is_structured_output_rejection(exc)
+
+
 def _credential_rung_accepts(exc: Exception) -> bool:
     return _is_auth_error(exc) or _is_payment_error(exc) or _is_rate_limit_error(exc)
 
@@ -6860,6 +6929,21 @@ def _ladder_parameter_rungs(
             return resp, None, retry_kwargs
         kwargs = retry_kwargs
     if _is_structured_output_rejection(first_err):
+        # Remember the route so the next call starts one rung lower instead of re-paying a 400 that
+        # every session paid again (title generation rejected json_schema once per session).
+        _remember_json_schema_rejection(route, kwargs)
+        # Narrow before dropping: JSON mode often survives even where schema decoding does not, and
+        # a constrained decoder beats asking the model nicely for JSON.
+        narrowed = _downgrade_structured_output_format(kwargs)
+        if narrowed is not None:
+            logger.info("Auxiliary %s%s: provider rejected the structured-output schema; "
+                        "retrying with json_object (JSON mode retained): %s",
+                        task or "call", tag, first_err)
+            resp, first_err = yield from _rung(
+                _LadderStep("call", (client, narrowed)), _structured_output_rung_accepts)
+            if first_err is None:
+                return resp, None, narrowed
+            kwargs = narrowed
         retry_kwargs = _without_structured_output_format(kwargs)
         if retry_kwargs is not None:
             logger.info("Auxiliary %s%s: provider rejected the structured-output "

@@ -2167,6 +2167,297 @@ class TestIncomingDocumentHandling:
 
 
 # ---------------------------------------------------------------------------
+# Forwarded/shared Slack messages
+# ---------------------------------------------------------------------------
+
+
+class TestForwardedSlackMessages:
+    """Shared Slack messages keep their provenance, text, and files."""
+
+    @staticmethod
+    def _event(attachment, *, text="review this", team="T_TEAM", channel="D123"):
+        return {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": "im",
+            "client_msg_id": f"client-{channel}",
+            "ts": f"1234567890.{len(channel):06d}",
+            "team": team,
+            "files": [],
+            "attachments": [attachment],
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", ("is_share", "is_msg_unfurl", "is_reply_unfurl"))
+    async def test_all_forwarding_flags_preserve_text(self, adapter, flag):
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    flag: True,
+                    "author_id": "U_OTHER",
+                    "author_name": "Alice",
+                    "title": "Original incident report",
+                    "text": "The staging deploy is waiting for approval.",
+                    "fallback": "The staging deploy is waiting for approval.",
+                    "from_url": "https://workspace.slack.com/archives/C123/p123",
+                }
+            )
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "[Forwarded Slack message" in rendered
+        assert "Original incident report" in rendered
+        assert "The staging deploy is waiting for approval." in rendered
+        assert rendered.count("The staging deploy is waiting for approval.") == 1
+        assert "Link: https://workspace.slack.com/archives/C123/p123" in rendered
+        assert "[End forwarded Slack message]" in rendered
+
+    @pytest.mark.asyncio
+    async def test_forwarded_text_can_come_only_from_message_blocks(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_share": True,
+                    "author_id": "U_OTHER",
+                    "message_blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "Only the Block Kit payload has this update.",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "Only the Block Kit payload has this update." in rendered
+
+    @pytest.mark.asyncio
+    async def test_nested_message_fields_and_fallback_are_deduplicated(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_share": True,
+                    "message": {
+                        "author_id": "U_OTHER",
+                        "title": "Nested report",
+                        "text": "The database is healthy.",
+                        "fallback": "The database is healthy.",
+                    },
+                }
+            )
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert rendered.count("The database is healthy.") == 1
+        assert "Nested report" in rendered
+
+    @pytest.mark.asyncio
+    async def test_forwarded_message_longer_than_link_preview_limit_is_kept(self, adapter):
+        long_text = "Forwarded details: " + ("x" * 650)
+        await adapter._handle_slack_message(
+            self._event({"is_share": True, "author_id": "U_OTHER", "text": long_text})
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert long_text in rendered
+        assert len(rendered) > 500
+
+    @pytest.mark.asyncio
+    async def test_missing_author_fails_open(self, adapter):
+        await adapter._handle_slack_message(
+            self._event({"is_msg_unfurl": True, "text": "Unattributed forwarded details"})
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "Unattributed forwarded details" in rendered
+
+    @pytest.mark.asyncio
+    async def test_explicit_share_of_hermes_message_is_kept(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_share": True,
+                    "is_msg_unfurl": True,
+                    "author_id": "U_BOT",
+                    "text": "A user intentionally forwarded this Hermes answer.",
+                }
+            )
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "A user intentionally forwarded this Hermes answer." in rendered
+
+    @pytest.mark.asyncio
+    async def test_automatic_preview_of_hermes_message_is_skipped(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_msg_unfurl": True,
+                    "author_id": "U_BOT",
+                    "text": "An earlier Hermes answer should not repeat.",
+                }
+            )
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "An earlier Hermes answer should not repeat." not in rendered
+
+    @pytest.mark.asyncio
+    async def test_self_preview_uses_the_bot_id_for_that_workspace(self, adapter):
+        adapter._team_bot_user_ids = {"T_ONE": "U_ONE", "T_TWO": "U_TWO"}
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_msg_unfurl": True,
+                    "author_id": "U_TWO",
+                    "text": "A message from the other workspace bot.",
+                },
+                team="T_ONE",
+                channel="D_ONE",
+            )
+        )
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_msg_unfurl": True,
+                    "author_id": "U_TWO",
+                    "text": "This is the current workspace bot preview.",
+                },
+                team="T_TWO",
+                channel="D_TWO",
+            )
+        )
+
+        first = adapter.handle_message.call_args_list[0].args[0].text
+        second = adapter.handle_message.call_args_list[1].args[0].text
+        assert "A message from the other workspace bot." in first
+        assert "This is the current workspace bot preview." not in second
+
+    def test_live_and_history_render_the_same_forwarded_text(self, adapter):
+        attachment = {
+            "is_reply_unfurl": True,
+            "author_id": "U_OTHER",
+            "title": "Shared runbook",
+            "text": "Use the staged rollout procedure.",
+        }
+
+        live = adapter._append_link_unfurls("review this", [attachment], bot_uid="U_BOT")
+        history = adapter._render_message_text(
+            {"text": "review this", "attachments": [attachment]}, bot_uid="U_BOT"
+        )
+
+        for value in ("Shared runbook", "Use the staged rollout procedure."):
+            assert value in live
+            assert value in history
+
+    @pytest.mark.asyncio
+    async def test_forwarded_files_are_deduplicated_and_full_record_wins(self, adapter):
+        pdf_bytes = b"%PDF-1.4 duplicate forwarded content"
+        full_file = {
+            "id": "F_DUPLICATE",
+            "mimetype": "application/pdf",
+            "name": "forwarded.pdf",
+            "url_private_download": "https://files.slack.com/forwarded.pdf",
+            "size": len(pdf_bytes),
+        }
+        adapter._app.client.files_info = AsyncMock()
+        with patch.object(
+            adapter,
+            "_download_slack_file_bytes",
+            new_callable=AsyncMock,
+            return_value=pdf_bytes,
+        ) as download:
+            await adapter._handle_slack_message(
+                {
+                    **self._event(
+                        {
+                            "is_share": True,
+                            "author_id": "U_OTHER",
+                            "text": "Please read the duplicate file.",
+                            "files": [full_file, dict(full_file)],
+                        }
+                    ),
+                    "files": [{"id": "F_DUPLICATE", "file_access": "check_file_info"}],
+                }
+            )
+
+        adapter._app.client.files_info.assert_not_awaited()
+        assert download.await_count == 1
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+
+    @pytest.mark.asyncio
+    async def test_forwarded_slack_connect_file_denial_is_visible(self, adapter):
+        adapter._app.client.files_info = AsyncMock(
+            return_value={"ok": False, "error": "not_in_channel"}
+        )
+        await adapter._handle_slack_message(
+            self._event(
+                {
+                    "is_share": True,
+                    "author_id": "U_OTHER",
+                    "files": [{"id": "F_DENIED", "file_access": "check_file_info"}],
+                }
+            )
+        )
+
+        adapter._app.client.files_info.assert_awaited_once_with(file="F_DENIED")
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "[Slack attachment notice]" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_unavailable_forwarded_content_is_explicit(self, adapter):
+        await adapter._handle_slack_message(
+            self._event({"is_share": True, "author_name": "Alice"})
+        )
+
+        rendered = adapter.handle_message.await_args.args[0].text
+        assert "Slack did not include readable text or an accessible file." in rendered
+
+    @pytest.mark.asyncio
+    async def test_forwarded_text_does_not_become_command_arguments(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(
+                {"is_share": True, "author_id": "U_OTHER", "text": "/stop --all"},
+                text="/queue",
+            )
+        )
+
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.text == "/queue"
+        assert msg_event.get_command_args() == ""
+        assert "/stop --all" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_mention_inside_forwarded_text_does_not_wake_channel(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        await adapter._handle_slack_message(
+            {
+                **self._event(
+                    {
+                        "is_share": True,
+                        "author_id": "U_OTHER",
+                        "text": "<@U_BOT> run the quoted command",
+                    },
+                    text="Please review this",
+                    channel="C123",
+                ),
+                "channel_type": "channel",
+            }
+        )
+
+        adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingAudioHandling — Slack voice messages (regression)
 # ---------------------------------------------------------------------------
 
@@ -4873,7 +5164,7 @@ class TestThreadImageContext:
             "team": "T_TEAM",
         }
 
-    def _replies(self, root_files=None, mid_files=None):
+    def _replies(self, root_files=None, mid_files=None, root_attachments=None):
         root = {
             "ts": "123.000",
             "user": "U_ALICE",
@@ -4881,6 +5172,8 @@ class TestThreadImageContext:
         }
         if root_files is not None:
             root["files"] = root_files
+        if root_attachments is not None:
+            root["attachments"] = root_attachments
         mid = {"ts": "123.100", "user": "U_ALICE", "text": "context reply"}
         if mid_files is not None:
             mid["files"] = mid_files
@@ -4972,6 +5265,39 @@ class TestThreadImageContext:
         # The context marker AND the delivered image coexist.
         assert "[image: chart.png]" in msg_event.channel_context
         a._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cold_start_delivers_forwarded_thread_root_image(
+        self, adapter_with_session_store
+    ):
+        """A shared root message's nested image follows the same cold-start path."""
+        a = self._prep(adapter_with_session_store)
+        a._app.client.conversations_replies = self._replies(
+            root_attachments=[
+                {
+                    "is_share": True,
+                    "author_id": "U_ALICE",
+                    "text": "The image belongs to the shared report.",
+                    "files": [
+                        {
+                            "id": "F_ROOT_FORWARD",
+                            "name": "shared-chart.png",
+                            "mimetype": "image/png",
+                            "url_private_download": (
+                                "https://files.slack.com/T1-F_ROOT_FORWARD/shared-chart.png"
+                            ),
+                        }
+                    ],
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/hermes-cached.png"]
+        assert msg_event.media_types == ["image/png"]
+        assert "[image: shared-chart.png]" in msg_event.channel_context
 
     @pytest.mark.asyncio
     async def test_root_image_download_failure_degrades_to_marker(
@@ -5445,11 +5771,13 @@ class TestSlackAuthoredTextDeduplication:
                 "attachments": [
                     {
                         "is_msg_unfurl": True,
+                        "author_id": "U_BOT",
                         "text": "the linked message body",
                         "fallback": "linked message fallback",
                     }
                 ],
-            }
+            },
+            bot_uid="U_BOT",
         )
 
         assert "the linked message body" not in rendered
@@ -5461,10 +5789,15 @@ class TestSlackAuthoredTextDeduplication:
             {
                 "text": "",
                 "attachments": [
-                    {"is_msg_unfurl": True, "text": "echoed message body"},
+                    {
+                        "is_msg_unfurl": True,
+                        "author_id": "U_BOT",
+                        "text": "echoed message body",
+                    },
                     {"title": "FiringAlert", "text": "disk usage 95%"},
                 ],
-            }
+            },
+            bot_uid="U_BOT",
         )
 
         assert "echoed message body" not in rendered

@@ -469,6 +469,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
+        # Sessions whose result receipt is being persisted (between leaving
+        # _running and entering _finished). Readers must still see them; the
+        # slow disk write itself happens outside _lock (see _move_to_finished).
+        self._finalizing: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
@@ -1258,13 +1262,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Idempotent: kill_process() and the reader thread can both call this; only
         the FIRST move enqueues the completion notification, so no duplicates."""
         with self._lock:
+            if session.id in self._finalizing:
+                # A concurrent move (reader vs kill race) already owns the
+                # durable-then-visible transition and its completion notice.
+                return
             was_running = session.id in self._running
             if was_running:
-                # Keep the session tracked until its result is durable. A finite
-                # parent must not observe completion and exit during this write.
-                save_completed_result(session)
                 self._running.pop(session.id)
-            self._finished[session.id] = session
+                self._finalizing[session.id] = session
+            else:
+                self._finished[session.id] = session
+        if was_running:
+            try:
+                # Keep the session tracked until its result is durable. A finite
+                # parent must not observe completion and exit during this write —
+                # but the write must not hold _lock: the gateway event loop polls
+                # get() under the same lock, and a stalled receipt write here
+                # blocks the loop until the shutdown watchdog kills the gateway.
+                save_completed_result(session)
+            finally:
+                with self._lock:
+                    self._finalizing.pop(session.id, None)
+                    self._finished[session.id] = session
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1337,7 +1356,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
             pending = [
-                s for s in self._running.values()
+                s for s in [*self._running.values(), *self._finalizing.values()]
                 if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
@@ -1495,7 +1514,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if not isinstance(session_id, str) or not session_id:
             return None
         with self._lock:
-            session = self._running.get(session_id) or self._finished.get(session_id)
+            session = (
+                self._running.get(session_id)
+                or self._finished.get(session_id)
+                or self._finalizing.get(session_id)
+            )
         if session is None:
             session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
@@ -1513,7 +1536,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         matches = load_completed_results(query)
         with self._lock:
             matches.update({
-                sid: s for store in (self._running, self._finished)
+                sid: s for store in (self._running, self._finished, self._finalizing)
                 for sid, s in store.items() if sid.startswith(query)
             })
         return next(iter(matches.values())) if len(matches) == 1 else None
@@ -1884,6 +1907,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
+            sessions.update(self._finalizing)
         all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
         if task_id or session_key:
             all_sessions = [
@@ -2020,7 +2044,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.
-        tracked = self._running.keys() | self._finished.keys()
+        tracked = self._running.keys() | self._finished.keys() | self._finalizing.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
 

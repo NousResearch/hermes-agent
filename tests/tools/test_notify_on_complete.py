@@ -10,6 +10,7 @@ Covers:
 
 import json
 import os
+import threading
 import time
 import pytest
 from unittest.mock import MagicMock, patch
@@ -441,3 +442,108 @@ def test_non_ci_background_command_does_not_emit_homebrew_hint(monkeypatch, tmp_
     assert "hint" not in result, (
         f"Non-CI command using awk must not be flagged as homebrew CI poller, got: {result.get('hint')!r}"
     )
+
+
+# =========================================================================
+# Receipt-write lock scope (#108327)
+# =========================================================================
+
+class TestReceiptWriteLockScope:
+    """_move_to_finished must not hold the registry lock across the durable
+    receipt write: the gateway event loop polls get() under the same lock, so
+    a stalled save_completed_result (antivirus scan, slow disk) blocks the
+    whole loop until the shutdown watchdog kills the gateway with exit 75."""
+
+    def test_get_does_not_block_on_receipt_write(self, registry):
+        """get() keeps answering while the receipt write is still in flight."""
+        release = threading.Event()
+        started = threading.Event()
+        writes = []
+
+        def slow_save(session):
+            started.set()
+            writes.append(session.id)
+            assert release.wait(timeout=10)
+
+        s = _make_session(sid="proc_slow_disk", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", slow_save):
+            mover = threading.Thread(target=registry._move_to_finished, args=(s,))
+            mover.start()
+            assert started.wait(timeout=5), "receipt write never started"
+            # The write runs outside the lock: the watcher's get() poll must
+            # return immediately instead of waiting on the disk I/O.
+            t0 = time.monotonic()
+            found = registry.get("proc_slow_disk")
+            elapsed = time.monotonic() - t0
+            release.set()
+            mover.join(timeout=10)
+
+        assert found is s
+        assert elapsed < 1.0, f"get() blocked {elapsed:.2f}s behind the receipt write"
+        assert writes == ["proc_slow_disk"]
+        # Durable-before-visible still holds: the session only becomes finished
+        # once its receipt has been persisted.
+        assert registry._finished[s.id] is s
+        assert registry.completion_queue.qsize() == 1
+
+    def test_completion_notice_waits_for_durable_receipt(self, registry):
+        """Neither the completion event nor the notice fire before the write ends."""
+        release = threading.Event()
+        started = threading.Event()
+
+        def slow_save(session):
+            started.set()
+            assert release.wait(timeout=10)
+
+        s = _make_session(sid="proc_durable_order", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", slow_save):
+            mover = threading.Thread(target=registry._move_to_finished, args=(s,))
+            mover.start()
+            assert started.wait(timeout=5), "receipt write never started"
+            assert registry.completion_queue.empty()
+            assert not s._completion_event.is_set()
+            release.set()
+            mover.join(timeout=10)
+
+        assert s._completion_event.is_set()
+        assert registry.completion_queue.qsize() == 1
+
+    def test_concurrent_move_skips_in_flight_finalize(self, registry):
+        """A raced second move (reader vs kill) neither duplicates the receipt
+        write nor enqueues a second completion notice."""
+        release = threading.Event()
+        started = threading.Event()
+        writes = []
+
+        def slow_save(session):
+            started.set()
+            writes.append(session.id)
+            assert release.wait(timeout=10)
+
+        s = _make_session(sid="proc_race", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", slow_save):
+            mover = threading.Thread(target=registry._move_to_finished, args=(s,))
+            mover.start()
+            assert started.wait(timeout=5), "receipt write never started"
+            registry._move_to_finished(s)  # kill/reader race against the in-flight move
+            release.set()
+            mover.join(timeout=10)
+
+        assert writes == ["proc_race"]
+        assert registry.completion_queue.qsize() == 1
+        assert registry._finished[s.id] is s

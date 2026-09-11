@@ -3,7 +3,7 @@
 Covers: v1 regression (unchanged behavior), v2 field parsing, unknown-field
 forward compat, requires_plugins load ordering + cycle handling,
 config_schema validation warnings, and the python_dependencies
-declare-only seam (surfaced, never installed).
+discovery check (surfaced without installing).
 """
 
 import logging
@@ -365,8 +365,9 @@ class TestPythonDependenciesSeam:
             mgr.discover_and_load()
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
-        assert "pip install" in caplog.text
-        assert "does not install plugin dependencies automatically" in caplog.text
+        assert "hermes pm repair" in caplog.text
+        assert "pip install" not in caplog.text
+        assert "Discovery does not install dependencies" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
@@ -382,7 +383,7 @@ class TestPythonDependenciesSeam:
             mgr = PluginManager()
             mgr.discover_and_load()
         assert mgr._plugins["pipok"].enabled
-        assert "pip install" not in caplog.text
+        assert "hermes pm repair" not in caplog.text
 
 
 class TestCtxHasPlugin:

@@ -653,7 +653,10 @@ def _print_azure_entra_status() -> None:
         print(f"  Endpoint: {base_url or '(not configured)'}")
         print(f"  Scope: {scope}")
         if not has_azure_identity_installed():
-            print("  Status: ⚠ azure-identity not installed (pip install azure-identity)")
+            print("  Status: ⚠ azure-identity not installed")
+            print("  From the Hermes environment, run: "
+                  "python -c \"from pm import sync_venv; sync_venv(['azure-identity'], explicit=True)\"")
+            print("  Then restart Hermes.")
         else:
             info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
             env_sources = info.get("env_sources") or []

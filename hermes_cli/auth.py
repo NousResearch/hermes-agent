@@ -2045,9 +2045,9 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
                     "azure-identity is installed; live credential validation "
                     "is skipped here. Run `hermes doctor` to verify token acquisition."
                 ) if installed else (
-                    "azure-identity not installed. Install with: "
-                    "pip install azure-identity  (or rely on Hermes' "
-                    "lazy-install at first use)."))
+                    "azure-identity not installed. From the Hermes environment, run: "
+                    "python -c \"from pm import sync_venv; sync_venv(['azure-identity'], explicit=True)\". "
+                    "Then restart Hermes."))
         except Exception as exc:
             info["logged_in"] = False
             info["error"] = f"azure-identity check failed: {exc}"

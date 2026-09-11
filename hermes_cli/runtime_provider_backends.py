@@ -30,8 +30,8 @@ def _azure_entra_credentials(cfg_entra: Dict[str, Any]) -> Any:
         from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
     except Exception as exc:
         raise AuthError(
-            "Azure Foundry Entra ID auth requires the 'azure-identity' "
-            "package. Install it with: pip install azure-identity "
+            "Could not load the Azure Foundry Entra ID adapter. "
+            "Run hermes pm repair, then restart Hermes. "
             f"(import failed: {exc})"
         ) from exc
     scope = str(cfg_entra.get("scope") or "").strip() or SCOPE_AI_AZURE_DEFAULT

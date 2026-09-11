@@ -200,9 +200,9 @@ class TestResolveAzureFoundryRuntimeApiKey:
 
 
 class TestAzureFoundryAuthStatus:
-    def test_entra_status_does_not_mint_token(self, monkeypatch, tmp_path):
-        """Structural check — must return logged_in=True based on
-        importable + config, never call get_bearer_token_provider."""
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_entra_status_does_not_mint_token(self, monkeypatch, tmp_path, installed):
+        """Status checks availability and gives an explicit PM command for missing dependencies."""
         from hermes_cli import auth as _auth
         # Force load_config to return our entra config.
         monkeypatch.setattr(
@@ -215,18 +215,26 @@ class TestAzureFoundryAuthStatus:
                 },
             },
         )
-        # Patch has_azure_identity_installed to True; do NOT patch the
-        # token provider — if the code path tried to mint, the SDK
-        # missing would raise.
+        # Do not patch the token provider: status must not request credentials.
         monkeypatch.setattr(
             "agent.azure_identity_adapter.has_azure_identity_installed",
-            lambda: True,
+            lambda: installed,
         )
         info = _auth._get_azure_foundry_auth_status()
-        assert info["logged_in"] is True
+        assert info["logged_in"] is installed
         assert info["auth_mode"] == "entra_id"
-        assert info["azure_identity_installed"] is True
+        assert info["azure_identity_installed"] is installed
         assert info["scope"].endswith("/.default")
+        if not installed:
+            import pm
+            from unittest.mock import Mock
+
+            sync = Mock()
+            monkeypatch.setattr(pm, "sync_venv", sync)
+            command = info["hint"].split('python -c "', 1)[1].split('"', 1)[0]
+            exec(command, {})
+            sync.assert_called_once_with(["azure-identity"], explicit=True)
+            assert "restart" in info["hint"].lower()
 
 
     def test_api_key_status_false_when_missing(self, monkeypatch):

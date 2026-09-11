@@ -470,10 +470,10 @@ def _memory_provider_mem0(issues: list) -> None:
 
 # provider -> (checker, ImportError row, ImportError issue, label for "check failed")
 _MEMORY_PROVIDER_CHECKS = {
-    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "pip install honcho-ai"),
-               "Honcho is set as memory provider but honcho-ai is not installed", "Honcho"),
-    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "pip install mem0ai"),
-             "Mem0 is set as memory provider but mem0ai is not installed", "Mem0"),
+    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "run hermes memory setup"),
+               "Honcho dependencies missing — run hermes memory setup, then restart Hermes", "Honcho"),
+    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "run hermes memory setup"),
+             "Mem0 dependencies missing — run hermes memory setup, then restart Hermes", "Mem0"),
 }
 
 

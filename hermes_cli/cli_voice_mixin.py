@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import tempfile
 import threading
 import time
@@ -72,24 +71,22 @@ class CLIVoiceMixin:
                 if "Termux:API Android app is not installed" in reqs.get("details", ""):
                     raise RuntimeError(
                         "Termux:API command package detected, but the Android app is missing.\n"
-                        "Install/update the Termux:API Android app, then retry /voice on.\n"
-                        "Fallback: pkg install python-numpy portaudio && python -m pip install sounddevice"
+                        "Install/update the Termux:API Android app, then retry /voice on."
                     )
                 raise RuntimeError(
-                    "Voice mode requires either Termux:API microphone access or Python audio libraries.\n"
-                    "Option 1: pkg install termux-api and install the Termux:API Android app\n"
-                    "Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice"
+                    "Voice mode needs microphone access.\n"
+                    "Run pkg install termux-api and install the Termux:API Android app, "
+                    "then retry /voice on."
                 )
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy")
+                "From the Hermes environment, run: "
+                "python -c \"from pm import sync_venv; sync_venv(['audio-io'], explicit=True)\". "
+                "Then restart Hermes.")
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(
                 "Voice mode requires an STT provider for transcription.\n"
-                "Option 1: uv pip install faster-whisper  "
-                "(free, local; `pip install faster-whisper` also works if pip is on PATH)\n"
-                "Option 2: Set GROQ_API_KEY (free tier)\n"
-                "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)")
+                "Run hermes tools and configure Speech-to-Text, then restart Hermes.")
 
         # Prevent double-start from concurrent threads (atomic check-and-set)
         with self._voice_lock:
@@ -505,11 +502,13 @@ class CLIVoiceMixin:
                 _cprint(f"  {_DIM}{line}{_RST}")
             if reqs["missing_packages"]:
                 if _is_termux_environment():
-                    _cprint(f"\n  {_BOLD}Option 1: pkg install termux-api{_RST}")
+                    _cprint(f"\n  {_BOLD}Run: pkg install termux-api{_RST}")
                     _cprint(f"  {_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}")
-                    _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
                 else:
-                    _cprint(f"\n  {_BOLD}Install: {sys.executable} -m pip install {' '.join(reqs['missing_packages'])}{_RST}")
+                    _cprint(f"\n  {_BOLD}From the Hermes environment, run: "
+                            "python -c \"from pm import sync_venv; sync_venv(['audio-io'], explicit=True)\""
+                            f"{_RST}")
+                    _cprint(f"  {_DIM}Then restart Hermes.{_RST}")
             return
 
         with self._voice_lock:

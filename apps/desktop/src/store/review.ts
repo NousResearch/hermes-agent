@@ -5,6 +5,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { desktopGitRoot } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
@@ -60,6 +61,7 @@ export function toggleReviewTreeMode(): void {
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])
 export const $reviewLoading = atom(false)
+export const $reviewReadOnly = atom(false)
 // False when the active session isn't in a local git repo (detached/fresh chat,
 // remote backend). Lets the pane say "not a repo" instead of stranding on a
 // skeleton or implying a clean repo with "no changes".
@@ -103,9 +105,92 @@ const repoCwd = reviewRepoCwd
 
 type ReviewBridge = NonNullable<NonNullable<NonNullable<Window['hermesDesktop']>['git']>['review']>
 let reviewRefreshSeq = 0
+let reviewDiffSeq = 0
 let reviewRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let shipInfoSeq = 0
 let shipInfoLastCheckedAt = 0
+
+export interface ReviewFallbackFile {
+  added: number
+  diff: string
+  path: string
+  removed: number
+}
+
+const $reviewFallbackFiles = atom<ReviewFallbackFile[]>([])
+
+function setReviewFallback(files: readonly ReviewFallbackFile[] = []): void {
+  const next = files.map(file => ({ ...file }))
+
+  if (next.length === 0) {
+    clearReviewFallback()
+
+    return
+  }
+
+  reviewDiffSeq += 1
+  $reviewFallbackFiles.set(next)
+  $reviewReadOnly.set(true)
+
+  const selected = $reviewSelectedPath.get()
+  const selectedFallback = selected ? next.find(file => file.path === selected) : null
+
+  if (selectedFallback) {
+    $reviewDiff.set(selectedFallback.diff)
+    $reviewDiffLoading.set(false)
+  } else if (selected) {
+    clearReviewSelection()
+  }
+}
+
+function clearReviewFallback(preserveSelection = false, preserveReadOnly = false): void {
+  const hadFallback = $reviewReadOnly.get() || $reviewFallbackFiles.get().length > 0
+
+  $reviewFallbackFiles.set([])
+
+  if (!hadFallback) {
+    if (!preserveReadOnly) {
+      $reviewReadOnly.set(false)
+    }
+
+    return
+  }
+
+  reviewDiffSeq += 1
+  $reviewDiff.set(null)
+  $reviewDiffLoading.set(false)
+
+  if (!preserveSelection) {
+    $reviewFiles.set([])
+    $reviewSelectedPath.set(null)
+  }
+
+  if (!preserveReadOnly) {
+    $reviewReadOnly.set(false)
+  }
+}
+
+function applyReviewFallback(seq: number): boolean {
+  const fallback = $reviewFallbackFiles.get()
+
+  if (seq !== reviewRefreshSeq || fallback.length === 0) {
+    return false
+  }
+
+  $reviewFiles.set(
+    fallback.map(file => ({
+      added: file.added,
+      path: file.path,
+      removed: file.removed,
+      staged: false,
+      status: 'M'
+    }))
+  )
+  $reviewIsRepo.set(false)
+  $reviewReadOnly.set(true)
+
+  return true
+}
 
 // The two things every review op needs: the repo cwd + the IPC bridge. Null when
 // either is missing (no session, remote backend), so callers bail in one line.
@@ -151,24 +236,37 @@ export async function refreshReview(): Promise<void> {
 
     // Hide dep/build/cache dirs and OS noise even when the repo tracks them —
     // .gitignored paths are already dropped upstream by `git status`.
+    const hasGitAuthority = result.files.length > 0
     const files = result.files.filter(file => !isExcludedPath(file.path))
 
-    $reviewFiles.set(files)
+    if (hasGitAuthority) {
+      clearReviewFallback(true, true)
+      $reviewFiles.set(files)
+      $reviewReadOnly.set(false)
+    } else if (!applyReviewFallback(seq)) {
+      $reviewFiles.set([])
+      $reviewReadOnly.set(false)
+    }
 
     // Drop the selection if the file is gone (staged away, reverted) so the diff
     // pane doesn't strand on a ghost; otherwise lazily fetch its diff so a
     // restored (persisted) selection re-renders on boot.
     const selected = $reviewSelectedPath.get()
-    const selectedFile = selected ? files.find(file => file.path === selected) : null
+    const selectedFile = selected ? matchReviewFile($reviewFiles.get(), selected) : undefined
 
     if (selected && !selectedFile) {
       clearReviewSelection()
     } else if (selectedFile && $reviewDiff.get() === null) {
+      // A fallback→Git transition clears the old diff before reaching here, so
+      // authority changes still fetch immediately. Ordinary Git list refreshes
+      // retain an already-valid diff instead of flashing or replacing it on a
+      // transient follow-up fetch failure.
       void selectReviewFile(selectedFile)
     }
   } catch {
-    if (seq === reviewRefreshSeq) {
+    if (seq === reviewRefreshSeq && !applyReviewFallback(seq)) {
       $reviewFiles.set([])
+      $reviewReadOnly.set(false)
     }
   } finally {
     if (seq === reviewRefreshSeq) {
@@ -193,7 +291,19 @@ function scheduleReviewRefresh(): void {
 }
 
 export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
+  const seq = (reviewDiffSeq += 1)
   $reviewSelectedPath.set(file.path)
+
+  if ($reviewReadOnly.get()) {
+    const fallback = $reviewFallbackFiles.get().find(candidate => candidate.path === file.path)
+
+    if (seq === reviewDiffSeq && $reviewSelectedPath.get() === file.path) {
+      $reviewDiff.set(fallback?.diff ?? '')
+      $reviewDiffLoading.set(false)
+    }
+
+    return
+  }
 
   const ctx = reviewCtx()
 
@@ -208,21 +318,22 @@ export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   try {
     const diff = await ctx.review.diff(ctx.cwd, file.path, 'uncommitted', null, file.staged)
 
-    if ($reviewSelectedPath.get() === file.path) {
+    if (seq === reviewDiffSeq && $reviewSelectedPath.get() === file.path && !$reviewReadOnly.get()) {
       $reviewDiff.set(diff || '')
     }
   } catch {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (seq === reviewDiffSeq && $reviewSelectedPath.get() === file.path && !$reviewReadOnly.get()) {
       $reviewDiff.set('')
     }
   } finally {
-    if ($reviewSelectedPath.get() === file.path) {
+    if (seq === reviewDiffSeq && $reviewSelectedPath.get() === file.path) {
       $reviewDiffLoading.set(false)
     }
   }
 }
 
 export function clearReviewSelection(): void {
+  reviewDiffSeq += 1
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
@@ -264,7 +375,12 @@ function refreshShipInfoIfStale(): void {
 /** Open the pane scoped to `scopeCwd` (a tile's worktree), or to the active
  *  session's cwd when null — see `$reviewScopeCwd`. Keep the originating
  *  composer target alongside it for agent-ship actions. */
-export function openReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+export function openReview(
+  scopeCwd: null | string = null,
+  scopeTarget = 'main',
+  fallbackFiles: readonly ReviewFallbackFile[] = []
+): void {
+  setReviewFallback(fallbackFiles)
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
   $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)
@@ -276,10 +392,13 @@ export function closeReview(): void {
   $reviewOpen.set(false)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
+  clearReviewFallback()
   clearReviewSelection()
 }
 
 export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+  clearReviewFallback()
+
   // Narrow width: the pane is a collapsed overlay (like the sidebar under ⌘B).
   // Make sure its data is loaded, then slide it in/out via the forced-reveal pin
   // — never the docked open state, which a 0px track would render invisibly.
@@ -315,18 +434,26 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
  * closes an already-open pane — it's the "take me to the diff" entry point used
  * by the transcript's changed-files card.
  */
-export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+export function revealReview(
+  scopeCwd: null | string = null,
+  scopeTarget = 'main',
+  fallbackFiles: readonly ReviewFallbackFile[] = []
+): void {
   const wasOpen = $reviewOpen.get()
   const target = scopeTarget.trim() || 'main'
 
   if (!wasOpen) {
-    openReview(scopeCwd, target)
-  } else if (($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target) {
-    // Already open but on another worktree's diff — re-home it. The scope
-    // subscription below clears the stale list and re-probes. Keep the
-    // originating composer target alongside the cwd for the agent-ship action.
-    $reviewScopeCwd.set(scopeCwd?.trim() || null)
-    $reviewScopeTarget.set(target)
+    openReview(scopeCwd, target, fallbackFiles)
+  } else {
+    if (($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target) {
+      // Clear the previous scope through the normal subscription first; install
+      // this card's snapshot afterwards so re-homing cannot erase the new data.
+      $reviewScopeCwd.set(scopeCwd?.trim() || null)
+      $reviewScopeTarget.set(target)
+    }
+
+    setReviewFallback(fallbackFiles)
+    void refreshReview()
   }
 
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
@@ -364,16 +491,68 @@ function matchReviewFile(files: readonly HermesReviewFile[], path: string): Herm
 export async function openReviewForPath(
   path: string,
   scopeCwd: null | string = null,
-  scopeTarget = 'main'
+  scopeTarget = 'main',
+  fallbackFiles: readonly ReviewFallbackFile[] = []
 ): Promise<void> {
-  revealReview(scopeCwd, scopeTarget)
+  revealReview(scopeCwd, scopeTarget, fallbackFiles)
   await refreshReview()
 
-  const file = matchReviewFile($reviewFiles.get(), path)
+  let file = matchReviewFile($reviewFiles.get(), path)
+
+  // Git at the pane's current scope has no authority over this file: the
+  // session cwd may not be a repo, may be an umbrella directory ABOVE the
+  // file's own repo, or — on a remote gateway — may be a stale/empty workspace
+  // path while the file lives in a real repo on the backend (#86334, #81722).
+  // Ask the file itself which repo it belongs to (desktopGitRoot is
+  // remote-aware: Electron locally, GET /api/fs/git-root on a gateway) and
+  // re-home the pane there so real git review wins over the read-only tool
+  // snapshot. An explicit scopeCwd is a deliberate pin (a tile's worktree) and
+  // is never second-guessed.
+  if (!scopeCwd && (!file || $reviewReadOnly.get())) {
+    if (await rehomeReviewToChangedFileRepo(path, scopeTarget, fallbackFiles)) {
+      file = matchReviewFile($reviewFiles.get(), path) ?? file
+    }
+  }
 
   if (file) {
     await selectReviewFile(file)
   }
+}
+
+// Monotonic token so an older repo-root probe that resolves late cannot yank
+// the pane away from a scope a newer interaction already established.
+let reviewRehomeSeq = 0
+
+/** Resolve `probePath`'s own git root and re-scope the pane to it. Returns
+ *  true when the pane was re-homed and refreshed against the resolved root. */
+async function rehomeReviewToChangedFileRepo(
+  probePath: string,
+  scopeTarget: string,
+  fallbackFiles: readonly ReviewFallbackFile[]
+): Promise<boolean> {
+  // Only an absolute tool path can name a repo (on either machine); a bare
+  // relative path is meaningless outside the scope we already probed.
+  if (!/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(probePath)) {
+    return false
+  }
+
+  const seq = (reviewRehomeSeq += 1)
+  let root: null | string = null
+
+  try {
+    root = (await desktopGitRoot(probePath))?.trim() || null
+  } catch {
+    root = null
+  }
+
+  if (seq !== reviewRehomeSeq || !root || root === repoCwd()) {
+    return false
+  }
+
+  revealReview(root, scopeTarget, fallbackFiles)
+  await refreshReview()
+
+  return seq === reviewRehomeSeq
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────
@@ -394,16 +573,28 @@ async function afterMutation(): Promise<void> {
 }
 
 export async function stageReviewFile(path: null | string): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   await desktopGit()?.review?.stage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function unstageReviewFile(path: null | string): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   await desktopGit()?.review?.unstage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function revertReviewFile(path: null | string): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   await desktopGit()?.review?.revert(repoCwd() ?? '', path)
   await afterMutation()
 }
@@ -416,6 +607,10 @@ export const $reviewRevertTarget = atom<{ path: null | string } | undefined>(und
 
 /** Open the revert confirm for a single file, or `null` for all changes. */
 export function requestRevert(path: null | string): void {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   $reviewRevertTarget.set({ path })
 }
 
@@ -429,7 +624,7 @@ export async function confirmRevert(): Promise<void> {
 
   $reviewRevertTarget.set(undefined)
 
-  if (target) {
+  if (target && !$reviewReadOnly.get()) {
     await revertReviewFile(target.path)
   }
 }
@@ -448,6 +643,10 @@ async function runShip<T>(action: () => Promise<T>): Promise<T> {
 }
 
 export async function commitChanges(message: string, opts: { push?: boolean } = {}): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   const ctx = reviewCtx()
 
   if (!ctx || !message.trim()) {
@@ -478,6 +677,10 @@ export function cancelCommitMessage(): void {
 // current box text: handing it back as "don't repeat this" makes a re-press a
 // real regen even on greedy / temperature-pinned models. Throws so the UI toasts.
 export async function generateCommitMessage(previous = ''): Promise<string> {
+  if ($reviewReadOnly.get()) {
+    return ''
+  }
+
   const ctx = reviewCtx()
 
   if (!ctx?.review.commitContext) {
@@ -511,6 +714,10 @@ export async function generateCommitMessage(previous = ''): Promise<string> {
 }
 
 export async function pushChanges(): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   const ctx = reviewCtx()
 
   if (!ctx) {
@@ -526,6 +733,10 @@ export async function pushChanges(): Promise<void> {
 // PR button: open the existing PR in the browser, or create one (pushing first)
 // then open it. Caller gates this on shipInfo.ghReady.
 export async function createOrOpenPr(): Promise<void> {
+  if ($reviewReadOnly.get()) {
+    return
+  }
+
   const ctx = reviewCtx()
 
   if (!ctx) {
@@ -594,6 +805,7 @@ $busy.subscribe(busy => {
 // diff into the new one.
 function onReviewRepoMoved(): void {
   if ($reviewOpen.get()) {
+    clearReviewFallback()
     clearReviewSelection()
     $reviewFiles.set([])
     $reviewLoading.set(true)

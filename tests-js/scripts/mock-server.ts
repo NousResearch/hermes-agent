@@ -301,6 +301,28 @@ function verificationStopScript(writePath: string): ScriptedTurn[] {
 export const VERIFICATION_STOP_TRIGGER = 'E2E_VERIFY_ON_STOP_TRIGGER'
 export const VERIFICATION_STOP_TEXT = 'I cannot provide fresh verification evidence for that edit.'
 
+export const REVIEW_TOOL_DIFF_TRIGGER = 'E2E_REVIEW_TOOL_DIFF_TRIGGER'
+export const REVIEW_TOOL_DIFF_QUESTION = 'Keep the review turn open?'
+
+function reviewToolDiffTurn(writePath: string): ScriptedTurn {
+  return {
+    text: 'I will edit the non-Git project and keep the turn open for review.',
+    toolCalls: [
+      {
+        name: 'write_file',
+        args: {
+          path: writePath,
+          content: 'def changed_by_e2e():\n    return "changed"\n',
+        },
+      },
+      {
+        name: 'clarify',
+        args: { question: REVIEW_TOOL_DIFF_QUESTION, choices: ['Continue', 'Stop'] },
+      },
+    ],
+  }
+}
+
 /**
  * A marker that makes the mock emit a real blocking clarify tool call. Tests
  * use it to hold a turn open while exercising busy-composer interactions.
@@ -505,7 +527,8 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
           const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
-
+          const isReviewToolDiffTrigger = userText.includes(REVIEW_TOOL_DIFF_TRIGGER)
+            && !messages.some(message => message?.role === 'tool')
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
@@ -537,6 +560,16 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               respond()
             }
 
+            return
+          }
+
+          if (isReviewToolDiffTrigger) {
+            const turn = reviewToolDiffTurn(options.verificationWritePath ?? 'e2e-review-target.py')
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
             return
           }
 

@@ -58,6 +58,19 @@ def test_management_token_path_is_single_authority(hermes_home):
     assert ip._management_token_path() == ip._proxy_state_dir_ro() / "management.token"
     assert not (hermes_home / "proxy").exists()
 
+
+@pytest.mark.parametrize("extra_secrets, error", [
+    ([{"env_var": "github-token", "hosts": ["api.github.com"]}], "uppercase environment"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["https://api.github.com"]}], "without a scheme"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["*"]}], "fully-qualified"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["api.github.com"], "match_headers": ["Host"]}], "routing, framing"),
+])
+def test_extra_secret_specs_reject_unbounded_or_unsafe_targets(extra_secrets, error):
+    with pytest.raises(ValueError, match=error):
+        ip.parse_extra_secret_specs(extra_secrets)
+
+
+
     token = ip.ensure_management_token()
     assert token.startswith("hermes-mgmt-")
     p = ip._management_token_path()

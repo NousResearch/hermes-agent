@@ -16,7 +16,8 @@ export interface ConnectorFlowState {
 export interface ConnectorFlowDeps {
   request: <T>(method: string, params: { session_id: string; connectors?: string[]; reconnect?: boolean }) => Promise<T>
   open: (url: string) => Promise<void>
-  /** The browser has the sign-in and the card is now waiting on the user. */
+  /** The browser has the sign-in and the card is now waiting on the user.
+   *  Also fired when the user asks to keep waiting after a timeout. */
   onWaiting?: (slug: string) => void
   delay?: () => Promise<void>
   now?: () => number
@@ -238,6 +239,8 @@ export function createConnectorFlow(sessionId: string, seeds: ConnectorRow[], de
       const token = (attempts.get(slug) ?? 0) + 1
       attempts.set(slug, token)
       update(slug, { phase: 'waiting', error: undefined })
+      // The agent's own wait timed out alongside ours; send it back in.
+      deps.onWaiting?.(slug)
       await wait(slug, token)
     },
     skip: (slug: string) => {

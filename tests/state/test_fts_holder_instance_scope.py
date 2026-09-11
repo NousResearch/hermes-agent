@@ -268,3 +268,62 @@ class TestArgvScopedToOtherHome:
             )
             is False
         )
+
+    def test_space_separated_other_home_value_is_inspected(self, tmp_path):
+        """A bare absolute-path value token (``--state-dir /other/.hermes``)
+        is inspected like any other absolute token: the exemption covers
+        space-separated option values, not just ``--opt=/abs`` spelling.
+        Pins the actual behavior noted in review (2026-09-11)."""
+        db_path = tmp_path / "state.db"
+        assert (
+            hermes_state_holders._argv_scoped_to_other_home(
+                ["hermes", "--state-dir", "/home/demo/.hermes", "gateway"], db_path
+            )
+            is True
+        )
+
+    def test_sibling_profile_under_our_home_keeps_flag(self, tmp_path):
+        """BY DESIGN, fail-closed: the ours-veto is home-subtree-wide, so a
+        sibling profile under our own HERMES_HOME (``<home>/profiles/<p>/…``)
+        is never exempted even when that argv references only the profile's
+        own state.db.  A nested profile shares this instance's home root; its
+        argv alone cannot prove it never touches the root instance's db, so
+        the conservative suspicion is kept (review question, 2026-09-11)."""
+        db_path = tmp_path / "state.db"
+        for argv in (
+            [
+                str(tmp_path / "profiles" / "life" / "hermes-agent" / "hermes"),
+                "gateway",
+            ],
+            [
+                "hermes",
+                "--state-dir",
+                str(tmp_path / "profiles" / "life"),
+                "gateway",
+            ],
+            ["hermes", "vacuum", str(tmp_path / "profiles" / "life" / "state.db")],
+        ):
+            assert (
+                hermes_state_holders._argv_scoped_to_other_home(argv, db_path)
+                is False
+            ), argv
+
+
+@pytest.mark.linux_only
+class TestSiblingProfileHolderStaysFlagged:
+    """Integration pin for the by-design sibling-profile fail-closed shape:
+    the holder scan must still report a nested-profile instance whose home
+    lives under OUR home subtree."""
+
+    def test_sibling_profile_process_is_still_a_holder(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        profile_home = tmp_path / "profiles" / "life"
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(
+            monkeypatch,
+            {222: [str(profile_home / "hermes-agent" / "hermes"), "gateway", "run"]},
+        )
+
+        holders = hermes_state_holders.foreign_state_db_holders(db_path)
+        assert [pid for pid, _ in holders] == [222]
+        assert holders[0][1].startswith("uninspectable holder:")

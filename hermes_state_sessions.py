@@ -951,16 +951,47 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
+    def _lineage_cost_by_root(self, chain_by_root: Dict[str, List[str]]) -> Dict[str, float]:
+        """Best-effort spend (actual preferred, estimated fallback) summed per compression
+        chain, in one chunked query. A member row missing from the dict contributes 0 —
+        a deleted segment must not break the projection (logged at debug: prune/delete
+        orphans members, so the sum may under-report until the store is consistent)."""
+        member_ids = list(dict.fromkeys(sid for chain in chain_by_root.values() for sid in chain))
+        if not member_ids:
+            return {}
+        sums: Dict[str, float] = {}
+        _CHUNK = 900
+        for start in range(0, len(member_ids), _CHUNK):
+            chunk = member_ids[start:start + _CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in self._read_all(
+                f"""SELECT id, COALESCE(actual_cost_usd, estimated_cost_usd, 0) AS cost
+                      FROM sessions WHERE id IN ({placeholders})""",
+                chunk,
+            ):
+                sums[row["id"]] = float(row["cost"] or 0.0)
+        missing = [sid for chain in chain_by_root.values() for sid in chain if sid not in sums]
+        if missing:
+            logger.debug("lineage cost sum: %d chain member(s) missing from sessions: %s", len(missing), missing[:5])
+        return {
+            root: round(sum(sums.get(sid, 0.0) for sid in chain), 6)
+            for root, chain in chain_by_root.items()
+        }
+
     def _project_compression_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
         """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
         for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
+        hold a MIDDLE segment's id). The projected row's cost is the WHOLE lineage's spend: the
+        root's own ``estimated_cost_usd`` is a frozen at-rotation snapshot, and copying the tip's
+        alone would drop every earlier segment — the sidebar showed a compressed conversation's
+        cost stuck at its pre-rotation value while the chat kept billing."""
         chain_by_root: Dict[str, List[str]] = {}  # only roots whose tip differs from themselves
         for s in sessions:
             if s.get("end_reason") == "compression":
                 chain = self.get_compression_chain(s["id"])
                 if chain and chain[-1] != s["id"]:
                     chain_by_root[s["id"]] = chain
+        lineage_costs = self._lineage_cost_by_root(chain_by_root)
         tip_rows = (
             self._get_session_rich_rows_batch(
                 {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
@@ -987,6 +1018,12 @@ class SessionSessionsMixin:
                 merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
+            if s["id"] in lineage_costs:
+                merged["estimated_cost_usd"] = lineage_costs[s["id"]]
+                # The chain sum is a mixed-basis best effort; a root's stale
+                # actual_cost_usd (frozen at rotation) must not shadow it for
+                # consumers reading COALESCE(actual, estimated).
+                merged["actual_cost_usd"] = None
             projected.append(merged)
         return projected
 

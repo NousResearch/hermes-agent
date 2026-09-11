@@ -517,6 +517,155 @@ class TestWebServerEndpoints:
             "sidebar-stale"
         ]
 
+    # ------------------------------------------------------------------
+    # Cost projection across compression lineage (frozen-at-rotation spend)
+    # ------------------------------------------------------------------
+
+    def _make_priced_lineage(self):
+        """root ($0.50, ended by compression) -> mid ($1.00) -> tip ($0.25, live)."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("cost_root", source="desktop")
+            db.append_message("cost_root", role="user", content="hi")
+            db.publish_compression_child(
+                parent_session_id="cost_root",
+                child_session_id="cost_mid",
+                source="desktop",
+                messages=[{"role": "user", "content": "hi"}],
+                require_compression_lease=False,
+            )
+            db.append_message("cost_mid", role="user", content="hi mid")
+            db.publish_compression_child(
+                parent_session_id="cost_mid",
+                child_session_id="cost_tip",
+                source="desktop",
+                messages=[{"role": "user", "content": "hi"}],
+                require_compression_lease=False,
+            )
+            db.append_message("cost_tip", role="user", content="after compress")
+            for sid, cost in (("cost_root", 0.50), ("cost_mid", 1.00), ("cost_tip", 0.25)):
+                db._write_rowcount(
+                    "UPDATE sessions SET estimated_cost_usd = ? WHERE id = ?", (cost, sid)
+                )
+        finally:
+            db.close()
+
+    def test_sidebar_projection_sums_lineage_cost_on_tip(self):
+        """The sidebar's projected tip must carry the WHOLE conversation's spend.
+
+        ``_project_compression_tips`` copied message_count/title/preview from
+        the live tip but left the ROOT's ``estimated_cost_usd`` — the frozen
+        at-rotation snapshot — on the projected row, so a compressed session's
+        sidebar cost never moved again (user-visible: cost stuck at the
+        pre-rotation value while the chat kept billing).
+        """
+        # The sidebar route's singleflight cache is keyed on query params only
+        # (5s TTL), not on the per-test store — disable it or this test reads
+        # whatever the previous sidebar test cached.
+        from hermes_cli.web_routers import profiles as profiles_router
+
+        self._make_priced_lineage()
+        # A billed root must not shadow the fresh chain sum for consumers
+        # reading COALESCE(actual_cost_usd, estimated_cost_usd).
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db._write_rowcount("UPDATE sessions SET actual_cost_usd = 0.10 WHERE id = 'cost_root'")
+        finally:
+            db.close()
+
+        with patch.object(profiles_router, "_SIDEBAR_CACHE_TTL_SECONDS", 0):
+            response = self.client.get("/api/profiles/sessions/sidebar")
+
+        assert response.status_code == 200
+        rows = response.json()["recents"]["sessions"]
+        tip = next(row for row in rows if row["id"] == "cost_tip")
+        # Per-member COALESCE(actual, estimated): 0.10 (root's billed actual
+        # overrides its estimate) + 1.00 + 0.25 = 1.35 — anything but the
+        # root's frozen estimate alone.
+        assert abs(tip["estimated_cost_usd"] - 1.35) < 1e-6
+        # The stale root actual must be cleared on the projected row, or
+        # COALESCE(actual, estimated) serves the frozen snapshot again.
+        assert not tip.get("actual_cost_usd")
+
+    def test_profile_usage_totals_include_lineage_children(self):
+        """The profile usage aggregate must count post-compression spend.
+
+        ``usage_totals()`` summed only ``parent_session_id IS NULL`` rows, so
+        every mid/tip segment of a compressed conversation (its spend AFTER
+        each rotation) was invisible to the sidebar's profile header — the
+        true total exceeded the shown one by the whole post-compression tail.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        self._make_priced_lineage()
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            totals = db.usage_totals()
+        finally:
+            db.close()
+
+        # Only the priced lineage exists in this store: 0.50 + 1.00 + 0.25.
+        assert abs(totals["cost_usd"] - 1.75) < 1e-6
+
+    def test_usage_totals_still_exclude_archived_rows(self):
+        """Archived rows stay out of the profile usage aggregate.
+
+        Archive semantics are lineage-wide (``set_session_archived`` spans the
+        chain), so archiving any segment hides the whole conversation; a row
+        flagged archived individually (raw SQL, e.g. an old partial state) is
+        excluded on its own.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        self._make_priced_lineage()
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            # Lineage-wide archive: root + mid + tip all flip together.
+            db.set_session_archived("cost_mid", True)
+            totals = db.usage_totals()
+            assert totals["cost_usd"] == 0.0
+
+            # Un-archive, then archive ONLY the tip directly: 0.50 + 1.00 remain.
+            db.set_session_archived("cost_mid", False)
+            db._write_rowcount("UPDATE sessions SET archived = 1 WHERE id = 'cost_tip'")
+            totals = db.usage_totals()
+        finally:
+            db.close()
+
+        assert abs(totals["cost_usd"] - 1.50) < 1e-6
+
+    def test_usage_totals_still_require_min_messages(self):
+        """The min_message_count floor keeps excluding empty segment rows."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("empty_root", source="desktop")
+            db.create_session("empty_child", source="desktop", parent_session_id="empty_root")
+            # Neither row has any messages: both must stay excluded.
+            db._write_rowcount(
+                "UPDATE sessions SET estimated_cost_usd = 0.9 WHERE id IN ('empty_root', 'empty_child')"
+            )
+            totals = db.usage_totals()
+        finally:
+            db.close()
+
+        assert totals["cost_usd"] == 0.0
+
     def test_startup_eager_reconcile_heals_stale_store(self):
         """The lifespan's eager reconcile brings a stale store current.
 

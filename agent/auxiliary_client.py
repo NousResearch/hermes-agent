@@ -4051,6 +4051,26 @@ def _try_configured_fallback_for_unavailable_client(
     return _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
 
 
+def _resolve_config_key_env(key_env: str) -> str:
+    """Resolve a config-declared credential ``key_env`` var, preferring ``~/.hermes/.env``.
+
+    Custom providers, fallback-chain entries, and auxiliary tasks all declare a
+    ``key_env`` naming a credential in ``~/.hermes/.env``. A long-lived
+    ``hermes serve`` (Desktop local gateway) snapshots ``os.environ`` once at
+    spawn, so a plain ``os.getenv()`` read never sees a key added/edited in
+    ``.env`` mid-session — the request falls through to the ``no-key-required``
+    placeholder and 401s until the backend is restarted (#67935). Routing
+    through ``get_env_value_prefer_dotenv()`` lets a fresh ``.env`` value win
+    over a stale inherited one, matching the credential-pool seeding path.
+    """
+    key_env = (key_env or "").strip()
+    if not key_env:
+        return ""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    return (get_env_value_prefer_dotenv(key_env) or "").strip()
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key via the secret-scope-aware resolver (no raw os.getenv under multiplexing)."""
     from hermes_cli.fallback_config import resolve_entry_api_key
@@ -4366,7 +4386,11 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
-        custom_key = _scoped_key_env(custom_key_env)
+        # Prefer a fresh ~/.hermes/.env value over a stale os.environ snapshot: a
+        # long-lived `hermes serve` reads the env once at spawn, so a key added or
+        # edited in .env mid-session is otherwise never seen and the request 401s
+        # on the no-key-required placeholder until restart (#67935).
+        custom_key = _resolve_config_key_env(custom_key_env)
     custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
     if custom_key_cmd:
         from agent.command_token_source import build_command_token_provider
@@ -5642,7 +5666,7 @@ def _resolve_task_provider_model(
         if not cfg_api_key:  # key_env → env var when api_key is not set directly
             cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
             if cfg_key_env:
-                cfg_api_key = _scoped_key_env(cfg_key_env) or None
+                cfg_api_key = _resolve_config_key_env(cfg_key_env) or None
         resolved_api_mode = str(task_config.get("api_mode", "")).strip() or None
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`

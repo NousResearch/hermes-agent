@@ -107,6 +107,18 @@ _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
 )
 _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 
+# systemctl accepts global options on either side of its lifecycle verb.
+_SYSTEMCTL_ALWAYS_BLOCKED_ACTIONS = frozenset({
+    "start", "stop", "restart", "kill", "try-restart", "reload-or-restart",
+    "reload-or-try-restart", "condrestart",
+})
+_SYSTEMCTL_NOW_BLOCKED_ACTIONS = frozenset({"disable", "mask"})
+_SYSTEMCTL_GATEWAY_UNIT_RE = re.compile(
+    r"^(?:ai[.\-])?hermes[.\-]?gateway"
+    r"(?:[-@][a-z0-9_.@\-]+)?(?:\.service)?$",
+    re.IGNORECASE,
+)
+
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
@@ -237,13 +249,60 @@ def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
     )
 
 
+def _systemctl_tokens_target_gateway_lifecycle(segment: list[str]) -> bool:
+    """Match the systemctl action and unit operands, excluding option values."""
+    options_with_values = {
+        "--host", "-H", "--machine", "-M", "--root", "--image",
+        "--image-policy", "--signal", "-s", "--kill-whom", "--kill-who",
+        "--type", "-t", "--state", "--property", "-p", "--job-mode",
+        "--lines", "-n", "--output", "-o", "--timestamp", "--what",
+        "--preset-mode", "--boot-loader-menu", "--boot-loader-entry",
+        "--reboot-argument", "--when",
+    }
+    for index, token in enumerate(segment):
+        if token.rsplit("/", 1)[-1].casefold() != "systemctl":
+            continue
+        arguments = segment[index + 1 :]
+        positional = []
+        now = False
+        parse_options = True
+        cursor = 0
+        while cursor < len(arguments):
+            argument = arguments[cursor]
+            cursor += 1
+            if parse_options and argument == "--":
+                parse_options = False
+                continue
+            if parse_options and argument in options_with_values:
+                cursor += 1
+                continue
+            if parse_options and argument.startswith("-"):
+                now = now or argument == "--now"
+                continue
+            positional.append(argument)
+        if not positional:
+            continue
+        action = positional[0].casefold()
+        if action not in _SYSTEMCTL_ALWAYS_BLOCKED_ACTIONS and not (
+            action in _SYSTEMCTL_NOW_BLOCKED_ACTIONS and now
+        ):
+            continue
+        if any(
+            _SYSTEMCTL_GATEWAY_UNIT_RE.fullmatch(argument.strip("'\"`$,:").rsplit("/", 1)[-1])
+            for argument in positional[1:]
+        ):
+            return True
+    return False
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
     Passes, in order: raw-text regex (the only pass that fires on inputs shlex cannot tokenize, e.g.
     Python source); profile-flag form; the same regex on each shell-tokenized segment with quotes/
     escapes resolved (closes splice bypasses like ``kick"start"`` / ``kick\\start``);
-    order-independent launchctl pass. Single choke point for every recursion level of
+    systemctl verb/unit normalization; order-independent launchctl pass.
+    Single choke point for every recursion level of
     ``_contains_unsafe_gateway_action``.
 
     That second pass exists because a real shell resolves quote-splicing (``kick"start"``) and
@@ -291,9 +350,20 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
             return True
+        if _systemctl_tokens_target_gateway_lifecycle(segment):
+            return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
         if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
             return True
+        if stripped != joined and _systemctl_tokens_target_gateway_lifecycle(stripped.split()):
+            return True
+        # Quoted command strings retain inner quotes until this additional pass.
+        # Reuse upstream segmentation so separate commands cannot share --now or units.
+        for token in segment:
+            if "systemctl" in token.casefold() and any(char.isspace() for char in token):
+                for nested in _iter_command_segments(token):
+                    if _systemctl_tokens_target_gateway_lifecycle(nested):
+                        return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable
     # defined in an earlier `;`-separated segment (`label=${item%%:*}; launchctl bootout

@@ -438,11 +438,21 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     return None, fields
 
 
+def _unwind_claimed_submit_turn(session):
+    """Release the turn claimed by ``_lock_in_submit_turn`` when persist fails
+    before an execution thread starts (5070/5071/5072)."""
+    with session["history_lock"]:
+        session["running"] = False
+        session["last_active"] = time.time()
+        _clear_inflight_turn(session)
+
+
 def _persist_session_row_for_submit(rid, session):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
     try:
         if _ensure_session_db_row(session) is False:
+            _unwind_claimed_submit_turn(session)
             return _err(
                 rid, 5072,
                 "session storage unavailable: "
@@ -451,10 +461,7 @@ def _persist_session_row_for_submit(rid, session):
         _persist_branch_seed(session)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
-        with session["history_lock"]:
-            session["running"] = False
-            session["last_active"] = time.time()
-            _clear_inflight_turn(session)
+        _unwind_claimed_submit_turn(session)
         if is_disk_full_error(exc):
             return _err(
                 rid, 5070,

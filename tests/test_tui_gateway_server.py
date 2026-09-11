@@ -14853,6 +14853,86 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
     assert "session storage unavailable" in resp["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("persist_mode", "expected_code"),
+    [
+        ("disk_full", 5070),
+        ("generic_persist", 5071),
+        ("store_unavailable", 5072),
+    ],
+    ids=["5070-disk-full", "5071-generic", "5072-store-unavailable"],
+)
+def test_prompt_submit_persist_failures_unwind_claimed_turn(
+    monkeypatch, persist_mode, expected_code,
+):
+    """After _lock_in_submit_turn claims the turn, persist failures 5070/5071/5072
+    must unwind running/inflight so the session is not left working with no thread (#106987)."""
+    import errno
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {}})
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_a, **_k: None)
+
+    if persist_mode == "store_unavailable":
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        monkeypatch.setattr(server, "_db_error", "utf-8 decode failure")
+    elif persist_mode == "disk_full":
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+
+        def _raise_disk_full(_session):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(server, "_persist_branch_seed", _raise_disk_full)
+    else:
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+
+        def _raise_generic(_session):
+            raise RuntimeError("persist boom")
+
+        monkeypatch.setattr(server, "_persist_branch_seed", _raise_generic)
+
+    sid = f"unwind-{persist_mode}"
+    session = _session()
+    server._sessions[sid] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "unwind",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "claim then fail"},
+            }
+        )
+        assert resp["error"]["code"] == expected_code
+        assert session["running"] is False
+        assert not session.get("inflight_turn")
+        assert session.get("_run_thread") is None
+        assert server._session_live_status(sid, session) == "idle"
+
+        if expected_code == 5072:
+            monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+            monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+            monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+
+            class _RecordThread:
+                def __init__(self, target=None, daemon=None, **kw):
+                    self.target = target
+
+                def start(self):
+                    return None
+
+            monkeypatch.setattr(server.threading, "Thread", _RecordThread)
+            recovered = server.handle_request(
+                {
+                    "id": "recover",
+                    "method": "prompt.submit",
+                    "params": {"session_id": sid, "text": "retry after store recovered"},
+                }
+            )
+            assert recovered.get("result"), f"got error: {recovered.get('error')}"
+            assert recovered["result"]["status"] == "streaming"
+    finally:
+        server._sessions.pop(sid, None)
+
+
 @pytest.mark.real_agent_prewarm
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:

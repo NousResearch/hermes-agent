@@ -298,9 +298,15 @@ auxiliary:
   review:
     provider: openrouter               # or nous, anthropic, a direct base_url, ...
     model: anthropic/claude-opus-4.6   # a strong reviewer model
+    reasoning_effort: medium           # optional review-only thinking level
 ```
 
 Credentials resolve exactly like a `delegation.provider` pin (full runtime-provider bundle: base_url, api key, api_mode). `provider: auto` with an empty `model` means "inherit the main agent's model" — the default.
+
+`auxiliary.review.reasoning_effort` accepts `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, and `ultra`. It overrides
+`delegation.reasoning_effort` for `/review` only; otherwise the reviewer falls
+back to the delegation setting and then the parent agent's level.
 
 `/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
 

@@ -877,6 +877,12 @@ prompt_caching:
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 #
+#   # Full-agent work-product reviewer started by /review.
+#   review:
+#     provider: "auto"
+#     model: ""
+#     reasoning_effort: ""   # Review > delegation > parent; empty = inherit
+#
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.
 #   # Usage is recorded under session_model_usage task='background_review'.

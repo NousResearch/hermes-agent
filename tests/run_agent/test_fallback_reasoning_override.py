@@ -135,3 +135,15 @@ class TestFallbackReasoningOverride:
 
         assert result is not None
         assert result.get("enabled") is False
+
+    def test_fallback_preserves_explicit_delegated_reasoning(self):
+        from agent.chat_completion_helpers import _reresolve_fallback_reasoning_config
+
+        agent = MagicMock()
+        agent.model = "fallback-model"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent._delegation_reasoning_override = {"enabled": True, "effort": "medium"}
+
+        _reresolve_fallback_reasoning_config(agent)
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}

@@ -1619,6 +1619,37 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_review_override_wins_and_is_preserved_for_fallback(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"reasoning_effort": "max"}
+        child = MagicMock()
+        MockAgent.return_value = child
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="review", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent, task_count=1,
+            override_reasoning_effort="medium",
+        )
+
+        expected = {"enabled": True, "effort": "medium"}
+        self.assertEqual(MockAgent.call_args[1]["reasoning_config"], expected)
+        self.assertEqual(child._delegation_reasoning_override, expected)
+
+        fallback_child = MagicMock()
+        MockAgent.return_value = fallback_child
+        with self.assertLogs("tools.delegate_tool", level="WARNING"):
+            _build_child_agent(
+                task_index=0, goal="review", context=None, toolsets=None,
+                model=None, max_iterations=50, parent_agent=parent, task_count=1,
+                override_reasoning_effort="invalid-level",
+            )
+        delegated = {"enabled": True, "effort": "max"}
+        self.assertEqual(MockAgent.call_args[1]["reasoning_config"], delegated)
+        self.assertEqual(fallback_child._delegation_reasoning_override, delegated)
+
 # =========================================================================
 # Dispatch helper, progress events, concurrency
 # =========================================================================

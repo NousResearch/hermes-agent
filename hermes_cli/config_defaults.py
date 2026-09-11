@@ -706,7 +706,10 @@ DEFAULT_CONFIG = {
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
-        "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
+        "review": {
+            "provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": "",
+            "reasoning_effort": "",  # none|minimal|low|medium|high|xhigh|max|ultra; empty = inherit
+        },
         "mcp": _aux(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {

@@ -757,7 +757,17 @@ const ChatViewContent = memo(function ChatViewContent({
               busy={busy}
               cwd={currentCwd}
               disabled={!gatewayOpen}
-              focusKey={activeSessionId}
+              // focusKey drives a re-focus of the composer input when it
+              // changes. The RUNTIME id is wrong identity here: every
+              // same-session resume attempt (interrupted-turn reconciliation,
+              // Bot Chat hydrate/forceResume, gateway reconnect) clears
+              // activeSessionId to null before re-binding it, so the churn
+              // re-armed the focus effect once per retry and ripped the caret
+              // out of the input mid-typing (windows-focused bot chats,
+              // #102736 / #101853 family). threadKey prefers the durable
+              // stored id and only falls back to the runtime id for a
+              // brand-new draft that has none yet.
+              focusKey={threadKey}
               gateway={gateway}
               maxRecordingSeconds={maxVoiceRecordingSeconds}
               onAddContextRef={onAddContextRef}

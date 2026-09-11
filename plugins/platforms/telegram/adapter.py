@@ -2949,7 +2949,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+            # default's listener (and stops polling for it).
+            from agent.secret_scope import UnscopedSecretError, get_secret
+            try:
+                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
+            except UnscopedSecretError:
+                webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:
@@ -4642,24 +4649,27 @@ class TelegramAdapter(BasePlatformAdapter):
                     os.unlink(_transcoded_voice_path)
 
     async def send_multiple_images(
-        self, chat_id: str, images: List[tuple], metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        self, chat_id: str, images: List[tuple], metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
         media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
-        if not self._bot or not images:
-            return
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not images:
+            return SendResult(success=False, error="no images to send")
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
             logger.warning("[%s] InputMediaPhoto unavailable, falling back to per-image send: %s", self.name, exc)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)  # noqa: E731
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
+        delivered = False
         if animations:
-            await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
+            anim_result = await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
+            delivered = anim_result.success
         if not photos:
-            return
+            return SendResult(success=delivered, error=None if delivered else "all images failed to send")
         from urllib.parse import unquote as _unquote
         CHUNK = 10  # Telegram's album limit
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
@@ -4692,15 +4702,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_media_group, {**send_kwargs, "media": media}, metadata, reply_to_id,
                     "media group", reset_media=_reset_opened_files)
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
                     chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
             finally:
                 for fh in opened_files:
                     with contextlib.suppress(Exception):
                         fh.close()
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -5042,6 +5055,13 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_exclusive_bot_mentions(self) -> bool:
         """Return whether explicit @...bot mentions exclusively route group messages."""
         return self._extra_bool("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true")
+
+    def _telegram_bots_require_mention(self) -> bool:
+        """Whether another bot's message must explicitly @mention us (a quote-reply alone won't);
+        breaks two-bot reply loops in groups while human replies stay unaffected."""
+        return self._extra_bool(
+            "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
+        )
 
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
@@ -5602,6 +5622,16 @@ class TelegramAdapter(BasePlatformAdapter):
         user_id = getattr(from_user, "id", None)
         return bot_id is not None and user_id is not None and bot_id == user_id
 
+    def _sender_is_other_bot(self, message: Message) -> bool:
+        """True when the sender is a bot other than this one (this bot's own echoes are already
+        filtered by ``_is_own_message``)."""
+        sender = getattr(message, "from_user", None)
+        if sender is None or not getattr(sender, "is_bot", False):
+            return False
+        bot_id = getattr(self._bot, "id", None)
+        sender_id = getattr(sender, "id", None)
+        return bot_id is None or sender_id is None or sender_id != bot_id
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
@@ -5631,6 +5661,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return guest_mention
         if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return True
+        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
+        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
+        if (
+            self._telegram_bots_require_mention()
+            and self._sender_is_other_bot(message)
+            and not self._message_mentions_bot(message)
+        ):
+            return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
@@ -6478,6 +6516,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _set_env("TELEGRAM_MENTION_PATTERNS", _json.dumps(telegram_cfg["mention_patterns"]))
     for key, env in (
         ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
+        ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
         ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
         _bridge_lower(key, env)
     # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already

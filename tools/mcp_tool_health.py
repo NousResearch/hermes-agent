@@ -9,7 +9,6 @@ import time
 from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
-from tools.mcp_tool_registration import _forget_mcp_tool_server
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
 
@@ -128,8 +127,7 @@ class MCPServerHealthMixin:
         from tools.registry import registry
         for tool_name in tool_names:
             if registry.get_toolset_for_tool(tool_name) == f"mcp-{self.name}":
-                registry.deregister(tool_name, scope=_core._server_registry_scope(self.name))
-                _forget_mcp_tool_server(tool_name)
+                _registration._deregister_mcp_tool_all_scopes(self.name, tool_name)
 
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire

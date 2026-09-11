@@ -339,10 +339,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google / Gemma ("gemma4" is Ollama-style naming, e.g. gemma4:31b-cloud)
     "gemini": 1048576,
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
-    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes.
+    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes. ``deepseek-flash``
+    # (version-less canonical id, 2026-09 Flash refresh) needs a discrete entry or the
+    # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000, "deepseek": 128000,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4.1-flash": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
@@ -353,9 +355,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — 5.2/5.3 are 1M (5.2 verified empirically at 789K on api.z.ai); older GLM ~202K.
+    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
-    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000, "glm-5.3": 1_048_576, "glm": 202752,
+    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
+    "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
+    "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
     # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
     # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
@@ -488,11 +495,17 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+def _catalog_key_matches(key: str, model_lower: str) -> bool:
+    """Substring match with version separators normalised on both sides, so a relay slug like
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398)."""
+    return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
+
+
 def _longest_key_match(table: Dict[str, int], model_lower: str) -> Optional[Tuple[str, int]]:
     """First ``(key, value)`` whose key is a substring of ``model_lower``, longest key first so
     specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order."""
     for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
-        if key in model_lower:
+        if _catalog_key_matches(key, model_lower):
             return key, value
     return None
 
@@ -600,8 +613,10 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host is None:
         return False
-    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts entries, mDNS.
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or (host and "." not in host):
+    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
+    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
+    # they are excluded here and classified by scope below (a global address is not local).
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
         return True
     try:
         addr = ipaddress.ip_address(host)
@@ -1295,7 +1310,7 @@ def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
     """True when a persisted window is a pre-catalog leftover: the model resolves (longest-key-first) to a
     _PRE_CATALOG_STALE_KEYS key and the cached value is <= the largest shorter matching catch-all (or 256K)."""
     model_lower = model.lower()
-    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if key in model_lower]
+    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if _catalog_key_matches(key, model_lower)]
     if not matches:
         return False
     specific_key, specific_value = max(matches, key=lambda kv: len(kv[0]))

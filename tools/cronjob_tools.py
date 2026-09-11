@@ -184,7 +184,7 @@ def _claim_for_manual_run(job_id: str, log_label: str):
     ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
     claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
     try:
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        claimed_job = claim_job_for_fire(job_id, manual=True, return_job=True)
         if isinstance(claimed_job, dict):
             return claimed_job, None
         refreshed = get_job(job_id)
@@ -985,7 +985,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
         },
         "required": ["action"]

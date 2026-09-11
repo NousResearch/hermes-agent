@@ -218,11 +218,10 @@ def _legacy_group_fence_error(rid, session, params):
         hosted = probe_hosted_room(default_db_path(), room_id=room_id)
         peer = False
         if not hosted:
-            from hermes_constants import named_profile_home
-            session_profile_home = named_profile_home(str(session.get("profile_home") or ""))
+            from hermes_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
                 default_db_path(), room_id=room_id, target_profile=(
-                    (session_profile_home.name if session_profile_home is not None else "")
+                    profile_name_for_home(session.get("profile_home"))
                     or str(params.get("profile") or "").strip()
                     or str(_current_profile_name() or "default").strip()))
     except RoomProbeUnavailableError:
@@ -467,7 +466,7 @@ def _persist_session_row_for_submit(rid, session):
 
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, hosted_terminal_callback,
-    external_submission_id=None,
+    external_submission_id=None, turn_author=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -514,7 +513,8 @@ def _run_after_agent_ready(
         rid, sid, session, text, display_kind=display_kind,
         image_paths=[] if external_submission_id else None,
         terminal_callback=hosted_terminal_callback,
-        external_submission_id=external_submission_id)
+        external_submission_id=external_submission_id,
+        turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -588,6 +588,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tools.bot_relay import DeliveryAuthor
+
+    # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
+    raw_author = params.get("_turn_author")
+    if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
+        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
+    turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -647,7 +654,7 @@ def _(rid, params: dict) -> dict:
             busy_transport = delivery_transport
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
-            external_submission_id=external_submission_id)
+            external_submission_id=external_submission_id, turn_author=turn_author)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -659,6 +666,9 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
+        if turn_author:
+            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
+                         turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
         if not isolated_response.get("error"):
@@ -684,7 +694,7 @@ def _(rid, params: dict) -> dict:
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, hosted_terminal_callback,
-            external_submission_id),
+            external_submission_id, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -1149,7 +1159,8 @@ def _(rid, params: dict) -> dict:
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value"}
+    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
+    "vault.save_login.respond": "login", "vault.code.respond": "code"}
 for _name, _key in _LATE_RESPOND_KEYS.items():
     method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
 del _name, _key

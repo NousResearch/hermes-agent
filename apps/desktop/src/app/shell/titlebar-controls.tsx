@@ -8,12 +8,12 @@ import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { Slot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
-import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleHud } from '@/store/hud'
 import {
   $fileBrowserOpen,
@@ -25,7 +25,7 @@ import {
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 
-import { appViewForPath, isOverlayView } from '../routes'
+import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
   TITLEBAR_ICON_BADGE_SCALE,
@@ -134,25 +134,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
-  const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
-
-  const toggleHaptics = () => {
-    if (!hapticsMuted) {
-      triggerHaptic('tap')
-    }
-
-    toggleHapticsMuted()
-
-    if (hapticsMuted) {
-      window.requestAnimationFrame(() => triggerHaptic('success'))
-    }
-  }
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -164,30 +151,28 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
-  const leftToolbarTools: TitlebarTool[] = [
-    {
-      actionId: 'view.toggleSidebar',
-      badge: panesFlipped ? undefined : unreadBadge,
-      icon: <TitlebarIcon name="layout-sidebar-left" />,
-      id: 'sidebar',
-      label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
-      onSelect: () => {
-        triggerHaptic('tap')
-        leftEdge.toggle()
-      }
-    },
-    {
-      actionId: 'view.flipPanes',
-      icon: <TitlebarIcon name="arrow-swap" />,
-      id: 'flip-panes',
-      label: t.titlebar.swapSidebarSides,
-      onSelect: () => {
-        triggerHaptic('tap')
-        togglePanesFlipped()
-      }
-    },
-    ...leftTools
-  ]
+  const sidebarTool: TitlebarTool = {
+    actionId: 'view.toggleSidebar',
+    badge: panesFlipped ? undefined : unreadBadge,
+    icon: <TitlebarIcon name="layout-sidebar-left" />,
+    id: 'sidebar',
+    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+    onSelect: () => {
+      triggerHaptic('tap')
+      leftEdge.toggle()
+    }
+  }
+
+  const flipTool: TitlebarTool = {
+    actionId: 'view.flipPanes',
+    icon: <TitlebarIcon name="arrow-swap" />,
+    id: 'flip-panes',
+    label: t.titlebar.swapSidebarSides,
+    onSelect: () => {
+      triggerHaptic('tap')
+      togglePanesFlipped()
+    }
+  }
 
   const rightSidebarTool: TitlebarTool = {
     actionId: 'view.toggleRightSidebar',
@@ -202,8 +187,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     tour: 'right-pane-toggle'
   }
 
-  // Static system tools — always pinned to the screen's right edge.
+  // App actions stay visible beside the left sidebar toggle.
   const systemTools: TitlebarTool[] = [
+    {
+      actionId: 'nav.settings',
+      icon: <TitlebarIcon name="settings-gear" />,
+      id: 'settings',
+      label: t.titlebar.openSettings,
+      onSelect: () => {
+        triggerHaptic('open')
+        onOpenSettings()
+      }
+    },
     {
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
@@ -237,82 +232,54 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         triggerHaptic('open')
         toggleHud(hudTargetSessionId())
       }
-    },
-    {
-      active: hapticsMuted,
-      icon: <TitlebarIcon name={hapticsMuted ? 'mute' : 'unmute'} />,
-      id: 'haptics',
-      label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
-      onSelect: toggleHaptics
-    },
-    {
-      actionId: 'nav.settings',
-      icon: <TitlebarIcon name="settings-gear" />,
-      id: 'settings',
-      label: t.titlebar.openSettings,
-      onSelect: () => {
-        triggerHaptic('open')
-        onOpenSettings()
-      }
     }
   ]
 
-  // While a full-screen overlay (settings, command center, …) is open it should
-  // visually own the window. These control clusters are `fixed` at a higher
-  // z-index than the overlay card, so they'd otherwise bleed over it — hide them
-  // and let the overlay's own chrome (close button, drag region) take over.
-  if (isOverlayView(appViewForPath(location.pathname))) {
+  const view = appViewForPath(location.pathname)
+
+  // Overlays own the window. These clusters are `fixed` at a higher z-index
+  // than the overlay card, so they'd otherwise bleed over it — hide them (and
+  // the nested titleBar slots) and let the overlay's own chrome take over.
+  if (isOverlayView(view)) {
     return null
   }
 
-  const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
-  const visiblePaneTools = tools.filter(tool => !tool.hidden)
+  const titlebarSlots = (
+    <>
+      <Slot area="titleBar.left" />
+      <Slot area="titleBar.center" />
+      <Slot area="titleBar.right" />
+    </>
+  )
+
+  const leftClusterClass = cn(
+    titlebarToolClusterClass,
+    'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+
+  // Contributed full-context plugin pages (`extension`) own the titlebar band.
+  // Hide the app's tool clusters but keep plugin slots in the same fixed
+  // position so `titleBar.center` (e.g. kanban's board switcher) stays mounted.
+  if (hidesFixedTitlebarClusters(view)) {
+    return <div className={leftClusterClass}>{titlebarSlots}</div>
+  }
+
+  const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
 
   return (
     <>
-      <div
-        aria-label={t.shell.windowControls}
-        className={cn(
-          titlebarToolClusterClass,
-          'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
-        )}
-      >
-        {leftToolbarTools
-          .filter(tool => !tool.hidden)
-          .map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-          ))}
+      <div aria-label={t.shell.windowControls} className={leftClusterClass}>
+        {visibleLeftTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
+        {titlebarSlots}
       </div>
-
-      {/*
-        Pane-scoped tools (preview's monitor / devtools / refresh / X) render
-        as their own fixed cluster. AppShell sets --shell-preview-toolbar-gap
-        to either the static cluster's width (file-browser closed → cluster
-        sits flush against system tools) or the file-browser pane's width
-        (file-browser open → cluster sits flush against the file-browser pane,
-        i.e. at the preview pane's right edge). No margin hacks needed.
-      */}
-      {visiblePaneTools.length > 0 && (
-        <div
-          aria-label={t.shell.paneControls}
-          className={cn(
-            titlebarToolClusterClass,
-            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
-          )}
-        >
-          {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-          ))}
-        </div>
-      )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
       >
-        {visibleSystemTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
+        <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>

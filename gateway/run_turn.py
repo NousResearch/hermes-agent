@@ -43,6 +43,29 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+_CONTEXT_OVERFLOW_ERROR_PHRASES = (
+    "context length", "context size", "context window",
+    "maximum context", "token limit", "too many tokens",
+    "reduce the length", "exceeds the limit",
+    "request entity too large", "prompt is too long",
+    "payload too large", "input is too long",
+)
+
+
+def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
+    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
+    (#1630 skip) and the user-facing reply so the two can never disagree.
+
+    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
+    "invalid authentication token"; a bare 400 only counts on a long session."""
+    if not agent_result.get("failed"):
+        return False
+    if agent_result.get("compression_exhausted"):
+        return True
+    err = str(agent_result.get("error") or "").lower()
+    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -1498,14 +1521,6 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _CONTEXT_OVERFLOW_ERROR_PHRASES = (
-        "context length", "context size", "context window",
-        "maximum context", "token limit", "too many tokens",
-        "reduce the length", "exceeds the limit",
-        "request entity too large", "prompt is too long",
-        "payload too large", "input is too long",
-    )
-
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
         ``(agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure)``.
@@ -1524,13 +1539,7 @@ class GatewayTurnMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        _err = str(agent_result.get("error", "")).lower()
-        # Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded".
-        is_context_overflow_failure = agent_failed_early and (
-            bool(agent_result.get("compression_exhausted"))
-            or any(p in _err for p in self._CONTEXT_OVERFLOW_ERROR_PHRASES)
-            or ("400" in _err and len(history) > 50)
-        )
+        is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
                 "Skipping transcript persistence for context-overflow "
@@ -1974,6 +1983,15 @@ class GatewayTurnMixin:
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
+            # A queued (/queue) chain answered the LAST message of the chain, so the outer final
+            # send (bracketed by the adapter against this event) must be ledgered under that
+            # message's id or it collides with an earlier turn's row carrying the same text. Reply
+            # routing is untouched: the anchor still comes from this event.
+            if isinstance(agent_result, dict):
+                _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
+                if _terminal_inbound:
+                    event.ledger_message_id = str(_terminal_inbound)
+
             await self._hmwa_stop_typing_for_turn(event, source)
 
             if not self._is_session_run_current(_quick_key, run_generation):
@@ -2271,7 +2289,7 @@ class GatewayTurnMixin:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_scope_keys
+            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.registry import registry
 
@@ -2281,7 +2299,7 @@ class GatewayTurnMixin:
                 with _lock:
                     return {
                         name for name in _servers
-                        if reload_scope is None or _server_scope_keys.get(name) == reload_scope
+                        if _server_visible_in_scope(name, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
@@ -3257,7 +3275,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
@@ -3383,6 +3401,9 @@ class GatewayTurnMixin:
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
                     deliver_media=not _delivery_result.get("failed"), stream_consumer=_sc,
+                    # The text send records a delivery-ledger obligation under this key, keyed on
+                    # the raw inbound id (the anchor above is only the reply target).
+                    session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3436,6 +3457,10 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
+        # distinct from the reply anchor above (None in forum topics). Carry it or two chained
+        # topic turns with the same text would collide on one obligation id (queued-final-ledger).
+        next_inbound_id = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3460,6 +3485,7 @@ class GatewayTurnMixin:
             if next_message is None:
                 return result
             next_message_id = self._reply_anchor_for_event(pending_event)
+            next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
 
@@ -3495,10 +3521,19 @@ class GatewayTurnMixin:
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
+            event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+            channel_prompt=next_channel_prompt, message_type=next_message_type,
         )
-        return _preserve_queued_followup_history_offset(result, followup_result)
+        merged = _preserve_queued_followup_history_offset(result, followup_result)
+        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
+        # the adapter brackets against the event that OPENED the chain. Without this the terminal
+        # reply is recorded under the first message's id, so a first reply that was refused (flood
+        # control) has its outstanding row replaced and marked delivered by an identical-text
+        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
+        # so only fill the key while it is still absent: the innermost turn wins.
+        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+        return merged
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",

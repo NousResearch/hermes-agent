@@ -730,6 +730,40 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
+    # P5(b): a connector DECLINE is not a lane failure. The connector
+    # authorized the destination and refused it; re-sending the same content as
+    # plain text into that same chat is the exfiltration the egress guard
+    # exists to stop. `failed` is the cue to fall back, so a decline needs its
+    # own verdict — callers must surface it and send nothing further.
+    #
+    # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
+    # preserves the connector's own dict in `raw_response`; rebuilding a dict
+    # from `error` alone loses two things review demonstrated:
+    #   * a decline carrying `code: egress_declined` and NO text renders as
+    #     "relay egress declined" — no marker colon — so the string check
+    #     missed it and the fallback fired into the refused chat;
+    #   * `ambiguous: True` (lost ack, mid-write drop) was flattened into a
+    #     DEFINITE failure, which re-sends a card that may well have posted.
+    # I fixed the text-marker path and tested only the text-marker path.
+    from gateway.relay.egress import declined_send
+
+    _raw = getattr(result, "raw_response", None)
+    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+        # The frame may have been applied. Same physics as a scheduling
+        # timeout: possibly-delivered, so never re-send. Checked BEFORE the
+        # decline classification because an ambiguous result is a transport
+        # outcome, not an authorization one, and this lane has three verdicts
+        # rather than the boolean the shared helper answers.
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        return "ambiguous"
+    if declined_send(result):
+        # Both shapes, one classifier: a structured body, or the uniform
+        # decline sentence from an older connector.
+        logger.warning(
+            "Prompt send DECLINED by connector egress guard: %s",
+            getattr(result, "error", None),
+        )
+        return "declined"
     logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
     return "failed"
 
@@ -740,6 +774,18 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
     and proceeds to the bounded wait, whose response timeout covers a lost card."""
     outcome = _approval_send_outcome(fut, timeout=15)
+    if outcome == "declined":
+        # P5(b): a connector DECLINE is MORE definitive than a failure — the
+        # destination was authorized and refused, so the card cannot arrive and
+        # no late reply can resolve it. Without this branch `declined` fell
+        # through to the bounded wait and the agent blocked until
+        # clarify_timeout (indefinitely when that is configured non-positive).
+        logger.warning(
+            "Clarify prompt DECLINED by the connector's egress guard; "
+            "clearing registration"
+        )
+        clarify_mod.clear_session(session_key)
+        return "[clarify prompt could not be delivered: destination refused]"
     if outcome == "failed":
         # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
         logger.warning("Clarify send failed definitively; clearing registration")
@@ -907,7 +953,7 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), context files."""
+    TTL cache), context files, the local Python toolchain probe (#106064)."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -918,6 +964,15 @@ def _warm_turn_machinery_sync() -> int:
         build_context_files_prompt()
     except Exception:
         logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
+    from hermes_cli.config import load_config_readonly
+
+    agent_cfg = load_config_readonly().get("agent")
+    if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
+        # The resolver owns remote-backend omission, the single worker, its cache and the bounded
+        # wait; calling it here is what the first prompt build would otherwise do on the hot path.
+        from tools.env_probe import get_environment_probe_line
+
+        get_environment_probe_line()
     return len(tool_defs)
 
 
@@ -2051,7 +2106,7 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
-from gateway.run_turn import GatewayTurnMixin
+from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
 from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
@@ -2971,8 +3026,13 @@ def _normalize_empty_agent_response(
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
     (#31884)
+
+    A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
+    (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
+    generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
-    if response:
+    is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -2990,9 +3050,7 @@ def _normalize_empty_agent_response(
                 "⚠️ Session storage was temporarily unavailable, so this "
                 "turn was stopped to protect your conversation history. "
                 "Your message should already be saved — please send it again in a moment.")
-        if any(p in error_str for p in (
-                "context", "token", "too large", "too long", "exceed", "payload")) or (
-                "400" in error_str and history_len > 50):
+        if is_overflow:
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or /reset to start fresh.")
@@ -3906,11 +3964,20 @@ class GatewayRunner(
                 return self._is_user_authorized(source)
             return self._is_user_authorized(source, allow_adapter_delegation=False)
 
+        return self._under_authorization_profile(source, _check)
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        """Count a bot message under the profile that authorized it, so the guard's peek, count and
+        config all read the transport profile's ``gateway.bot_loop_guard``."""
+        return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
+
+    @staticmethod
+    def _under_authorization_profile(source: SessionSource, check):
         authorization_home = getattr(source, "_authorization_profile_home", None)
-        if authorization_home is not None:
-            with _profile_runtime_scope(Path(authorization_home)):
-                return _check()
-        return _check()
+        if authorization_home is None:
+            return check()
+        with _profile_runtime_scope(Path(authorization_home)):
+            return check()
 
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
@@ -4173,11 +4240,6 @@ class GatewayRunner(
         ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
-
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name", "honcho.ai_peer", "honcho.pin_peer_name", "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases")
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

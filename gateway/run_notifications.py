@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -316,8 +317,14 @@ class GatewayNotificationsMixin:
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
+        session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
     ) -> None:
-        """Deliver a queued response using the normal text+attachment split."""
+        """Deliver a queued response using the normal text+attachment split.
+
+        ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
+        send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
+        ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
+        stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -341,10 +348,25 @@ class GatewayNotificationsMixin:
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
                             )
+                        else:
+                            # P5(b): a DECLINE is not "editing unavailable". The
+                            # send below re-delivers the whole response to the
+                            # chat the connector just refused.
+                            from gateway.relay.egress import declined_send
+
+                            if declined_send(_edit_res):
+                                logger.warning(
+                                    "Queued-lane reconcile edit DECLINED by the "
+                                    "connector's egress guard; not falling back "
+                                    "to a send (the destination is not approved)."
+                                )
+                                return
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await adapter.send(source.chat_id, text_content, metadata=metadata)
+                    await self._send_queued_final_text(
+                        adapter, source, text_content, metadata, event_message_id, session_key,
+                        inbound_message_id)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
@@ -353,6 +375,31 @@ class GatewayNotificationsMixin:
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+
+    async def _send_queued_final_text(
+        self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
+        event_message_id: Optional[str], session_key: Optional[str],
+        inbound_message_id: Optional[str] = None,
+    ):
+        """Send a queued-lane final through the same ledger bracket as the normal final
+        (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
+        result, so a final refused here (flood control, a transport that had just died) left no
+        ledger row and was gone for good. The ledger identity is the raw inbound message id;
+        ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
+        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
+        inbound id the ledger falls back to the event's own (empty) message id. Adapters without
+        the base contract and sends without a session key keep the plain send."""
+        if session_key and isinstance(adapter, BasePlatformAdapter):
+            result, _ = await adapter.send_final_ledgered(
+                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+        else:
+            result = await adapter.send(source.chat_id, text_content, metadata=metadata)
+        if not getattr(result, "success", False):
+            logger.warning(
+                "Queued-lane final send to %s failed: %s", getattr(source, "chat_id", "?"),
+                getattr(result, "error", None) or "no result")
+        return result
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
@@ -374,6 +421,19 @@ class GatewayNotificationsMixin:
             prompt=_hermes_home / ".update_prompt.json", response=_hermes_home / ".update_response",
         )
 
+    @staticmethod
+    def _marker_profile(data: dict) -> Optional[str]:
+        """Owning profile of a persisted restart/update marker: explicit ``profile``, else the
+        ``agent:<profile>:`` lane of its ``session_key`` (markers written before ``profile`` was
+        persisted); ``None`` = default profile."""
+        profile = str(data.get("profile") or "").strip()
+        if profile:
+            return profile
+        parts = str(data.get("session_key") or "").split(":")
+        if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
+            return parts[1]
+        return None
+
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -387,7 +447,9 @@ class GatewayNotificationsMixin:
                 if not (platform_str and chat_id):
                     continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
+                # lane); a bare self.adapters lookup is the default bot under multiplex.
+                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
                 if not adapter:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
@@ -580,7 +642,7 @@ class GatewayNotificationsMixin:
             exit_code = self._update_exit_code(paths)
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
+            adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
@@ -624,7 +686,10 @@ class GatewayNotificationsMixin:
             if not platform_str or not chat_id:
                 return None
             platform = Platform(platform_str)
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
+            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
+            transport = resolve_delivery_transport(
+                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
             if transport is None:
                 logger.debug("Restart notification skipped: no live transport for %s", platform_str)
                 return None
@@ -695,6 +760,26 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, home.chat_id, exc)
             return False
 
+    def _free_tier_startup_line(self) -> Optional[str]:
+        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
+
+        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
+        try:
+            # Persisted state only. The free-tier check reads auth.json; it runs FIRST so the resolver
+            # is only consulted when a free-tier identity already exists and its own free-tier rung
+            # (which may mint on a fresh install, NS-829) answers from that identity without a network
+            # call. No token refresh at boot either way.
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.anon_auth import guest_carries_inference
+            if not guest_carries_inference():
+                return None
+            if resolve_provider("auto") != "nous":
+                return None
+        except Exception as exc:
+            logger.debug("Free tier startup line skipped: %s", exc)
+            return None
+        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
+
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
@@ -706,6 +791,9 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        free_tier_line = self._free_tier_startup_line()
+        if free_tier_line:
+            message = f"{message}\n{free_tier_line}"
         for platform, platform_cfg, home, transport in self._home_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -1369,6 +1457,15 @@ class GatewayNotificationsMixin:
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
+        # API delivery does not start a model turn, so there is nothing to coalesce.
+        # Keep each unit's stable identity with its row across partial delivery/retry.
+        if group and group[0].get("origin_session_id"):
+            outcomes = []
+            for evt in group:
+                text = _format_gateway_process_notification(evt)
+                if text:
+                    outcomes.append(await self._deliver_completion_notification(text, evt))
+            return False if False in outcomes else True
         deliverable: list[tuple[dict, str]] = []
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)

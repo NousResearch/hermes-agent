@@ -4,6 +4,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import json
+
 import contextlib
 import threading
 
@@ -169,6 +171,26 @@ def _wire_callbacks(sid: str):
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
+    # External password-manager unlock: the renderer shows a masked master-password card; the
+    # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
+    from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
+                                             set_save_login_prompt_callback, set_unlock_prompt_callback)
+    set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
+    set_unlock_prompt_callback(lambda backend, display_name: _block(
+        "vault.unlock.request", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+
+    def save_login_cb(origin, site):
+        # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
+        raw = _block("vault.save_login.request", sid, {"origin": origin, "site": site}, timeout=180)
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) and data.get("password") else None
+
+    set_save_login_prompt_callback(save_login_cb)
+    set_code_prompt_callback(lambda site, hint: _block(
+        "vault.code.request", sid, {"site": site, "hint": hint}, timeout=180))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

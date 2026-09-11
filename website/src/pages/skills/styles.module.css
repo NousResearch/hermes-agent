@@ -1036,5 +1036,6 @@
 
 .pickBtn:hover {
   background: var(--ifm-color-primary);
-  color: var(--ifm-background-color, #0b0b0e);
+  /* Same transparent --ifm-background-color failure mode as #91491. */
+  color: var(--ifm-color-emphasis-0, #f7f8fa);
 }

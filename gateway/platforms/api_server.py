@@ -1387,16 +1387,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if adapter is not None:
             return adapter
         runner = self.gateway_runner or request.app.get("gateway_runner")
-        adapters = getattr(runner, "adapters", None)
-        if not adapters:
+        if runner is None:
             return None
+        # ``/p/<profile>/`` binds the callback to that profile's adapter map; a missing adapter there is a
+        # 503, never the primary profile's adapter (verifying/dispatching a secondary's events under the
+        # default bot's credentials, #84266). ``_authorization_adapter`` is the shared fail-closed resolver.
         try:
-            return adapters.get(Platform(platform_name))
+            platform = Platform(platform_name)
         except Exception:
-            for platform, candidate in adapters.items():
-                if getattr(platform, "value", platform) == platform_name:
-                    return candidate
-        return None
+            return None
+        return runner._authorization_adapter(platform, _api_request_profile.get())
 
     async def _handle_platform_event_callback(self, request: "web.Request") -> "web.Response":
         platform_name = self._normalize_callback_platform(request.match_info.get("platform", ""))

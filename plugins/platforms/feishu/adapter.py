@@ -3726,7 +3726,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+            self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

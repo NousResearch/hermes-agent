@@ -8,7 +8,7 @@ import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compac
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
+import { gatewayErrorToastId, isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -201,12 +201,17 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       // Toast globally, not just when the failing thread is focused: a
       // turn-ending error (e.g. out of funds) blocks every thread, so the
       // inline error alone is too easy to miss. The stable id collapses the
-      // same error from multiple blocked threads into one toast.
+      // same error from multiple blocked threads into one toast — and, because
+      // it is keyed on the HTTP status rather than the full message, a
+      // retrying provider whose error text varies per attempt (429 with a
+      // different retry-after, quota prose) replaces one toast instead of
+      // stacking a new one per failure.
       notify({
-        id: `gateway-error:${errorMessage}`,
+        id: gatewayErrorToastId(errorMessage),
         kind: 'error',
         title: 'Hermes error',
-        message: errorMessage
+        message: errorMessage,
+        sessionId: sessionId ?? undefined
       })
     }
 

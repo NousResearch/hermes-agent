@@ -1,9 +1,19 @@
 import { beforeEach, expect, test } from 'vitest'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import {
+  $inAppToastsEnabled,
+  $notifications,
+  clearNotifications,
+  gatewayErrorToastId,
+  isDiskFullErrorMessage,
+  notify,
+  notifyError,
+  setInAppToastsEnabled
+} from './notifications'
 
 beforeEach(() => {
   clearNotifications()
+  setInAppToastsEnabled(true)
 })
 
 function lastMessage(): string {
@@ -45,6 +55,44 @@ test('disk-full / ENOSPC errors toast a free-space message', () => {
 
   expect(lastMessage()).toMatch(/Disk full/i)
   expect(lastMessage()).toMatch(/free some space/i)
+})
+
+test('in-app toast master switch suppresses notify() and keeps ids stable', () => {
+  setInAppToastsEnabled(false)
+
+  expect($inAppToastsEnabled.get()).toBe(false)
+
+  const id = notify({ id: 'toast-a', kind: 'error', message: 'hidden' })
+
+  expect(id).toBe('toast-a')
+  expect($notifications.get()).toHaveLength(0)
+
+  // Re-enabling does not resurrect suppressed toasts…
+  setInAppToastsEnabled(true)
+  expect($notifications.get()).toHaveLength(0)
+
+  // …but new ones show again, and a later dismiss of a suppressed id is a no-op.
+  notify({ id: 'toast-b', kind: 'info', message: 'visible' })
+  expect($notifications.get().map(n => n.id)).toEqual(['toast-b'])
+})
+
+test('gateway error toast id keys on the HTTP status, not the message text', () => {
+  // A retrying provider varies its message per attempt; these must collapse
+  // into one toast instead of stacking one per failure.
+  const first = gatewayErrorToastId('429 Rate limit exceeded, retry after 37s')
+  const second = gatewayErrorToastId('429 Rate limit exceeded, retry after 19s')
+
+  expect(first).toBe(second)
+  expect(first).toBe('gateway-error:429')
+
+  // Different status → a distinct toast.
+  expect(gatewayErrorToastId('503 upstream unavailable')).not.toBe(first)
+
+  // No status in the text → dedupe on the first line.
+  const noStatus1 = gatewayErrorToastId('minimax/minimax-m3-free failed\nretry-after: 12s')
+  const noStatus2 = gatewayErrorToastId('minimax/minimax-m3-free failed\nretry-after: 45s')
+
+  expect(noStatus1).toBe(noStatus2)
 })
 
 test('session storage write failure is treated as disk-full class', () => {

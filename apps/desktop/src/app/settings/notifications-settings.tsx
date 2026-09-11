@@ -16,7 +16,7 @@ import {
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { $inAppToastsEnabled, notify, setInAppToastsEnabled } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
@@ -30,6 +30,7 @@ function Caption({ children, className }: { children: ReactNode; className?: str
 export function NotificationsSettings() {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
+  const inAppToasts = useStore($inAppToastsEnabled)
   const completionSoundVariantId = useStore($completionSoundVariantId)
   const copy = t.settings.notifications
 
@@ -43,6 +44,13 @@ export function NotificationsSettings() {
     <SettingsContent>
       <SectionHeading icon={Bell} title={copy.title} />
       <Caption className="mb-2 leading-(--conversation-caption-line-height)">{copy.intro}</Caption>
+
+      <ToggleRow
+        checked={inAppToasts}
+        description={copy.inAppDesc}
+        label={copy.inAppLabel}
+        onChange={setInAppToastsEnabled}
+      />
 
       <ToggleRow
         checked={prefs.enabled}

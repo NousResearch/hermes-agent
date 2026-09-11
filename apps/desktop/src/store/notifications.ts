@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
@@ -27,6 +28,11 @@ export interface AppNotification {
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
+  /**
+   * Session the notification is about. When set, clicking the toast opens that
+   * session — the in-app twin of an OS notification's click-to-focus behavior.
+   */
+  sessionId?: string
 }
 
 export interface NotificationInput {
@@ -42,12 +48,27 @@ export interface NotificationInput {
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
+  sessionId?: string
 }
 
 let notificationCounter = 0
 const timers = new Map<string, number>()
 
 export const $notifications = atom<AppNotification[]>([])
+
+// Master switch for the in-app toast stacks (Settings → Notifications). Separate
+// from the OS-notification prefs: the two surfaces interrupt differently, and a
+// user drowning in toasts from background sessions/bots needs a way to silence
+// just the in-app feed while keeping OS alerts. Per device, like the rest of
+// the notifications panel.
+const IN_APP_TOASTS_KEY = 'hermes:in-app-toasts'
+
+export const $inAppToastsEnabled = atom<boolean>(storedBoolean(IN_APP_TOASTS_KEY, true))
+
+export function setInAppToastsEnabled(enabled: boolean) {
+  $inAppToastsEnabled.set(enabled)
+  persistBoolean(IN_APP_TOASTS_KEY, enabled)
+}
 
 function defaultDuration(kind: NotificationKind) {
   if (kind === 'error' || kind === 'warning') {
@@ -158,7 +179,28 @@ export function readableError(error: unknown, fallback: string): { message: stri
   return { message: summary, detail: detail === summary ? undefined : detail }
 }
 
+/**
+ * Stable identity for a gateway error toast. The raw HTTP status (401/429/…)
+ * is the discriminator: provider retry failures vary their message text per
+ * attempt (retry-after values, quota prose, fallback notices), so keying the
+ * toast on the full message mints a fresh id per failure and stacks up to the
+ * visible cap. One status → one toast that updates in place; text without a
+ * status still dedupes on its own first line, which is usually the provider
+ * prefix ("Rate limit exceeded: …").
+ */
+export function gatewayErrorToastId(message: string): string {
+  const status = message.match(/\b(\d{3})\b/)?.[1]
+
+  return `gateway-error:${status ?? message.split('\n')[0].slice(0, 80)}`
+}
+
 export function notify(input: NotificationInput): string {
+  // Suppressed toasts still return an id so callers that later dismiss by id
+  // (e.g. notification.clear) don't need to know about the preference.
+  if (!$inAppToastsEnabled.get()) {
+    return input.id ?? `suppressed-${Date.now()}-${notificationCounter++}`
+  }
+
   const kind = input.kind ?? 'info'
   const id = input.id ?? `${Date.now()}-${notificationCounter++}`
 
@@ -174,7 +216,8 @@ export function notify(input: NotificationInput): string {
     action: input.action,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
-    placement: input.placement ?? defaultPlacement(kind, input.action)
+    placement: input.placement ?? defaultPlacement(kind, input.action),
+    sessionId: input.sessionId
   }
 
   window.clearTimeout(timers.get(id))

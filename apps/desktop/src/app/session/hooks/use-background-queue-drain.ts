@@ -100,7 +100,8 @@ export function useBackgroundQueueDrain({
             id: `composer-background-queue-stuck-${sessionKey}`,
             kind: 'error',
             title: t.composer.queueStuckTitle,
-            message: t.composer.queueStuckBody
+            message: t.composer.queueStuckBody,
+            sessionId: sessionKey
           })
 
           return

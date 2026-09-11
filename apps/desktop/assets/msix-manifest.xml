@@ -31,6 +31,11 @@
     <Description>${description}</Description>
     <Logo>${logo}</Logo>
     ${packageIntegrity}
+    <!-- Hermes owns durable state in %LOCALAPPDATA% and shares it with the
+         unpackaged CLI/gateway. Do not give MSIX a package-private AppData
+         view or the Store and sideloaded builds will split the user's state. -->
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
   </Properties>
   <Resources>
     ${resourceLanguages}

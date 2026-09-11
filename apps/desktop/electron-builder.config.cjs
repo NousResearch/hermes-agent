@@ -221,6 +221,10 @@ module.exports = {
     // time, so typecheck/test imports don't touch the filesystem.
     customExtensionsPath: 'build/msix-extensions.xml',
     customManifestPath: store ? 'build/store-msix-manifest.xml' : 'assets/msix-manifest.xml',
+    // Hermes state is deliberately shared with unpackaged CLI/gateway
+    // processes. Pair the manifest's disabled virtualization properties with
+    // the restricted capability that permits unvirtualized AppData/HKCU writes.
+    capabilities: ['unvirtualizedResources'],
     showNameOnTiles: true
   },
   linux: {

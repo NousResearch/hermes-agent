@@ -73,6 +73,36 @@ def test_session_status_lines_unresolvable_session_shown_as_unknown():
     assert lines == ["  Session: PID 4242 -> unknown"]
 
 
+def test_active_console_session_id_recognizes_no_interactive_session(monkeypatch):
+    """``WTSGetActiveConsoleSessionId`` returns the DWORD 0xFFFFFFFF when nobody is
+    logged on. ctypes' default restype is the *signed* c_int, so an unbound call
+    would come back as -1 and never match ``_INVALID_SESSION_ID`` (same class of
+    bug as #71218's GetCurrentProcess truncation) — this fakes that signed/unsigned
+    distinction to prove the wrapper binds restype before comparing.
+    """
+
+    import ctypes as ctypes_module
+
+    class FakeWTSGetActiveConsoleSessionId:
+        restype = None
+
+        def __call__(self):
+            value = 0xFFFFFFFF
+            if self.restype is ctypes_module.c_uint:
+                return value
+            return value - 0x100000000  # signed c_int truncation, ctypes' default
+
+    class FakeKernel32:
+        WTSGetActiveConsoleSessionId = FakeWTSGetActiveConsoleSessionId()
+
+    class FakeWindll:
+        kernel32 = FakeKernel32()
+
+    monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
+
+    assert gateway_windows._active_console_session_id() is None
+
+
 @pytest.mark.windows_only
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is

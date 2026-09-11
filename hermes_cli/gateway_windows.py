@@ -1202,7 +1202,12 @@ def _process_session_id(pid: int) -> int | None:
 
 def _active_console_session_id() -> int | None:
     """Session id of the interactive desktop, or None when nobody is logged on
-    (``WTSGetActiveConsoleSessionId`` returns 0xFFFFFFFF in that case)."""
+    (``WTSGetActiveConsoleSessionId`` returns 0xFFFFFFFF in that case).
+
+    ``restype`` must be set explicitly: the function returns a DWORD, but ctypes'
+    default ``c_int`` is signed, so the 0xFFFFFFFF sentinel comes back as -1 and
+    silently fails to match ``_INVALID_SESSION_ID`` (same class of bug as #71218)."""
+    ctypes.windll.kernel32.WTSGetActiveConsoleSessionId.restype = ctypes.c_uint
     session_id = ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
     return None if session_id == _INVALID_SESSION_ID else session_id
 

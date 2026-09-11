@@ -281,7 +281,7 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -304,11 +304,14 @@ class TurnExplainersMixin:
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
             )
             if persistence_cause == "corrupt":
-                # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+                # Copy-pasteable, so name the store that actually failed: the agent's own
+                # SessionDB. A multi-profile backend (Desktop serve) hosts sessions whose
+                # state.db is NOT the process default, so the default would send the operator
+                # to inspect/repair the wrong profile's database (#105887).
                 from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
-                body = body.replace("{db_path}", str(_default_db_path()))
+                body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")
                 )

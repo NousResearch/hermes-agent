@@ -79,7 +79,6 @@ UPDATE_MODULE_CANDIDATES = (
 # in these is treated as post-swap.
 POST_SWAP_HELPER_MODULES = (
     "hermes_cli/post_update.py",
-    "hermes_cli/runtime_repair.py",
     "hermes_cli/update_lock.py",
     # pm era: `hermes update` drives the store through the pm package. A pm
     # module imported BEFORE the swap keeps running as old code afterwards,

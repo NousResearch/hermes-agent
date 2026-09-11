@@ -10,7 +10,7 @@ set -u
 
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
 # wrong user's home directory when running under sudo -u <user>.  See #21269.
-# pm's own venv sync re-isolates (pm/packages.py::uv_env), so this bootstrap
+# pm's own venv sync re-isolates (pm/environment.py), so this bootstrap
 # hygiene can't break the locked sync the way it used to before pm owned it.
 export UV_NO_CONFIG=1
 

@@ -9,7 +9,10 @@ disciplines now check the reference body.
 import re
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tools.threat_patterns import scan_for_threats
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]
@@ -45,6 +48,17 @@ def test_all_workflow_references_exist():
         "repo-management.md",
     ):
         assert (SKILL_DIR / "references" / ref).is_file(), f"missing reference: {ref}"
+
+
+# Other bundled skills have existing findings; keep this gate scoped to GitHub.
+@pytest.mark.parametrize(
+    "path",
+    [SKILL_PATH]
+    + sorted(path for path in (SKILL_DIR / "references").rglob("*") if path.is_file()),
+    ids=lambda path: str(path.relative_to(SKILL_DIR)),
+)
+def test_skill_documents_pass_context_threat_scan(path):
+    assert scan_for_threats(path.read_text(encoding="utf-8"), scope="context") == []
 
 
 def test_frontmatter_required_fields():

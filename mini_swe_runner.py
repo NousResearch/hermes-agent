@@ -179,11 +179,10 @@ class MiniSWERunner:
             return {"output": "", "exit_code": -1, "error": str(e)}
 
     def _format_tools_for_system_message(self) -> str:
-        return json.dumps([
-            {"name": t["function"]["name"], "description": t["function"].get("description", ""),
-             "parameters": t["function"].get("parameters", {}), "required": None}
-            for t in self.tools
-        ], ensure_ascii=False)
+        # Canonical renderer lives in agent.system_prompt — importing prevents the
+        # trajectory tool-JSON format from drifting between batch runners.
+        from agent.system_prompt import format_tools_for_system_message
+        return format_tools_for_system_message(self)
 
     def _tool_response_turn(self, messages: List[Dict[str, Any]], i: int) -> tuple:
         """Fold the tool messages following assistant turn ``i`` into one ``tool`` value.

@@ -454,6 +454,14 @@ _TOOL_STATUS_ERROR_ALIASES = {"error", "failed", "failure"}
 _TOOL_STATUS_COMPLETED_ALIASES = {"completed", "complete", "success", "succeeded"}
 
 
+def _is_timeout_error(error: BaseException) -> bool:
+    """True for httpx/socket timeouts raised anywhere in the recall path."""
+    if isinstance(error, TimeoutError):
+        return True
+    httpx = _get_httpx()
+    return httpx is not None and isinstance(error, httpx.TimeoutException)
+
+
 def _resolve_user_space(client, *, timeout: Optional[float] = None) -> Optional[str]:
     """Server-asserted current user for explicit-uid URIs; ``None`` when the probe fails or
     reports no user. Callers may fall back to a configured value for that one operation but
@@ -1613,7 +1621,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 deadline=deadline, request_timeout=cfg["request_timeout_seconds"], full_read_limit=cfg["full_read_limit"],
             ))
         except Exception as e:
-            logger.debug("OpenViking context search failed: %s", e)
+            # Recall contributes no query context after a timeout. Report the configured
+            # budgets without private exception text or another request to resolve identity.
+            if _is_timeout_error(e):
+                logger.warning("OpenViking recall timed out (%s; budget_s=%s request_s=%s); no query context injected",
+                               type(e).__name__, cfg["timeout_seconds"], cfg["request_timeout_seconds"])
+            else:
+                logger.debug("OpenViking context search failed: %s", e)
             return ""
 
     # -- typed settings ------------------------------------------------------

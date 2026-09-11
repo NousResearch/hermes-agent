@@ -374,8 +374,8 @@ class TestCronCreateLifecycleBlock:
         rc = cron_command(args)
         assert rc == 1
         out = capsys.readouterr().out
-        assert "Blocked" in out
-        assert "#30719" in out
+        assert "cron_operation_failed" in out
+        assert "#30719" not in out
 
 
     def test_block_script_with_lifecycle_command(self, tmp_path, capsys, monkeypatch):
@@ -403,7 +403,7 @@ class TestCronCreateLifecycleBlock:
         rc = cron_command(args)
         assert rc == 1
         out = capsys.readouterr().out
-        assert "Blocked" in out
+        assert "cron_operation_failed" in out
 
 
     def test_allow_empty_prompt(self, capsys):
@@ -1746,8 +1746,7 @@ class TestCreateJobBlocksLifecycleCommands:
         assert job["id"]
 
     def test_cronjob_tool_surfaces_block_as_error(self, tmp_path, monkeypatch):
-        """End-to-end through the model tool: the block comes back as
-        result['error'] with the #30719 hint, not an unhandled exception."""
+        """The model tool exposes only the bounded failure category."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir(parents=True)
         from tools.cronjob_tools import cronjob
@@ -1756,7 +1755,7 @@ class TestCreateJobBlocksLifecycleCommands:
             prompt="please run hermes gateway restart nightly",
         ))
         assert result.get("success") is False
-        assert "#30719" in result.get("error", "")
+        assert result.get("error") == "cron_operation_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -1913,7 +1912,7 @@ class TestCronCreateLifecycleBlockExtra:
         rc = cron_command(args)
         assert rc == 1
         out = capsys.readouterr().out
-        assert "Blocked" in out
+        assert "cron_operation_failed" in out
 
 class TestLifecycleGuardDataArgumentExemption:
     """Lifecycle words inside DATA arguments (SQL text, grep patterns) must

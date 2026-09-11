@@ -21,6 +21,338 @@ class TestParseTargetPlatformChat:
         assert target.is_explicit is True
 
 
+class TestTransportReceiptContract:
+    def test_transport_target_rejects_string_subclasses_without_magic_methods(self):
+        from gateway.platforms.base import TransportTarget
+
+        class HostileText(str):
+            def __bool__(self):
+                raise AssertionError("hostile text truthiness was evaluated")
+
+            def __len__(self):
+                raise AssertionError("hostile text length was evaluated")
+
+            def __eq__(self, _other):
+                raise AssertionError("hostile text was compared")
+
+            def __hash__(self):
+                raise AssertionError("hostile text was hashed")
+
+        with pytest.raises(ValueError, match="platform must be"):
+            TransportTarget(platform=HostileText("telegram"), chat_id="123")
+
+    def test_transport_receipt_rejects_subclasses_before_magic_methods(self):
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget(platform="telegram", chat_id="123")
+
+        class HostileText(str):
+            def __bool__(self):
+                raise AssertionError("hostile text truthiness was evaluated")
+
+            def __hash__(self):
+                raise AssertionError("hostile text was hashed")
+
+            def __eq__(self, _other):
+                raise AssertionError("hostile text was compared")
+
+        with pytest.raises(ValueError, match="outcome must be"):
+            TransportReceipt(outcome=HostileText("unknown"), requested_target=target)
+
+        class HostileTarget(TransportTarget):
+            pass
+
+        with pytest.raises(TypeError, match="requested_target"):
+            TransportReceipt(
+                outcome="unknown",
+                requested_target=HostileTarget("telegram", "123"),
+            )
+
+    def test_transport_receipt_rejects_datetime_subclasses_and_custom_tzinfo(self):
+        from datetime import datetime, timedelta, timezone, tzinfo
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget(platform="telegram", chat_id="123")
+
+        class HostileDateTime(datetime):
+            def astimezone(self, *_args, **_kwargs):
+                raise AssertionError("hostile datetime conversion was called")
+
+        hostile_datetime = HostileDateTime.now(timezone.utc)
+        with pytest.raises(ValueError, match="timezone-aware"):
+            TransportReceipt(
+                outcome="unknown", requested_target=target,
+                observed_at=hostile_datetime,
+            )
+
+        class HostileTimezone(tzinfo):
+            def utcoffset(self, _dt):
+                raise AssertionError("hostile timezone offset was called")
+
+            def dst(self, _dt):
+                return timedelta(0)
+
+        custom_tz_datetime = datetime(2026, 8, 23, tzinfo=HostileTimezone())
+        with pytest.raises(ValueError, match="timezone-aware"):
+            TransportReceipt(
+                outcome="unknown", requested_target=target,
+                observed_at=custom_tz_datetime,
+            )
+
+    def test_matrix_receipt_target_metadata_rejects_subclasses_without_methods(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        class HostileDict(dict):
+            def __bool__(self):
+                raise AssertionError("hostile metadata truthiness was evaluated")
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("hostile metadata get was called")
+
+        with pytest.raises(TypeError, match="metadata"):
+            MatrixAdapter._transport_receipt_targets(
+                "!room:example.org", HostileDict({})
+            )
+        with pytest.raises(TypeError, match="requested target"):
+            MatrixAdapter._transport_receipt_targets(
+                "!room:example.org",
+                {"_transport_receipt_requested_target": HostileDict({})},
+            )
+
+    @pytest.mark.asyncio
+    async def test_matrix_send_rejects_receipt_metadata_before_provider_dispatch(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = object.__new__(MatrixAdapter)
+        adapter.plan_transport_text = lambda _content: ["bounded"]
+        adapter._client = SimpleNamespace(send_message_event=AsyncMock())
+
+        class HostileDict(dict):
+            def __bool__(self):
+                raise AssertionError("hostile metadata truthiness was evaluated")
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("hostile metadata get was called")
+
+        class HostileText(str):
+            def __bool__(self):
+                raise AssertionError("hostile content truthiness was evaluated")
+
+            def __str__(self):
+                raise AssertionError("hostile content was stringified")
+
+        metadata_result = await adapter.send(
+            "!room:example.org", "bounded", metadata=HostileDict({})
+        )
+        content_result = await adapter.send(
+            "!room:example.org", HostileText("bounded"), metadata={}
+        )
+
+        for result in (metadata_result, content_result):
+            assert result.success is False
+            assert result.error_kind == "invalid_transport_receipt"
+        adapter._client.send_message_event.assert_not_awaited()
+
+        media_adapter = object.__new__(MatrixAdapter)
+        media_adapter._client = SimpleNamespace(
+            upload_media=AsyncMock(), send_message_event=AsyncMock(),
+        )
+        media_adapter._max_media_bytes = 1024
+        media_adapter._encryption = False
+        media_result = await media_adapter._upload_and_send(
+            "!room:example.org", b"bounded", "report.pdf",
+            "application/pdf", "m.file", metadata=HostileDict({}),
+        )
+        assert media_result.success is False
+        assert media_result.error_kind == "invalid_transport_receipt"
+        media_adapter._client.upload_media.assert_not_awaited()
+        media_adapter._client.send_message_event.assert_not_awaited()
+
+    def test_provider_message_id_normalization_never_calls_hostile_stringification(self):
+        from gateway.platforms.base import normalize_transport_provider_message_id
+
+        class HostileText(str):
+            def __str__(self):
+                raise AssertionError("hostile provider id was stringified")
+
+            def __len__(self):
+                raise AssertionError("hostile provider id length was evaluated")
+
+        class HostileTextMeta(type):
+            def __getattribute__(self, _name):
+                raise AssertionError("hostile provider id type metadata was read")
+
+        class HostileMetaText(str, metaclass=HostileTextMeta):
+            pass
+
+        class HostileObject:
+            def __str__(self):
+                raise AssertionError("provider object was stringified")
+
+        class_spoof_calls = []
+
+        class HostileClassSpoof:
+            @property
+            def __class__(self):
+                class_spoof_calls.append("called")
+                return str
+
+        assert normalize_transport_provider_message_id(HostileText("provider-1")) == "provider-1"
+        assert normalize_transport_provider_message_id(HostileMetaText("provider-2")) == "provider-2"
+        assert normalize_transport_provider_message_id(42) == "42"
+        assert normalize_transport_provider_message_id(HostileObject()) is None
+        assert normalize_transport_provider_message_id(HostileClassSpoof()) is None
+        assert class_spoof_calls == []
+        assert normalize_transport_provider_message_id(True) is None
+
+    def test_receipt_targets_are_typed_and_observation_is_always_aware(self):
+        from datetime import datetime
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget(platform="telegram", chat_id="123")
+        receipt = TransportReceipt(
+            outcome="delivered", provider_message_id="1",
+            requested_target=target, actual_target=target,
+        )
+        assert receipt.observed_at is not None
+        assert receipt.observed_at.utcoffset() is not None
+        for requested, actual in (({}, target), (target, object())):
+            with pytest.raises(TypeError, match="TransportTarget"):
+                TransportReceipt(
+                    outcome="delivered", provider_message_id="1",
+                    requested_target=requested, actual_target=actual,
+                )
+        with pytest.raises(ValueError, match="timezone-aware"):
+            TransportReceipt(
+                outcome="delivered", provider_message_id="1",
+                requested_target=target, actual_target=target,
+                observed_at=datetime.now(),
+            )
+        from datetime import timedelta, timezone
+
+        for unbounded in (
+            datetime(1969, 12, 31, tzinfo=timezone.utc),
+            datetime.now(timezone.utc) + timedelta(minutes=6),
+        ):
+            with pytest.raises(ValueError, match="bounded"):
+                TransportReceipt(
+                    outcome="delivered", provider_message_id="1",
+                    requested_target=target, actual_target=target,
+                    observed_at=unbounded,
+                )
+        with pytest.raises(ValueError, match="ordinal"):
+            TransportReceipt(
+                outcome="delivered", provider_message_id="1",
+                requested_target=target, actual_target=target, ordinal=True,
+            )
+
+    def test_receipts_are_ordered_component_evidence_not_a_final_id_alias(self):
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget(platform="telegram", chat_id="123")
+        first = TransportReceipt(
+            outcome="delivered", provider_message_id="1", requested_target=target,
+            actual_target=target, component="text", ordinal=0,
+        )
+        second = TransportReceipt(
+            outcome="delivered", provider_message_id="2", requested_target=target,
+            actual_target=target, component="text", ordinal=1,
+        )
+        result = SendResult(success=True, message_id="2", receipts=(first, second))
+
+        assert result.receipt == first
+        assert result.receipts == (first, second)
+        with pytest.raises(ValueError, match="ordered"):
+            SendResult(success=True, receipts=(second, first))
+
+    def test_send_result_rejects_receipt_subclasses_and_mutations_before_methods(self):
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget("telegram", "123")
+        receipt = TransportReceipt(outcome="unknown", requested_target=target)
+
+        class HostileTuple(tuple):
+            def __iter__(self):
+                raise AssertionError("hostile receipt tuple was iterated")
+
+            def __len__(self):
+                raise AssertionError("hostile receipt tuple length was evaluated")
+
+        with pytest.raises(ValueError, match="immutable tuple"):
+            SendResult(success=False, receipts=HostileTuple((receipt,)))
+
+        class ReceiptSubclass(TransportReceipt):
+            pass
+
+        subclass_receipt = ReceiptSubclass(
+            outcome="unknown", requested_target=target,
+        )
+        with pytest.raises(ValueError, match="TransportReceipt"):
+            SendResult(success=False, receipts=(subclass_receipt,))
+
+        class HostileText(str):
+            def __hash__(self):
+                raise AssertionError("hostile receipt outcome was hashed")
+
+            def __eq__(self, _other):
+                raise AssertionError("hostile receipt outcome was compared")
+
+        object.__setattr__(receipt, "outcome", HostileText("unknown"))
+        with pytest.raises(ValueError, match="outcome"):
+            SendResult(success=False, receipts=(receipt,))
+
+    @pytest.mark.parametrize("bad", [" id", "id ", "id\nnext", "id\u00a0next"])
+    def test_transport_ids_reject_controls_and_whitespace_confusables(self, bad):
+        from gateway.platforms.base import TransportTarget
+
+        with pytest.raises(ValueError):
+            TransportTarget(platform="telegram", chat_id=bad)
+
+    def test_delivered_receipt_requires_provider_evidence_and_actual_target(self):
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        requested = TransportTarget(platform="matrix", chat_id="!requested:example.org")
+        actual = TransportTarget(platform="matrix", chat_id="!actual:example.org")
+        receipt = TransportReceipt(
+            outcome="delivered",
+            provider_message_id="$event",
+            requested_target=requested,
+            actual_target=actual,
+        )
+
+        result = SendResult(success=True, message_id="legacy-id", receipt=receipt)
+        assert result.success is True  # legacy semantics stay independent
+        assert result.message_id == "legacy-id"
+        assert result.receipt == receipt
+
+        with pytest.raises(ValueError, match="provider_message_id"):
+            TransportReceipt(
+                outcome="delivered",
+                requested_target=requested,
+                actual_target=actual,
+            )
+        with pytest.raises(ValueError, match="actual_target"):
+            TransportReceipt(
+                outcome="delivered",
+                provider_message_id="$event",
+                requested_target=requested,
+            )
+
+    def test_failed_receipt_requires_bounded_category_and_unknown_is_default(self):
+        from gateway.platforms.base import TransportReceipt, TransportTarget
+
+        target = TransportTarget(platform="telegram", chat_id="123", thread_id="7")
+        assert SendResult(success=True).receipt is None
+        with pytest.raises(ValueError, match="failure_kind"):
+            TransportReceipt(outcome="failed", requested_target=target)
+        failed = TransportReceipt(
+            outcome="failed", requested_target=target, failure_kind="not_configured"
+        )
+        assert failed.failure_kind == "not_configured"
+
+
     def test_origin_with_source(self):
         origin = SessionSource(platform=Platform.TELEGRAM, chat_id="789", thread_id="42")
         target = DeliveryTarget.parse("origin", origin=origin)

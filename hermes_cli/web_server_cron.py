@@ -6,6 +6,7 @@ import contextlib
 import logging
 import inspect
 import re
+import unicodedata
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -233,9 +234,142 @@ def _raise_if_cron_registration_error(e: Exception) -> None:
         raise HTTPException(status_code=424, detail=e.to_dict()) from e
 
 
+def _public_cron_text(value: Any, *, limit: int) -> Optional[str]:
+    if type(value) is not str or not value or len(value) > limit:
+        return None
+    return value if all(char.isprintable() for char in value) else None
+
+
+def _public_cron_timestamp(value: Any) -> Optional[str]:
+    if type(value) is not str or len(value) > 64:
+        return None
+    try:
+        from datetime import datetime
+
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+
+
+def _public_cron_string_list(value: Any) -> List[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if type(item) is str and 0 < len(item) <= 256]
+
+
+_PUBLIC_CRON_JOB_STATES = frozenset({"scheduled", "paused", "completed", "error"})
+_PUBLIC_CRON_LAST_STATUSES = frozenset({"ok", "error", "delivery_failed", "delivery_queued", "blocked_config", "interrupted"})
+
+
+def _public_cron_job(job: Any) -> Dict[str, Any]:
+    """Bounded dashboard summary; execution/configuration detail stays private."""
+    if type(job) is not dict:
+        raise TypeError("cron job projection requires an object")
+    schedule = job.get("schedule")
+    schedule_summary = (
+        {
+            "kind": _public_cron_text(schedule.get("kind"), limit=32),
+            "expr": _public_cron_text(schedule.get("expr"), limit=256),
+            "run_at": _public_cron_timestamp(schedule.get("run_at")),
+            "display": _public_cron_text(schedule.get("display"), limit=256),
+        }
+        if type(schedule) is dict
+        else None
+    )
+    state = job.get("state")
+    last_status = job.get("last_status")
+    public = {
+        "id": _public_cron_text(job.get("id"), limit=128),
+        "name": _public_cron_text(job.get("name"), limit=256),
+        "schedule_display": _public_cron_text(job.get("schedule_display"), limit=256),
+        "schedule": schedule_summary,
+        "repeat": {
+            key: value
+            for key in ("times", "completed")
+            if type((value := (job.get("repeat") or {}).get(key))) is int and value >= 0
+        } if type(job.get("repeat")) is dict else None,
+        "enabled": job.get("enabled") if type(job.get("enabled")) is bool else False,
+        "state": state if type(state) is str and state in _PUBLIC_CRON_JOB_STATES else None,
+        "last_status": last_status if type(last_status) is str and last_status in _PUBLIC_CRON_LAST_STATUSES else None,
+        "last_run_at": _public_cron_timestamp(job.get("last_run_at")),
+        "next_run_at": _public_cron_timestamp(job.get("next_run_at")),
+        "last_error": "run_failed" if job.get("last_error") is not None else None,
+        "last_delivery_error": "delivery_failed" if job.get("last_delivery_error") is not None else None,
+        "delivery_kind": (
+            job.get("deliver") if job.get("deliver") in {"local", "origin", "all"}
+            else "external" if type(job.get("deliver")) is str and job.get("deliver")
+            else "local"
+        ),
+        "mode": (
+            "monitor" if any(type(job.get(key)) is str and job.get(key) for key in ("monitor_script", "monitor_url"))
+            else "script" if job.get("no_agent") is True else "agent"
+        ),
+        "skill_count": min(len(_public_cron_string_list(job.get("skills"))), 9999),
+        "toolset_count": min(len(_public_cron_string_list(job.get("enabled_toolsets"))), 9999),
+        "model_configured": any(type(job.get(key)) is str and job.get(key) for key in ("model", "provider", "base_url")),
+    }
+    fire_error = job.get("last_fire_error")
+    public["last_fire_error"] = (
+        {"at": _public_cron_timestamp(fire_error.get("at")), "error_kind": "fire_forward_failed"}
+        if type(fire_error) is dict else None
+    )
+    return public
+
+
+def _public_cron_job_for_profile(job: Any, profile: str) -> Dict[str, Any]:
+    """Attach only route-derived profile identity to a summary row."""
+    from hermes_cli import profiles as profiles_mod
+
+    profile_name = profiles_mod.normalize_profile_name(profile)
+    profiles_mod.validate_profile_name(profile_name)
+    public = _public_cron_job(job)
+    public.update(profile=profile_name, profile_name=profile_name, is_default_profile=profile_name == "default")
+    return public
+
+
+_CRON_DETAIL_TEXT_LIMITS = {
+    "prompt": 16000, "script": 1024, "workdir": 4096, "model": 256,
+    "provider": 256, "base_url": 2048, "deliver": 2048, "failure_deliver": 2048,
+    "monitor_script": 1024, "monitor_url": 2048, "reasoning_effort": 64,
+}
+
+
+def _public_cron_job_detail(job: Any) -> Dict[str, Any]:
+    """Explicit-profile editable fields, excluding all runtime and identity state."""
+    detail = _public_cron_job(job)
+    for key, limit in _CRON_DETAIL_TEXT_LIMITS.items():
+        value = job.get(key)
+        if key == "prompt" and type(value) is str:
+            valid = len(value) <= limit and all(
+                not unicodedata.category(char).startswith("C") or char in "\n\r\t"
+                for char in value
+            )
+            detail[key] = value if valid else None
+        elif value is not None:
+            detail[key] = _public_cron_text(value, limit=limit)
+    for key in ("skills", "context_from", "enabled_toolsets"):
+        if key in job:
+            detail[key] = _public_cron_string_list(job[key])
+    for key in ("no_agent", "continuity"):
+        if key in job:
+            detail[key] = job[key] if type(job[key]) is bool else False
+    for key in ("profile", "profile_name", "is_default_profile"):
+        detail.pop(key, None)
+    return detail
+
+
+def _require_concrete_cron_profile(profile: Optional[str]) -> str:
+    selected = (profile or "").strip()
+    if not selected or selected.lower() == "all":
+        raise HTTPException(status_code=400, detail="cron_mutation_profile_required")
+    return _cron_profile_home(selected)[0]
+
+
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     try:
-        profile_name, profile_home = _cron_profile_home(profile)
+        profile_name = _require_concrete_cron_profile(profile)
+        _profile_name, profile_home = _cron_profile_home(profile_name)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
         skills = _cron_string_list(body.skills)
         context_from = _cron_string_list(body.context_from)
@@ -243,7 +377,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         no_agent = bool(body.no_agent)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
-        return _mutate_cron_for_profile(
+        job = _mutate_cron_for_profile(
             profile_name,
             "create_job",
             prompt=body.prompt or "",
@@ -261,12 +395,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             no_agent=no_agent,
             **{key: getattr(body, key) for key in ("paused", "paused_reason")
                if key in body.model_fields_set})
+        return _public_cron_job_for_profile(job, profile_name)
     except HTTPException:
         raise
     except Exception as e:
         _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/jobs failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="cron_create_failed") from e
 
 
 def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False) -> bool:

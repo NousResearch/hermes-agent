@@ -141,10 +141,26 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
         assert claim['_scheduled_instant'] == slot
         assert claim['next_run_at'] != slot
         assert '_scheduled_instant' not in jobs.load_jobs()[0]
+        fire_identity = executions.scheduled_fire_identity(
+            stored['id'], claim['fire_claim']['fire_at'],
+        )
+        assert claim['fire_identity'] == fire_identity
+        attempts = executions.preregister_receipt_plan(
+            claim['execution_id'], fire_identity=fire_identity,
+            components=[{
+                'target': {'platform': 'telegram', 'chat_id': '123'},
+                'component': 'text', 'ordinal': 0, 'content': 'bounded',
+            }],
+        )
+        assert len(attempts) == 1
         executions.mark_execution_handoff_pending(claim['execution_id'])
         adopted = executions.adopt_claimed_execution(claim['execution_id'])
         assert adopted is not None
         assert adopted['scheduled_instant'] == slot
+        assert adopted['fire_identity'] == fire_identity
+        assert executions.receipt_summary(claim['execution_id']) == {
+            'delivered': 0, 'failed': 0, 'unknown': 1, 'targets_delivered': 0,
+        }
 
         # A runnable legacy wall-clock value cannot establish an exact UTC identity.
         from datetime import timedelta

@@ -142,7 +142,10 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_pat
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     prov, fake = chronos
-    claimed = {"id": "j1", "fire_claim": {"by": "owner-1"}}
+    claimed = {
+        "id": "j1",
+        "fire_claim": {"by": "owner-1", "fire_at": "2026-06-18T12:00:00+00:00"},
+    }
     persisted = {
         "id": "j1",
         "enabled": True,

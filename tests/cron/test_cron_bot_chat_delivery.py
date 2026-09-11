@@ -11,12 +11,11 @@ from unittest import mock
 
 import pytest
 
-from cron import scheduler as sched
 from cron import scheduler_delivery as sched_delivery
-from cron.scheduler import _resolve_delivery_targets
 from cron.scheduler_delivery import (
     BOT_CHAT_PLATFORM,
     _deliver_to_bot_chat,
+    _resolve_delivery_targets,
     _resolve_bot_chat_target,
     parse_bot_chat_deliver_token,
 )
@@ -48,7 +47,7 @@ def test_non_bot_chat_tokens_pass_through():
 
 def test_own_profile_resolves_without_name():
     target = _resolve_bot_chat_target({"id": "j1"}, "")
-    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
+    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "_self", "thread_id": None}
 
 
 def test_named_profile_resolves_when_exists():
@@ -118,6 +117,24 @@ def _completed(returncode=0, stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
 
 
+@pytest.mark.parametrize("profile", ["", "research"])
+def test_unowned_bot_chat_scrubs_delegated_worker_authority(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "worker-only-task")
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    with mock.patch("tools.bot_live_delivery.find_canonical_live_owner", return_value=None), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched_delivery.subprocess, "run", return_value=_completed()) as run:
+        assert _deliver_to_bot_chat({"id": "safe-job"}, "payload", profile) is None
+    child_env = run.call_args.kwargs["env"]
+    assert "HERMES_KANBAN_TASK" not in child_env
+    assert child_env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+    if profile:
+        assert "HERMES_HOME" not in child_env
+    else:
+        assert child_env["HERMES_HOME"] == str(tmp_path)
+
+
 def test_deliver_runs_canonical_bot_chat_lane():
     """The subprocess must use the Bot Mode agent-to-agent chat lane:
     chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>."""
@@ -128,7 +145,7 @@ def test_deliver_runs_canonical_bot_chat_lane():
         calls["kwargs"] = kwargs
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with mock.patch.object(sched_delivery.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
 
@@ -153,9 +170,9 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
         calls["kwargs"] = kwargs
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with mock.patch.object(sched_delivery.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
+         mock.patch.dict(sched_delivery.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
 
     assert err is None
@@ -167,21 +184,19 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
 
 def test_deliver_failure_returns_error_string():
     with mock.patch.object(
-        sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
+        sched_delivery.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
     ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-    assert err is not None
-    assert "boom" in err
+    assert err == "bot-chat delivery confirmation unavailable"
 
 
 def test_deliver_timeout_returns_error_string():
     with mock.patch.object(
-        sched.subprocess, "run",
+        sched_delivery.subprocess, "run",
         side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
     ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-    assert err is not None
-    assert "timed out" in err
+    assert err == "bot-chat delivery confirmation unavailable"
 
 
 def test_deliver_message_carries_cron_attribution(tmp_path):
@@ -194,7 +209,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
             captured["message"] = fh.read()
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with mock.patch.object(sched_delivery.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the payload", "")
 

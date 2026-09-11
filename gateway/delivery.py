@@ -55,6 +55,14 @@ class DeliveryTransport:
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 
 
+class DeliverySendError(RuntimeError):
+    """Delivery failure retaining content-free receipt evidence for the caller."""
+
+    def __init__(self, message: str, send_result: Any):
+        super().__init__(message)
+        self.send_result = send_result
+
+
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
                                adapters: Optional[Dict[Platform, Any]]) -> Optional[DeliveryTransport]:
     """Resolve a logical platform to its live delivery transport. A concrete native adapter always wins;
@@ -311,5 +319,5 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
-            raise RuntimeError(error or f"{target.platform.value} delivery failed")
+            raise DeliverySendError(error or f"{target.platform.value} delivery failed", result)
         return result

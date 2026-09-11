@@ -67,6 +67,31 @@ def _dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, indent=2)
 
 
+def _public_cron_operation_error(exc: Exception) -> tuple[str, str]:
+    """Map known user-correctable validation errors to bounded public text.
+
+    Core validators sometimes interpolate a timestamp, path or provider detail
+    into ``ValueError``.  Tool callers need actionable feedback for the small
+    stable validation vocabulary, but must never receive arbitrary exception
+    strings from the scheduler/provider stack.
+    """
+    if type(exc) is ValueError:
+        text = str(exc)
+        if text.startswith("Cron job has nothing to run:"):
+            return (
+                "Cron job has nothing to run. Provide a prompt, a script, or at least one skill.",
+                "invalid_job_payload",
+            )
+        if "past and cannot be scheduled" in text:
+            return (
+                "Requested one-shot time is in the past and cannot be scheduled.",
+                "past_one_shot",
+            )
+        if "no_agent=True requires a script" in text:
+            return "no_agent=True requires a script.", "invalid_job_payload"
+    return "cron_operation_failed", "cron_operation_failed"
+
+
 def _notify_provider_jobs_changed_safe() -> None:
     """Tell the active scheduler provider the job set changed; best-effort, never raises."""
     try:
@@ -171,7 +196,7 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
         if refreshed.get("last_delivery_queued"):
             return " (output queued for Bot Chat; completion unverified, do not resend)"
         return " (output was delivered there by the job itself)"
-    return f" (⚠ delivery FAILED: {err[:200]})"
+    return " (⚠ delivery FAILED)"
 
 
 _ALREADY_RUNNING_ERROR = (
@@ -199,7 +224,10 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
         with contextlib.suppress(Exception):
             mark_job_run(job_id, False, str(e))
-        return None, {"claimed": True, "success": False, "error": str(e)}
+        return None, {
+            "claimed": True, "success": False, "error": "run_failed",
+            "error_kind": "run_failed",
+        }
 
 
 def _execute_job_now(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
@@ -323,7 +351,12 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
-        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        return {
+            "claimed": True,
+            "success": bool(processed and ok),
+            "error": None if processed and ok else "run_failed",
+            "error_kind": None if processed and ok else "run_failed",
+        }
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         if _registered:
@@ -334,7 +367,10 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
                 release_running_job(job_id)
         with contextlib.suppress(Exception):
             mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
-        return {"claimed": True, "success": False, "error": str(e)}
+        return {
+            "claimed": True, "success": False, "error": "run_failed",
+            "error_kind": "run_failed",
+        }
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
@@ -503,7 +539,8 @@ def _try_dispatch_background_run(
     logger.info(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name)
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    assert claimed_job is not None  # claim failure returned above; never strand its exact snapshot.
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 
@@ -585,11 +622,19 @@ def _action_create(a: Dict[str, Any]) -> str:
         _local_delivery_notice(job, deliver))))
     # The builtin ticker lives in the gateway process: with no gateway running the job is stored
     # but never fires — tell the model (the CLI already warns).
+    # A model-tool create response is a status receipt, never a second copy of
+    # the stored execution configuration.  Keep only the bounded summary at
+    # both response levels; delivery targets, prompts, skill names and paths
+    # remain in the durable job record / explicit dashboard-detail route.
+    public_job = _format_job(job)
     _result = {
-        "success": True, "job_id": job["id"], "name": job["name"], "skill": job.get("skill"),
-        "skills": job.get("skills", []), "schedule": job["schedule_display"], "repeat": _repeat_display(job),
-        "deliver": job.get("deliver", "local"), "next_run_at": job["next_run_at"], "job": _format_job(job),
-        "message": _create_message, **_gateway_liveness_notice(),
+        "success": True,
+        **{key: public_job[key] for key in (
+            "job_id", "name", "schedule", "repeat", "delivery_kind", "mode", "next_run_at"
+        )},
+        "job": public_job,
+        "message": _create_message,
+        **_gateway_liveness_notice(),
     }
     return _dumps(_with_guidance(_result, job, deliver))
 
@@ -645,7 +690,6 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         result = _refreshed_job_view(job_id)
         result["executed"] = True
         result["execution_mode"] = "background"
-        result["delegation_id"] = bg.get("delegation_id")
         return _dumps({
             "success": True,
             "job": result,
@@ -885,6 +929,12 @@ def cronjob(
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
     try:
+        if attach_to_session is not None and type(attach_to_session) is not bool:
+            return tool_error(
+                "attach_to_session must be a boolean.",
+                success=False,
+                error_kind="invalid_argument",
+            )
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
         if handler is not None:
@@ -900,8 +950,12 @@ def cronjob(
         if handler is None:
             return tool_error(f"Unknown cron action '{action}'", success=False)
         return handler(job, a)
-    except Exception as e:
-        return tool_error(str(e), success=False)
+    except Exception as exc:
+        logger.exception("cronjob operation failed")
+        error, error_kind = _public_cron_operation_error(exc)
+        return tool_error(
+            error, success=False, error_kind=error_kind
+        )
 
 
 CRONJOB_SCHEMA = {

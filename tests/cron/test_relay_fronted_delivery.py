@@ -24,6 +24,7 @@ from cron import scheduler as sched
 from cron.scheduler import _deliver_result, _resolve_delivery_targets
 from cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
 from gateway.config import HomeChannel, Platform
+from gateway.platforms.base import SendResult, TransportReceipt, TransportTarget
 
 
 def _gateway_config_with_home(platform=Platform.DISCORD, chat_id="1517373704248758474",
@@ -139,7 +140,15 @@ class TestRelayDeliveryGate:
         router = MagicMock()
 
         async def _deliver_to_platform(target, content, metadata):
-            return {"success": True, "raw_response": None}
+            receipt_target = TransportTarget("discord", "123")
+            return SendResult(
+                success=True,
+                message_id="relay-message",
+                receipts=(TransportReceipt(
+                    outcome="delivered", provider_message_id="relay-message",
+                    requested_target=receipt_target, actual_target=receipt_target,
+                ),),
+            )
 
         router._deliver_to_platform = _deliver_to_platform
 

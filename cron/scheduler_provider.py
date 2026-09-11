@@ -150,12 +150,36 @@ class CronScheduler(ABC):
         return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
 
     def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
-        """Durably claim one fire + create its audit attempt. Transports call this synchronously
-        before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
-        from cron.executions import create_execution, finish_execution, set_execution_occurrence
-        from cron.jobs import claim_job_for_fire
+        """Durably claim one fire and create its audit attempt before dispatch.
 
-        execution = create_execution(job_id, source=self.name)
+        Webhook transports call this synchronously before acknowledging the
+        external scheduler, then pass the exact owner-bearing snapshot to
+        ``fire_claimed`` in tracked background work.
+        """
+        from cron.executions import (
+            bind_execution_fire_identity,
+            create_execution,
+            finish_execution,
+            scheduled_fire_identity,
+            set_execution_occurrence,
+        )
+        from cron.jobs import claim_job_for_fire, get_job
+
+        preclaim_job = get_job(job_id)
+        recovery_fire_identity = None
+        if not force and isinstance(preclaim_job, dict):
+            existing_claim = preclaim_job.get("fire_claim")
+            if isinstance(existing_claim, dict):
+                if not existing_claim.get("fire_at"):
+                    raise ValueError("existing fire claim has no immutable timestamp")
+                recovery_fire_identity = scheduled_fire_identity(
+                    job_id, existing_claim["fire_at"],
+                )
+
+        create_kwargs = {"source": self.name}
+        if recovery_fire_identity is not None:
+            create_kwargs["fire_identity"] = recovery_fire_identity
+        execution = create_execution(job_id, **create_kwargs)
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
@@ -172,9 +196,39 @@ class CronScheduler(ABC):
             )
             raise
         if not isinstance(claimed_job, dict):
-            finish_execution(execution["id"], success=False, error="Fire claim was not acquired")
+            finish_execution(
+                execution["id"],
+                success=False,
+                error="Fire claim was not acquired",
+                error_kind="claim_lost",
+            )
             return None
+        bound_execution = execution
+        if recovery_fire_identity is None:
+            try:
+                acquired_claim = claimed_job.get("fire_claim")
+                if (
+                    not isinstance(acquired_claim, dict)
+                    or not acquired_claim.get("fire_at")
+                ):
+                    raise ValueError("acquired fire claim has no immutable timestamp")
+                acquired_fire_identity = scheduled_fire_identity(
+                    job_id, acquired_claim["fire_at"],
+                )
+                bound_execution = bind_execution_fire_identity(
+                    execution["id"], acquired_fire_identity,
+                )
+            except BaseException as exc:
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Fire identity binding failed before dispatch: {type(exc).__name__}: {exc}",
+                )
+                raise
         claimed_job["execution_id"] = execution["id"]
+        claimed_job["fire_identity"] = (
+            bound_execution.get("fire_identity") or execution["id"]
+        )
         return claimed_job
 
     def fire_claimed(

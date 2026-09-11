@@ -7,6 +7,8 @@ late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working
 
 import asyncio
 import functools
+import math
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,6 +36,10 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_public_cron_job = late("_public_cron_job", "hermes_cli.web_server_cron")
+_public_cron_job_for_profile = late("_public_cron_job_for_profile", "hermes_cli.web_server_cron")
+_public_cron_job_detail = late("_public_cron_job_detail", "hermes_cli.web_server_cron")
+_require_concrete_cron_profile = late("_require_concrete_cron_profile", "hermes_cli.web_server_cron")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -83,7 +89,8 @@ def _found(job):
 def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        return [_public_cron_job_for_profile(job, requested)
+                for job in _call_cron_for_profile(requested, "list_jobs", True)]
 
     jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
@@ -91,14 +98,63 @@ def _list_cron_jobs_sync(profile: str = "all"):
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            jobs.extend(_public_cron_job_for_profile(job, name)
+                        for job in _call_cron_for_profile(name, "list_jobs", True))
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs
 
 
 def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    return _found(_call_cron_for_profile(_job_profile(job_id, profile), "get_job", job_id))
+    selected = _job_profile(job_id, profile)
+    return _public_cron_job_for_profile(
+        _found(_call_cron_for_profile(selected, "get_job", job_id)), selected)
+
+
+def _get_cron_job_detail_sync(job_id: str, profile: str):
+    selected = (profile or "").strip()
+    if not selected or selected.lower() == "all":
+        raise HTTPException(status_code=400, detail="cron_detail_profile_required")
+    return _public_cron_job_detail(
+        _found(_call_cron_for_profile(selected, "get_job", job_id)))
+
+
+_PUBLIC_CRON_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+
+def _public_cron_run_time(value: Any) -> Optional[float]:
+    if type(value) not in {int, float}:
+        return None
+    try:
+        parsed = float(value)
+    except OverflowError:
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
+def _public_cron_run(run: Any, *, now: float) -> Optional[Dict[str, Any]]:
+    """Restore the bounded run projection; unknown session fields stay private."""
+    if type(run) is not dict:
+        return None
+    run_id = run.get("id")
+    if type(run_id) is not str or not _PUBLIC_CRON_RUN_ID_RE.fullmatch(run_id):
+        return None
+    ended_raw = run.get("ended_at")
+    last_active = _public_cron_run_time(run.get("last_active"))
+    reason = run.get("end_reason")
+    statuses = {"completed": "completed", "success": "completed", "agent_close": "completed",
+                "failed": "failed", "error": "failed", "cancelled": "cancelled",
+                "interrupted": "cancelled", "timeout": "timeout"}
+    status = "running" if ended_raw is None else statuses.get(reason, "ended") if type(reason) is str else "ended"
+    archived = run.get("archived")
+    return {
+        "id": run_id, "status": status,
+        "started_at": _public_cron_run_time(run.get("started_at")),
+        "ended_at": _public_cron_run_time(ended_raw), "last_active": last_active,
+        "is_active": ended_raw is None and last_active is not None and math.isfinite(now)
+                     and 0 <= now - last_active < 300,
+        "archived": archived is True or (type(archived) is int and archived == 1),
+    }
 
 
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
@@ -106,8 +162,9 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
     Runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
     cron/scheduler.run_job); ``source='cron'`` plus the id prefix binds them to
-    this job. Same row shape as ``/api/sessions`` so the frontend reuses
-    SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
+    this job. Session rows are projected onto bounded public run metadata;
+    prompts, previews and unknown fields remain private.
+    Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
     scan, so cost scales with the requested window, not total cron history.
     """
     selected = profile or _find_cron_job_profile(job_id)
@@ -125,13 +182,9 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
     db = _open_session_db_for_profile(selected, read_only=True)
     try:
-        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+        rows = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
-        for s in runs:
-            s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            s["archived"] = bool(s.get("archived"))
-            if selected:
-                s["profile"] = selected
+        runs = [public for row in rows if (public := _public_cron_run(row, now=now)) is not None]
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()
@@ -141,7 +194,7 @@ _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}
 
 
 def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
-    selected = _job_profile(job_id, profile)
+    selected = _require_concrete_cron_profile(profile)
     try:
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _found(_call_cron_for_profile(profile_name, "get_job", job_id))
@@ -158,19 +211,21 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _found(job)
+    return _public_cron_job(_found(job))
 
 
 def _pause_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "pause_job", job_id))
+    return _public_cron_job(_found(_mutate_cron_for_profile(
+        _require_concrete_cron_profile(profile), "pause_job", job_id)))
 
 
 def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "resume_job", job_id))
+    return _public_cron_job(_found(_mutate_cron_for_profile(
+        _require_concrete_cron_profile(profile), "resume_job", job_id)))
 
 
 def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = _job_profile(job_id, profile)
+    selected = _require_concrete_cron_profile(profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
     # Never expose the job as due before claiming it: the built-in ticker and
     # external/manual fire paths share one durable claim, so only one executes
@@ -180,19 +235,19 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     ran = _fire_cron_job_for_profile(selected, job["id"], force=force)
     refreshed = _call_cron_for_profile(selected, "get_job", job["id"])
     if refreshed and refreshed.get("last_run_at") != job.get("last_run_at"):
-        return refreshed
+        return _public_cron_job(refreshed)
     if not ran:
         raise HTTPException(status_code=409, detail="Job is already running or was claimed by another scheduler")
     if refreshed:
-        return refreshed
+        return _public_cron_job(refreshed)
     # A one-shot may remove itself after exhausting repeat=1: keep the response
     # shape without inventing an outcome the store no longer holds; the list
     # refresh removes the completed row.
-    return {**job, "enabled": False, "state": "completed"}
+    return _public_cron_job({**job, "enabled": False, "state": "completed"})
 
 
 def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = _job_profile(job_id, profile)
+    selected = _require_concrete_cron_profile(profile)
     try:
         removed = _mutate_cron_for_profile(selected, "remove_job", job_id)
     except ValueError as exc:
@@ -208,6 +263,22 @@ def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
 _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 
 
+def _public_gateway_fire_body(status_code: int, gateway_body: object, job_id: str) -> dict:
+    """Receipt-only fire response; gateway diagnostics and profile routing stay private."""
+    body = gateway_body if type(gateway_body) is dict else {}
+    status = body.get("status")
+    if 200 <= status_code < 300 and type(status) is str and status in {"accepted", "duplicate"}:
+        return {"status": status, "job_id": job_id}
+    error_kind = (
+        "invalid_request" if status_code == 400
+        else "authentication_failed" if status_code in {401, 403}
+        else "claim_conflict" if status_code == 409
+        else "gateway_unavailable" if status_code == 503
+        else "gateway_fire_failed"
+    )
+    return {"error": error_kind, "error_kind": error_kind, "job_id": job_id}
+
+
 @router.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
@@ -218,13 +289,18 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
 
 
+@router.get("/api/cron/jobs/{job_id}/detail")
+async def get_cron_job_detail(job_id: str, profile: str):
+    return await _run_cron_dashboard_io(_get_cron_job_detail_sync, job_id, profile)
+
+
 @router.get("/api/cron/jobs/{job_id}/runs")
 async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
 @router.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
+async def create_cron_job(body: CronJobCreate, profile: str):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
 
 
@@ -244,27 +320,27 @@ async def get_cron_delivery_targets():
 
 
 @router.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: str):
     return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+async def pause_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+async def resume_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+async def delete_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
@@ -340,23 +416,23 @@ async def cron_fire_webhook(request: Request):
             return JSONResponse(
                 {
                     "status": "gateway_stopped",
-                    "detail": "gateway deliberately stopped; fire dropped, jobs re-arm on next gateway start",
                     "job_id": job_id,
-                    "profile": profile,
                 },
                 status_code=200,
             )
         return JSONResponse(
-            {"error": "gateway unreachable; retry", "job_id": job_id, "profile": profile},
+            {"error": "gateway_unavailable", "error_kind": "gateway_unavailable", "job_id": job_id},
             status_code=503,
             headers={"Retry-After": str(_CRON_FIRE_RETRY_AFTER_SECONDS)},
         )
     status_code, gateway_body = forwarded
-    if isinstance(gateway_body, dict):
-        gateway_body.setdefault("job_id", job_id)
     # The gateway's own 503s (draining, admission failure) are equally transient.
     headers = {"Retry-After": str(_CRON_FIRE_RETRY_AFTER_SECONDS)} if status_code == 503 else None
-    return JSONResponse(gateway_body, status_code=status_code, headers=headers)
+    return JSONResponse(
+        _public_gateway_fire_body(status_code, gateway_body, job_id),
+        status_code=status_code,
+        headers=headers,
+    )
 
 
 @router.get("/api/cron/blueprints")
@@ -384,13 +460,13 @@ async def list_cron_blueprints():
                         f["options"] = deliver_options
             entries.append(entry)
         return {"blueprints": entries}
-    except Exception as e:
+    except Exception:
         _log.exception("GET /api/cron/blueprints failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="cron_blueprint_list_failed")
 
 
 @router.post("/api/cron/blueprints/instantiate")
-async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
+async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
         from cron.blueprint_catalog import BlueprintFillError, fill_blueprint, get_blueprint
@@ -407,17 +483,18 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         spec.pop("origin", None)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
-        _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)
+        selected = _require_concrete_cron_profile(profile)
+        _create = functools.partial(_call_cron_for_profile, selected, "create_job", **spec)
         created = await _run_cron_dashboard_io(_create)
         # Reconcile the profile-scoped provider (file I/O + NAS calls) off-loop.
-        await _run_cron_dashboard_io(_notify_cron_provider_for_profile, profile)
-        return created
+        await _run_cron_dashboard_io(_notify_cron_provider_for_profile, selected)
+        return _public_cron_job_for_profile(created, selected)
     except HTTPException:
         raise
     except Exception as e:
         _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/blueprints/instantiate failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="cron_create_failed") from e
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

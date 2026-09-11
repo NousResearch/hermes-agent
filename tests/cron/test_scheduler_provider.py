@@ -18,7 +18,7 @@ drives it and stops promptly.
 """
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
@@ -374,7 +374,11 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
         jobs,
         "claim_job_for_fire",
         lambda jid, **kw: claims.append((jid, kw))
-        or {"id": jid, "name": "t", "fire_claim": {"by": "exact-owner"}},
+        or {"id": jid, "name": "t", "fire_claim": {
+            "by": "exact-owner",
+            "at": "2026-08-22T19:00:00+00:00",
+            "fire_at": "2026-08-22T19:00:00+00:00",
+        }},
         raising=False,
     )
     monkeypatch.setattr(
@@ -399,13 +403,22 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
         jobs,
         "claim_job_for_fire",
         lambda jid, **kwargs: events.append("claim")
-        or {"id": jid, "fire_claim": {"by": "owner"}},
+        or {"id": jid, "fire_claim": {
+            "by": "owner",
+            "at": "2026-08-22T19:00:00+00:00",
+            "fire_at": "2026-08-22T19:00:00+00:00",
+        }},
     )
     monkeypatch.setattr(
         executions,
         "create_execution",
         lambda jid, source, _create=executions.create_execution:
         events.append("ledger") or _create(jid, source=source),
+    )
+    monkeypatch.setattr(
+        executions,
+        "bind_execution_fire_identity",
+        lambda eid, fire: events.append("bind") or {"id": eid, "fire_identity": fire},
     )
     monkeypatch.setattr(
         sched,
@@ -416,33 +429,247 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     provider = InProcessCronScheduler()
     claimed = provider.claim_fire("j1")
 
-    assert events == ["ledger", "claim"]
+    assert events == ["ledger", "claim", "bind"]
     assert claimed is not None
     assert executions.get_execution(claimed["execution_id"])["status"] == "claimed"
     assert provider.fire_claimed(claimed) is True
-    assert events == ["ledger", "claim", ("run", claimed["execution_id"])]
+    assert events == ["ledger", "claim", "bind", ("run", claimed["execution_id"])]
+
+
+def test_claim_fire_binds_scheduled_fire_before_provider_dispatch(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setattr(executions, "set_execution_occurrence", lambda *args: None)
+    created = []
+    monkeypatch.setattr(jobs, "get_job", lambda _jid: {
+        "id": "j1", "next_run_at": "2026-08-22T19:00:00+00:00",
+    })
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid, **_kwargs: {
+        "id": jid, "fire_claim": {
+            "by": "owner",
+            "at": "2026-08-22T19:00:00+00:00",
+            "fire_at": "2026-08-22T19:00:00+00:00",
+        },
+    })
+
+    def create(jid, *, source, **kwargs):
+        created.append((jid, source, kwargs.get("fire_identity")))
+        return {"id": "exec-1", "fire_identity": kwargs.get("fire_identity")}
+
+    monkeypatch.setattr(executions, "create_execution", create)
+    monkeypatch.setattr(
+        executions, "bind_execution_fire_identity",
+        lambda eid, fire: {"id": eid, "fire_identity": fire},
+    )
+    claimed = InProcessCronScheduler().claim_fire("j1")
+
+    assert created[0][2] is None
+    assert claimed["fire_identity"] == executions.scheduled_fire_identity(
+        "j1", "2026-08-22T19:00:00+00:00",
+    )
+
+
+def test_claim_fire_binds_identity_from_acquired_claim_not_stale_pre_read(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setattr(executions, "set_execution_occurrence", lambda *args: None)
+    events = []
+    stale_due = "2026-08-22T19:00:00+00:00"
+    acquired_at = "2026-08-22T20:00:00+00:00"
+    monkeypatch.setattr(jobs, "get_job", lambda _jid: {
+        "id": "j1", "next_run_at": stale_due,
+    })
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid, **_kwargs: (
+        events.append("claim") or {
+            "id": jid,
+            "next_run_at": "2026-08-22T21:00:00+00:00",
+            "fire_claim": {
+                "by": "owner", "at": acquired_at, "fire_at": acquired_at,
+            },
+        }
+    ))
+
+    def create(jid, *, source, **kwargs):
+        events.append(("create", kwargs.get("fire_identity")))
+        return {
+            "id": "exec-race", "fire_identity": kwargs.get("fire_identity") or "exec-race",
+        }
+
+    def bind(execution_id, fire_identity):
+        events.append(("bind", execution_id, fire_identity))
+        return {"id": execution_id, "fire_identity": fire_identity}
+
+    monkeypatch.setattr(executions, "create_execution", create)
+    monkeypatch.setattr(executions, "bind_execution_fire_identity", bind, raising=False)
+    claimed = InProcessCronScheduler().claim_fire("j1")
+
+    expected = executions.scheduled_fire_identity("j1", acquired_at)
+    assert events[0] == ("create", None)
+    assert events[1] == "claim"
+    assert events[2] == ("bind", "exec-race", expected)
+    assert claimed["fire_identity"] == expected
+
+
+def test_claim_fire_reuses_immutable_timestamp_identity_for_stale_recovery(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setattr(executions, "set_execution_occurrence", lambda *args: None)
+    created = []
+    fire_at = "2026-08-22T19:00:00+00:00"
+    monkeypatch.setattr(jobs, "get_job", lambda _jid: {
+        "id": "j1", "next_run_at": "2026-08-22T20:00:00+00:00",
+        "fire_claim": {
+            "by": "dead-owner",
+            "at": "2026-08-22T19:30:00+00:00",
+            "fire_at": fire_at,
+        },
+    })
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid, **_kwargs: {
+        "id": jid, "fire_claim": {
+            "by": "new-owner",
+            "at": "2026-08-22T20:01:00+00:00",
+            "fire_at": fire_at,
+        },
+    })
+
+    def create(jid, *, source, **kwargs):
+        created.append(kwargs.get("fire_identity"))
+        return {"id": "exec-2", "fire_identity": kwargs.get("fire_identity")}
+
+    monkeypatch.setattr(executions, "create_execution", create)
+    claimed = InProcessCronScheduler().claim_fire("j1")
+
+    expected = executions.scheduled_fire_identity("j1", fire_at)
+    assert created == [expected]
+    assert claimed["fire_identity"] == expected
+
+
+def test_external_recovery_after_heartbeat_reuses_original_fire_identity(
+    monkeypatch, tmp_path,
+):
+    from datetime import datetime, timedelta, timezone
+
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db",
+    )
+    current = [datetime(2026, 8, 22, 19, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: current[0])
+
+    job = jobs.create_job(prompt="bounded", schedule="every 5m", name="recovery")
+    provider = InProcessCronScheduler()
+    first = provider.claim_fire(job["id"])
+    assert first is not None
+    plan = [{
+        "target": {"platform": "telegram", "chat_id": "123"},
+        "component": "text", "ordinal": 0, "content": "bounded",
+    }]
+    executions.preregister_receipt_plan(
+        first["execution_id"],
+        fire_identity=first["fire_identity"],
+        components=plan,
+    )
+
+    current[0] += timedelta(seconds=30)
+    assert jobs.heartbeat_fire_claim(
+        job["id"], expected_owner=first["fire_claim"]["by"],
+    ) is True
+    current[0] += timedelta(seconds=301)
+
+    recovery = provider.claim_fire(job["id"])
+    assert recovery is not None
+    assert recovery["fire_identity"] == first["fire_identity"]
+    with __import__("pytest").raises(ValueError, match="already attempted"):
+        executions.preregister_receipt_plan(
+            recovery["execution_id"],
+            fire_identity=recovery["fire_identity"],
+            components=plan,
+        )
 
 
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
+    import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
+    monkeypatch.setattr(executions, "set_execution_occurrence", lambda *args: None)
     claims = []
+    events = []
+    fire_at = "2026-08-22T19:00:00+00:00"
     monkeypatch.setattr(
         jobs,
         "claim_job_for_fire",
         lambda jid, **kw: claims.append((jid, kw))
-        or {"id": jid, "name": "t", "fire_claim": {"by": "manual-owner"}},
+        or {"id": jid, "name": "t", "fire_claim": {
+            "by": "manual-owner", "at": fire_at, "fire_at": fire_at,
+        }},
     )
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        lambda jid, source: {"id": "exec-force"},
+    )
+    monkeypatch.setattr(
+        executions,
+        "bind_execution_fire_identity",
+        lambda eid, fire: events.append(("bind", eid, fire))
+        or {"id": eid, "fire_identity": fire},
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: events.append(("run", job["fire_identity"])) or True,
+    )
 
     assert InProcessCronScheduler().fire_due("j1", force=True) is True
     assert claims == [("j1", {"force": True, "return_job": True})]
-    # An off-tick run-now forwards ``manual`` so the claim does not stamp the next occurrence;
-    # the default (webhook / misfire) fire keeps the occurrence stamp.
+    expected = executions.scheduled_fire_identity("j1", fire_at)
+    assert events == [
+        ("bind", "exec-force", expected),
+        ("run", expected),
+    ]
+    # Off-tick run-now must not consume the next scheduled occurrence.
     assert InProcessCronScheduler().fire_due("j1", manual=True) is True
     assert claims[-1] == ("j1", {"manual": True, "return_job": True})
+
+
+def test_force_claim_without_immutable_timestamp_fails_before_dispatch(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    monkeypatch.setattr(executions, "set_execution_occurrence", lambda *args: None)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: {"id": jid, "fire_claim": {"by": "manual-owner"}},
+    )
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        lambda jid, source: {"id": "exec-force"},
+    )
+    monkeypatch.setattr(executions, "finish_execution", lambda *args, **kwargs: None)
+    run = Mock()
+    monkeypatch.setattr(sched, "run_one_job", run)
+
+    with __import__("pytest").raises(
+        ValueError, match="acquired fire claim has no immutable timestamp",
+    ):
+        InProcessCronScheduler().fire_due("j1", force=True)
+    run.assert_not_called()
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -463,6 +690,31 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
 
     assert InProcessCronScheduler().fire_due("j1") is False
     assert ran == []
+
+
+def test_claim_loser_is_categorized_before_return(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    finished = []
+    monkeypatch.setattr(jobs, "get_job", lambda _jid: None)
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda _jid, **_kwargs: False)
+    monkeypatch.setattr(
+        executions, "create_execution",
+        lambda _jid, **_kwargs: {"id": "exec-loser", "fire_identity": "exec-loser"},
+    )
+    monkeypatch.setattr(
+        executions, "finish_execution",
+        lambda eid, **kwargs: finished.append((eid, kwargs)),
+    )
+
+    assert InProcessCronScheduler().claim_fire("j1") is None
+    assert finished == [("exec-loser", {
+        "success": False,
+        "error": "Fire claim was not acquired",
+        "error_kind": "claim_lost",
+    })]
 
 
 def test_fire_due_missing_job_does_not_run(monkeypatch):

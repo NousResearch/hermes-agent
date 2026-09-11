@@ -215,26 +215,25 @@ class TestTickerLoopRecordsErrors:
 
 
 class TestCronStatusSurfacesError:
-    def test_status_shows_last_error_and_permission_hint(self, monkeypatch, capsys):
+    def test_status_redacts_last_error_and_keeps_permission_hint(self, monkeypatch, capsys):
         from hermes_cli import cron as cron_cli
 
+        sentinel = (
+            "RuntimeError: Failed to read cron database: [Errno 13] "
+            "Permission denied: '/private/jobs.json' user@example.org"
+        )
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
         monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)   # alive
         monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 9_999.0)  # failing
-        monkeypatch.setattr(
-            jobs,
-            "get_ticker_last_error",
-            lambda: (
-                "RuntimeError: Failed to read cron database: "
-                "[Errno 13] Permission denied: '/opt/data/cron/jobs.json'"
-            ),
-        )
+        monkeypatch.setattr(jobs, "get_ticker_last_error", lambda: sentinel)
         monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
 
         cron_cli.cron_status()
         out = capsys.readouterr().out
-        assert "Last tick error:" in out
-        assert "Permission denied" in out
+        assert "Last tick error: permission_denied" in out
+        assert sentinel not in out
+        assert "/private/jobs.json" not in out
+        assert "user@example.org" not in out
         # The permission-specific hint must point at the ownership fix.
         assert "docker exec -u" in out
 

@@ -168,19 +168,22 @@ class TestSchedulerJobReasoningPrecedence:
 
 
 class TestCronjobToolReasoningEffort:
-    """The model tool READS the field (list surfacing) but must never WRITE
-    it: models don't make model-configuration decisions (standing policy —
-    the only exception is user-defined profile selection). The pin is set
-    via `hermes cron create/edit --reasoning-effort` only."""
+    """The model tool must neither reveal nor write the field.
 
-    def test_format_job_surfaces_pin_when_set(self, tmp_cron_dir):
+    Models don't make model-configuration decisions (standing policy — the
+    only exception is user-defined profile selection). The pin is set via
+    `hermes cron create/edit --reasoning-effort` only.
+    """
+
+    def test_format_job_redacts_pin_when_set(self, tmp_cron_dir):
         import json
 
         from tools.cronjob_tools import cronjob
 
         _create(reasoning_effort="high")
+        assert load_jobs()[0]["reasoning_effort"] == "high"
         listed = json.loads(cronjob(action="list"))["jobs"][0]
-        assert listed["reasoning_effort"] == "high"
+        assert "reasoning_effort" not in listed
 
     def test_format_job_omits_field_when_unset(self, tmp_cron_dir):
         import json

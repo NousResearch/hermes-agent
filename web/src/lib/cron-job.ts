@@ -1,5 +1,50 @@
 import type { CronJob, CronJobMutation } from "./api";
 
+export function cronJobProfile(job: CronJob): string {
+  const profile = typeof job.profile === "string" ? job.profile : "";
+  const profileName =
+    typeof job.profile_name === "string" ? job.profile_name : "";
+  return profile || profileName || "default";
+}
+
+export function cronJobKey(job: CronJob): string {
+  return `${cronJobProfile(job)}:${job.id}`;
+}
+
+export function splitCronJobKey(key: string): { profile: string; id: string } {
+  const idx = key.indexOf(":");
+  if (idx === -1) return { profile: "default", id: key };
+  return { profile: key.slice(0, idx) || "default", id: key.slice(idx + 1) };
+}
+
+export async function loadCronJobDetailForEditor(
+  getDetail: (id: string, profile: string) => Promise<CronJob>,
+  job: CronJob,
+  profile: string,
+): Promise<CronJob> {
+  if (!profile || profile === "all") {
+    throw new Error("cron_detail_profile_required");
+  }
+  const detail = await getDetail(job.id, profile);
+  return { ...detail, profile };
+}
+
+export function cronJobSummaryPresentation(job: CronJob): {
+  title: string;
+  mode: "agent" | "script" | "monitor";
+  modelLabel: string;
+} {
+  const name = typeof job.name === "string" ? job.name.trim() : "";
+  const id = typeof job.id === "string" ? job.id : "";
+  const mode =
+    job.mode === "script" || job.mode === "monitor" ? job.mode : "agent";
+  return {
+    title: name || id || "Cron job",
+    mode,
+    modelLabel: job.model_configured === true ? "configured" : "",
+  };
+}
+
 export interface CronJobFormState {
   name: string;
   prompt: string;
@@ -121,6 +166,7 @@ export interface CronLastResult {
 const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
   ok: "success",
   delivery_failed: "warning",
+  delivery_queued: "warning",
   blocked_config: "warning",
   error: "destructive",
 };
@@ -132,6 +178,9 @@ export function cronLastResult(
   if (!status) return null;
   const tone = CRON_LAST_RESULT_TONE[status] ?? "destructive";
   if (status === "ok") return { status, tone, detail: null };
+  if (status === "delivery_queued") {
+    return { status, tone, detail: "Completion unverified; do not resend" };
+  }
   const detail =
     status === "delivery_failed"
       ? asString(job.last_delivery_error).trim() || asString(job.last_error).trim()

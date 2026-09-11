@@ -440,9 +440,12 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
         name="named-profile-job",
     )
 
-    paused = await _rt_cron.pause_cron_job(worker_job["id"])
-    assert paused["profile"] == "worker_alpha"
-    assert paused["enabled"] is False
+    paused = await _rt_cron.pause_cron_job(worker_job["id"], profile="worker_alpha")
+    # Mutations acknowledge only the public summary; ownership is verified from
+    # the selected store rather than echoed into every mutation response.
+    assert "profile" not in paused
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", worker_job["id"])
+    assert stored["enabled"] is False
 
     default_jobs = await _rt_cron.list_cron_jobs(profile="default")
     worker_jobs = await _rt_cron.list_cron_jobs(profile="worker_alpha")
@@ -733,7 +736,7 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
     )
 
     assert triggered["last_status"] == "error"
-    assert triggered["last_error"] == "expected failure"
+    assert triggered["last_error"] == "run_failed"
 
 
 @pytest.mark.asyncio
@@ -813,10 +816,12 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", tracking_find)
 
     jobs = await _rt_cron.list_cron_jobs(profile="all")
-    paused = await _rt_cron.pause_cron_job(worker_job["id"])
+    # Read-only lookup may discover the owner; mutation routes require the
+    # caller-selected concrete profile.
+    discovered = await _rt_cron.get_cron_job(worker_job["id"])
 
     assert any(job["id"] == worker_job["id"] for job in jobs)
-    assert paused["profile"] == "worker_alpha"
+    assert discovered["profile"] == "worker_alpha"
     profile_scan_thread_ids = _drain_queue(profile_scan_threads)
     worker_thread_ids = _drain_queue(worker_threads)
     assert profile_scan_thread_ids
@@ -865,10 +870,12 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
         profile="worker_alpha",
     )
 
-    assert updated["base_url"] == "https://example.invalid/v1"
-    assert updated["script"] == "collect.py"
-    assert updated["context_from"] is None
-    assert updated["no_agent"] is True
+    assert "base_url" not in updated and "script" not in updated
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["base_url"] == "https://example.invalid/v1"
+    assert stored["script"] == "collect.py"
+    assert stored["context_from"] is None
+    assert stored["no_agent"] is True
 
 
 @pytest.mark.asyncio
@@ -930,8 +937,10 @@ async def test_update_cron_job_no_agent_reuses_existing_script(isolated_profiles
         profile="worker_alpha",
     )
 
-    assert updated["no_agent"] is True
-    assert updated["script"] == "collect.py"
+    assert "no_agent" not in updated and "script" not in updated
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["no_agent"] is True
+    assert stored["script"] == "collect.py"
 
 
 @pytest.mark.asyncio
@@ -1024,8 +1033,10 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
     )
 
     assert updated["name"] == "dashboard-edit-job-renamed"
-    assert updated["provider_snapshot"] == "initial-provider"
-    assert updated["model_snapshot"] == "test-model"
+    assert "provider_snapshot" not in updated and "model_snapshot" not in updated
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["provider_snapshot"] == "initial-provider"
+    assert stored["model_snapshot"] == "test-model"
 
 
 @pytest.mark.asyncio
@@ -1066,8 +1077,10 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
         profile="worker_alpha",
     )
 
-    assert updated["provider_snapshot"] is None
-    assert updated["model_snapshot"] is None
+    assert "provider_snapshot" not in updated and "model_snapshot" not in updated
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["provider_snapshot"] is None
+    assert stored["model_snapshot"] is None
 
 
 @pytest.mark.asyncio
@@ -1146,7 +1159,7 @@ async def test_cron_profile_validation_errors(isolated_profiles):
 
 
 @pytest.mark.asyncio
-async def test_create_cron_job_without_profile_uses_backend_own_profile(
+async def test_create_cron_job_requires_explicit_profile(
     isolated_profiles, monkeypatch
 ):
     """A pool backend scoped to a named profile must not default creates to
@@ -1158,22 +1171,21 @@ async def test_create_cron_job_without_profile_uses_backend_own_profile(
         "HERMES_HOME", str(isolated_profiles["worker_alpha"])
     )
 
-    job = await _rt_cron.create_cron_job(
-        _web_models.CronJobCreate(
-            prompt="runs in my own profile",
-            schedule="every 1h",
-            name="own-profile-job",
-        ),
-        profile=None,
-    )
-
-    assert job["profile"] == "worker_alpha"
-    assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
-    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
+                prompt="runs in my own profile",
+                schedule="every 1h",
+                name="own-profile-job",
+            ),
+            profile=None,
+        )
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "cron_mutation_profile_required"
 
 
 @pytest.mark.asyncio
-async def test_create_cron_job_without_profile_defaults_when_unscoped(
+async def test_create_cron_job_rejects_missing_profile_when_unscoped(
     isolated_profiles, monkeypatch
 ):
     """HERMES_HOME at the default home (or unrecognized) keeps the legacy
@@ -1182,14 +1194,30 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
 
-    job = await _rt_cron.create_cron_job(
-        _web_models.CronJobCreate(
-            prompt="runs in default",
-            schedule="every 1h",
-            name="default-job",
-        ),
-        profile=None,
-    )
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
+                prompt="runs in default",
+                schedule="every 1h",
+                name="default-job",
+            ),
+            profile=None,
+        )
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "cron_mutation_profile_required"
 
-    assert job["profile"] == "default"
-    assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+def test_dashboard_public_cron_job_allows_known_status_and_drops_unknown_values():
+    known_public = _web_server_cron._public_cron_job({
+        "id": "known-job-id",
+        "last_status": "delivery_queued",
+    })
+    unknown_public = _web_server_cron._public_cron_job({
+        "id": "known-job-id",
+        "state": "private_unknown_state",
+        "last_status": "private_unknown_status",
+    })
+
+    assert known_public["last_status"] == "delivery_queued"
+    assert unknown_public["state"] is None
+    assert unknown_public["last_status"] is None

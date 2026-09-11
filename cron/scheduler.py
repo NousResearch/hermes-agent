@@ -465,8 +465,9 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, use_cron_store)
 from cron.executions import (
-    _TERMINAL_STATES, create_execution, finish_execution, get_execution,
-    mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
+    _TERMINAL_STATES, bind_execution_fire_identity, create_execution, finish_execution,
+    get_execution, mark_execution_handoff_pending, mark_execution_running,
+    recover_interrupted_executions, scheduled_fire_identity)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2431,8 +2432,19 @@ def run_one_job(
         execution = create_execution(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
+        job["fire_identity"] = execution.get("fire_identity") or execution["id"]
 
     execution_id = str(job["execution_id"])
+    claim = job.get("fire_claim")
+    fire_at = claim.get("fire_at") if isinstance(claim, dict) else None
+    if isinstance(fire_at, str) and fire_at:
+        expected_fire_identity = scheduled_fire_identity(job["id"], fire_at)
+        # The job snapshot is not authoritative. Verify/bind in the ledger before the worker,
+        # handoff, or any user side effect so every transport receipt has immutable provenance.
+        bound = bind_execution_fire_identity(execution_id, expected_fire_identity)
+        job["fire_identity"] = bound.get("fire_identity") or expected_fire_identity
+    elif not job.get("fire_identity"):
+        job["fire_identity"] = execution_id
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
@@ -2508,13 +2520,22 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
-    normalized_deliver: str, incident_acked: bool, success: bool,
+    normalized_deliver: str, incident_acked: bool, success: bool, execution_id: Optional[str] = None,
     delivery_queued=None,
 ) -> str:
+    if should_deliver and delivery_queued and not delivery_error:
+        return "queued"
+    if should_deliver and execution_id:
+        receipt_outcome = _receipt_delivery_outcome(execution_id)
+        if receipt_outcome == "unknown":
+            return "unknown"
+        if delivery_error:
+            return "failed"
+        if receipt_outcome is not None:
+            return receipt_outcome
     if delivery_error:
         return "failed"
-    if should_deliver and delivery_queued:
-        return "queued"
+
     if should_deliver and unresolved_origin:
         return "not_configured"
     if should_deliver and normalized_deliver != "local":
@@ -2673,6 +2694,8 @@ def _save_compose_deliver(
                 deliver_content,
                 adapters=adapters,
                 loop=loop,
+                execution_id=str(job.get("execution_id") or ""),
+                fire_identity=str(job.get("fire_identity") or job.get("execution_id") or ""),
                 # Failure summaries (and drift/blocked-config alerts composed into deliver_content
                 # on the failure path) honor the job's failure_deliver override (NS-788).
                 for_failure=not d.success,
@@ -2733,6 +2756,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)),
         incident_acked=d.incident_acked,
         success=d.success,
+        execution_id=execution_id,
     )
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
@@ -2760,6 +2784,8 @@ def _deliver_crash_failure(
             _summarize_cron_failure_for_delivery(job, err_text) + _failure_streak_nudge(job),
             adapters=adapters,
             loop=loop,
+            execution_id=str(job.get("execution_id") or ""),
+            fire_identity=str(job.get("fire_identity") or job.get("execution_id") or ""),
             for_failure=True,
         )
     except Exception as delivery_exc:
@@ -2773,6 +2799,7 @@ def _deliver_crash_failure(
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
+        execution_id=str(job.get("execution_id") or ""),
         delivery_queued=job.get("last_delivery_queued"))
     if delivery_outcome in ("delivered", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
@@ -3550,6 +3577,14 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    claim = claimed_job.get("fire_claim")
+    fire_at = claim.get("fire_at") if isinstance(claim, dict) else None
+    if isinstance(fire_at, str) and fire_at:
+        fire_identity = scheduled_fire_identity(claimed_job["id"], fire_at)
+        bound = bind_execution_fire_identity(claimed_job["execution_id"], fire_identity)
+        claimed_job["fire_identity"] = bound.get("fire_identity") or fire_identity
+    else:
+        claimed_job["fire_identity"] = job.get("fire_identity") or job["execution_id"]
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
@@ -3767,8 +3802,8 @@ def tick(
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
 from cron.scheduler_delivery import (  # noqa: E402
-    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
-    _resolve_delivery_targets,
+    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _receipt_delivery_outcome,
+    _resolve_delivery_target, _resolve_delivery_targets,
 )
 from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,

@@ -142,7 +142,8 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, classify_send_error,
+    BasePlatformAdapter, SendResult, TransportReceipt,
+    TransportTarget, classify_send_error, normalize_transport_provider_message_id,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -368,6 +369,10 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+class _InvalidTransportReceiptMetadata(ValueError):
+    """Scheduler-owned receipt metadata failed before any provider side effect."""
+
+
 class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -397,6 +402,74 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+
+    @staticmethod
+    def _transport_identity_text(value: Any, *, field: str) -> str:
+        """Return a transport identity without invoking caller-defined coercion hooks."""
+        if type(value) is str:
+            return value
+        if type(value) is int:
+            return str(value)
+        raise _InvalidTransportReceiptMetadata(
+            f"transport receipt {field} must be text or an integer"
+        )
+
+    @classmethod
+    def _validated_transport_metadata(
+        cls, chat_id: Any, metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Copy receipt/routing metadata only after rejecting hostile subclasses.
+
+        Delivery metadata is scheduler-owned protocol input. Validate it before
+        any fallback can send, rather than letting a ``dict``/``str`` subclass
+        execute its hooks while routing or constructing a receipt.
+        """
+        if metadata is None:
+            return {}
+        if type(metadata) is not dict:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt metadata must be an object"
+            )
+        routed_chat = cls._transport_identity_text(chat_id, field="chat_id")
+        validated = dict(metadata)
+        for key in (
+            "thread_id",
+            "message_thread_id",
+            "direct_messages_topic_id",
+            "telegram_direct_messages_topic_id",
+            "telegram_reply_to_message_id",
+        ):
+            raw_value = metadata.get(key)
+            if raw_value is not None:
+                validated[key] = cls._transport_identity_text(raw_value, field=key)
+        requested = metadata.get("_transport_receipt_requested_target")
+        if requested is None:
+            return validated
+        if type(requested) is not dict:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt requested target must be an object"
+            )
+        platform = requested.get("platform", "telegram")
+        if type(platform) is not str:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt platform must be a string"
+            )
+        requested_chat = requested.get("chat_id", routed_chat)
+        requested_thread = requested.get("thread_id")
+        target = TransportTarget(
+            platform=platform,
+            chat_id=cls._transport_identity_text(requested_chat, field="chat_id"),
+            thread_id=(
+                cls._transport_identity_text(requested_thread, field="thread_id")
+                if requested_thread is not None else None
+            ),
+        )
+        validated["_transport_receipt_requested_target"] = {
+            "platform": target.platform,
+            "chat_id": target.chat_id,
+            "thread_id": target.thread_id,
+        }
+        return validated
 
     @staticmethod
     def _env_float_clamped(name: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
@@ -1096,8 +1169,18 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]],
-        reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None) -> Any:
+        reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None,
+        actual_thread_out: Optional[Dict[str, Optional[str]]] = None) -> Any:
         """Retry stale private-topic media replies once without the topic anchor."""
+        if actual_thread_out is not None:
+            routed_thread = (
+                send_kwargs.get("message_thread_id")
+                if send_kwargs.get("message_thread_id") is not None
+                else send_kwargs.get("direct_messages_topic_id")
+            )
+            actual_thread_out["thread_id"] = (
+                str(routed_thread) if routed_thread is not None else None
+            )
         try:
             return await send_fn(**send_kwargs)
         except Exception as send_err:
@@ -1112,7 +1195,145 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             retry_kwargs["reply_to_message_id"] = None
             retry_kwargs.pop("message_thread_id", None)
             retry_kwargs.pop("direct_messages_topic_id", None)
+            if actual_thread_out is not None:
+                actual_thread_out["thread_id"] = None
             return await send_fn(**retry_kwargs)
+
+    def _transport_media_receipt_plan(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+        routed_thread: Optional[Any],
+    ) -> Optional[tuple[TransportTarget, int]]:
+        """Validate scheduler-owned media receipt metadata before dispatch."""
+        if metadata is None:
+            metadata = {}
+        elif type(metadata) is not dict:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt metadata must be an object"
+            )
+        has_component = "_transport_receipt_component" in metadata
+        has_ordinal = "_transport_receipt_ordinal" in metadata
+        if not has_component and not has_ordinal:
+            return None
+        component = metadata.get("_transport_receipt_component")
+        if type(component) is not str or component != "media":
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt component must be media"
+            )
+        ordinal = metadata.get("_transport_receipt_ordinal")
+        if type(ordinal) is not int or ordinal < 0:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt ordinal must be a non-negative integer"
+            )
+
+        requested_raw = metadata.get("_transport_receipt_requested_target")
+        try:
+            if requested_raw is None:
+                requested_target = TransportTarget(
+                    platform="telegram",
+                    chat_id=self._transport_identity_text(chat_id, field="chat_id"),
+                    thread_id=(
+                        self._transport_identity_text(routed_thread, field="thread_id")
+                        if routed_thread is not None else None
+                    ),
+                )
+            else:
+                if type(requested_raw) is not dict:
+                    raise TypeError(
+                        "transport receipt requested target must be an object"
+                    )
+                requested_target = TransportTarget(
+                    platform=requested_raw.get("platform", "telegram"),
+                    chat_id=requested_raw.get(
+                        "chat_id",
+                        self._transport_identity_text(chat_id, field="chat_id"),
+                    ),
+                    thread_id=requested_raw.get("thread_id"),
+                )
+        except (TypeError, ValueError) as exc:
+            raise _InvalidTransportReceiptMetadata(
+                "transport receipt requested target is invalid"
+            ) from exc
+        return requested_target, ordinal
+
+    def _transport_media_receipt_context(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+        thread_kwargs: Dict[str, Any],
+    ) -> tuple[
+        Optional[tuple[TransportTarget, int]],
+        Dict[str, Optional[str]],
+    ]:
+        routed_thread = (
+            thread_kwargs.get("message_thread_id")
+            if thread_kwargs.get("message_thread_id") is not None
+            else thread_kwargs.get("direct_messages_topic_id")
+        )
+        return (
+            self._transport_media_receipt_plan(chat_id, metadata, routed_thread),
+            {},
+        )
+
+    @staticmethod
+    def _invalid_transport_media_receipt_result() -> SendResult:
+        return SendResult(
+            success=False,
+            error="Invalid transport receipt metadata",
+            error_kind="invalid_transport_receipt",
+            retryable=False,
+        )
+
+    @staticmethod
+    def _transport_media_unknown_result(
+        plan: tuple[TransportTarget, int],
+    ) -> SendResult:
+        requested_target, ordinal = plan
+        receipt = TransportReceipt(
+            outcome="unknown",
+            requested_target=requested_target,
+            component="media",
+            ordinal=ordinal,
+        )
+        return SendResult(
+            success=False,
+            error="Telegram media delivery outcome is unknown",
+            error_kind="unknown",
+            receipt=receipt,
+            retryable=False,
+        )
+
+    @staticmethod
+    def _transport_media_send_result(
+        msg: Any,
+        chat_id: str,
+        plan: Optional[tuple[TransportTarget, int]],
+        actual_thread: Dict[str, Optional[str]],
+    ) -> SendResult:
+        provider_id = normalize_transport_provider_message_id(
+            getattr(msg, "message_id", None)
+        )
+        if plan is not None and provider_id is None:
+            return TelegramAdapter._transport_media_unknown_result(plan)
+        if plan is None:
+            return SendResult(success=True, message_id=provider_id)
+        requested_target, ordinal = plan
+        receipt = TransportReceipt(
+            outcome="delivered",
+            provider_message_id=provider_id,
+            requested_target=requested_target,
+            actual_target=TransportTarget(
+                platform="telegram",
+                chat_id=TelegramAdapter._transport_identity_text(
+                    chat_id, field="chat_id",
+                ),
+                thread_id=actual_thread.get("thread_id"),
+            ),
+            component="media",
+            ordinal=ordinal,
+        )
+        return SendResult(success=True, message_id=provider_id, receipt=receipt)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -3220,19 +3441,21 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             _TimedOut = None  # type: ignore[assignment,misc]
         return _NetErr, _BadReq, _TimedOut
 
-    async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
+    async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any], *, receipt_bound=False):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
             return await self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs)
         except Exception as md_error:
             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                if receipt_bound:
+                    raise
                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                 return await self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs)
             raise
 
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
-        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple):
+        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple, *, receipt_bound=False):
         """Deliver one chunk: routing, up to 3 attempts, thread-not-found / deleted-anchor / flood handling.
 
         Returns ``(msg, used_thread_fallback)`` on success or a ``SendResult`` to return verbatim (fail-loud DM-topic
@@ -3253,7 +3476,8 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                return await self._send_chunk_markdown_or_plain(
+                    chunk, send_kwargs, receipt_bound=receipt_bound), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
@@ -3342,6 +3566,21 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await self.send_typing(chat_id, metadata=metadata)
 
+    def plan_transport_text(self, content: str) -> list[str]:
+        """Expose Telegram's exact MarkdownV2 split before provider dispatch."""
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(
+            formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+        )
+        if len(chunks) > 1:
+            chunks = [
+                _separate_chunk_indicator_from_fence(
+                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                )
+                for chunk in chunks
+            ]
+        return list(chunks)
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
@@ -3359,6 +3598,14 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
+        try:
+            metadata = self._validated_transport_metadata(chat_id, metadata)
+        except _InvalidTransportReceiptMetadata:
+            return self._invalid_transport_media_receipt_result()
+        if type(content) is not str:
+            return self._invalid_transport_media_receipt_result()
+        receipts: list[TransportReceipt] = []
+        receipt_bound_send = False
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
@@ -3380,36 +3627,102 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                     for chunk in chunks
                ]
             message_ids = []
+            receipts = []
+            receipt_bound_send = (
+                "_transport_receipt_requested_target" in (metadata or {})
+            )
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
+            requested_route_kwargs = self._thread_kwargs_for_send(
+                chat_id, thread_id, metadata, reply_to_message_id=None,
+                reply_to_mode=self._reply_to_mode,
+            )
+            receipt_requested = metadata.get("_transport_receipt_requested_target") or {}
+            receipt_requested_thread = (
+                receipt_requested["thread_id"]
+                if receipt_requested.get("thread_id")
+                else (
+                    None
+                    if receipt_requested
+                    else (str(requested_thread_id) if requested_thread_id is not None else None)
+                )
+            )
+            receipt_requested_target = TransportTarget(
+                platform=receipt_requested.get("platform") or "telegram",
+                chat_id=(
+                    receipt_requested.get("chat_id")
+                    or self._transport_identity_text(chat_id, field="chat_id")
+                ),
+                thread_id=receipt_requested_thread,
+            )
+            # Initialize for type-safety and for the degenerate empty-chunk
+            # path; each successful chunk then replaces it with its actual
+            # route before the receipt is created.
+            effective_thread_id = (
+                requested_route_kwargs.get("message_thread_id")
+                if requested_route_kwargs.get("message_thread_id") is not None
+                else requested_route_kwargs.get("direct_messages_topic_id")
+            )
             used_thread_fallback = False
             for i, chunk in enumerate(chunks):
                 outcome = await self._send_chunk_with_retries(
-                    chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types)
+                    chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types,
+                    receipt_bound=receipt_bound_send)
                 if isinstance(outcome, SendResult):
-                    return outcome
+                    return SendResult(
+                        success=outcome.success, message_id=outcome.message_id, error=outcome.error,
+                        raw_response=outcome.raw_response, receipts=tuple(receipts),
+                        retryable=outcome.retryable, retry_after=outcome.retry_after,
+                        continuation_message_ids=outcome.continuation_message_ids, error_kind=outcome.error_kind)
                 msg, used_thread_fallback = outcome
-                message_ids.append(str(msg.message_id))
+                provider_id = normalize_transport_provider_message_id(getattr(msg, "message_id", None))
+                if provider_id is None:
+                    receipts.append(TransportReceipt(
+                        outcome="unknown", requested_target=receipt_requested_target,
+                        component="text", ordinal=i))
+                    return SendResult(success=False, error="Telegram delivery outcome is unknown", error_kind="unknown",
+                                      receipts=tuple(receipts), retryable=False)
+                message_ids.append(provider_id)
+                receipts.append(TransportReceipt(
+                    outcome="delivered", provider_message_id=provider_id,
+                    requested_target=receipt_requested_target,
+                    actual_target=TransportTarget(
+                        platform="telegram", chat_id=self._transport_identity_text(chat_id, field="chat_id"),
+                        thread_id=None if used_thread_fallback else (
+                            str(effective_thread_id) if effective_thread_id is not None else None)),
+                    component="text", ordinal=i))
             await self._retrigger_typing(chat_id, metadata)
             return SendResult(
                 success=True, message_id=message_ids[0] if message_ids else None,
                 raw_response={
-                    "message_ids": message_ids, "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
+                    "message_ids": message_ids, "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback},
+                receipts=tuple(receipts))
         except Exception as e:
             safe_error = _redact_telegram_error_text(e)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
+            if receipt_bound_send and error_kind == "bad_format":
+                # A scheduler-bound planned payload has no safe plaintext retry:
+                # the ledger needs the original provider rejection, not a
+                # second, unplanned message with the same logical component.
+                return SendResult(
+                    success=False, error=safe_error, receipts=tuple(receipts),
+                    retryable=False, error_kind="provider_rejected",
+                )
             # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
             if "message_too_long" in err_str or "too long" in err_str:
                 logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
-                return SendResult(success=False, error="message_too_long", error_kind="too_long")
+                return SendResult(
+                    success=False, error="message_too_long", error_kind="too_long",
+                    receipts=tuple(receipts))
             # TimedOut may have reached Telegram — non-retryable so _send_with_retry() doesn't re-send,
             # except a wrapped ConnectTimeout or an httpx pool timeout (safe to re-send).
             _to = error_types[2]
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(
                 success=False, error=safe_error,
+                receipts=tuple(receipts),
                 retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
                 error_kind=error_kind)
 
@@ -4579,17 +4892,22 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
 
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]], media_label: str,
-        reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
+        reset_media: Optional[Any] = None, actual_thread_out: Optional[Dict[str, Optional[str]]] = None,
+        **media_kwargs: Any) -> Any:
         """Send one native media payload with thread routing + DM-topic anchor retry."""
         reply_to_id, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
         return await self._send_with_dm_topic_reply_anchor_retry(
-            send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media)
+            send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label,
+            reset_media=reset_media, actual_thread_out=actual_thread_out)
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
         return caption[:1024] if caption else None
 
-    async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
+    async def _send_voice_bubble(
+        self, audio_file, chat_id, reply_to, metadata, caption, duration_secs,
+        actual_thread_out: Optional[Dict[str, Optional[str]]] = None,
+    ):
         """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
         Bot API rejects the entities; anything else is a real error."""
         # Render caption markdown (#32029): auto-TTS captions carry the agent's markdown reply, which showed
@@ -4612,8 +4930,11 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             try:
                 return await self._send_media(
                     self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
-                    voice=audio_file, caption=_cap_text, parse_mode=_cap_parse_mode, duration=duration_secs)
+                    actual_thread_out=actual_thread_out, voice=audio_file, caption=_cap_text,
+                    parse_mode=_cap_parse_mode, duration=duration_secs)
             except Exception as _cap_error:
+                if metadata and "_transport_receipt_component" in metadata:
+                    raise
                 err = str(_cap_error).lower()
                 if _cap_parse_mode is not None and ("parse" in err or "entit" in err):
                     logger.warning(
@@ -4630,8 +4951,10 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        receipt_plan: Optional[tuple[TransportTarget, int]] = None
         _transcoded_voice_path: Optional[str] = None
         try:
+            metadata = self._validated_transport_metadata(chat_id, metadata)
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             # sendVoice only accepts Ogg/Opus: an explicit voice-bubble request (is_voice) transcodes via
@@ -4647,19 +4970,37 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                         self.name, os.path.basename(audio_path))
             # Telegram drops duration for long clips (~5 min+, shows 0:00).
             _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
+            _, media_send_kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+            receipt_plan, actual_thread = self._transport_media_receipt_context(
+                chat_id, metadata, media_send_kwargs,
+            )
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
-                    msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
+                    msg = await self._send_voice_bubble(
+                        audio_file, chat_id, reply_to, metadata, caption, _duration_secs,
+                        actual_thread_out=actual_thread,
+                    )
                 elif ext in {".mp3", ".m4a"}:  # Bot API sendAudio only accepts MP3 / M4A
                     msg = await self._send_media(
                         self._bot.send_audio, chat_id, reply_to, metadata, "audio", reset_media=lambda: audio_file.seek(0),
-                        audio=audio_file, caption=self._caption_1024(caption), duration=_duration_secs)
+                        actual_thread_out=actual_thread, audio=audio_file,
+                        caption=self._caption_1024(caption), duration=_duration_secs)
                 else:  # formats Telegram can't play natively (.wav, .flac, ...)
                     return await self.send_document(
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
-            return SendResult(success=True, message_id=str(msg.message_id))
+            return self._transport_media_send_result(msg, chat_id, receipt_plan, actual_thread)
+        except _InvalidTransportReceiptMetadata:
+            return self._invalid_transport_media_receipt_result()
         except Exception as e:
+            if receipt_plan is not None:
+                logger.warning(
+                    "[%s] Telegram voice/audio outcome is unknown; "
+                    "suppressing fallback: %s",
+                    self.name,
+                    _redact_telegram_error_text(e),
+                )
+                return self._transport_media_unknown_result(receipt_plan)
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
@@ -4741,15 +5082,10 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
         async def _photo_failed(e: Exception) -> SendResult:
-            error_str = str(e)
-            # Dimension errors are expected for valid images Telegram refuses as photos → INFO.
-            if "Photo_invalid_dimensions" in error_str or "PHOTO_INVALID_DIMENSIONS" in error_str:
-                logger.info("[%s] Image dimensions exceed Telegram photo limits, sending as document: %s", self.name, image_path)
-            else:
-                logger.warning(
-                    "[%s] Failed to send Telegram local image as photo, trying document fallback: %s", self.name,
-                    _redact_telegram_error_text(e), exc_info=True)
-            # Document has no dimension limit (50MB only); if even that fails, base adapter text.
+            logger.info(
+                "[%s] Image dimensions exceed Telegram photo limits, sending as document: %s",
+                self.name, image_path,
+            )
             try:
                 return await self.send_document(
                     chat_id=chat_id, file_path=image_path, caption=caption, file_name=os.path.basename(image_path),
@@ -4761,24 +5097,59 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                 return await super(TelegramAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
         return await self._send_local_file(
             "Image", image_path, chat_id, reply_to, metadata, "photo",
-            lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+            lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed,
+            known_pre_dispatch_error=self._is_exact_photo_dimension_rejection)
+
+    @staticmethod
+    def _is_exact_photo_dimension_rejection(error: Exception) -> bool:
+        """Only Telegram's typed, exact pre-dispatch photo rejection is safe to resend as a document."""
+        try:
+            from telegram.error import BadRequest
+        except ImportError:
+            return False
+        return (
+            isinstance(error, BadRequest)
+            and str(error).strip().casefold() == "photo_invalid_dimensions"
+        )
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
+        *, known_pre_dispatch_error: Optional[Callable[[Exception], bool]] = None,
     ) -> SendResult:
-        """Shared shell for native local-file sends: existence check, open, send with routing, then
-        ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
+        """Native local-file send with receipt binding and safe fallback classification.
+
+        A receipt plan is registered before provider dispatch. Any later exception
+        is an unknown outcome (never a fallback resend), except an explicitly
+        typed pre-dispatch rejection such as Telegram's exact photo-dimension
+        error.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        receipt_plan: Optional[tuple[TransportTarget, int]] = None
         try:
+            metadata = self._validated_transport_metadata(chat_id, metadata)
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
+            _, media_send_kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+            receipt_plan, actual_thread = self._transport_media_receipt_context(
+                chat_id, metadata, media_send_kwargs,
+            )
             with open(path, "rb") as f:
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
-                    reset_media=lambda: f.seek(0), **build_kwargs(f))
-            return SendResult(success=True, message_id=str(msg.message_id))
+                    reset_media=lambda: f.seek(0), actual_thread_out=actual_thread, **build_kwargs(f))
+            return self._transport_media_send_result(msg, chat_id, receipt_plan, actual_thread)
+        except _InvalidTransportReceiptMetadata:
+            return self._invalid_transport_media_receipt_result()
         except Exception as e:
+            if receipt_plan is not None and not (
+                known_pre_dispatch_error is not None and known_pre_dispatch_error(e)
+            ):
+                logger.warning(
+                    "[%s] Telegram %s outcome is unknown; suppressing fallback: %s",
+                    self.name, media_key, _redact_telegram_error_text(e),
+                )
+                return self._transport_media_unknown_result(receipt_plan)
             return await on_error(e)
 
     async def _warn_then(self, media_key: str, e: Exception, fallback) -> SendResult:

@@ -160,25 +160,27 @@ class TestDeliveryNote:
         # earlier deliver config) must not flip the wording either.
         assert _manual_run_delivery_note("", {"last_delivery_error": "old"}) == expected
 
-    def test_whitespace_deliver_defers_to_error_record(self):
+    def test_whitespace_deliver_reports_failure_category_without_raw_error(self):
         """Whitespace-only deliver is NOT folded into local: fire time lets it
-        through as a target that fails to resolve, so the recorded error must
-        stay visible rather than being masked by a saved-locally wording."""
+        through as a target that fails to resolve.  The manual summary reports
+        that delivery category without exposing the adapter diagnostic."""
         note = _manual_run_delivery_note(" ", {"last_delivery_error": "no target"})
-        assert "delivery FAILED" in note
-        assert "no target" in note
+        assert note == " (⚠ delivery FAILED)"
+        assert "no target" not in note
 
     def test_remote_with_error_says_delivery_failed(self):
+        raw_error = "send failed: 400 Bad Request"
         note = _manual_run_delivery_note(
-            "telegram", {"last_delivery_error": "send failed: 400 Bad Request"}
+            "telegram", {"last_delivery_error": raw_error}
         )
         assert "delivery FAILED" in note
-        assert "send failed: 400 Bad Request" in note
+        assert raw_error not in note
 
-    def test_remote_error_text_truncated_to_200_chars(self):
-        note = _manual_run_delivery_note("telegram", {"last_delivery_error": "E" * 500})
-        assert "E" * 200 in note
-        assert "E" * 201 not in note
+    def test_remote_error_text_is_not_exposed(self):
+        raw_error = "E" * 500
+        note = _manual_run_delivery_note("telegram", {"last_delivery_error": raw_error})
+        assert note == " (⚠ delivery FAILED)"
+        assert raw_error not in note
 
 
 class TestRunnerSummaryWiring:
@@ -214,7 +216,7 @@ class TestRunnerSummaryWiring:
         summary = evt.get("summary") or ""
         assert "Delivery target: telegram" in summary
         assert "delivery FAILED" in summary
-        assert "telegram send failed: 400" in summary
+        assert "telegram send failed: 400" not in summary
         assert "delivered there by the job itself" not in summary
         # The headline must not read "Result: ok" over an undelivered run.
         assert "Result: FAILED" in summary

@@ -42,7 +42,7 @@ def test_live_delivery_retry_keeps_receipt_across_owner_loss(tmp_path, monkeypat
 
 
 def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
-    from cron import jobs
+    from cron import executions, jobs
     from gateway import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -55,16 +55,22 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(delivery.subprocess, "run", Mock(side_effect=AssertionError("CLI")))
     updates = []
     monkeypatch.setattr(jobs, "update_job", lambda key, values: updates.append(values))
-    job = dict(id="digest", execution_id="run", deliver="bot-chat")
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
+    execution = executions.create_execution("digest", source="direct")
+    job = dict(id="digest", execution_id=execution["id"], deliver="bot-chat")
     error = delivery._deliver_result(job, "payload")
     assert error is None
     queued = updates[-1]["last_delivery_queued"]
     assert queued and next(iter(queued.values()))["status"] == "queued"
     assert delivery._sched._classify_delivery_outcome(
         delivery_error=error, delivery_queued=queued, should_deliver=True, unresolved_origin=False,
-        normalized_deliver="bot-chat", incident_acked=False, success=True) == "queued"
+        normalized_deliver="bot-chat", incident_acked=False, success=True,
+        execution_id=execution["id"]) == "queued"
     record = mailbox.claim_pending_delivery(tmp_path, owner)
     assert record is not None
     mailbox.complete_delivery(tmp_path, record["delivery_id"], status="settled", reply="done")
-    assert delivery._deliver_result(job, "payload") is None
+    # Bot-owner completion is not a provider ack; a replay must neither
+    # rewrite the terminal unknown receipt nor report confirmed delivery.
+    assert "delivery is unknown" in delivery._deliver_result(job, "payload")
     assert updates[-1]["last_delivery_queued"] is None
+    assert delivery._receipt_delivery_outcome(execution["id"]) == "unknown"

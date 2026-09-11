@@ -356,6 +356,27 @@ prove completion. Restoring the ledger itself to an older backup also removes
 that evidence. External fire callbacks identify the currently accepted store
 claim, not an upstream scheduled slot absent from the callback.
 
+#### Transport receipts
+
+Execution completion and transport acknowledgement are separate evidence.
+Before dispatch, Hermes binds a content-free receipt plan to the execution and
+fire identity, recording each target and text/media component with its ordinal
+and content hash. A target is confirmed only when every planned component has
+a matching typed provider acknowledgement, including the actual destination.
+Legacy success flags or message IDs alone do not upgrade a planned component
+to confirmed delivery. Unknown outcomes are not automatically resent.
+
+`hermes cron runs` reports bounded `delivered`, `failed`, `unknown`, and
+`targets_delivered` receipt counts. `completed` still describes the execution,
+not proof that the recipient received every attachment. Missing acknowledgements,
+partial sends, and a thread fallback to a different destination remain
+unconfirmed. These receipts establish provider acceptance, not a human read
+receipt or an end-to-end natural-delivery verification.
+
+The receipt tables share the profile-local execution ledger and its retention
+lifecycle. They store identities and hashes, not message bodies or attachment
+bytes; public summaries omit raw provider errors and private delivery targets.
+
 ### Repeated-failure review nudge
 
 Each job tracks a `failure_streak` — consecutive failed runs (delivery

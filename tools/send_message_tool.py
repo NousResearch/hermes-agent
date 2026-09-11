@@ -16,7 +16,8 @@ from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _send_matrix_via_adapter, _matrix_send_core, _send_qqbot, _send_signal, _send_telegram,
+    _send_telegram_message_with_retry, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -391,25 +392,31 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
     inherit the BasePlatformAdapter stub for a kind are unsupported, not no-op'd."""
     caption, separate_text = _media_caption_split(message, media_files, max_caption_len=_DEFAULT_CAPTION_LIMIT)
     last_result = None
+    receipts = []
+
+    def media_error(detail):
+        return {"error": detail, "receipts": tuple(receipts)}
+
     if separate_text and separate_text.strip():
         last_result = await adapter.send(chat_id=chat_id, content=separate_text, metadata=metadata)
+        receipts.extend(getattr(last_result, "receipts", ()))
         if not last_result.success:
-            return {"error": f"Adapter send failed: {_bounded_send_error(last_result.error)}"}
+            return media_error(f"Adapter send failed: {_bounded_send_error(last_result.error)}")
     from gateway.platforms.base import BasePlatformAdapter
     total = len(media_files)
     for index, descriptor in enumerate(media_files):
         media_path = descriptor[0] if isinstance(descriptor, (list, tuple)) and descriptor else None
         if not isinstance(media_path, str) or not media_path:
-            return {"error": f"Adapter media send failed: invalid media descriptor {index + 1}/{total}"}
+            return media_error(f"Adapter media send failed: invalid media descriptor {index + 1}/{total}")
         is_voice = len(descriptor) > 1 and bool(descriptor[1])
         if not os.path.exists(media_path):
-            return {"error": f"Adapter media send failed: media file {index + 1}/{total} was not found"}
+            return media_error(f"Adapter media send failed: media file {index + 1}/{total} was not found")
         ext = os.path.splitext(media_path)[1].lower()
         method_name, media_kind = _adapter_media_method(ext, is_voice or ext in _AUDIO_EXTS, force_document)
         adapter_method = getattr(type(adapter), method_name, None)
         if adapter_method is None or adapter_method is getattr(BasePlatformAdapter, method_name):
-            return {"error": (f"Live adapter does not implement native {media_kind} delivery; "
-                              f"media file {index + 1}/{total} was not sent")}
+            return media_error(f"Live adapter does not implement native {media_kind} delivery; "
+                               f"media file {index + 1}/{total} was not sent")
         try:
             last_result = await getattr(adapter, method_name)(
                 chat_id, media_path, caption=caption if index == 0 else None, reply_to=thread_id, metadata=metadata)
@@ -418,13 +425,15 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
         except Exception as exc:
             detail = _bounded_send_error(exc)
         else:
+            receipts.extend(getattr(last_result, "receipts", ()))
             if last_result.success:
                 continue
             detail = _bounded_send_error(last_result.error or "media send failed")
-        return {"error": f"Adapter media send failed after {index}/{total} files: {detail}"}
+        return media_error(f"Adapter media send failed after {index}/{total} files: {detail}")
     if last_result is None:
-        return {"error": _NO_DELIVERABLE}
-    return {"success": True, "message_id": last_result.message_id, "media_delivered": True}
+        return media_error(_NO_DELIVERABLE)
+    return {"success": True, "message_id": last_result.message_id, "media_delivered": True,
+            "receipts": tuple(receipts)}
 
 
 async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
@@ -468,9 +477,10 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"error": f"Plugin platform send failed: {_bounded_send_error(e)}"}
         if isinstance(result, dict):
             return result
+        receipts = getattr(result, "receipts", ())
         if result.success:
-            return {"success": True, "message_id": result.message_id}
-        return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
+            return {"success": True, "message_id": result.message_id, "receipts": receipts}
+        return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}", "receipts": receipts}
     try:
         from gateway.platform_registry import platform_registry
         sender = platform_registry.get(platform_name).standalone_sender_fn
@@ -585,7 +595,7 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None, receipt_bound=False):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -598,7 +608,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         return await _send_telegram(
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
-            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
+            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")),
+            receipt_bound=receipt_bound)
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]

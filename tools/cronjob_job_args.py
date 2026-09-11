@@ -2,6 +2,9 @@
 tools/cronjob_tools.py)."""
 
 import logging
+import math
+import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -134,7 +137,9 @@ def _split_monitor_arg(
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
-    rep = job.get("repeat") or {}
+    rep = job.get("repeat")
+    if type(rep) is not dict:
+        rep = {}
     times, completed = rep.get("times"), rep.get("completed", 0)
     if times is None:
         return "forever"
@@ -343,54 +348,73 @@ _FORMAT_JOB_OPTIONAL_KEYS = (
     "monitor_state", "no_agent", "enabled_toolsets", "workdir")
 
 
-def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    from agent.redact import redact_sensitive_text
+_PUBLIC_CRON_JOB_STATES = frozenset({"scheduled", "paused", "completed", "error"})
+_PUBLIC_CRON_LAST_STATUSES = frozenset({"ok", "error", "delivery_failed", "delivery_queued", "blocked_config", "interrupted"})
 
-    prompt = str(job.get("prompt") or "")
-    skills = _canonical_skills(job.get("skill"), job.get("skills"))
-    job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+
+def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Model-safe cron summary: no prompts, targets, paths, or raw failures."""
+    if type(job) is not dict:
+        raise TypeError("cron job projection requires an object")
+
+    def timestamp(value: Any) -> Optional[str]:
+        if type(value) is not str or len(value) > 64:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+
+    def category(value: Any) -> Optional[str]:
+        return value if type(value) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", value) else None
+
+    raw_id = job.get("id")
+    job_id = raw_id if type(raw_id) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", raw_id) else "unknown"
+    name = job.get("name")
+    safe_name = name if type(name) is str and name.isprintable() and len(name) <= 256 else job_id
+    deliver = job.get("deliver")
+    delivery_kind = (
+        deliver if type(deliver) is str and deliver in {"local", "origin", "all"}
+        else "external" if type(deliver) is str and deliver else "local"
+    )
+    last_dispatch = job.get("last_dispatch")
+    dispatch = None
+    if type(last_dispatch) is dict:
+        lateness = last_dispatch.get("lateness_seconds")
+        if isinstance(lateness, (int, float)) and not isinstance(lateness, bool):
+            lateness_value = float(lateness)
+            scheduled_at = timestamp(last_dispatch.get("scheduled_at"))
+            dispatched_at = timestamp(last_dispatch.get("dispatched_at"))
+            if (scheduled_at and dispatched_at
+                    and last_dispatch.get("kind") in {"on_time", "catch_up", "late"}
+                    and math.isfinite(lateness_value) and lateness_value >= 0):
+                dispatch = {"scheduled_at": scheduled_at, "dispatched_at": dispatched_at,
+                            "lateness_seconds": lateness_value, "kind": last_dispatch["kind"]}
     result = {
-        "job_id": job_id,
-        "name": name,
-        "skill": skills[0] if skills else None,
-        "skills": skills,
-        "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
-        "model": job.get("model"),
-        "provider": job.get("provider"),
-        "base_url": job.get("base_url"),
-        "schedule": job.get("schedule_display") or "?",
-        "repeat": _repeat_display(job),
-        "deliver": job.get("deliver", "local"),
-        "next_run_at": job.get("next_run_at"),
-        "last_run_at": job.get("last_run_at"),
-        "last_status": job.get("last_status"),
-        "last_delivery_error": job.get("last_delivery_error"),
-        "last_delivery_unverified": job.get("last_delivery_unverified"),
-        "last_fire_error": job.get("last_fire_error"),
-        "last_error": redact_sensitive_text(
-            job["last_error"], force=True, redact_url_credentials=True,
-        ) if job.get("last_error") else job.get("last_error"),
-        "enabled": job.get("enabled", True),
-        # Derive from enabled so half-paused records never render as paused.
-        "state": effective_job_state(job),
-        "paused_at": job.get("paused_at"),
-        "paused_reason": job.get("paused_reason"),
+        "job_id": job_id, "name": safe_name,
+        "schedule": job.get("schedule_display") if type(job.get("schedule_display")) is str and len(job["schedule_display"]) <= 256 else "?",
+        "repeat": _repeat_display(job), "delivery_kind": delivery_kind,
+        "mode": "monitor" if any(type(job.get(key)) is str and job.get(key) for key in ("monitor_script", "monitor_url")) else "script" if job.get("no_agent") is True else "agent",
+        "next_run_at": timestamp(job.get("next_run_at")), "last_run_at": timestamp(job.get("last_run_at")),
+        "last_dispatch": dispatch,
+        "last_status": job["last_status"] if type(job.get("last_status")) is str and job["last_status"] in _PUBLIC_CRON_LAST_STATUSES else None,
+        "last_error": "run_failed" if job.get("last_error") is not None else None,
+        "last_delivery_error": "delivery_failed" if job.get("last_delivery_error") is not None else None,
+        "last_delivery_unverified": True if isinstance(job.get("last_delivery_unverified"), list) and job["last_delivery_unverified"] else None,
+        "last_fire_error": {"at": timestamp(job["last_fire_error"].get("at")), "error_kind": "fire_forward_failed"} if type(job.get("last_fire_error")) is dict else None,
+        "enabled": job.get("enabled") if type(job.get("enabled")) is bool else True,
+        "state": effective_job_state(job) if type(effective_job_state(job)) is str and effective_job_state(job) in _PUBLIC_CRON_JOB_STATES else None,
     }
-    for key in _FORMAT_JOB_OPTIONAL_KEYS:
-        if job.get(key):
-            result[key] = True if key == "no_agent" else job[key]
-    stored_refs = job.get("context_from") or []
-    if isinstance(stored_refs, str):
-        stored_refs = [stored_refs]
-    is_self = lambda r: str(r).strip().lower() == "self" or r == job.get("id")  # noqa: E731
-    if any(is_self(r) for r in stored_refs):
-        result["continuity"] = True
-    external_refs = [r for r in stored_refs if not is_self(r)]
-    if external_refs:
-        result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    try:
+        from cron.executions import latest_execution, receipt_summary
+        execution = latest_execution(job_id)
+        if execution is not None:
+            result["last_execution"] = {"status": category(execution.get("status")), "receipt": receipt_summary(execution["id"])}
+    except Exception:
+        pass
     return result
 
 

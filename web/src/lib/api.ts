@@ -532,9 +532,15 @@ export const api = {
     }),
 
   // Cron jobs
-  getCronJobs: (profile = 'all') => fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () => fetchJSON<{ targets: CronDeliveryTarget[] }>('/api/cron/delivery-targets'),
-  createCronJob: (job: CronJobMutation, profile = 'default') =>
+  getCronJobs: (profile = "all") =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronJobDetail: (id: string, profile: string) =>
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}/detail?profile=${encodeURIComponent(profile)}`,
+    ),
+  getCronDeliveryTargets: () =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2256,34 +2262,44 @@ export interface CronJobMutation {
 }
 
 export interface CronJob {
-  id: string
-  profile?: string | null
-  profile_name?: string | null
-  hermes_home?: string | null
-  is_default_profile?: boolean
-  name?: string | null
-  prompt?: string | null
-  script?: string | null
-  skills?: string[] | null
-  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string }
-  schedule_display?: string | null
-  repeat?: CronJobRepeat | null
-  enabled: boolean
-  state?: string | null
-  deliver?: string | null
-  model?: string | null
-  provider?: string | null
-  base_url?: string | null
-  no_agent?: boolean | null
-  context_from?: string[] | string | null
-  enabled_toolsets?: string[] | null
-  workdir?: string | null
-  last_run_at?: string | null
-  next_run_at?: string | null
-  last_status?: string | null
-  last_error?: string | null
-  last_delivery_error?: string | null
-  last_fire_error?: { at?: string | null; detail?: string | null } | null
+  id: string;
+  profile?: string | null;
+  profile_name?: string | null;
+  hermes_home?: string | null;
+  is_default_profile?: boolean;
+  name?: string | null;
+  prompt?: string | null;
+  script?: string | null;
+  skills?: string[] | null;
+  schedule?: { kind?: string; expr?: string; run_at?: string | null; display?: string };
+  schedule_display?: string | null;
+  repeat?: CronJobRepeat | null;
+  enabled: boolean;
+  state?: string | null;
+  deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  provider_snapshot?: string | null;
+  model_snapshot?: string | null;
+  base_url?: string | null;
+  no_agent?: boolean | null;
+  context_from?: string[] | string | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  last_status?: string | null;
+  last_error?: string | null;
+  last_delivery_error?: string | null;
+  last_fire_error?: {
+    at?: string | null;
+    error_kind?: "fire_forward_failed" | null;
+  } | null;
+  delivery_kind?: "local" | "origin" | "all" | "external";
+  mode?: "agent" | "script" | "monitor";
+  skill_count?: number;
+  toolset_count?: number;
+  model_configured?: boolean;
 }
 
 export interface CronDeliveryTarget {

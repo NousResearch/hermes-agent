@@ -99,6 +99,7 @@ def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) ->
         "success": True,
         "message_id": "evt-image",
         "media_delivered": True,
+        "receipts": (),
     }
     assert calls == [
         ("image", str(image), {"caption": "screenshot caption", "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}})
@@ -174,6 +175,7 @@ def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
         "success": True,
         "message_id": "evt-document",
         "media_delivered": True,
+        "receipts": (),
     }
     assert len(media_calls) == 1
     assert media_calls[0][1] == str(document)

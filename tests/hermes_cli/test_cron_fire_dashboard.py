@@ -578,3 +578,75 @@ def test_reachable_gateway_does_not_stamp(monkeypatch):
     finally:
         _restore(pa, ph)
         client.close()
+
+
+@pytest.mark.parametrize(
+    ("gateway_status", "gateway_body", "expected_body"),
+    [
+        (
+            202,
+            {
+                "status": "accepted",
+                "job_id": "j-redact",
+                "raw": "RAW_SUCCESS_PROVIDER_SENTINEL user@example.org",
+            },
+            {"status": "accepted", "job_id": "j-redact"},
+        ),
+        (
+            202,
+            {
+                "status": ["RAW_UNHASHABLE_STATUS_SENTINEL"],
+                "raw": "RAW_UNHASHABLE_PROVIDER_SENTINEL user@example.org",
+            },
+            {
+                "error": "gateway_fire_failed",
+                "error_kind": "gateway_fire_failed",
+                "job_id": "j-redact",
+            },
+        ),
+        (
+            503,
+            {
+                "error": "gateway unavailable",
+                "reason": "RAW_FAILURE_REASON_SENTINEL /private/report.pdf",
+                "raw": "RAW_FAILURE_PROVIDER_SENTINEL user@example.org",
+            },
+            {
+                "error": "gateway_unavailable",
+                "error_kind": "gateway_unavailable",
+                "job_id": "j-redact",
+            },
+        ),
+    ],
+)
+def test_gateway_forward_response_is_bounded(
+    monkeypatch, gateway_status, gateway_body, expected_body,
+):
+    async def fake_forward(profile, job_id, authorization):
+        return gateway_status, gateway_body
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(_web_server_cron, "_forward_cron_fire_to_gateway", fake_forward)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        response = client.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer nas-jwt"},
+            json={"job_id": "j-redact"},
+        )
+        assert response.status_code == gateway_status
+        assert response.json() == expected_body
+        serialized = response.text
+        assert "RAW_" not in serialized
+        assert "user@example.org" not in serialized
+        assert "/private/report.pdf" not in serialized
+        if gateway_status == 503:
+            assert response.headers["Retry-After"]
+    finally:
+        _restore(pa, ph)
+        client.close()

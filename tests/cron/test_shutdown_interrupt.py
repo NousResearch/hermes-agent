@@ -363,7 +363,11 @@ class TestExecutionScopedInterruption:
             "id": "job-1",
             "name": "test job",
             "prompt": "do work",
-            "fire_claim": {"by": "replacement-owner"},
+            "fire_claim": {
+                "by": "replacement-owner",
+                "at": "2026-08-22T19:00:00+00:00",
+                "fire_at": "2026-08-22T19:00:00+00:00",
+            },
         }
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
@@ -432,7 +436,11 @@ class TestBaseExceptionThroughOwnerFencedFlow:
             "id": "job-be",
             "name": "base exc",
             "prompt": "p",
-            "fire_claim": {"by": "owner-be"},
+            "fire_claim": {
+                "by": "owner-be",
+                "at": "2026-08-22T19:00:00+00:00",
+                "fire_at": "2026-08-22T19:00:00+00:00",
+            },
         }
 
     def _patches(self, run_side_effect):

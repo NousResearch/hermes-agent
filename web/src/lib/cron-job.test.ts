@@ -156,6 +156,17 @@ describe("cronJobFormFromJob", () => {
 });
 
 describe("cronLastResult", () => {
+  it("warns that queued delivery is unverified without exposing stale details", () => {
+    expect(cronLastResult({
+      last_status: "delivery_queued",
+      last_error: "private stale diagnostic",
+    })).toEqual({
+      status: "delivery_queued",
+      tone: "warning",
+      detail: "Completion unverified; do not resend",
+    });
+  });
+
   it("renders nothing for a job that never ran", () => {
     expect(cronLastResult({ last_status: null })).toBeNull();
     expect(cronLastResult({ last_status: "" })).toBeNull();

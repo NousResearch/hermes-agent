@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -28,6 +29,17 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
 def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _public_timestamp(value) -> Optional[str]:
+    """One strict, bounded timestamp suitable for human-facing cron status."""
+    if type(value) is not str or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
 
 
 def _active_cron_provider_name() -> str:
@@ -170,9 +182,8 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     if last_status == "delivery_queued":
         return color("delivery_queued: completion unverified; do not resend", Colors.YELLOW)
     if last_status == "delivery_failed":
-        # Agent succeeded but the result never reached the user — not green; last_error is None.
-        return color(f"delivery_failed: {job.get('last_delivery_error') or '?'}", Colors.YELLOW)
-    display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+        return color("delivery_failed", Colors.YELLOW)
+    display = color(f"{last_status}: run_failed", Colors.RED)
     streak = int(job.get("failure_streak") or 0)
     if streak >= 2:
         display += color(f"  ({streak} failures in a row)", Colors.RED)
@@ -180,57 +191,47 @@ def _last_run_display(job: Dict[str, Any]) -> str:
 
 
 def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
-    """``(label, value)`` detail rows for one job in ``cron list``."""
-    # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
-    repeat_info = job.get("repeat") or {}
-    repeat_times = repeat_info.get("times")
-    # `deliver` may be present-but-null in the job record (same pitfall as `repeat` above), so coalesce to
-    # the default rather than relying on the dict-default, which only applies to a missing key. A null value
-    # would otherwise reach `", ".join(None)` and crash the whole listing (#32896).
-    deliver = job.get("deliver") or ["local"]
-    skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
-    monitor_source = job.get("monitor_script") or job.get("monitor_url")
-    mon_state = job.get("monitor_state") or {}
-    latest_execution = job.get("latest_execution") or {}
-    optional = [
-        ("Skills", ", ".join(skills) if skills else ""),
-        ("Script", job.get("script")),
-        ("Monitor", f"{monitor_source} (agent runs only on output change)" if monitor_source
-         else ""),
-        ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
-        ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
-         if job.get("no_agent") else ""),
-        ("Workdir", job.get("workdir")),
-        ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
-         if job.get("last_status") else ""),
-        ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
-        ("Execution", f"{latest_execution.get('status', '?')}  {latest_execution.get('id', '?')}"
-         if latest_execution else "")]
-    return [
-        ("Name", job.get("name", "(unnamed)")),
-        ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
-        ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
-        ("Next run", job.get("next_run_at", "?")),
-        ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
-    ] + [(label, value) for label, value in optional if value]
+    """Bounded, content-free rows for ``cron list``.
+
+    CLI list is a status surface, not an editable job-detail endpoint.  Reuse
+    the tool's strict projection so stored prompts, targets, paths and raw
+    execution diagnostics cannot leak through a newly-added job field.
+    """
+    from tools.cronjob_job_args import _format_job
+
+    public = _format_job(job)
+    rows = [
+        ("Name", public["name"]),
+        ("Schedule", public["schedule"]),
+        ("Repeat", public["repeat"]),
+        ("Next run", public["next_run_at"] or "?"),
+        ("Delivery", public["delivery_kind"]),
+        ("Mode", public["mode"]),
+    ]
+    if dispatch := _dispatch_display(public.get("last_dispatch")):
+        rows.append(("Dispatch", dispatch))
+    if public.get("last_run_at"):
+        rows.append(("Last run", f"{public['last_run_at']}  {_last_run_display(public)}"))
+    return rows
 
 
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
-    if queued := job.get("last_delivery_queued"):
-        lines.append(f"Delivery queued (completion unverified; do not resend): {queued}")
+    if job.get("last_delivery_queued"):
+        lines.append("Delivery queued (completion unverified; do not resend)")
     if job.get("last_delivery_error"):
-        lines.append(f"{color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
+        lines.append(color("⚠ Delivery failed", Colors.YELLOW))
     # A live adapter acked the last send but returned no message_id / raw_response
     # (Slack/Matrix/Mattermost shape): accepted as delivered, but say so here.
     if unverified := job.get("last_delivery_unverified"):
-        lines.append(f"{color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} adapter acked "
-                     f"{_unverified_targets(unverified)} without message_id/raw_response")
+        lines.append(f"{color('⚠ Delivery UNVERIFIED:', Colors.YELLOW)} "
+                     "adapter acked without message_id/raw_response")
     fire_err = job.get("last_fire_error")
-    if isinstance(fire_err, dict) and fire_err.get("detail"):
+    if isinstance(fire_err, dict):
+        at = _public_timestamp(fire_err.get("at"))
         lines.append(f"{color('⚠ Missed scheduled fire:', Colors.RED)} "
-                     f"{fire_err.get('at', '?')}  {fire_err['detail']}")
+                     f"{at or '?'}")
     return lines
 
 
@@ -249,25 +250,36 @@ def cron_tick():
         # Real lock-acquisition failures (EMFILE, EACCES) propagate; they are not contention.
         # For the one-shot CLI surface, report cleanly instead of dumping a traceback; the gateway ticker
         # loop handles its own retry. See #87644.
-        print(color(f"✗ Cron tick failed: {exc}", Colors.RED))
+        print(color("✗ Cron tick failed: tick_failed", Colors.RED))
         print("  Check `hermes cron status` and the gateway log for details.")
         return 1
     return 0
 
 
+_PUBLIC_EXECUTION_STATUSES = frozenset({"claimed", "running", "completed", "failed", "unknown"})
+_PUBLIC_EXECUTION_SOURCES = frozenset({"builtin", "control", "direct", "external", "manual", "recovery"})
+
+
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
-    """Show indexed durable cron execution history."""
-    from cron.executions import list_executions
+    """Show bounded durable cron execution history without ledger identities."""
+    from cron.executions import list_executions, receipt_summary
     records = list_executions(job_id=job_id, limit=limit)
     if not records:
         print("No cron execution attempts recorded.")
         return
     for record in records:
-        print(f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
-              f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
-              f"{record.get('claimed_at', '?')}")
-        if record.get("error"):
-            print(f"    {record['error']}")
+        status = record.get("status")
+        public_status = status if type(status) is str and status in _PUBLIC_EXECUTION_STATUSES else "unknown"
+        source = record.get("source")
+        public_source = source if type(source) is str and source in _PUBLIC_EXECUTION_SOURCES else "unknown"
+        print(f"status={public_status:<9}  job={record.get('job_id', '?')}  source={public_source}  "
+              f"error={'failed' if public_status == 'failed' else 'none'}")
+        summary = receipt_summary(str(record.get("id", "")))
+        print(
+            "    Receipt: "
+            f"delivered={summary['delivered']} failed={summary['failed']} "
+            f"unknown={summary['unknown']} targets_delivered={summary['targets_delivered']}"
+        )
 
 
 _INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "closed": Colors.GREEN}
@@ -367,7 +379,13 @@ def _print_ticker_health(pids: list) -> None:
             # Show WHY ticks fail — e.g. a root-rewritten jobs.json (PermissionError) that silently locked
             # out the ticker's uid for ~14h in the field (#68483), or fd exhaustion (EMFILE) that used to
             # stall the scheduler invisibly (#87644).
-            print(color(f"  Last tick error: {last_error}", Colors.RED))
+            if "Permission denied" in last_error:
+                error_kind = "permission_denied"
+            elif _cron_is_fd_exhaustion_text(last_error):
+                error_kind = "fd_exhaustion"
+            else:
+                error_kind = "tick_failed"
+            print(color(f"  Last tick error: {error_kind}", Colors.RED))
             if "Permission denied" in last_error:
                 print(color(_PERMISSION_HINT, Colors.YELLOW))
             elif _cron_is_fd_exhaustion_text(last_error):
@@ -673,9 +691,7 @@ def _run_outcome(job: Dict[str, Any]) -> str:
     A background-dispatched run (execution_mode="background" / delegation_id) keeps running
     after this CLI exits, so report the dispatch rather than a success/failure verdict.
     """
-    if job.get("delegation_id"):
-        return f"Running in background (delegation {job['delegation_id']})."
-    if job.get("execution_mode") == "background":
+    if job.get("delegation_id") or job.get("execution_mode") == "background":
         return "Running in background."
     if job.get("executed"):
         return f"Ran now: {'succeeded' if job.get('execution_success') else 'failed'}."

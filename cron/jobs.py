@@ -2577,9 +2577,18 @@ def claim_job_for_fire(
             return False
         if force:
             _activate_job_record(job)
+        fire_at = now.isoformat()
+        existing = job.get("fire_claim")
+        if not force and isinstance(existing, dict):
+            existing_fire_at = existing.get("fire_at")
+            if isinstance(existing_fire_at, str) and existing_fire_at:
+                fire_at = existing_fire_at
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
-        job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        job["fire_claim"] = {
+            "at": now.isoformat(), "fire_at": fire_at,
+            "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+        }
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:

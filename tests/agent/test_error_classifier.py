@@ -217,6 +217,78 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_402_openrouter_in_flight_budget_with_nested_retry_after(self):
+        e = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={
+                "error": {
+                    "status_code": 402,
+                    "body": {
+                        "message": (
+                            "This request would exceed your available credits given your current "
+                            "in-flight requests. Retry after in-flight requests settle, or add credits."
+                        ),
+                        "code": 402,
+                        "metadata": {
+                            "reason": "in_flight_budget_exhausted",
+                            "limit_source": "openrouter_in_flight_budget",
+                            "remedy_hint": (
+                                "Retry after your in-flight requests settle "
+                                "(see the Retry-After header). ..."
+                            ),
+                            "headers": {"Retry-After": "120"},
+                        },
+                    },
+                },
+            },
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_402_insufficient_credits_without_retry_signal_is_billing(self):
+        e = MockAPIError("insufficient credits", status_code=402)
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_402_billing_wording_with_bare_try_again_stays_billing(self):
+        # "try again"/"wait" alone is ordinary billing copy, not a reset promise:
+        # the message path needs usage-limit wording AND a transient marker.
+        e = MockAPIError(
+            "insufficient credits - add credits and try again", status_code=402,
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_402_payment_required_wait_for_settlement_stays_billing(self):
+        e = MockAPIError(
+            "payment required, wait for invoice settlement", status_code=402,
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_402_with_response_retry_after_is_rate_limit(self):
+        e = MockAPIError(
+            "insufficient credits", status_code=402, headers={"Retry-After": "120"},
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
 
 
 

@@ -3,6 +3,7 @@ import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEf
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { registry } from '@/contrib/registry'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
@@ -15,6 +16,7 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 
+import { COMPOSER_AREAS, type ComposerDraft, type ComposerMiddleware } from '../contrib'
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 import type { ChatBarProps } from '../types'
@@ -673,5 +675,36 @@ describe('steerDraft composer-frame semantics', () => {
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['ship it']))
+  })
+
+  it('seals the composer-mode frame when a rejected steer re-queues the words', async () => {
+    const disposed = registry.register({
+      id: 'test-steer-fallback-seal',
+      area: COMPOSER_AREAS.middleware,
+      data: {
+        handler: (draft: ComposerDraft) => ({ ...draft, mode: 'debug', note: 'DEBUG-NOTE' })
+      } satisfies ComposerMiddleware
+    })
+
+    try {
+      $queuedPromptsBySession.set({})
+      const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'frame me' })
+      onSteer.mockResolvedValue(false)
+
+      await act(async () => {
+        hook.result.current.steerDraft()
+        await Promise.resolve()
+      })
+
+      await waitFor(() => {
+        expect(getQueuedPrompts('stored-session')[0]).toMatchObject({
+          text: 'frame me',
+          mode: 'debug',
+          note: 'DEBUG-NOTE'
+        })
+      })
+    } finally {
+      disposed()
+    }
   })
 })

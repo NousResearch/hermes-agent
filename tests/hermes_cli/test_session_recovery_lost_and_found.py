@@ -157,9 +157,10 @@ def test_exact_lookup_recovers_tail_row_next_to_damaged_high_edge(
 
     copied = report["copy"]["messages"]
     bounds = copied["rowid_bounds"]
-    # Premise check: the high edge probe really failed and fell back.
+    # Premise check: the high edge probe really failed; the bound came from the aggregate
+    # (#98050) or, when that fails too, the synthetic-domain fallback.
     assert any("high rowid" in error for error in bounds["errors"]), bounds
-    assert "high" in bounds["fallback_edges"]
+    assert "high" in bounds["fallback_edges"] or "high" in bounds.get("aggregate_edges", ())
 
     conn = sqlite3.connect(str(output))
     try:

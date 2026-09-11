@@ -876,3 +876,42 @@ def test_partial_recovery_skips_phantom_row_rejected_by_destination_schema(
     with sqlite3.connect(str(output)) as conn:
         assert conn.execute("SELECT count(*) FROM sessions WHERE id = 'phantom'").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 21
+
+
+
+def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain(
+    tmp_path: Path,
+) -> None:
+    """#98050: with the leftmost leaf damaged, ``ORDER BY rowid ASC LIMIT 1`` fails while
+    ``min(rowid)`` still answers via the covering index. Bisecting from INT64_MIN burned the
+    whole 10,000-query budget and lost every row; the aggregate must seed the bound instead."""
+    source = tmp_path / "low-edge.db"
+    sessions_root = _make_many_sessions_source(source, session_count=180)
+    page_size, leaf_pages = _btree_leaf_pages(source, sessions_root)
+    assert len(leaf_pages) >= 3
+    first_leaf = leaf_pages[0]
+    data = bytearray(source.read_bytes())
+    header_offset = (first_leaf - 1) * page_size
+    assert data[header_offset] == 0x0D
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    source.write_bytes(data)
+
+    conn = sqlite3.connect(str(source))
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute('SELECT rowid FROM "sessions" ORDER BY rowid ASC LIMIT 1').fetchone()
+        bounds = session_recovery._salvage_rowid_bounds(conn, "sessions")
+        assert bounds["low"] == 1 and bounds["high"] == 180
+        assert bounds["fallback_edges"] == []
+
+        destination = sqlite3.connect(":memory:")
+        destination.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL)")
+        result = session_recovery._copy_table_salvage(
+            conn, destination, "sessions", chunk_size=16, progress_cb=None, source_rows=180,
+        )
+    finally:
+        conn.close()
+    assert result["query_limit_reached"] is False
+    assert result["range_queries"] < 200
+    # Only the rows on the damaged leaf are lost; everything behind it is recovered.
+    assert result["copied_rows"] >= 180 - 60

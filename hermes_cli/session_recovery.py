@@ -414,6 +414,22 @@ def _salvage_rowid_bounds(source: sqlite3.Connection, table: str) -> dict[str, A
         result["empty" if not result["errors"] else "unavailable"] = True
         return result
 
+    # An ordered LIMIT 1 walks the table b-tree and dies on a damaged edge leaf, while the
+    # aggregate lets the planner answer from any covering index (every Hermes table has at
+    # least a PRIMARY KEY autoindex). Ask it before falling back to the synthetic domain:
+    # bisecting from INT64_MIN burned the whole query budget on a 4-row table (#98050).
+    missing = [edge for edge in ("low", "high") if rows[edge] is None]
+    if missing:
+        try:
+            aggregate = source.execute(f'SELECT min(rowid), max(rowid) FROM "{table}"').fetchone()
+        except sqlite3.DatabaseError as exc:
+            result["errors"].append(f"aggregate rowid bounds: {exc}")
+        else:
+            for edge, value in zip(("low", "high"), aggregate):
+                if rows[edge] is None and value is not None:
+                    rows[edge] = int(value)
+                    result.setdefault("aggregate_edges", []).append(edge)
+
     # A damaged edge can stop one ordered probe. Keep the readable edge and bound the other side by the
     # SQLite rowid domain, so bisection never assumes user databases hold only positive ids.
     if rows["low"] is None:

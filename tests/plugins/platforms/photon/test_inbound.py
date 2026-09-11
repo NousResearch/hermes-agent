@@ -150,12 +150,80 @@ async def test_on_inbound_line_dispatches_and_dedups(
     assert captured[0].text == "ping"
 
 
+@pytest.mark.asyncio
+async def test_inbound_dedup_survives_adapter_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An at-least-once replay is not re-dispatched after gateway restart."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    line = json.dumps(_dm_event("run once", msg_id="restart-replay-1"))
+
+    first = _make_adapter(monkeypatch)
+    first_captured = _capture(first, monkeypatch)
+    await first._on_inbound_line(line)
+
+    restarted = _make_adapter(monkeypatch)
+    restarted_captured = _capture(restarted, monkeypatch)
+    await restarted._on_inbound_line(line)
+
+    assert [event.text for event in first_captured] == ["run once"]
+    assert restarted_captured == []
+
+
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     assert adapter._is_duplicate("id-1") is False
+    adapter._mark_seen_message("id-1")
     assert adapter._is_duplicate("id-1") is True
     assert adapter._is_duplicate("id-2") is False
+    adapter._mark_seen_message("id-2")
     assert adapter._is_duplicate("id-1") is True  # still dup
+
+
+def test_durable_dedup_is_profile_scoped_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugins.platforms.photon import adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "_DEDUP_MAX_SIZE", 2)
+    first_home = tmp_path / "first-profile"
+    monkeypatch.setenv("HERMES_HOME", str(first_home))
+    first = _make_adapter(monkeypatch)
+    assert first._is_duplicate("oldest") is False
+    first._mark_seen_message("oldest")
+    first._mark_seen_message("newer")
+    first._mark_seen_message("newest")
+
+    restarted = _make_adapter(monkeypatch)
+    assert restarted._is_duplicate("newest") is True
+    assert restarted._is_duplicate("oldest") is False  # evicted at the bound
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "second-profile"))
+    other_profile = _make_adapter(monkeypatch)
+    assert other_profile._is_duplicate("newest") is False
+
+
+@pytest.mark.asyncio
+async def test_failed_dispatch_is_retried_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    line = json.dumps(_dm_event("retry me", msg_id="failed-dispatch-1"))
+    failed = _make_adapter(monkeypatch)
+
+    async def fail_dispatch(event: dict) -> None:
+        raise RuntimeError("injected dispatch failure")
+
+    monkeypatch.setattr(failed, "_dispatch_inbound", fail_dispatch)
+    await failed._on_inbound_line(line)
+
+    restarted = _make_adapter(monkeypatch)
+    captured = _capture(restarted, monkeypatch)
+    await restarted._on_inbound_line(line)
+    assert [event.text for event in captured] == ["retry me"]
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:

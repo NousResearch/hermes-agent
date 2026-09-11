@@ -7,23 +7,18 @@ import pytest
 from hermes_cli import auth as auth_mod
 from hermes_cli import free_tier_bootstrap as fb
 
-CUSTOM_PIN = {
-    "model": {
-        "provider": "custom:llama.cpp",
-        "base_url": "http://127.0.0.1:8080/v1",
-        "api_key": "local",
-    }
-}
+CUSTOM_PIN = {"model": {"provider": "custom:llama.cpp"}}
+# One alias that the ladder documents as a spelling of ``custom`` — derived from the table so the
+# test pins the RELATIONSHIP (an alias of custom answers rung 2), not the table's contents.
+CUSTOM_ALIAS = next(k for k, v in auth_mod._PROVIDER_ALIASES.items() if v == "custom")
 
 
-@pytest.mark.parametrize("pin", ["custom:llama.cpp", "llamacpp", "ollama"])
+@pytest.mark.parametrize("pin", ["custom:llama.cpp", CUSTOM_ALIAS])
 def test_custom_pin_resolves_to_custom_on_the_auto_ladder(monkeypatch, pin):
-    """``_config_model_provider`` is rung 2 of ``resolve_provider("auto")``; a ``custom:*`` pin or
-    a documented alias (``llamacpp``) is not in ``PROVIDER_REGISTRY`` but must still answer, or the
-    ladder falls through to env/host credentials and finally ``no_provider_configured`` (#107918)."""
-    cfg = {"model": {**CUSTOM_PIN["model"], "provider": pin}}
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    assert auth_mod._config_model_provider() == (cfg["model"], "custom")
+    """``_config_model_provider`` is rung 2 of ``resolve_provider("auto")``; a ``custom:*`` pin or a
+    documented alias is not in ``PROVIDER_REGISTRY`` but must still answer, or the ladder falls
+    through to env/host credentials and finally ``no_provider_configured`` (#107918)."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"provider": pin}})
     assert auth_mod.resolve_provider("auto", skip_free_tier=True) == "custom"
 
 

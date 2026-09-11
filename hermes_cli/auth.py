@@ -1404,6 +1404,9 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
+        # ``custom:<name>`` folds to ``custom`` HERE only: an explicit ``resolve_provider("custom:x")``
+        # request is answered by _resolve_named_custom_runtime before this rung and a miss must
+        # still error with a hint, whereas a config pin only has to prove "a provider is configured".
         if provider.startswith("custom:"):
             provider = "custom"
         provider = _plugin_aliases().get(provider, provider)

@@ -1459,9 +1459,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
-            served = {
-                name for name, _ in profiles_to_serve(
-                    multiplex=True, profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))}
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
         return profile if profile in served else _PROFILE_REJECTED

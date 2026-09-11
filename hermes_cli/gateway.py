@@ -4361,14 +4361,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
             if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
                 return False
 
-        gateway_cfg = cfg.get("gateway", {}) or {}
-        if "multiplex_profile_allowlist" in cfg:
-            raw_allowlist = cfg.get("multiplex_profile_allowlist")
-        else:
-            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
-        from gateway.config import _normalize_multiplex_profile_allowlist
-        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
-        return profile_allowlist is None or normalize_profile_name(suffix) in profile_allowlist
+        return True  # a multiplexing default gateway serves every named profile
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False

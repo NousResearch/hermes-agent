@@ -136,7 +136,7 @@ spawning a `-p coder gateway restart` that could only fail.
 "Served" is read from the running gateway's own record (`served_profiles` in the
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
-environment, or when the allowlist was edited after the gateway started.
+environment, or when profiles were added after the gateway started.
 
 The multiplexer is the single inbound process; a second profile gateway would
 double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
@@ -352,43 +352,36 @@ profile and never shares with the default or any sibling:
 | Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
 | Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
+| Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
+| MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
+| Dashboard actions (`hermes -p <name> …` spawned by the Desktop/dashboard) | A scrubbed child env pinned to that profile's `HERMES_HOME` | The child loads its own `.env`; the dashboard profile's tokens and ports are not inherited |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared
 on the default profile).
 
-### Serving selected profiles
+### Which profiles are served
 
-By default, `gateway.multiplex_profiles: true` serves every valid named profile
-on the host. To keep unrelated profiles installed without starting their
-adapters or cron jobs, set `gateway.multiplex_profile_allowlist`:
+`gateway.multiplex_profiles: true` serves the default profile plus **every**
+live named profile under `profiles/` — there is no per-profile opt-out list.
+(The former `gateway.multiplex_profile_allowlist` key is retired; a config
+migration removes it from `config.yaml`, and a profile you do not want served is
+archived or deleted instead — `hermes profile delete <name>`, or move the
+directory out of `profiles/`.) Deleted profiles leave a tombstone and are never
+enumerated; a profile whose directory is gone is never recreated by a served
+turn, the cron ticker or log routing.
 
-```yaml
-gateway:
-  multiplex_profiles: true
-  multiplex_profile_allowlist:
-    - worker
-    - guest
-```
+The served set controls `/p/<profile>/` API and webhook prefixes, runtime
+status, profile-route eligibility, and which profiles the in-process cron
+scheduler ticks (the Desktop backend's ticker enumerates the same set and stands
+down for any profile a running multiplexer or its own gateway already serves). A
+multiplexer started as `hermes -p <name> gateway run` always ticks its own
+profile's cron store as well.
 
-The default profile is always served and does not need to be listed. An unset
-allowlist preserves the historical serve-all behavior; an empty list serves
-only the default profile. Names are normalized and deduplicated. Invalid list
-entries or names that are not installed are skipped with a warning. A malformed
-non-list value fails safely to default-only.
-
-The resulting served set also controls `/p/<profile>/` API and webhook prefixes,
-runtime status, profile-route eligibility, and which profiles the in-process
-cron scheduler ticks (the Desktop backend's ticker follows the same allowlist and
-stands down for any profile a running multiplexer already serves). A multiplexer
-started as `hermes -p <name> gateway run` always ticks its own profile's cron store
-as well. A named profile outside the allowlist may still run its own standalone
-gateway.
-
-One caveat: the served set is a **start-time snapshot**. A profile created or
-added to the allowlist while the multiplexer is running is not picked up until
-`hermes gateway restart` (profiles deleted at runtime are dropped from cron
-ticking automatically).
+One caveat: the served set is a **start-time snapshot**. A profile created while
+the multiplexer is running is not picked up until `hermes gateway restart`
+(profiles deleted at runtime are dropped from cron ticking automatically).
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
@@ -472,8 +465,7 @@ ids are unchanged.
 
 `profile_routes` requires `gateway.multiplex_profiles: true`; with
 multiplexing off the routes are ignored. If an explicit route matches but its
-target profile is not installed or is outside `multiplex_profile_allowlist`,
-the gateway rejects that ingress and logs the route and target. It does not run
+target profile is not installed (or was deleted), the gateway rejects that ingress and logs the route and target. It does not run
 the default profile. Traffic that matches no route keeps the historical
 default-profile behavior.
 

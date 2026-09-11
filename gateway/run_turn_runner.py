@@ -1236,10 +1236,17 @@ class TurnRunner:
         timeout. Returns the response string, or a sentinel when none arrived."""
         from gateway.run import _clarify_send_then_wait
         from tools import clarify_gateway as clarify_mod
+        from tools.clarify_tool import TIMEOUT_RESPONSE
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
             return ""
+        # No path back to a pending clarify_id on this transport (e.g. webhook: every delivery is
+        # an independent one-shot session): skip the unresumable wait rather than registering one
+        # that can only ever time out. Same sentinel a real timeout returns, so the agent proceeds
+        # exactly as it already does when nobody answers in time (#105097).
+        if not getattr(ctx._status_adapter, "supports_interactive_clarify", True):
+            return TIMEOUT_RESPONSE
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None

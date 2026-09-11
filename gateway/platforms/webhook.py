@@ -156,6 +156,9 @@ class WebhookAdapter(BasePlatformAdapter):
     # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
     # emitting an interactive acknowledgement that abandons the task (#57056).
     interactive_resume: bool = False
+    # Each delivery keys an independent session_chat_id (route+delivery_id): a reply arrives as an
+    # unrelated new session, never as a message this adapter can route back to a pending clarify_id.
+    supports_interactive_clarify: bool = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)

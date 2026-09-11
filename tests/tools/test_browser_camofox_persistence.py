@@ -43,8 +43,9 @@ def _clear_session_state():
     yield
     with mod._sessions_lock:
         mod._sessions.clear()
-    mod._vnc_url = None
-    mod._vnc_url_checked = False
+    with mod._cache_lock:
+        mod._vnc_cache.clear()
+        mod._cmd_timeout_cache.clear()
 
 
 class TestManagedPersistenceToggle:
@@ -130,6 +131,7 @@ class TestConfiguredCamofoxIdentity:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "https://default.example")
@@ -144,6 +146,7 @@ class TestConfiguredCamofoxIdentity:
             }
         }
         secret_scope.set_multiplex_active(True)
+        home_token = set_hermes_home_override(str(tmp_path))
         token = secret_scope.set_secret_scope(
             {
                 "CAMOFOX_URL": "https://secondary.example",
@@ -166,6 +169,7 @@ class TestConfiguredCamofoxIdentity:
                 request_body = mock_post.call_args.kwargs["json"]
         finally:
             secret_scope.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
             secret_scope.set_multiplex_active(False)
 
         assert result["success"] is True
@@ -177,6 +181,7 @@ class TestConfiguredCamofoxIdentity:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_USER_ID", "default-profile-user")
@@ -190,12 +195,14 @@ class TestConfiguredCamofoxIdentity:
             }
         }
         secret_scope.set_multiplex_active(True)
+        home_token = set_hermes_home_override(str(tmp_path))
         token = secret_scope.set_secret_scope({})
         try:
             with patch("tools.browser_camofox.load_config", return_value=config):
                 session = _get_session("config-fallback")
         finally:
             secret_scope.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
             secret_scope.set_multiplex_active(False)
 
         assert session["user_id"] == "secondary-config-user"
@@ -205,17 +212,20 @@ class TestConfiguredCamofoxIdentity:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_USER_ID", "default-profile-user")
         monkeypatch.setenv("CAMOFOX_SESSION_KEY", "default-profile-session")
         secret_scope.set_multiplex_active(True)
+        home_token = set_hermes_home_override(str(tmp_path))
         token = secret_scope.set_secret_scope({})
         try:
             with patch("tools.browser_camofox.load_config", return_value={}):
                 session = _get_session("fail-closed")
         finally:
             secret_scope.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
             secret_scope.set_multiplex_active(False)
 
         assert session["user_id"].startswith("hermes_")
@@ -256,7 +266,98 @@ class TestConfiguredCamofoxIdentity:
         assert result is True
         import tools.browser_camofox as mod
         with mod._sessions_lock:
-            assert "task-1" not in mod._sessions
+            assert (mod.check_fn_cache_scope(), "task-1") not in mod._sessions
+
+
+class TestCrossProfileCacheIsolation:
+    """Camofox caches must not reuse identity or endpoints across profiles."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_multiplex(self):
+        from agent import secret_scope as ss
+        ss.set_multiplex_active(False)
+        yield
+        ss.set_multiplex_active(False)
+
+    def test_same_task_id_and_cleanup_are_profile_isolated(self, tmp_path):
+        from agent import secret_scope as ss
+        from gateway.run import _profile_runtime_scope
+
+        home_a = tmp_path / "profile-a"
+        home_a.mkdir()
+        home_b = tmp_path / "profile-b"
+        home_b.mkdir()
+
+        ss.set_multiplex_active(True)
+        try:
+            with _enable_persistence():
+                with _profile_runtime_scope(home_a):
+                    session_a = _get_session("shared-task")
+                with _profile_runtime_scope(home_b):
+                    session_b = _get_session("shared-task")
+                    assert camofox_soft_cleanup("shared-task") is True
+
+                import tools.browser_camofox as mod
+                with _profile_runtime_scope(home_a):
+                    key_a = mod._session_cache_key("shared-task")
+                with mod._sessions_lock:
+                    assert key_a in mod._sessions
+        finally:
+            ss.set_multiplex_active(False)
+
+        assert session_a["user_id"] != session_b["user_id"]
+        assert session_a["session_key"] != session_b["session_key"]
+
+    def test_unresolved_multiplex_scope_fails_closed_before_session_creation(self):
+        from agent import secret_scope as ss
+        from agent.secret_scope import UnscopedSecretError
+        import tools.browser_camofox as mod
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(None)
+        try:
+            with patch(
+                "tools.browser_camofox.load_config",
+                return_value={"browser": {"camofox": {"managed_persistence": True}}},
+            ):
+                with pytest.raises(UnscopedSecretError):
+                    _get_session("unscoped-task")
+                assert camofox_soft_cleanup("unscoped-task") is False
+
+            with mod._sessions_lock:
+                assert mod._sessions == {}
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_vnc_endpoint_isolated_per_profile(self, tmp_path):
+        from agent import secret_scope as ss
+        from gateway.run import _profile_runtime_scope
+
+        home_a = tmp_path / "profile-a"
+        home_a.mkdir()
+        (home_a / ".env").write_text("CAMOFOX_URL=http://profile-a:9377\n")
+        home_b = tmp_path / "profile-b"
+        home_b.mkdir()
+        (home_b / ".env").write_text("CAMOFOX_URL=http://profile-b:9377\n")
+
+        def _health_by_url(url, timeout=None):
+            port = 5901 if url.startswith("http://profile-a") else 5902
+            return _mock_response(json_data={"vncPort": port})
+
+        ss.set_multiplex_active(True)
+        try:
+            with patch("tools.browser_camofox.requests.get", side_effect=_health_by_url):
+                with _profile_runtime_scope(home_a):
+                    vnc_a = get_vnc_url()
+                with _profile_runtime_scope(home_b):
+                    vnc_b = get_vnc_url()
+        finally:
+            ss.set_multiplex_active(False)
+
+        assert vnc_a == "http://profile-a:5901"
+        assert vnc_b == "http://profile-b:5902"
+        assert vnc_a != vnc_b
 
 
 class TestVncUrlDiscovery:
@@ -274,8 +375,7 @@ class TestVncUrlDiscovery:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         import tools.browser_camofox as mod
-        mod._vnc_url = "http://localhost:6080"
-        mod._vnc_url_checked = True
+        mod._vnc_cache[(mod.check_fn_cache_scope(), "http://localhost:9377")] = "http://localhost:6080"
 
         with patch("tools.browser_camofox.requests.post", return_value=_mock_response(
             json_data={"tabId": "t1", "url": "https://example.com"}
@@ -301,7 +401,7 @@ class TestCamofoxSoftCleanup:
         # Session should have been dropped from in-memory store
         import tools.browser_camofox as mod
         with mod._sessions_lock:
-            assert "task-1" not in mod._sessions
+            assert (mod.check_fn_cache_scope(), "task-1") not in mod._sessions
 
 
     def test_does_not_call_server_delete(self, tmp_path, monkeypatch):

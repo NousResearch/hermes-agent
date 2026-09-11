@@ -620,6 +620,8 @@ export const en: Translations = {
       intro: 'OS notifications (not in-app toasts). Per device.',
       enableAll: 'Enable notifications',
       enableAllDesc: 'Off silences every notification below.',
+      enableAppSounds: 'Enable app sounds & haptics',
+      enableAppSoundsDesc: 'Controls completion, thinking, and wake sounds separately from OS notifications.',
       focusedHint: 'Completion alerts only fire while Hermes is in the background.',
       kinds: {
         approval: {

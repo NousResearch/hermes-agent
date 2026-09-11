@@ -601,6 +601,8 @@ export const zh: Translations = {
       intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
       enableAll: '启用通知',
       enableAllDesc: '关闭后静音下方所有通知。',
+      enableAppSounds: '启用应用内声音和触感反馈',
+      enableAppSoundsDesc: '控制完成、思考和唤醒声音，与系统通知相互独立。',
       focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
       kinds: {
         approval: {

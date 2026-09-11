@@ -399,6 +399,8 @@ export const zhHant = defineLocale({
       intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
       enableAll: '啟用通知',
       enableAllDesc: '關閉後靜音下方所有通知。',
+      enableAppSounds: '啟用應用程式內聲音與觸覺回饋',
+      enableAppSoundsDesc: '控制完成、思考與喚醒提示音，與原生桌面通知分開。',
       focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
       kinds: {
         approval: {

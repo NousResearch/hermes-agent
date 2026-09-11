@@ -412,6 +412,8 @@ export const ja = defineLocale({
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'オフで以下の通知をすべて無効にします。',
+      enableAppSounds: 'アプリのサウンドと触覚フィードバックを有効にする',
+      enableAppSoundsDesc: '完了・思考・ウェイクサウンドを、OS 通知とは別に設定します。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
       kinds: {
         approval: {

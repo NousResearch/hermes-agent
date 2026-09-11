@@ -75,10 +75,10 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    stderr_lower = result.stderr.lower()
-    if (result.returncode == 1 and not marker) or any(
-        msg in stderr_lower for msg in ("no such process", "not found")
-    ):
+    # rc==1 with empty output is the portable "no such pid"; "No such process" widens that for ps
+    # builds that say so explicitly. Any other failure stays an OSError so the watchdog degrades to
+    # pid liveness instead of exiting on a healthy backend.
+    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 

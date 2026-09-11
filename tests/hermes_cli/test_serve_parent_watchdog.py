@@ -191,22 +191,19 @@ def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserr
     assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
                               process_start_marker=broken_marker_probe) is False
 
-
-def test_parent_watchdog_detects_dead_parent_on_process_lookup_error():
-    """#80204: ``ProcessLookupError`` from the marker probe means the parent is gone, whatever
-    a (possibly recycled) pid liveness check says."""
     def lookup_error_probe(pid: int) -> str:
         raise ProcessLookupError(pid)
 
-    assert _is_serve_orphaned(4242, "ps:Thu Aug 20 22:33:11 2026", pid_exists=lambda _pid: True,
+    # ProcessLookupError is conclusive on its own, whatever a recycled-pid liveness check says.
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
                               process_start_marker=lookup_error_probe) is True
 
 
 @pytest.mark.macos_only
 def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeypatch):
-    """The darwin ``ps`` probe raises ``ProcessLookupError`` only for a missing-process message;
-    any other non-zero exit stays a plain ``OSError`` so the watchdog degrades instead of killing
-    a healthy backend."""
+    """The darwin ``ps`` probe raises ``ProcessLookupError`` only for an explicit missing-process
+    message; any other unknown failure stays a plain ``OSError`` so the watchdog degrades instead
+    of killing a healthy backend."""
     import subprocess
 
     from hermes_cli import web_server_lifecycle

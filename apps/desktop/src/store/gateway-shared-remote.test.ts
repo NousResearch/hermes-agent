@@ -37,8 +37,14 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
-const { $gateway, closeSecondaryGateways, configureGatewayRegistry, ensureGatewayForProfile, setPrimaryGateway } =
-  await import('./gateway')
+const {
+  $gateway,
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureGatewayForProfile,
+  openLocalSecondaryCount,
+  setPrimaryGateway
+} = await import('./gateway')
 
 type DesktopStub = { getConnection: ReturnType<typeof vi.fn> }
 
@@ -105,6 +111,28 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect(gatewayMocks.connect).toHaveBeenCalledOnce()
     expect(gatewayMocks.connect).toHaveBeenCalledWith(remoteWsUrl)
     expect($gateway.get()).not.toBe(primary)
+    // Remote registry profiles own no Electron child process and therefore
+    // must not consume the local backend cap used by hover prewarming.
+    expect(openLocalSecondaryCount()).toBe(0)
+  })
+
+  it('counts an open local pooled profile toward the backend cap', async () => {
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({
+      getConnection: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:8644',
+        mode: 'local',
+        profile: 'worker',
+        wsUrl: 'ws://127.0.0.1:8644/api/ws'
+      }))
+    })
+    gatewayMocks.connect.mockResolvedValueOnce(undefined)
+
+    await ensureGatewayForProfile('worker')
+
+    expect(openLocalSecondaryCount()).toBe(1)
   })
 
   it('rejects the failed dial without publishing an activation, then activates once the backend returns', async () => {

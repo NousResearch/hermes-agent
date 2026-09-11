@@ -1636,6 +1636,24 @@ export function openSecondaryCount(): number {
   return count
 }
 
+// The Electron backend-pool cap applies only to locally spawned backends.
+// Registry remote/cloud descriptors have no child process in the main process
+// and are deliberately excluded there, so including their open renderer
+// sockets here would make hover prewarming report a false local saturation.
+// Missing mode remains conservative for legacy descriptors: only an explicit
+// remote mode is known to be process-less.
+export function openLocalSecondaryCount(): number {
+  let count = 0
+
+  for (const entry of g.secondaries.values()) {
+    if (isOpen(entry.gateway) && entry.connection?.mode !== 'remote') {
+      count += 1
+    }
+  }
+
+  return count
+}
+
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 // "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect

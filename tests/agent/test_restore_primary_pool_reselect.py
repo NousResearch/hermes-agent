@@ -77,7 +77,6 @@ class TestRestorePrimaryPoolReselect:
         agent._credential_pool = pool
         agent._fallback_activated = True
         agent._fallback_index = 1
-        agent._rate_limited_until = 0
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
         agent.context_compressor = MagicMock()

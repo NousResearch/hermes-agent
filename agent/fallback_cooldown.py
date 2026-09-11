@@ -1,7 +1,7 @@
 """Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
 fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
 import logging
-import time
+
 
 from agent.error_classifier import FailoverReason
 
@@ -11,22 +11,25 @@ _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverRea
 
 
 def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | None:
-    """Arm the primary's exponential cooldown (60s → 2m → ... → 4h cap) on CONSECUTIVE rate-limits;
-    restore_primary_runtime resets the counter. Only when leaving the primary: chain-switching from
-    an active fallback means the primary was not the 429 source, so its cooldown is left alone.
-    Return the armed cooldown in seconds, or None when no cooldown was armed."""
+    """Persist a primary cooldown when leaving it for rate-limit or billing failover."""
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
     if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
         return None
-    backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-    agent._rate_limit_backoff_count = backoff_count + 1
-    backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
-    logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
-    return backoff_seconds
+    from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+    active_key = getattr(agent, "api_key", None)
+    if active_key is None:
+        active_key = getattr(agent, "_api_key", None)
+    reason_text = reason.value if hasattr(reason, "value") else str(reason)
+    cooldown_key = build_cooldown_key(current_provider, active_key, reason_text)
+    cooldown_seconds = get_cooldown_manager().mark_failure(
+        cooldown_key,
+        "billing" if reason == FailoverReason.billing else "rate_limit",
+    )
+    return cooldown_seconds
 
 
 # Codex ChatGPT-account entitlement 400 — the account can never use the named slug, so with

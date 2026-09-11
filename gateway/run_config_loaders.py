@@ -477,9 +477,15 @@ class GatewayConfigLoadersMixin:
         if agent is None:
             return
         new_chain = list(chain or [])
-        rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
-        if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
-            return
+        if getattr(agent, "_fallback_activated", False):
+            runtime = getattr(agent, "_primary_runtime", None) or {}
+            provider = str(runtime.get("provider") or "").strip().lower()
+            from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+            manager = get_cooldown_manager()
+            if manager.is_cooling(provider) or manager.is_cooling(
+                build_cooldown_key(provider, runtime.get("api_key"), "rate_limit")
+            ):
+                return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
         agent._fallback_chain = new_chain
         agent._fallback_model = new_chain[0] if new_chain else None

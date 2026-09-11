@@ -1718,8 +1718,18 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     context across every provider again."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+        from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+        primary_runtime = agent._primary_runtime or {}
+        primary_provider = (primary_runtime.get("provider") or "").strip().lower()
+        cooldown_key = build_cooldown_key(primary_provider, None, "rate_limit")
+        manager = get_cooldown_manager()
+        if not manager.is_cooling(cooldown_key):
+            manager.mark_failure(
+                cooldown_key,
+                "rate_limit",
+                cooldown_seconds=_FALLBACK_EXHAUSTED_COOLDOWN_S,
+            )
     return False
 
 
@@ -1911,8 +1921,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
                 f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
             if cooldown_seconds is not None:
-                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+                notice += f" Primary retry eligible in ~{math.ceil(cooldown_seconds)} s; recovery is not guaranteed."
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

@@ -419,7 +419,6 @@ class TestPerProviderReasoningEcho:
         agent = object.__new__(AIAgent)
         agent._reasoning_echo_flag = True  # primary had opt-in
         agent._fallback_activated = True
-        agent._rate_limited_until = 0
         agent._primary_runtime = {
             "model": "glm-5.2",
             "provider": "custom",

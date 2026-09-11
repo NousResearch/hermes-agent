@@ -55,6 +55,7 @@ function renderSubmitHook({
   const editorRef = { current: editor }
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
+  const onSteerHidden = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
@@ -112,6 +113,7 @@ function renderSubmitHook({
         loadIntoComposer,
         onCancel,
         onSteer,
+        onSteerHidden,
         onSubmit,
         queueCurrentDraft,
         queueEdit: null,
@@ -128,6 +130,7 @@ function renderSubmitHook({
     hook,
     onCancel,
     onSteer,
+    onSteerHidden,
     onSubmit,
     loadIntoComposer,
     stashAt,
@@ -173,17 +176,20 @@ describe('useComposerSubmit external request routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it.each([true, false])('steers a busy hidden request like a visible one and queues only on rejection (%s)', async accepted => {
-    const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
-    onSteer.mockResolvedValue(accepted)
+  it.each([true, false])('delivers a busy hidden request as a steer with no user turn and queues it hidden on refusal (%s)', async accepted => {
+    const { onSteer, onSteerHidden, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
+    onSteerHidden.mockResolvedValue(accepted)
 
     await act(async () => {
       requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
     })
 
-    expect(onSteer).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
+    expect(onSteerHidden).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
+    expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
-    expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(accepted ? [] : ['[setup] links opened'])
+    expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual(
+      accepted ? [] : [{ text: '[setup] links opened', displayKind: 'hidden' }]
+    )
     expect(loadIntoComposer).not.toHaveBeenCalled()
     expect(stashAt).not.toHaveBeenCalled()
   })

@@ -186,6 +186,38 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_null_sse_frame_is_skipped(self, mock_close, mock_create):
+        """A ``data: null`` SSE frame (SDK yields None) is dropped, not fatal."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Hello"),
+            None,  # malformed `data: null` frame from an OpenAI-compat relay
+            _make_stream_chunk(content=" world", finish_reason="stop", model="test-model"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Hello world"
+        assert response.choices[0].finish_reason == "stop"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,

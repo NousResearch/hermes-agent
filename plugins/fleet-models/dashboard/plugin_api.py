@@ -1,4 +1,4 @@
-"""Models tab — backend. Mounted at /api/plugins/fleet-models/ behind the dashboard's own auth.
+"""Fleet Models page — backend. Mounted at /api/plugins/fleet-models/ behind the dashboard's own auth.
 
 Reads: models.yaml (the source of truth), the nine live configs (what Hermes will actually do — drift is
 shown, never hidden), every profile's state.db (real usage, billed dollars, which host served), and
@@ -121,14 +121,108 @@ def _uptime_snapshot(doc: dict) -> dict:
 
 
 # ── usage from every ledger ──────────────────────────────────────────────────────────────────
+# A ledger row (session_model_usage) is one session × model × host × task, with the time of its first and last
+# call. Short windows need more than "when did it end": each row's usage is spread evenly across its active span
+# (first_seen → last_seen) and pro-rated into the window and into each bucket. Measured 2026-09-12: ~70% of calls
+# sit in rows spanning 1–15 min and ~12% in rows over an hour, so 15-minute views are close estimates, not guesses.
+# Buckets align to the VIEWER's local clock (IANA tz from the browser) — hours on the hour, days at local midnight,
+# DST-safe — so "24 h" reads 09:00, 10:00… in Auckland rather than on UTC boundaries.
+WINDOW_MIN, WINDOW_MAX = 900, 90 * 86400
+NICE_BUCKETS = (60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800)
+MAX_BUCKETS = 400
+_TZ_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+-/")
+
+
+def natural_bucket(window: int) -> int:
+    """The bucket a window reads best in when there is room: 24 h by the hour, 7 days by 6 h, 30 days by day."""
+    for w, b in ((900, 60), (1800, 60), (3600, 120), (7200, 300), (10800, 300), (21600, 900), (43200, 1800),
+                 (86400, 3600), (7 * 86400, 21600)):
+        if window <= w:
+            return b
+    return 86400
+
+
+def _tzinfo(name: Optional[str]):
+    from datetime import timezone
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover
+        ZoneInfo = None
+    cands = [name] if name else []
+    cands.append(os.environ.get("TZ"))
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in link:
+            cands.append(link.split("zoneinfo/", 1)[1])
+    except OSError:
+        pass
+    for c in cands:
+        if c and ZoneInfo and len(c) <= 64 and set(c) <= _TZ_OK:
+            try:
+                return ZoneInfo(c), c
+            except Exception:  # noqa: BLE001
+                continue
+    loc = __import__("datetime").datetime.now().astimezone().tzinfo
+    return loc or timezone.utc, str(loc or "UTC")
+
+
+def _floor_local(ts: float, b: int, tz) -> float:
+    from datetime import datetime, timedelta
+    dt = datetime.fromtimestamp(ts, tz)
+    mid = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if b >= 86400:
+        return (mid - timedelta(days=dt.date().toordinal() % (b // 86400))).timestamp()
+    secs = dt.hour * 3600 + dt.minute * 60 + dt.second
+    return (mid + timedelta(seconds=secs - secs % b)).timestamp()
+
+
+def bucket_edges(since: float, now: float, b: int, tz) -> List[float]:
+    """Local-clock bucket boundaries covering [since, now]. Stepping 1.5 buckets and re-flooring keeps days at
+    midnight across a 23- or 25-hour DST day, and hours on the hour after the clocks change."""
+    edges = [_floor_local(since, b, tz)]
+    while edges[-1] < now and len(edges) <= MAX_BUCKETS + 2:
+        cur = edges[-1]
+        nxt = _floor_local(cur + 1.5 * b, b, tz)
+        edges.append(nxt if nxt > cur else cur + b)
+    return edges
+
+
 def _ledgers(root: Path):
     out = [("root", root / "state.db")]
     out += [(p.parent.name, p) for p in sorted((root / "profiles").glob("*/state.db"))]
     return [(n, p) for n, p in out if p.exists()]
 
 
-def usage(days: int = 7) -> dict:
-    core = _core(); root = _root()
+def _usage_rows(root: Path, since: float, now: float):
+    """(profile, model, host, base, task, calls, in, out, cache_read, cache_write, cost, source, first, last)."""
+    for prof, db in _ledgers(root):
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            q = ("SELECT model, COALESCE(provider_name,''), COALESCE(billing_base_url,''), COALESCE(task,''), "
+                 "COALESCE(api_call_count,0), COALESCE(input_tokens,0), COALESCE(output_tokens,0), "
+                 "COALESCE(cache_read_tokens,0), COALESCE(cache_write_tokens,0), "
+                 "CASE WHEN COALESCE(actual_cost_usd,0) > 0 THEN actual_cost_usd WHEN COALESCE(total_cost,0) > 0 THEN total_cost "
+                 "ELSE COALESCE(estimated_cost_usd,0) END, COALESCE(cost_source,''), "
+                 "COALESCE(first_seen, last_seen), last_seen "
+                 "FROM session_model_usage WHERE last_seen >= ? AND COALESCE(first_seen, last_seen) <= ?")
+            for r in c.execute(q, (since, now)):
+                yield (prof,) + tuple(r)
+            c.close()
+        except sqlite3.Error:
+            continue
+
+
+def usage(window: int = 7 * 86400, bucket: Optional[int] = None, tz: Optional[str] = None,
+          now: Optional[float] = None, root: Optional[Path] = None) -> dict:
+    import bisect
+    core = _core(); root = root or _root()
+    window = max(WINDOW_MIN, min(int(window), WINDOW_MAX))
+    b = int(bucket) if bucket in NICE_BUCKETS else natural_bucket(window)
+    while window / b > MAX_BUCKETS:
+        b = next((x for x in NICE_BUCKETS if x > b), b * 2)
+    tzi, tzname = _tzinfo(tz)
+    now = float(now if now is not None else time.time())
+    since = now - window
     try:
         doc = core.load_doc(root)
     except Exception:  # noqa: BLE001
@@ -139,48 +233,67 @@ def usage(days: int = 7) -> dict:
             ce = m.get("cap_equivalent") or {}
             for n in [m.get("id"), *(m.get("served_as") or [])]:
                 rates[str(n).lower()] = (float(ce.get("input") or 0), float(ce.get("output") or 0), float(ce.get("cache_read") or 0))
-    since = time.time() - days * 86400
-    rows, daily = [], {}
-    for prof, db in _ledgers(root):
-        try:
-            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-            q = ("SELECT model, COALESCE(provider_name,''), COALESCE(billing_base_url,''), COALESCE(task,''), "
-                 "SUM(COALESCE(api_call_count,0)), SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0)), "
-                 "SUM(COALESCE(cache_read_tokens,0)), SUM(COALESCE(cache_write_tokens,0)), "
-                 "SUM(CASE WHEN COALESCE(actual_cost_usd,0) > 0 THEN actual_cost_usd WHEN COALESCE(total_cost,0) > 0 THEN total_cost "
-                 "ELSE COALESCE(estimated_cost_usd,0) END), "
-                 "COALESCE(cost_source,''), CAST(last_seen/86400 AS INT) "
-                 "FROM session_model_usage WHERE last_seen >= ? GROUP BY 1,2,3,4,11,12")
-            for (model, host, base, task, n, inp, out, cr, cw, cost, src, day) in c.execute(q, (since,)):
-                ark = "bytepluses.com" in base or src in ("modelark subscription", "modelark-proxy")
-                r = rates.get((model or "").lower()) or ((0.66, 1.98, 0.022) if "pro" in (model or "") else (0.15, 0.60, 0.003))
-                capeq = ((inp + cw) * r[0] + out * r[1] + cr * r[2]) / 1e6 if ark else 0.0
-                billed = 0.0 if ark and src != "modelark-proxy" else float(cost or 0)
-                if src == "modelark-proxy":
-                    billed = 0.0  # 1.x rows stored the cap-equivalent AS cost; it was never invoiced
-                rows.append({"profile": prof, "model": model, "host": host or ("ModelArk" if ark else ""), "task": task or "main",
-                             "calls": int(n or 0), "input": int(inp or 0), "output": int(out or 0), "cache_read": int(cr or 0),
-                             "billed_usd": round(billed, 6), "modelark": ark, "cap_equivalent_usd": round(capeq, 6), "day": int(day)})
-                d = daily.setdefault(int(day), {"billed_usd": 0.0, "modelark_calls": 0, "calls": 0})
-                d["billed_usd"] += billed; d["calls"] += int(n or 0)
-                if ark:
-                    d["modelark_calls"] += int(n or 0)
-            c.close()
-        except sqlite3.Error:
-            continue
-    # merge rows that differ only by day
+    edges = bucket_edges(since, now, b, tzi)
+    nb = len(edges) - 1
+    ser = [{"billed_usd": 0.0, "calls": 0.0, "modelark_calls": 0.0} for _ in range(nb)]
+    by_p: Dict[str, dict] = {}
+    by_m: Dict[str, dict] = {}
     agg: Dict[tuple, dict] = {}
-    for r in rows:
-        k = (r["profile"], r["model"], r["host"], r["task"], r["modelark"])
-        a = agg.get(k)
-        if a is None:
-            agg[k] = {x: v for x, v in r.items() if x != "day"}
+
+    def idx(t):
+        return min(nb - 1, max(0, bisect.bisect_right(edges, t) - 1))
+
+    for (prof, model, host, base, task, n, inp, out, cr, cw, cost, src, fs, ls) in _usage_rows(root, since, now):
+        fs = float(fs if fs is not None else ls); ls = float(ls)
+        span = ls - fs
+        lo, hi = max(fs, since), min(ls, now)
+        if span <= 1.0:
+            parts = [(idx(ls), 1.0)] if since <= ls <= now else []
+        elif hi > lo:
+            parts = []
+            for i in range(idx(lo), idx(hi) + 1):
+                ov = min(hi, edges[i + 1]) - max(lo, edges[i])
+                if ov > 0:
+                    parts.append((i, ov / span))
         else:
-            for x in ("calls", "input", "output", "cache_read", "billed_usd", "cap_equivalent_usd"):
-                a[x] += r[x]
-    series = [{"day": d, **{k: round(v, 6) if isinstance(v, float) else v for k, v in daily[d].items()}} for d in sorted(daily)]
-    return {"days": days, "rows": sorted(agg.values(), key=lambda r: (-r["billed_usd"], -r["calls"])), "daily": series,
-            "generated_at": time.time()}
+            parts = []
+        frac = sum(f for _, f in parts)
+        if frac <= 0:
+            continue
+        ark = "bytepluses.com" in base or src in ("modelark subscription", "modelark-proxy")
+        r = rates.get((model or "").lower()) or ((0.66, 1.98, 0.022) if "pro" in (model or "") else (0.15, 0.60, 0.003))
+        capeq = ((inp + cw) * r[0] + out * r[1] + cr * r[2]) / 1e6 if ark else 0.0
+        billed = 0.0 if ark else float(cost or 0)  # 1.x "modelark-proxy" rows stored the cap-equivalent AS cost; never invoiced
+        calls = float(n or 0)
+        pp = by_p.setdefault(prof, {"calls": [0.0] * nb, "billed": [0.0] * nb})
+        mm = by_m.setdefault(model or "?", {"calls": [0.0] * nb, "billed": [0.0] * nb})
+        for i, f in parts:
+            s_ = ser[i]
+            s_["calls"] += calls * f; s_["billed_usd"] += billed * f
+            if ark:
+                s_["modelark_calls"] += calls * f
+            pp["calls"][i] += calls * f; pp["billed"][i] += billed * f
+            mm["calls"][i] += calls * f; mm["billed"][i] += billed * f
+        k = (prof, model, host or ("ModelArk" if ark else ""), task or "main", ark)
+        a = agg.setdefault(k, {"profile": prof, "model": model, "host": k[2], "task": k[3], "modelark": ark, "calls": 0.0,
+                               "input": 0.0, "output": 0.0, "cache_read": 0.0, "billed_usd": 0.0, "cap_equivalent_usd": 0.0})
+        a["calls"] += calls * frac; a["input"] += inp * frac; a["output"] += out * frac; a["cache_read"] += cr * frac
+        a["billed_usd"] += billed * frac; a["cap_equivalent_usd"] += capeq * frac
+
+    rows = []
+    for a in agg.values():
+        for x in ("calls", "input", "output", "cache_read"):
+            a[x] = int(round(a[x]))
+        a["billed_usd"] = round(a["billed_usd"], 6); a["cap_equivalent_usd"] = round(a["cap_equivalent_usd"], 6)
+        if a["calls"] or a["billed_usd"]:
+            rows.append(a)
+    series = [{"t": edges[i], "end": edges[i + 1], "partial": edges[i] < since or edges[i + 1] > now,
+               "calls": round(s_["calls"], 3), "modelark_calls": round(s_["modelark_calls"], 3),
+               "billed_usd": round(s_["billed_usd"], 6)} for i, s_ in enumerate(ser)]
+    rnd = lambda d: {k: {"calls": [round(v, 3) for v in x["calls"]], "billed": [round(v, 6) for v in x["billed"]]} for k, x in d.items()}
+    return {"window": window, "bucket": b, "since": since, "now": now, "tz": tzname, "days": round(window / 86400, 4),
+            "method": "spread", "rows": sorted(rows, key=lambda r: (-r["billed_usd"], -r["calls"])), "series": series,
+            "by_profile": rnd(by_p), "by_model": rnd(by_m), "generated_at": time.time()}
 
 
 def _caps(root: Path) -> dict:
@@ -230,8 +343,16 @@ def get_state():
 
 
 @router.get("/usage")
-def get_usage(days: int = 7):
-    return usage(max(1, min(int(days), 90)))
+def get_usage(window: Optional[int] = None, bucket: Optional[int] = None, tz: Optional[str] = None, days: Optional[int] = None):
+    """window = seconds (15 min … 90 days); bucket = one of NICE_BUCKETS (else the window's natural bucket);
+    tz = the viewer's IANA zone. `days` is the 1.0.x form, kept for old tabs still open."""
+    if window:
+        return usage(int(window), bucket=bucket, tz=tz)
+    # a 1.0.4 page still open in a browser: daily UTC buckets under the old "daily" key
+    u = usage(int(days or 7) * 86400, bucket=86400, tz="UTC")
+    u["daily"] = [{"day": int(x["t"] // 86400), "billed_usd": x["billed_usd"], "calls": int(round(x["calls"])),
+                   "modelark_calls": int(round(x["modelark_calls"]))} for x in u["series"]]
+    return u
 
 
 @router.get("/market")

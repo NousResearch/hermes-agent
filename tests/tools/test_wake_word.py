@@ -66,7 +66,7 @@ def test_looks_like_path():
 
 
 @pytest.mark.parametrize("system,machine,expected", [
-    ("win32", "ARM64", "porcupine"),
+    ("win32", "ARM64", "sherpa"),
     ("win32", "AMD64", "openwakeword"),
     ("darwin", "x86_64", "sherpa"),
     ("darwin", "arm64", "openwakeword"),

@@ -97,7 +97,7 @@ Windows 支持取决于功能和架构。部分可选 SDK 不支持所有 Window
 | Dashboard `/chat` 内嵌终端面板 | `pywinpty`/ConPTY | POSIX PTY |
 | 登录时自动启动                                               | ✓（schtasks）       | ✓（systemd）       |
 
-Dashboard 已有 Windows ConPTY 实现，依赖 `pywinpty`。SDK 缺失或损坏时终端仍可能不可用。原生 Windows ARM64 不包含 Mem0/Google Chat SDK、Faster-Whisper、openWakeWord 或 sherpa；可选择远程服务或其他引擎。
+Dashboard 已有 Windows ConPTY 实现，依赖 `pywinpty`。SDK 缺失或损坏时终端仍可能不可用。原生 Windows ARM64 不包含 Mem0/Google Chat SDK、Faster-Whisper 或 openWakeWord。Sherpa 支持原生 Windows ARM64，且是该平台自动选择的唤醒词引擎。
 
 ## Hermes 在 Windows 上如何运行 shell 命令
 

@@ -77,16 +77,14 @@ backend process.
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
 | **openWakeWord** | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on Intel macOS or native Windows ARM64. |
-| **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Not available on native Windows ARM64. |
+| **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Supports native Windows ARM64. |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
 The default provider is **`auto`**. It selects the first platform-supported
 engine in this order: **openWakeWord → sherpa → Porcupine**. The platform is
 that of the Python backend, not a remote desktop client:
 
-- **Native Windows ARM64:** Porcupine. You must set `PORCUPINE_ACCESS_KEY`
-  before enabling wake detection; auto does not remove that requirement.
-- **Intel macOS:** sherpa (free, no key).
+- **Native Windows ARM64 and Intel macOS:** sherpa (free, no key).
 - **Windows x64, Apple Silicon, and supported Linux targets:** openWakeWord
   (free, no key).
 
@@ -108,8 +106,8 @@ Packaged builds include the engine dependencies supported by their target.
 
 The `pyopen-wakeword` macOS
 wheel contains an ARM64-only library despite its `universal2` label. Hermes
-excludes that engine on Intel Macs. Native Windows ARM64 excludes both
-openWakeWord and sherpa.
+excludes that engine on Intel Macs and native Windows ARM64. Sherpa provides
+keyless detection on both targets.
 
 Porcupine's default keyword is **"jarvis"**, not "hey hermes". Its `phrase`
 setting is only a display label; choose a built-in keyword or supply a custom

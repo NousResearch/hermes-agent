@@ -256,11 +256,10 @@ wake = [
   # Its universal2 wheel contains an ARM64-only library, so Intel Macs cannot
   # load it. There is no native Windows ARM64 wheel either.
   "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
-  # sherpa-onnx ships win_amd64/win32 wheels only (its kaldi-decoder C++ has
-  # no win_arm64 build), so win32-arm64 would build the sdist and fail. Gate
-  # it off there like faster-whisper; the other engines still ship.
-  "sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "sherpa-onnx==1.13.8",
+  # text2token imports both tokenizers even for English phrases.
   "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
@@ -281,7 +280,7 @@ silk = ["pilk==0.2.4"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
 # sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
 wake-openwakeword = ["pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"]
-wake-sherpa = ["sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'"]
+wake-sherpa = ["sherpa-onnx==1.13.8", "sentencepiece==0.2.2", "pypinyin==0.55.0"]
 wake-porcupine = ["pvporcupine==4.0.3"]
 # Google Chat service account push (gateway/platforms/google_chat) — pubsub
 # subscriber for the Chat API's Cloud Pub/Sub delivery.
@@ -479,7 +478,6 @@ google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # Match the engine dependency markers so PM refuses an unsupported install.
 wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
-wake-sherpa = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 
 [tool.uv]
 override-dependencies = [
@@ -632,7 +630,9 @@ sentencepiece = false
 setuptools = false
 setuptools-rust = false
 wheel = false
-sherpa-onnx = false
+sherpa-onnx = "2026-09-10T17:00:04Z"
+# The core is exact-pinned by sherpa-onnx. Admit all wheels of that release.
+sherpa-onnx-core = "2026-09-10T15:58:47Z"
 slack-bolt = false
 slack-sdk = false
 snowballstemmer = false

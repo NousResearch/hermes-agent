@@ -41,15 +41,17 @@ def test_wake_dependencies_and_runtime_gate_agree_on_supported_targets():
                                if (req := Requirement(spec)).name == "pyopen-wakeword")
             assert requirement.marker.evaluate(environment) is supported, (extra, system, machine)
         assert Marker(gates["wake-openwakeword"]).evaluate(environment) is supported
-        if system == "darwin":
-            selected = {req.name for spec in optional["wake"]
-                        if (req := Requirement(spec)).marker is None or req.marker.evaluate(environment)}
-            assert {"sherpa-onnx", "pvporcupine"} <= selected
-            for extra in ("wake-sherpa", "wake-porcupine"):
-                assert all(req.marker is None or req.marker.evaluate(environment)
-                           for req in map(Requirement, optional[extra]))
-                gate = gates.get(extra)
-                assert gate is None or Marker(gate).evaluate(environment)
+        selected = {req.name for spec in optional["wake"]
+                    if (req := Requirement(spec)).marker is None or req.marker.evaluate(environment)}
+        assert {"sherpa-onnx", "pvporcupine", "sentencepiece", "pypinyin"} <= selected
+        sherpa_deps = {req.name for spec in optional["wake-sherpa"]
+                       if (req := Requirement(spec)).marker is None or req.marker.evaluate(environment)}
+        assert {"sherpa-onnx", "sentencepiece", "pypinyin"} <= sherpa_deps
+        for extra in ("wake-sherpa", "wake-porcupine"):
+            assert all(req.marker is None or req.marker.evaluate(environment)
+                       for req in map(Requirement, optional[extra]))
+            gate = gates.get(extra)
+            assert gate is None or Marker(gate).evaluate(environment)
 
 
 def test_direct_overrides_preserve_the_declared_exact_version():

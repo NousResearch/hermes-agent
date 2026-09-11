@@ -1471,6 +1471,22 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         checkpoint_required, getattr(agent, "api_mode", None)
     )
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
+    # Context-window budget hint threshold (fraction of the model's context
+    # window at which the advisory hint fires; see agent/budget_hint.py).
+    # Adapted from openai/codex's TokenBudgetRemainingContext. 0 disables the
+    # hint entirely (the default is 0.70: hint only fires above 70% usage, so
+    # low-usage conversations keep a byte-stable prompt prefix).
+    try:
+        from agent.budget_hint import DEFAULT_BUDGET_HINT_THRESHOLD
+    except ImportError:  # pragma: no cover - defensive for partial installs
+        DEFAULT_BUDGET_HINT_THRESHOLD = 0.70
+    try:
+        _budget_hint_threshold = float(
+            cfg.get("budget_hint_threshold", DEFAULT_BUDGET_HINT_THRESHOLD)
+        )
+    except (TypeError, ValueError):
+        _budget_hint_threshold = DEFAULT_BUDGET_HINT_THRESHOLD
+    agent._budget_hint_threshold = max(0.0, _budget_hint_threshold)
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))

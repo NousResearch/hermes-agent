@@ -1,5 +1,5 @@
 """MCP connection/transport error classification: URL validation, TLS client certs, identity
-headers, redirect header stripping, exception-group unwrapping, auth/session-expired/
+headers, redirect header stripping, exception-group unwrapping, auth/session-expired/stale-connection/
 method-not-found detection and connect-error formatting. Split from tools/mcp_tool.py."""
 
 import asyncio
@@ -322,3 +322,77 @@ def _is_session_expired_error(exc: BaseException) -> bool:
         stack.extend((*getattr(current, "exceptions", ()), getattr(current, "__cause__", None),
                       getattr(current, "__context__", None)))
     return found
+
+
+# Type names of exceptions the MCP SDK / httpcore2 stack raises when a pooled keep-alive
+# connection turns out to have been closed by the remote (CDN idle kill, load-balancer drain,
+# server restart, ...).  Checked by name rather than isinstance because the exact classes differ
+# between the SDK's httpx2 stack and Hermes' own httpx, and either can be unreachable for import
+# at module load.
+_STALE_CONNECTION_TYPE_NAMES: frozenset = frozenset({
+    "RemoteProtocolError",
+    "ConnectionClosed",
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+})
+
+# Message markers for the same failure class.  These are phrased after what the SDK actually
+# emits: ``MCPError: Connection closed`` and ``RemoteProtocolError: Server disconnected without
+# sending a response`` (httpcore2 wraps the latter in the SDK's own transport errors).
+_STALE_CONNECTION_MARKERS: tuple = (
+    "server disconnected",
+    "connection reset",
+    "connection closed",
+    "peer closed connection",
+    "remote protocol error",
+)
+
+
+def _is_stale_connection_error(exc: BaseException, *, allow_message_markers: bool = True) -> bool:
+    """True if ``exc`` is a stale/dead-connection transport failure: the remote closed the
+    underlying keep-alive connection out from under us — the failure a CDN / load balancer /
+    proxy idle kill surfaces as ``MCPError: Connection closed`` or ``RemoteProtocolError: Server
+    disconnected without sending a response`` (#90166).
+
+    Distinct from :func:`_is_session_expired_error`: that classifier covers server-side session
+    GC (``Invalid or expired session``) plus AnyIO stream closures.  Both are transient transport
+    conditions that a rebuild-and-retry-once recovers from; neither is a credential or config
+    problem.
+
+    ``allow_message_markers`` gates the substring matching on exception messages.  Marker phrases
+    like ``"connection reset"`` / ``"connection closed"`` also show up in *application-level*
+    failures, and retrying ``tools/call`` after a partial execution can duplicate real side
+    effects; ``tools/call`` passes ``allow_message_markers=False`` so only exact transport
+    exception type names trigger a retry (read-only ``resources/*`` handlers keep marker
+    matching).  See #91460 review.
+
+    Same bounded, identity-visited traversal as :func:`_is_session_expired_error` so arbitrarily
+    deep ExceptionGroup / ``__cause__`` graphs terminate promptly.
+    """
+    stack: "list[BaseException | None]" = [exc]
+    seen: set[int] = set()
+    budget = _EXC_TRAVERSAL_MAX_NODES
+    while stack and budget > 0:
+        current = stack.pop()
+        if current is None:
+            continue
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        budget -= 1
+
+        if isinstance(current, InterruptedError):
+            return False
+        if type(current).__name__ in _STALE_CONNECTION_TYPE_NAMES:
+            return True
+        if allow_message_markers:
+            msg = str(current).lower()
+            if msg and any(marker in msg for marker in _STALE_CONNECTION_MARKERS):
+                return True
+
+        stack.extend(getattr(current, "exceptions", ()))
+        stack.append(getattr(current, "__cause__", None))
+        stack.append(getattr(current, "__context__", None))
+
+    return False

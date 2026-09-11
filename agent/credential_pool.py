@@ -11,10 +11,12 @@ import threading
 import time
 import uuid
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -45,21 +47,37 @@ from hermes_cli.auth import (
     read_credential_pool,
     write_credential_pool,
 )
-
 logger = logging.getLogger(__name__)
+
+# A listing owns its snapshot; another thread or the next invocation loads fresh config.
+_POOL_CONFIG_SNAPSHOT: ContextVar[Optional[Dict[str, dict]]] = ContextVar(
+    "_POOL_CONFIG_SNAPSHOT", default=None,
+)
+
+
+@contextmanager
+def pool_config_snapshot() -> Iterator[None]:
+    """Reuse read-only config only while building one provider listing."""
+    token = _POOL_CONFIG_SNAPSHOT.set({})
+    try:
+        yield
+    finally:
+        _POOL_CONFIG_SNAPSHOT.reset(token)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml read-only, returning None on any error.
-
-    ``load_config_readonly()`` skips the deepcopy ``load_config()`` pays per
-    call; the picker calls ``load_pool()`` once per provider row, which made
-    that copy the dominant cost of ``model.options``.
-    """
+    """Load current config read-only, sharing one load inside a picker snapshot."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import get_config_path, load_config_readonly
 
-        return load_config_readonly()
+        snapshot = _POOL_CONFIG_SNAPSHOT.get()
+        key = str(get_config_path())
+        if snapshot is not None and key in snapshot:
+            return snapshot[key]
+        config = load_config_readonly()
+        if snapshot is not None:
+            snapshot[key] = config
+        return config
     except Exception:
         return None
 
@@ -962,6 +980,44 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             available, _pending = self._available_entries()
             return bool(available)
+
+    def has_available_readonly(self) -> bool:
+        """True if at least one entry is available — computed without writes.
+
+        :meth:`has_available` answers the same question but is not read-only:
+        ``_available_entries`` prunes aged-out DEAD manual entries (rebinding
+        ``self._entries``), re-syncs stale entries from external credential
+        stores, and persists auth.json.  Callers that share one memoized pool
+        instance across read-only consumers (the /model picker caches pools
+        for a whole listing pass) need an order-independent probe instead:
+        this evaluates the same availability predicate on the current entries
+        and never mutates state or touches disk.  Unlike ``has_available``
+        it does not re-sync exhausted entries whose tokens another process
+        refreshed, so it can be conservative right after an out-of-band
+        re-auth; the next mutating consumer syncs as usual.
+        """
+        with self._lock:
+            now = time.time()
+            sole_credential = sum(
+                1 for e in self._entries if e.last_status != STATUS_DEAD
+            ) <= 1
+            for entry in self._entries:
+                # Mirrors _available_entries(clear_expired=False,
+                # refresh=False) minus the mutating prune/sync/persist paths.
+                if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                    continue
+                if entry.auth_type == AUTH_TYPE_OAUTH and not (entry.access_token or "").strip():
+                    continue
+                if entry.last_status == STATUS_DEAD:
+                    continue
+                if entry.last_status == STATUS_EXHAUSTED:
+                    exhausted_until = _exhausted_until(
+                        entry, sole_credential=sole_credential
+                    )
+                    if exhausted_until is not None and now < exhausted_until:
+                        continue
+                return True
+            return False
 
     def next_available_at(self) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.

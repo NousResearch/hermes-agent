@@ -12,7 +12,7 @@ import os
 import time
 import threading as _threading
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
@@ -144,16 +144,44 @@ def _fetch_picker_live_models(
 _picker_prewarm_done = _threading.Event()
 
 
-def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+def _credential_pool_is_usable(
+    provider: str,
+    *,
+    raw_pool_present: bool = False,
+    _pool_cache: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Whether *provider* has a credential that can be selected now.
 
     Legacy opaque ``auth.json`` pool values that do not deserialize into ``PooledCredential``
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
-    all-exhausted/dead pool is not authenticated."""
+    all-exhausted/dead pool is not authenticated.
+
+    ``_pool_cache`` lets ``list_authenticated_providers()`` reuse the same
+    ``CredentialPool`` instance across the three sections that check the same
+    provider, instead of loading and seeding the pool repeatedly for each row.
+    A shared instance must be probed read-only: ``has_available()`` prunes
+    aged-out DEAD entries, re-syncs entries from credential stores, and
+    persists auth.json, which would make the memoized result order-dependent
+    across sections and turn a picker render into a credential-store write.
+    The memoized path therefore uses :meth:`has_available_readonly`."""
     try:
         from agent.credential_pool import load_pool
-        pool = load_pool(provider)
+
+        if _pool_cache is not None and provider in _pool_cache:
+            pool = _pool_cache[provider]
+        else:
+            pool = load_pool(provider)
+            if _pool_cache is not None:
+                _pool_cache[provider] = pool
         if pool.has_credentials():
+            if _pool_cache is not None:
+                # Memoized instance shared across sections: probe read-only.
+                # has_available() would prune/persist, making the shared
+                # instance order-dependent across callers. Pool-like objects
+                # without the read-only probe keep the legacy behavior.
+                readonly_probe = getattr(pool, "has_available_readonly", None)
+                if readonly_probe is not None:
+                    return readonly_probe()
             return pool.has_available()
     except Exception:
         pass
@@ -296,21 +324,21 @@ def _auth_store_has_provider(*keys: str) -> bool:
         return False
 
 
-def _raw_pool_usable(hermes_id: str) -> bool:
+def _raw_pool_usable(hermes_id: str, *, _pool_cache: Optional[Dict[str, Any]] = None) -> bool:
     """Section-1 pool check: only consult the pool when auth.json lists a raw entry."""
     try:
         from hermes_cli.auth import _load_auth_store
         store = _load_auth_store()
         if store and store.get("credential_pool", {}).get(hermes_id):
-            return _credential_pool_is_usable(hermes_id, raw_pool_present=True)
+            return _credential_pool_is_usable(hermes_id, raw_pool_present=True, _pool_cache=_pool_cache)
     except Exception:
         pass
     return False
 
 
-def _pool_usable(slug: str) -> bool:
+def _pool_usable(slug: str, *, _pool_cache: Optional[Dict[str, Any]] = None) -> bool:
     try:
-        return _credential_pool_is_usable(slug)
+        return _credential_pool_is_usable(slug, _pool_cache=_pool_cache)
     except Exception as exc:
         logger.debug("Credential pool check failed for %s: %s", slug, exc)
         return False
@@ -580,7 +608,8 @@ def _discover_endpoint_models(
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str]) -> list[str]:
+    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str],
+    *, _pool_cache: Optional[Dict[str, Any]] = None) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
     Mirrors the credential checks of sections 1, 2 and 2b of :func:`list_authenticated_providers`
@@ -601,7 +630,7 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
-        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
+        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id, _pool_cache=_pool_cache):
             _emit(hermes_id, hermes_id)
 
     mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
@@ -611,7 +640,7 @@ def _collect_authed_provider_slugs(
             continue
         if (
             _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
-            or _auth_store_has_provider(pid, hermes_slug) or _pool_usable(hermes_slug)):
+            or _auth_store_has_provider(pid, hermes_slug) or _pool_usable(hermes_slug, _pool_cache=_pool_cache)):
             _emit(hermes_slug, pid, hermes_slug)
 
     for cp in CANONICAL_PROVIDERS:
@@ -620,7 +649,7 @@ def _collect_authed_provider_slugs(
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
             cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env))
-        if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug):
+        if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug, _pool_cache=_pool_cache):
             _emit(cp.slug, cp.slug)
 
     # Nous excluded: its picker branch builds from the curated list and never reads the
@@ -651,6 +680,11 @@ class _PickerBuild:
     builtin_endpoints: set = field(default_factory=set)
     # (display_name, base_url) pairs from section 3 so section 4 skips overlapping rows.
     section3_pairs: set = field(default_factory=set)
+    # CredentialPool instances shared across sections 1, 2, 2b so the same provider is
+    # loaded and seeded from auth.json/config only once per list_authenticated_providers()
+    # call and probed read-only (has_credentials / has_available_readonly) so a shared
+    # instance is never pruned, re-synced, or persisted by a picker render.
+    pool_cache: dict = field(default_factory=dict)
 
     @property
     def current_provider_norm(self) -> str:
@@ -742,7 +776,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     from hermes_cli.model_switch import _declared_model_ids
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id, _pool_cache=b.pool_cache)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -784,14 +818,18 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         # Full auto-seeding pool check catches external stores (Codex CLI ~/.codex/auth.json)
         # not yet in auth.json.
         try:
-            if _credential_pool_is_usable(hermes_slug):
+            if _credential_pool_is_usable(hermes_slug, _pool_cache=b.pool_cache):
                 has_creds = True
             elif b.for_picker:
                 # Show providers whose pool is entirely in cooldown: limits are per-model for
                 # many providers, so another model may work.
                 try:
-                    from agent.credential_pool import load_pool
-                    has_creds = load_pool(hermes_slug).has_credentials()
+                    _pool = b.pool_cache.get(hermes_slug)
+                    if _pool is None:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        b.pool_cache[hermes_slug] = _pool
+                    has_creds = _pool.has_credentials()
                 except Exception:
                     pass
         except Exception as exc:
@@ -863,7 +901,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
+        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug, _pool_cache=b.pool_cache) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
         if not has_creds:
             continue
@@ -1120,24 +1158,27 @@ def list_authenticated_providers(
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         curated=_build_curated_lists(current_provider, current_base_url, current_model))
 
-    # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
-    # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
-    # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
-    prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [])
-    if len(prefetch_slugs) > 3:
-        try:
-            _prefetch_provider_models_parallel(prefetch_slugs)
-        except Exception:
-            pass  # best-effort; serial path still works
+    from agent.credential_pool import pool_config_snapshot
 
-    _lap_builtin_rows(b, data, user_providers)
-    _lap_overlay_rows(b, data)
-    _lap_canonical_rows(b)
-    if user_providers and isinstance(user_providers, dict):
-        _lap_user_provider_rows(b, user_providers)
-    _lap_bare_custom_row(b, custom_providers)
-    if custom_providers and isinstance(custom_providers, list):
-        _lap_custom_provider_rows(b, custom_providers)
+    with pool_config_snapshot():
+        # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
+        # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
+        # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
+        prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [], _pool_cache=b.pool_cache)
+        if len(prefetch_slugs) > 3:
+            try:
+                _prefetch_provider_models_parallel(prefetch_slugs)
+            except Exception:
+                pass  # best-effort; serial path still works
+
+        _lap_builtin_rows(b, data, user_providers)
+        _lap_overlay_rows(b, data)
+        _lap_canonical_rows(b)
+        if user_providers and isinstance(user_providers, dict):
+            _lap_user_provider_rows(b, user_providers)
+        _lap_bare_custom_row(b, custom_providers)
+        if custom_providers and isinstance(custom_providers, list):
+            _lap_custom_provider_rows(b, custom_providers)
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 

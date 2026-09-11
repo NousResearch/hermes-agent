@@ -169,6 +169,7 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    input_mode: str = "programmatic",
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -177,6 +178,55 @@ def run_oneshot(
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
     """
+    audit = None
+    try:
+        from hermes_cli.oneshot_audit import start_oneshot_audit
+
+        audit = start_oneshot_audit(prompt, input_mode)
+    except Exception:
+        pass
+    try:
+        exit_code, outcome, session_id = _run_oneshot_impl(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            skills=skills,
+            usage_file=usage_file,
+            resume=resume,
+            reasoning=reasoning,
+        )
+    except KeyboardInterrupt:
+        if audit is not None:
+            audit.finish("interrupted", 130)
+        raise
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        outcome = "interrupted" if exit_code == 130 else ("success" if exit_code == 0 else "agent_error")
+        if audit is not None:
+            audit.finish(outcome, exit_code)
+        raise
+    except BaseException:
+        if audit is not None:
+            audit.finish("agent_error", 1)
+        raise
+
+    if audit is not None:
+        audit.finish(outcome, exit_code, session_id=session_id)
+    return exit_code
+
+
+def _run_oneshot_impl(
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    toolsets: object = None,
+    skills: object = None,
+    usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
+    reasoning: object = None,
+) -> tuple[int, str, object]:
+    """Execute the existing one-shot behavior and describe its terminal audit state."""
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)
@@ -189,12 +239,12 @@ def run_oneshot(
             "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "
             "Pass both explicitly, or neither to use your configured defaults.\n"
         )
-        return 2
+        return 2, "validation_error", None
 
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
-        return 2
+        return 2, "validation_error", None
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
     # Non-interactive by definition — an approval prompt would hang forever.
@@ -240,7 +290,7 @@ def run_oneshot(
         _write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
-        return 1
+        return 1, "agent_error", result.get("session_id")
 
     _write_usage_file(usage_file, result)
 
@@ -258,11 +308,11 @@ def run_oneshot(
 
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
-            return 2
+            return 2, "agent_error", result.get("session_id")
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
-        return 1
-    return 0
+        return 1, "agent_error", result.get("session_id")
+    return 0, "success", result.get("session_id")
 
 
 def _create_session_db_for_oneshot():

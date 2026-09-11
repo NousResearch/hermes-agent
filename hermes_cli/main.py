@@ -142,6 +142,7 @@ def _run_and_exit_oneshot(
     usage_file: object = None,
     resume: object = None,
     reasoning: object = None,
+    input_mode: str = "programmatic",
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -155,6 +156,7 @@ def _run_and_exit_oneshot(
             usage_file=usage_file,
             resume=resume,
             reasoning=reasoning,
+            input_mode=input_mode,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -1746,6 +1748,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
+        "_input_mode": "query-file" if getattr(args, "query_file", None) else "query",
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -2930,6 +2933,7 @@ def _run_oneshot_from_args(args) -> None:
         usage_file=getattr(args, "usage_file", None),
         resume=getattr(args, "resume", None),
         reasoning=getattr(args, "reasoning", None),
+        input_mode="prompt",
     )
 
 

@@ -2477,6 +2477,50 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return False
 
 
+@contextmanager
+def _audit_single_query_run(prompt, input_mode: str, enabled: bool, state: dict[str, object]):
+    """Correlate a non-interactive CLI query without changing its exception behavior."""
+    if not enabled:
+        yield
+        return
+
+    def session_id():
+        try:
+            cli = state.get("cli")
+            return _oneshot_agent_and_session(cli)[1] if cli is not None else None
+        except Exception:
+            return None
+
+    try:
+        from hermes_cli.oneshot_audit import start_oneshot_audit
+
+        audit = start_oneshot_audit(prompt or "", input_mode)
+    except Exception:
+        yield
+        return
+    state["audit"] = audit
+    try:
+        yield
+    except KeyboardInterrupt:
+        audit.finish("interrupted", 130, session_id())
+        raise
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        outcomes = {0: "success", 2: "validation_error", 130: "interrupted"}
+        audit.finish(outcomes.get(exit_code, "agent_error"), exit_code, session_id())
+        raise
+    except ValueError:
+        audit.finish("validation_error", 1, session_id())
+        raise
+    except BaseException:
+        audit.finish("agent_error", 1, session_id())
+        raise
+    else:
+        cli = state.get("cli")
+        outcome = getattr(cli, "_single_query_audit_outcome", "success") if cli is not None else "success"
+        audit.finish(outcome, 0, session_id())
+
+
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
     """Stable TUI panel width wide enough for the title and content (incl. borders)."""
     term_cols = shutil.get_terminal_size((100, 20)).columns
@@ -4226,6 +4270,10 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            with suppress(Exception):
+                audit = getattr(cli, "_oneshot_audit", None)
+                if audit is not None:
+                    audit.finish("interrupted", 0, _oneshot_agent_and_session(cli)[1])
             _flush_logging_and_stdio()
             os._exit(0)
         raise KeyboardInterrupt()
@@ -4430,7 +4478,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         if _query_label:
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
-        cli.chat(query, images=single_query_images or None)
+        response = cli.chat(query, images=single_query_images or None)
+        if response is None:
+            cli._single_query_audit_outcome = "agent_error"
         cli._print_exit_summary(clear_screen=False)
     finally:
         _finalize_single_query(cli)
@@ -4463,6 +4513,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    _input_mode: str = "programmatic",
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4517,40 +4568,46 @@ def main(
         _run_legacy_gateway()
         return
 
-    _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
-    cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    audit_enabled = bool(query or image) and not _should_seed_interactive(query, image, quiet, oneshot)
+    audit_state: dict[str, object] = {}
+    with _audit_single_query_run(query, _input_mode, audit_enabled, audit_state):
+        _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
+        cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
+                                   verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+        audit_state["cli"] = cli
+        if audit_state.get("audit") is not None:
+            cli._oneshot_audit = audit_state["audit"]
 
-    # Join the background worktree creation before anything consumes TERMINAL_CWD.
-    # A requested worktree whose setup failed aborts: never silently run without isolation.
-    wt_info = _join_worktree() if _join_worktree is not None else None
-    if _join_worktree is not None and not wt_info:
-        return
+        # Join the background worktree creation before anything consumes TERMINAL_CWD.
+        # A requested worktree whose setup failed aborts: never silently run without isolation.
+        wt_info = _join_worktree() if _join_worktree is not None else None
+        if _join_worktree is not None and not wt_info:
+            return
 
-    # Inject worktree context into agent's system prompt
-    if wt_info:
-        wt_note = (
-            f"\n\n[System note: You are working in an isolated git worktree at "
-            f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
-            f"Changes here do not affect the main working tree or other agents. "
-            f"Remember to commit and push your changes, and create a PR if appropriate. "
-            f"The original repo is at {wt_info['repo_root']}.]"
-        )
-        cli.system_prompt = (cli.system_prompt or "") + wt_note
+        # Inject worktree context into agent's system prompt
+        if wt_info:
+            wt_note = (
+                f"\n\n[System note: You are working in an isolated git worktree at "
+                f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
+                f"Changes here do not affect the main working tree or other agents. "
+                f"Remember to commit and push your changes, and create a PR if appropriate. "
+                f"The original repo is at {wt_info['repo_root']}.]"
+            )
+            cli.system_prompt = (cli.system_prompt or "") + wt_note
 
-    if list_tools or list_toolsets:
-        cli.show_banner()
-        (cli.show_tools if list_tools else cli.show_toolsets)()
-        sys.exit(0)
+        if list_tools or list_toolsets:
+            cli.show_banner()
+            (cli.show_tools if list_tools else cli.show_toolsets)()
+            sys.exit(0)
 
-    atexit.register(_run_cleanup)  # interactive mode registers again in run() (idempotent)
-    _install_single_query_signal_handlers(cli)
+        atexit.register(_run_cleanup)  # interactive mode registers again in run() (idempotent)
+        _install_single_query_signal_handlers(cli)
 
-    if query or image:
-        _run_single_query_mode(cli, query, image, quiet, oneshot)
-        return
-    cli.run()
+        if query or image:
+            _run_single_query_mode(cli, query, image, quiet, oneshot)
+            return
+        cli.run()
 
 
 if __name__ == "__main__":

@@ -127,9 +127,6 @@ function patchEmptyPollTitles(source) {
   // internal metadata on this inbound path; Hermes only consumes the selected
   // option title. Supply a non-empty placeholder and preserve the option map.
   const anchor = `\tconst poll = asPoll({\n\t\ttitle: input.title,`;
-  if (!source.includes("const toCachedPoll =") || !source.includes(anchor)) {
-    return source;
-  }
   return replaceOnce(
     source,
     anchor,
@@ -153,6 +150,9 @@ export function patchSpectrumTs(root = scriptDir()) {
     .filter((name) => name.endsWith(".js"))
     .map((name) => path.join(dist, name));
 
+  const writes = [];
+  let firstCandidate;
+  let alreadyPatched = false;
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
     // Normalize to LF for matching so the patch works regardless of the
@@ -171,8 +171,9 @@ export function patchSpectrumTs(root = scriptDir()) {
     if (!hasMixedMapper && !hasPollMapper) {
       continue;
     }
+    firstCandidate ??= file;
 
-    let patched = patchEmptyPollTitles(original);
+    let patched = hasPollMapper ? patchEmptyPollTitles(original) : original;
     // spectrum-ts 12.x replaced the attachment-only branches with
     // `buildUnwrappedContentMessage` + `toOrderedParts`, which already emits a
     // group containing both text and attachments. There is nothing left for
@@ -187,18 +188,28 @@ export function patchSpectrumTs(root = scriptDir()) {
       patched = `// ${MARKER}\n${patched}`;
     }
     if (patched === original) {
-      const reason = original.includes(POLL_MARKER) || original.includes(MARKER)
-        ? "already patched"
-        : "upstream preserves mixed payloads";
-      return { patched: false, file, reason };
+      alreadyPatched ||= original.includes(POLL_MARKER) || original.includes(MARKER);
+      continue;
     }
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
     }
-    fs.writeFileSync(file, patched, "utf8");
-    return { patched: true, file };
+    writes.push({ file, patched });
   }
-  throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+  if (!firstCandidate) {
+    throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+  }
+  for (const { file, patched } of writes) {
+    fs.writeFileSync(file, patched, "utf8");
+  }
+  if (writes.length > 0) {
+    return { patched: true, file: writes[0].file };
+  }
+  return {
+    patched: false,
+    file: firstCandidate,
+    reason: alreadyPatched ? "already patched" : "upstream preserves mixed payloads"
+  };
 }
 
 const _invokedDirectly =

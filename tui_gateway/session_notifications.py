@@ -371,6 +371,11 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _emit("status.update", sid, {"kind": "process", "text": text})
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
+    # Resumes register their poller before deferred history hydration and agent
+    # construction.  Surface and buffer the durable event immediately, but do
+    # not claim a model turn until there is an agent to run it.
+    if session.get("agent") is None:
+        return
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:

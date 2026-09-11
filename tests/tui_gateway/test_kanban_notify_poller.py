@@ -362,3 +362,90 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+    def test_resumed_session_replays_before_agent_build_then_dispatches_once(self, monkeypatch):
+        import threading
+        import tui_gateway.server as server
+
+        tid = _create_subscribed_task()
+        _complete(tid, summary="completed while disconnected")
+        session = {
+            "agent": None,
+            "session_key": SESSION_KEY,
+            "history_lock": threading.Lock(),
+            "running": False,
+        }
+        emitted: list[str] = []
+        submitted: list[str] = []
+        monkeypatch.setattr(
+            server,
+            "_emit",
+            lambda event, _sid, payload=None: emitted.append(payload["text"])
+            if event == "status.update" and payload
+            else None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda _rid, _sid, _session, text: submitted.append(text),
+        )
+
+        server._notif_poll_kanban("resumed-runtime", session)
+
+        assert any(tid in text for text in emitted)
+        assert submitted == []
+        assert len(session["_kanban_pending"]) == 1
+        cursor_after_replay = _sub_rows(tid)[0]["last_event_id"]
+
+        session["agent"] = object()
+        server._notif_poll_kanban("resumed-runtime", session)
+
+        assert len(submitted) == 1
+        assert tid in submitted[0]
+        assert session["_kanban_pending"] == []
+        assert _sub_rows(tid)[0]["last_event_id"] == cursor_after_replay
+
+    def test_cold_resume_starts_replay_before_agent_build(self, tmp_path, monkeypatch):
+        import threading
+        from hermes_state import SessionDB
+        import tui_gateway.server as server
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(SESSION_KEY, source="tui", model="test/model")
+        tid = _create_subscribed_task()
+        _complete(tid, summary="offline completion")
+        emitted: list[str] = []
+
+        def start_replay(sid, session):
+            server._notif_poll_kanban(sid, session)
+            return threading.Event()
+
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_start_notification_poller", start_replay)
+        monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+        monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_args: None)
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(
+            server,
+            "_emit",
+            lambda event, _sid, payload=None: emitted.append(payload["text"])
+            if event == "status.update" and payload
+            else None,
+        )
+
+        response = server.handle_request({
+            "id": "resume-offline-kanban",
+            "method": "session.resume",
+            "params": {"session_id": SESSION_KEY},
+        })
+
+        try:
+            assert "error" not in response
+            assert any(tid in text for text in emitted)
+            runtime_id = response["result"]["session_id"]
+            assert server._sessions[runtime_id]["_kanban_pending"]
+            assert _sub_rows(tid)[0]["last_event_id"] > 0
+        finally:
+            server._sessions.pop(response.get("result", {}).get("session_id", ""), None)
+            db.close()

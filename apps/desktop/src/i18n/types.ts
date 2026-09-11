@@ -1621,6 +1621,7 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      restartHint: string
       legacyBackend: string
       portableBadge: string
       catalogTitle: string

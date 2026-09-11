@@ -2007,6 +2007,7 @@ export const zh: Translations = {
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
+      restartHint: '更改将在 Hermes 后端重启后生效。',
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
       catalogTitle: '插件目录',

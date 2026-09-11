@@ -363,10 +363,13 @@ class Venv(StatePackage):
     name = "venv"
     deps = ("uv",)
 
+    def __init__(self, project_root: Path | None = None):
+        self._project_root = project_root
+
     def project_root(self) -> Path:
         from pm.paths import repo_root
 
-        return repo_root()
+        return repo_root() if self._project_root is None else self._project_root
 
     def venv_dir(self) -> Path:
         from hermes_cli.runtime_paths import selected_venv

@@ -54,35 +54,44 @@ def test_isolated_worker_preserves_install_error(client, monkeypatch):
     assert not paths.facts_path().exists()
 
 
-def test_realized_uv_returns_worker_selected_binaries_and_caller_env(client, tmp_path):
-    from pm.lock import Facts, Lockfile
-    from pm.registry import get_package
-    from pm.store import current_target
+def test_worker_build_owns_creation_and_preserves_parent_environment(client, tmp_path, monkeypatch, isolated_python):
+    import json
+    from pm import operations
 
-    target = current_target()
-    lock = Lockfile(paths.lockfile_path())
-    facts = Facts(paths.facts_path())
-    binaries = {}
-    for name in ("python", "uv"):
-        package = get_package(name)
-        entry = paths.store_root() / package.store_entry("1", target)
-        binary = package.binary(entry, target)
-        assert binary is not None
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        binary.write_bytes(b"installed binary fixture")
-        if name == "uv":
-            binary = binary.with_name("uvx" + binary.suffix)
-            binary.write_bytes(b"installed uvx fixture")
-        binaries[name] = str(binary)
-        digest = "a" * 64
-        lock.set_pin(name, "1", {target: {"url": "https://unused.invalid/archive", "sha256": digest}})
-        facts.record(name, "1", entry.name, {}, paths.store_root(), target=target, artifacts=[digest])
-    lock.save()
-    binary, env = client.uv("uvx", venv=tmp_path / "project-env", base_env={"KEEP": "caller", "PYTHONPATH": "bad"})
-    assert binary == binaries["uv"]
-    assert env["UV_PYTHON"] == binaries["python"] and env["KEEP"] == "caller"
-    assert env["VIRTUAL_ENV"] == str(tmp_path / "project-env")
-    assert "PYTHONPATH" not in env
+    uv = shutil.which("uv")
+    assert uv
+    worker = Path(client.__file__).with_name("worker.py")
+    script = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
+        "import pm._uv; "
+        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
+        f"__import__('pathlib').Path({sys.executable!r})); "
+        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    monkeypatch.setattr(operations, "build_environment", lambda **kwargs: pytest.fail("build ran in caller"))
+    source = tmp_path / "project with spaces"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        '[project]\nname="worker-proof"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\n', encoding="utf-8",
+    )
+    monkeypatch.setenv("UV_PYTHON", "/not-the-interpreter")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong-environment"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "wrong-environment"))
+    before = dict(os.environ)
+    python = client.build_environment(source=source, out=tmp_path / "dependency tree",
+                                      frozen=False, offline=True, explicit=True)
+    result = subprocess.run([str(python), "-I", "-c", "import json,sys; print(json.dumps(sys.prefix))"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert Path(json.loads(result.stdout)) == python.parent.parent
+    assert not (tmp_path / "wrong-environment").exists()
+    assert dict(os.environ) == before
+    with pytest.raises(OSError, match="already exists"):
+        client.build_environment(source=source, out=python.parent.parent, explicit=True)
+    assert python.is_file()
 
 
 def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monkeypatch):
@@ -93,8 +102,6 @@ def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monk
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         client.ensure("node")
-    with pytest.raises(InstallError, match="lazy installs are disabled"):
-        client.uv()
     paused = threading.Event()
     paused.set()
     with pytest.raises(DownloadPaused):
@@ -171,16 +178,16 @@ def test_lazy_disabled_sync_does_not_bootstrap_tools(client, tmp_path, monkeypat
     # Exercise runtime acquisition too: the other worker tests supply a ready
     # interpreter, which hides an explicit tool install before worker refusal.
     monkeypatch.setattr("pm.runtime.runtime_python", runtime_python)
-    engine = importlib.import_module("pm.ensure")
-    original_uv = engine.uv
+    from pm import _uv
+    original_toolchain = _uv._toolchain
 
-    def uv(*args, **kwargs):
+    def toolchain(**kwargs):
         assert kwargs.get("realize") is False, "lazy-disabled sync bootstrapped tools"
         if tools_present:
-            return str(tmp_path / "uv"), {"UV_PYTHON": str(isolated_python)}
-        return original_uv(*args, **kwargs)
+            return tmp_path / "uv", isolated_python
+        return original_toolchain(**kwargs)
 
-    monkeypatch.setattr(engine, "uv", uv)
+    monkeypatch.setattr(_uv, "_toolchain", toolchain)
     monkeypatch.setattr("pm.runtime_stage.stage_runtime",
                         lambda *a, **kw: pytest.fail("lazy-disabled sync prepared PM runtime"))
     selections = []
@@ -334,11 +341,13 @@ def test_installed_tool_needs_no_pm_runtime(client, dl_server, monkeypatch):
     assert client.ensure("node", base_env={"PATH": "caller"}).env["PATH"].endswith("caller")
 
 
-def test_uv_probe_needs_no_pm_runtime(client, monkeypatch):
+def test_environment_probe_needs_no_pm_runtime(client, monkeypatch, tmp_path):
+    from pm import environment_python, python_tool
     monkeypatch.setattr("pm.runtime.runtime_python", lambda: pytest.fail("probe bootstrapped PM"))
-    binary, env = client.uv(realize=False, venv=Path("project-venv"), base_env={"KEPT": "yes"})
-    assert binary is None
-    assert env["KEPT"] == "yes" and env["VIRTUAL_ENV"] == "project-venv"
+    root = tmp_path / "not-created"
+    assert environment_python("test", root=root) is None
+    assert python_tool("test", "test", root=root) is None
+    assert not root.exists()
 
 
 def test_worker_receipt_is_exact_even_if_latest_is_replaced(client, tmp_path, monkeypatch):
@@ -434,8 +443,8 @@ def test_failed_finish_runs_undo_before_propagating_callback_exception(client, t
 def test_invalid_arguments_keep_the_engine_exception_type(client):
     with pytest.raises(ValueError, match="repair restores"):
         client.sync_venv([], repair=True)
-    with pytest.raises(ValueError, match="unknown uv executable"):
-        client.uv("not-uv")
+    with pytest.raises(ValueError, match="environment name"):
+        client.ensure_environment("../escape", ["example==1"], explicit=True)
     with pytest.raises(KeyError):
         client.ensure("no-such-package", explicit=True)
 
@@ -444,6 +453,51 @@ def test_worker_death_reports_transport_failure(client, monkeypatch, isolated_py
     monkeypatch.setattr(client, "runtime_command", lambda path: [str(isolated_python), "-I", "-c", "import os; os._exit(7)"])
     with pytest.raises(InstallError, match="worker.*result"):
         client.ensure("node", explicit=True)
+
+
+def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(client, tmp_path, monkeypatch, isolated_python):
+    import zipfile
+    from pm import environment_python, python_tool
+    from tests.pm.test_environment_build import _wheel
+
+    uv = shutil.which("uv")
+    assert uv
+    worker = Path(client.__file__).with_name("worker.py")
+    script = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
+        "import pm._uv; "
+        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
+        f"__import__('pathlib').Path({sys.executable!r})); "
+        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    wheel = _wheel(tmp_path, "side_dep")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("side_dep/cli.py", "def main():\n    print('real side dependency')\n")
+        archive.writestr("side_dep-1.0.dist-info/entry_points.txt", "[console_scripts]\nside-proof = side_dep.cli:main\n")
+    requirements = [f"side-dep @ {wheel.as_uri()}"]
+    root = tmp_path / "side environment"
+    assert environment_python("proof", root=root) is None
+    executable = client.ensure_python_tool("proof", requirements, "side-proof", root=root, explicit=True)
+    assert python_tool("proof", "side-proof", root=root) == executable
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "real side dependency"
+    selected = environment_python("proof", root=root)
+    selection = (root / "active.json").read_bytes()
+    generations = set(root.glob("gen-*"))
+    assert client.ensure_environment("proof", requirements, root=root) == selected
+    assert set(root.glob("gen-*")) == generations
+    with pytest.raises(InstallError, match="do not provide"):
+        client.ensure_python_tool("proof", requirements, "missing-command", root=root, explicit=True)
+    assert (root / "active.json").read_bytes() == selection
+    assert set(root.glob("gen-*")) == generations
+    assert python_tool("proof", "side-proof", root=root) == executable
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    with pytest.raises(InstallError, match="lazy installs are disabled"):
+        client.ensure_environment("proof", ["absent-dependency==0"], root=root)
+    assert (root / "active.json").read_bytes() == selection
 
 
 def test_unknown_worker_operation_is_not_dispatched(client):

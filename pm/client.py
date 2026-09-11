@@ -1,7 +1,7 @@
 """Synchronous PM mutations in an isolated interpreter, never the app's imports."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -33,7 +33,7 @@ def _missing_or_refuse(name):
     return missing
 
 
-def _request(operation, arguments, *, callbacks=None, pause_event=None):
+def _request(operation, arguments, *, callbacks=None, pause_event=None, project_root=None):
     from pm import receipt
     from pm.ensure import lazy_installs_allowed
     from pm.registry import get_package, package_definitions
@@ -42,17 +42,25 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None):
     update_id = receipt._ambient_update_id()
     callbacks = callbacks or {}
     names = ([arguments["name"]] if operation in ("ensure", "stage_only") else
-             {"uv": ["uv"], "sync_venv": ["venv"]}.get(operation, []))
+             {"sync_venv": ["venv"], "venv_is_current": ["venv"],
+              "build_environment": ["uv"], "lock_project": ["uv"],
+              "ensure_environment": ["uv"], "ensure_python_tool": ["uv"],
+              "stage_manager_runtime": ["uv"], "check_project_lock": ["uv"],
+              "export_requirements": ["uv"], "build_requirements_environment": ["uv"],
+              "prune_cache": ["uv"]}.get(operation, []))
     message = {
         "id": request_id, "operation": operation, "arguments": arguments,
         "update_id": update_id,
         "callbacks": list(callbacks),
         "packages": package_definitions(names),
-        "context": {"repo": str(paths.repo_root()), "lockfile": str(paths.lockfile_path())},
+        "context": {"repo": str(Path(project_root).absolute() if project_root is not None else paths.repo_root()),
+                    "lockfile": str(paths.lockfile_path())},
     }
     worker = Path(__file__).with_name("worker.py").resolve()
     environment = runtime_environment()
-    state_sync = operation == "sync_venv" or (
+    state_sync = operation in ("sync_venv", "build_environment", "lock_project",
+                               "ensure_environment", "ensure_python_tool", "check_project_lock",
+                               "export_requirements", "build_requirements_environment") or (
         operation == "ensure" and isinstance(get_package(arguments["name"]), StatePackage))
     if (state_sync and not arguments.get("explicit") and not arguments.get("repair")
             and not lazy_installs_allowed()):
@@ -69,6 +77,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None):
                 receipt.finalize("failed", 1, token=token)
             raise
         environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    elif operation == "venv_is_current":
+        command = runtime_command(worker, bootstrap=False)
     else:
         command = runtime_command(worker)
     callback_error = None
@@ -139,8 +149,9 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None):
                 if error["type"] == "DownloadPaused":
                     from pm.downloader import DownloadPaused
                     raise DownloadPaused(error["message"])
-                kind = {"ValueError": ValueError, "TypeError": TypeError,
-                        "KeyError": KeyError, "OSError": OSError}.get(error["type"], RuntimeError)
+                kind = {"ValueError": ValueError, "TypeError": TypeError, "KeyError": KeyError,
+                        "OSError": OSError, "FileExistsError": FileExistsError,
+                        "FileNotFoundError": FileNotFoundError, "PermissionError": PermissionError}.get(error["type"], RuntimeError)
                 raise kind(error["message"])
             return response["result"]
         finally:
@@ -176,8 +187,10 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
     return Runner(name, env_for(name, base_env=base_env))
 
 
-def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None, repair=False) -> None:
-    if is_runtime():
+def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None, repair=False,
+              project_root: Path | None = None) -> None:
+    foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
+    if is_runtime() and not foreign:
         from pm.ensure import sync_venv as direct
         return direct(extras, explicit=explicit, plugin_dirs=plugin_dirs,
                       before_publish=before_publish, repair=repair)
@@ -197,7 +210,7 @@ def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, before_publish=N
             return {"undo": publication is not None, "finish": hasattr(publication, "finish")}
         callbacks["before_publish"] = publish
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
-                          "plugin_dirs": members}, callbacks=callbacks)
+                          "plugin_dirs": members}, callbacks=callbacks, project_root=project_root)
 
 
 def stage_only(name, target, *, progress=None) -> Path:
@@ -208,17 +221,124 @@ def stage_only(name, target, *, progress=None) -> Path:
     return Path(_request("stage_only", {"name": name, "target": target}, callbacks=callbacks))
 
 
-def uv(command="uv", *, venv=None, realize=True, explicit=False, base_env=None):
-    if command not in ("uv", "uvx"):
-        raise ValueError(f"unknown uv executable: {command}")
-    if not realize or is_runtime():
-        from pm.ensure import uv as direct
-        return direct(command, venv=venv, realize=realize, explicit=explicit, base_env=base_env)
-    if not explicit:
-        _missing_or_refuse("uv")
-    binary, environment = _request("uv", {
-        "command": command, "venv": str(venv) if venv is not None else None,
-        "realize": realize, "explicit": explicit,
-        "base_env": dict(os.environ if base_env is None else base_env),
+def _python_operation(operation: str, arguments: dict):
+    from pm import operations
+    implementation = getattr(operations, operation, None)
+    if implementation is None:
+        from pm import build_operations
+        implementation = getattr(build_operations, operation)
+    if is_runtime():
+        return implementation(**arguments)
+    payload = {key: str(value.absolute()) if isinstance(value, Path) else value
+               for key, value in arguments.items()}
+    return _request(operation, payload)
+
+
+def build_environment(
+    *, source: Path, out: Path, python: Path | None = None,
+    cache: Path | None = None, env: Mapping[str, str] | None = None,
+    extras: Sequence[str] = (), groups: Sequence[str] = (),
+    all_extras: bool = False, no_install_project: bool = False,
+    frozen: bool = True, sealed: bool = False, offline: bool = False,
+    explicit: bool = False, timeout: int = 1800,
+) -> Path:
+    """Build a validated Python environment without exposing install machinery."""
+    return Path(_python_operation("build_environment", {
+        "source": Path(source), "out": Path(out), "python": python, "cache": cache,
+        "env": dict(env) if env is not None else None, "extras": list(extras), "groups": list(groups),
+        "all_extras": all_extras, "no_install_project": no_install_project,
+        "frozen": frozen, "sealed": sealed, "offline": offline,
+        "explicit": explicit, "timeout": timeout,
+    }))
+
+
+def lock_project(
+    source: Path, *, upgrade: bool = False, python: Path | None = None,
+    env: Mapping[str, str] | None = None, cache: Path | None = None,
+    offline: bool = False, explicit: bool = False,
+) -> None:
+    """Resolve a project's lock without creating or selecting an environment."""
+    _python_operation("lock_project", {
+        "source": Path(source), "upgrade": upgrade, "python": python,
+        "env": dict(env) if env is not None else None, "cache": cache,
+        "offline": offline, "explicit": explicit,
     })
-    return binary, environment
+
+
+def stage_manager_runtime(
+    *, python: Path, destination: Path, project: Path | None = None,
+    offline: bool = False, wheelhouse: Path | None = None, cache: Path | None = None,
+) -> Path:
+    return Path(_python_operation("stage_manager_runtime", {
+        "python": Path(python), "destination": Path(destination), "project": project,
+        "offline": offline, "wheelhouse": wheelhouse, "cache": cache,
+    }))
+
+
+def ensure_environment(
+    name: str, requirements: Sequence[str], *, root: Path | None = None,
+    explicit: bool = False, timeout: int = 1800,
+) -> Path:
+    """Select a complete isolated dependency generation, retaining the previous one."""
+    if isinstance(requirements, str):
+        raise TypeError("requirements must be a sequence, not a string")
+    return Path(_python_operation("ensure_environment", {
+        "name": name, "requirements": list(requirements), "root": root,
+        "explicit": explicit, "timeout": timeout,
+    }))
+
+
+def ensure_python_tool(
+    name: str, requirements: Sequence[str], executable: str, *, root: Path | None = None,
+    explicit: bool = False, timeout: int = 1800,
+) -> Path:
+    """Install an isolated tool and return its validated executable, not uv/uvx."""
+    if isinstance(requirements, str):
+        raise TypeError("requirements must be a sequence, not a string")
+    return Path(_python_operation("ensure_python_tool", {
+        "name": name, "requirements": list(requirements), "executable": executable,
+        "root": root, "explicit": explicit, "timeout": timeout,
+    }))
+
+
+def venv_is_current(*, project_root: Path | None = None) -> bool:
+    from pm.ensure import venv_is_current as direct
+
+    return direct(project_root=project_root)
+
+
+def check_project_lock(source: Path, *, python: Path | None = None, cache: Path | None = None,
+                       env: Mapping[str, str] | None = None, offline: bool = False,
+                       explicit: bool = False) -> None:
+    _python_operation("check_project_lock", {
+        "source": Path(source), "python": python, "cache": cache,
+        "env": dict(env) if env is not None else None, "offline": offline, "explicit": explicit,
+    })
+
+
+def export_requirements(source: Path, out: Path, *, extras: Sequence[str] = (),
+                        python: Path | None = None, cache: Path | None = None,
+                        env: Mapping[str, str] | None = None, explicit: bool = False) -> None:
+    _python_operation("export_requirements", {
+        "source": Path(source), "out": Path(out), "extras": list(extras),
+        "python": python, "cache": cache, "env": dict(env) if env is not None else None,
+        "explicit": explicit,
+    })
+
+
+def build_requirements_environment(requirements: Sequence[str], *, out: Path,
+                                   python: Path | None = None, cache: Path | None = None,
+                                   env: Mapping[str, str] | None = None, wheelhouse: Path | None = None,
+                                   offline: bool = False, sealed: bool = False,
+                                   explicit: bool = False) -> Path:
+    if isinstance(requirements, str):
+        raise TypeError("requirements must be a sequence, not a string")
+    return Path(_python_operation("build_requirements_environment", {
+        "requirements": list(requirements), "out": Path(out), "python": python, "cache": cache,
+        "env": dict(env) if env is not None else None, "wheelhouse": wheelhouse,
+        "offline": offline, "sealed": sealed, "explicit": explicit,
+    }))
+
+
+def prune_cache(cache: Path, *, ci: bool = False) -> None:
+    _python_operation("prune_cache", {"cache": Path(cache), "ci": ci})

@@ -40,7 +40,7 @@ def prepare(tmp_path, monkeypatch, packages):
     def forbidden(*args, **kwargs):
         pytest.fail("lookup-only result reached a mutation or dependency refresh")
 
-    for name in ("_pin_artifacts", "_install_names", "_run_live", "pm_uv"):
+    for name in ("_pin_artifacts", "_install_names", "_run_live", "lock_project"):
         monkeypatch.setattr(cli, name, forbidden)
     monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", forbidden)
     return lock

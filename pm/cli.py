@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
-from pm.ensure import uv as pm_uv
+from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
 from pm.registry import get_package
@@ -357,13 +357,10 @@ def cmd_update(args) -> int:
         print("pm update: nothing to update")
 
     if args.uv:
-        uv_bin, env = pm_uv(realize=False)
-        if uv_bin is None:
-            print("✗ uv: not installed")
-            return 1
-        code, tail = _run_live([uv_bin, "lock", "--upgrade"], cwd=str(repo_root()), env=env)
-        if code != 0:
-            print(f"✗ uv lock --upgrade failed:\n{tail}")
+        try:
+            lock_project(repo_root(), upgrade=True, explicit=True)
+        except InstallError as exc:
+            print(f"✗ Python lock refresh failed: {exc}")
             return 1
         print("✓ uv.lock refreshed")
         try:

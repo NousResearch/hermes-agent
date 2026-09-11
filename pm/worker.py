@@ -114,15 +114,25 @@ def main():
     with receipt.worker_context(request.get("update_id")):
         try:
             load_package_definitions(request.get("packages", []))
+            from pm import operations as python
             operations = {"ensure": engine.ensure, "sync_venv": sync_venv,
-                          "stage_only": engine.stage_only, "uv": engine.uv}
+                          "stage_only": engine.stage_only, "venv_is_current": engine.venv_is_current,
+                          "build_environment": python.build_environment, "lock_project": python.lock_project,
+                          "stage_manager_runtime": python.stage_manager_runtime,
+                          "ensure_environment": python.ensure_environment,
+                          "ensure_python_tool": python.ensure_python_tool}
             arguments = request["arguments"]
             if request["operation"] == "ensure":
                 arguments["pause_event"] = pause
             for name in ("progress", "download_progress"):
                 if name in request["callbacks"]:
                     arguments[name] = lambda *args, name=name: callback(name, *args)
-            result = operations[request["operation"]](**arguments)
+            if request["operation"] in ("check_project_lock", "export_requirements",
+                                        "build_requirements_environment", "prune_cache"):
+                from pm import build_operations
+                result = getattr(build_operations, request["operation"])(**arguments)
+            else:
+                result = operations[request["operation"]](**arguments)
             if request["operation"] == "ensure":
                 result = None  # Runner is reconstructed from the caller's base env.
             if isinstance(result, Path):

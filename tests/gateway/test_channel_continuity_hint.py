@@ -8,7 +8,8 @@ Covers:
 - build_channel_continuity_note() emits a hint for human chat surfaces (Slack,
   Discord, Telegram, WeCom callback DMs, plugin platforms, ...) that were
   auto-reset with real prior activity, and stays silent for machine callers,
-  Home Assistant events, and agent-peer transports (Raft wakes, A2A tasks).
+  system-generated events, and agent-peer transports (Home Assistant, ntfy,
+  Raft wakes, A2A tasks).
 """
 
 from datetime import datetime, timedelta
@@ -142,6 +143,7 @@ class TestBuildChannelContinuityNote:
             Platform.WEBHOOK,
             Platform.MSGRAPH_WEBHOOK,
             Platform.HOMEASSISTANT,
+            Platform("ntfy"),  # broadcast topic, no user identity
             Platform("raft"),  # machine-only wake bridge
             Platform("a2a"),  # agent-peer task protocol
         ],

@@ -82,6 +82,12 @@ describe('named-profile appearance seeds the global fallback (#101216)', () => {
     expect(modePref.resolve('atlas')).toBe('light')
   })
 
+  it('lets a never-themed profile inherit the last named-profile assign', () => {
+    modePref.assign('forge', 'dark')
+    modePref.assign('atlas', 'light')
+    expect(modePref.resolve('never-themed')).toBe('light')
+  })
+
   it('promotes a unanimous pre-existing per-profile mode into the empty global slot', () => {
     window.localStorage.setItem('hermes-desktop-profile-modes-v1', JSON.stringify({ forge: 'dark' }))
     expect(modePref.resolve('atlas')).toBe('dark')

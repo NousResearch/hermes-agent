@@ -70,6 +70,7 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // unassigned profiles and pre-per-profile installs stay on the global value.
 // Named assigns also mirror into the global slot so a Bot Mode gateway hop onto
 // a never-themed bot inherits the look the user just picked (#101216).
+// Persists from stored (write-on-read). Idempotent. No-op when records disagree.
 const promoteUnanimousLegacy = (record: string, legacy: string): void => {
   if (storedString(legacy) != null) {
     return

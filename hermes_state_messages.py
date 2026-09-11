@@ -811,6 +811,52 @@ class SessionMessagesMixin:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
+    def get_display_messages(self, session_id: str, *, limit: Optional[int] = None,
+                             offset: int = 0, latest: bool = False) -> List[Dict[str, Any]]:
+        """Page the logical display transcript across a compression lineage.
+
+        Legacy rotating compression stores the visible prefix in ended ancestors and the
+        summary/tail in the live tip.  Display pagination must span both without changing
+        the active-only model replay.  ``display_identity`` collapses protected-tail copies
+        before LIMIT/OFFSET, and ``display_order`` retains their original chronology.
+        """
+        session_ids = self._resume_lineage_ids(session_id)
+        if len(session_ids) == 1:
+            return self.get_messages(
+                session_id, include_compacted=True, limit=limit, offset=offset, latest=latest)
+        if all(self._ensure_display_order(sid) for sid in session_ids):
+            placeholders = _placeholders(session_ids)
+            direction = "DESC" if latest else "ASC"
+            sql = f"""WITH logical AS (
+                    SELECT display_identity, MIN(display_order) AS display_order
+                    FROM messages
+                    WHERE session_id IN ({placeholders}) AND (active = 1 OR compacted = 1)
+                    GROUP BY display_identity
+                ), page AS (
+                    SELECT display_identity, display_order FROM logical
+                    ORDER BY display_order {direction} LIMIT ? OFFSET ?
+                )
+                SELECT chosen.* FROM page
+                JOIN messages AS chosen ON chosen.id = (
+                    SELECT candidate.id FROM messages AS candidate
+                    WHERE candidate.session_id IN ({placeholders})
+                      AND candidate.display_identity = page.display_identity
+                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                )
+                ORDER BY page.display_order ASC"""
+            rows = self._read_all(
+                sql, [*session_ids, -1 if limit is None else limit, offset, *session_ids])
+        else:
+            # A read-only pre-index store cannot backfill display identities. Preserve the
+            # historical projection exactly, then page the deduped logical rows in memory.
+            rows = self._dedupe_display_generations(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)}) "
+                "AND (active = 1 OR compacted = 1) ORDER BY id ASC", session_ids))
+            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+        return [self._row_to_message_dict(row, warn_context="get_display_messages", summary_flag=True)
+                for row in rows]
+
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
         ids = [s for s in session_ids if s]

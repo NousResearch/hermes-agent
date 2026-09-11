@@ -15,6 +15,9 @@ notional figure into the only place it is needed:
   rows: their tokens priced at DeepSeek's own list rate (bundled ``deepseek`` snapshot). Without it a
   worker looping on ModelArk would never trip the $1 cap — the 2026-09-08 failure.
 
+2.1: the cap-equivalent rates (and extra model names) come from the fleet's single model file,
+``~/.hermes/fleet/models.json`` (written by plugins/fleet-models), falling back to the bundled list.
+
 Only the Coding Plan path (``/api/coding/``) is treated as subscription: ``/api/v3`` on the same host
 bills per call and must keep reporting as unpriced.
 """
@@ -41,6 +44,48 @@ FAMILY = {
     "deepseek-v4-pro": "deepseek-v4-pro",
 }
 _MARK = "_modelark_subscription_wrapped"
+_REG = [None, {}]
+
+
+def fleet_rates() -> dict:
+    """{model name (lower): (in, out, cache_read) $/M} for every ModelArk model in the fleet's single model
+    file (~/.hermes/fleet/models.yaml — ids AND served names), mtime-cached. The cap-equivalent is priced
+    from there so a rate change on the dashboard reaches the $1 cap without a deploy. {} when the file is
+    absent or unreadable: the bundled DeepSeek list (below) then applies."""
+    import json
+    from pathlib import Path
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = Path(get_default_hermes_root())
+    except Exception:  # noqa: BLE001
+        root = Path.home() / ".hermes"
+    p = root / "fleet" / "models.json"
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return {}
+    if _REG[0] == mt:
+        return _REG[1]
+    out = {}
+    try:
+        for m in (json.loads(p.read_text()).get("models") or {}).values():
+            if not isinstance(m, dict) or m.get("provider") != "modelark":
+                continue
+            ce = m.get("cap_equivalent") or {}
+            r = tuple(Decimal(str(ce.get(k) or 0)) for k in ("input", "output", "cache_read"))
+            for name in [m.get("id"), *(m.get("served_as") or [])]:
+                if name:
+                    out[str(name).strip().lower()] = r
+    except Exception:  # noqa: BLE001
+        logger.warning("modelark-pricing: fleet/models.json unreadable — using the bundled DeepSeek list")
+        out = {}
+    _REG[0], _REG[1] = mt, out
+    return out
+
+
+def _is_ark_model(model: str) -> bool:
+    m = (model or "").strip().lower()
+    return m in FAMILY or m in fleet_rates()
 
 
 def is_subscription_url(base_url) -> bool:
@@ -54,7 +99,7 @@ def _wrap_route(orig):
         route = orig(model_name, provider=provider, base_url=base_url)
         model = (model_name or "").strip()
         if is_subscription_url(base_url) or (
-                not base_url and (provider or "").strip().lower() in PROVIDER_KEYS and model.lower() in FAMILY):
+                not base_url and (provider or "").strip().lower() in PROVIDER_KEYS and _is_ark_model(model)):
             return dataclasses.replace(route, provider="modelark", model=model,
                                        billing_mode="subscription_included")
         return route
@@ -100,9 +145,10 @@ def cap_equivalent_rows(conn, where: str, params) -> tuple[float, int]:
         "COALESCE(SUM(u.api_call_count),0) FROM session_model_usage u JOIN sessions s ON s.id = u.session_id "
         f"WHERE ({where}) AND u.billing_base_url LIKE ? AND COALESCE(u.cost_source,'') != 'modelark-proxy' "
         "GROUP BY u.model", [*params, f"%{ARK_HOST}{ARK_SUB_PATH}%"]).fetchall()
+    fleet = fleet_rates()
     for model, inp, out, cr, cw, n in rows:
         fam = FAMILY.get((model or "").lower()) or ("deepseek-v4-pro" if "pro" in (model or "") else "deepseek-v4-flash")
-        r_in, r_out, r_cr = rates.get(fam, (Decimal(0), Decimal(0), Decimal(0)))
+        r_in, r_out, r_cr = fleet.get((model or "").strip().lower()) or rates.get(fam, (Decimal(0), Decimal(0), Decimal(0)))
         usd += (Decimal(inp) + Decimal(cw)) * r_in / 1_000_000 + Decimal(out) * r_out / 1_000_000 \
             + Decimal(cr) * r_cr / 1_000_000
         calls += int(n or 0)
@@ -183,4 +229,4 @@ def install() -> list:
 
 
 def register(ctx) -> None:  # noqa: ARG001 — plugin loader entry point
-    logger.info("modelark-pricing 2.0: wrapped %s", install())
+    logger.info("modelark-pricing 2.1: wrapped %s", install())

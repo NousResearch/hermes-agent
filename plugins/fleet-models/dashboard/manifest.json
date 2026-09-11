@@ -1,0 +1,14 @@
+{
+  "name": "fleet-models",
+  "label": "Models",
+  "description": "Every agent's model waterfall from one file — live settings, hosts, prices, usage and cost, with preview, apply and revert",
+  "icon": "Cpu",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/models",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

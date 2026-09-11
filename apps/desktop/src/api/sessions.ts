@@ -460,8 +460,7 @@ export function getLatestSessionMessages(
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
   const route = { ...connectionScoped(), ...sessionScoped(profile) }
-  // Owner identity is resolved from the ambient state at REQUEST time; only
-  // the lookup key is normalized — backfill replays `route` verbatim.
+  // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'
 

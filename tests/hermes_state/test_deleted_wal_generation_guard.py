@@ -20,8 +20,8 @@ import hermes_state_dbfile
 import hermes_state_readpool
 import hermes_state_wal
 from hermes_state import (
-    DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable, classify_persistence_error,
-    refuse_deleted_wal_generation,
+    DeletedWalGenerationError, SessionDB, StateDbReplacedError, _close_time_checkpoint_configurable,
+    classify_persistence_error, refuse_deleted_wal_generation,
 )
 from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 from tests.hermes_state._wal_generation_harness import (
@@ -35,13 +35,17 @@ def force_wal(monkeypatch):
     pin_wal(monkeypatch)
 
 
-def test_classify_deleted_wal_is_replaced_not_disk():
-    err = DeletedWalGenerationError(
+def test_classify_deleted_wal_separately_from_main_file_replacement():
+    message = (
         "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
         "inode while the path names a different (or missing) generation."
     )
-    assert classify_persistence_error(err) == "replaced"
-    assert classify_persistence_error(str(err)) == "replaced"
+    assert classify_persistence_error(DeletedWalGenerationError(message)) == "deleted_wal"
+    assert classify_persistence_error(message) == "deleted_wal"
+
+    replaced = StateDbReplacedError("state.db was replaced underneath this process")
+    assert classify_persistence_error(replaced) == "replaced"
+    assert classify_persistence_error(str(replaced)) == "replaced"
 
 
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):

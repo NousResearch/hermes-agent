@@ -20,9 +20,7 @@ dispatching ``llm.request_started`` into a REAL ``GatewayStreamConsumer`` whose
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 import queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -104,51 +102,140 @@ def _fire_request_started(sc, *, label="claude (API call #1)"):
 
 
 class TestFirstCallSignalNotGated:
-    def test_llm_request_started_not_gated_behind_api_call_count(self):
-        """Source guard: ``llm.request_started`` must not sit behind
-        ``api_call_count > 1``.  The per-turn reset of ``api_call_count`` means
-        such a gate drops every turn's first-call thinking timer (#342s hang).
+    """Behaviour contract: driving the REAL turn loop, the very first API call of
+    a turn emits ``llm.request_started`` through ``tool_progress_callback``.
+
+    The bug this pins: ``api_call_count`` resets to 0 each turn, so gating the
+    emit behind ``> 1`` dropped every turn's first-call thinking timer (#342s
+    hang). We drive ``_run_conversation_turn`` with the pre-emit phases stubbed
+    to no-ops and the API step raised out via a sentinel, then assert what the
+    callback actually received — not the shape of the source.
+    """
+
+    class _Sentinel(Exception):
+        pass
+
+    def _drive_first_turn(self, monkeypatch, *, budget_remaining: int = 10):
+        """Drive the REAL ``_run_conversation_turn`` through its first loop
+        iteration, capturing every ``tool_progress_callback`` invocation.
+
+        We inject a fake TurnContext (so no live agent/session is needed) and
+        stub the phase helpers, but the emit block itself runs on this build's
+        real ``_run_conversation_turn`` code — the API step raises a sentinel
+        that unwinds the loop right after the emit point.
+
+        Returns the list of ``(signal, *rest)`` tuples the callback received.
         """
-        tree = ast.parse(inspect.getsource(conversation_loop.run_conversation))
+        emitted = []
 
-        # Locate the callback call that emits "llm.request_started".
-        emit_calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and any(
-                isinstance(a, ast.Constant) and a.value == "llm.request_started"
-                for a in node.args
-            )
-        ]
-        assert emit_calls, "expected an llm.request_started emit in run_conversation"
+        # ── Fake agent: only the attributes the real loop reads before the API. ──
+        agent = SimpleNamespace(
+            api_mode="chat_completions",
+            model="claude",
+            max_iterations=500,
+            iteration_budget=SimpleNamespace(remaining=budget_remaining),
+            _budget_grace_call=False,
+            _current_api_request_id=None,
+            _last_compaction_in_place=False,
+            _last_compression_attempt_recorded=False,
+            _last_compression_attempt_in_place=None,
+            _delivered_interim_texts=set(),
+            _incremental_persistence_failed=False,
+            _last_persistence_error_cause=None,
+            _compression_adoption_failed=False,
+            _ephemeral_reasoning_off=False,
+            _auth_pool_refresh_counts={},
+            _last_turn_usage=None,
+            max_compression_attempts=3,
+            _api_max_retries=3,
+            tool_progress_callback=lambda *a: emitted.append(a),
+        )
+        agent._try_refresh_env_client_credentials = lambda: None
 
-        # Build a parent map so each emit can be bound to its enclosing `if`.
-        parents = {}
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                parents[child] = node
+        # begin_fast_mode_turn touches the agent; stub to a no-op.
+        monkeypatch.setattr(conversation_loop, "begin_fast_mode_turn", lambda *a, **k: None)
 
-        def _guarded_by_api_call_count_gt_1(node) -> bool:
-            cur = parents.get(node)
-            while cur is not None:
-                if isinstance(cur, ast.If):
-                    for cmp in ast.walk(cur.test):
-                        if (
-                            isinstance(cmp, ast.Compare)
-                            and isinstance(cmp.left, ast.Name)
-                            and cmp.left.id == "api_call_count"
-                            and any(isinstance(op, ast.Gt) for op in cmp.ops)
-                        ):
-                            return True
-                cur = parents.get(cur)
-            return False
+        # finalize_turn runs only when the loop exits WITHOUT making a call
+        # (budget-exhausted case); raise the sentinel there too so neither path
+        # needs a fully-wired agent past the point we care about. Real code
+        # introspects finalize_turn's signature to build kwargs, so the stub
+        # must preserve the ORIGINAL signature (functools.wraps) — a bare
+        # ``**kwargs`` stub would make the caller do getattr(s, "kwargs").
+        import functools as _functools
 
-        for emit in emit_calls:
-            assert not _guarded_by_api_call_count_gt_1(emit), (
-                "llm.request_started must fire on the first API call too; a "
-                "`api_call_count > 1` gate drops the first-turn thinking timer"
-            )
+        _orig_finalize = conversation_loop.finalize_turn
+
+        @_functools.wraps(_orig_finalize)
+        def _fake_finalize(*args, **kwargs):
+            raise self._Sentinel()
+
+        monkeypatch.setattr(conversation_loop, "finalize_turn", _fake_finalize)
+
+        # ── Fake TurnContext: build_turn_context normally builds this from a live
+        #    agent+session. We hand back an object exposing exactly the fields
+        #    _LoopState seeds from it (names minus the leading underscore). ──
+        ctx_values = {
+            "user_message": "hi",
+            "original_user_message": "hi",
+            "conversation_history": [],
+            "effective_task_id": None,
+            "turn_id": "turn-1",
+            "should_review_memory": False,
+            "plugin_user_context": None,
+            "ext_prefetch_cache": None,
+            "messages": [],
+            "active_system_prompt": "sys",
+            "current_turn_user_idx": 0,
+            "preflight_compression_blocked": False,
+        }
+        fake_ctx = SimpleNamespace(**ctx_values)
+        monkeypatch.setattr(conversation_loop, "build_turn_context", lambda *a, **k: fake_ctx)
+
+        # ── Stub phase helpers. begin_iteration must increment api_call_count
+        #    exactly as the real helper does (the grace flag is off), then every
+        #    phase reports "proceed" so the loop reaches the emit line. ──
+        def _fake_run_phase(fn, _agent, state, **extra):
+            if fn is conversation_loop.begin_iteration:
+                state.api_call_count += 1
+            return SimpleNamespace(action="proceed")
+
+        monkeypatch.setattr(conversation_loop, "_run_phase", _fake_run_phase)
+
+        # The API step cuts the loop AFTER the emit block above it has run.
+        def _fake_api_retry_loop(_agent, _s):
+            raise self._Sentinel()
+
+        monkeypatch.setattr(conversation_loop, "_run_api_retry_loop", _fake_api_retry_loop)
+
+        with pytest.raises(self._Sentinel):
+            conversation_loop._run_conversation_turn(agent, "hi")
+
+        return emitted
+
+    def test_first_call_emits_request_started(self, monkeypatch):
+        """FIRST API call of a turn (api_call_count becomes 1) MUST emit the
+        signal — driven through the real _run_conversation_turn."""
+        emitted = self._drive_first_turn(monkeypatch)
+        signals = [e[0] for e in emitted]
+        assert "llm.request_started" in signals, (
+            "the first API call of a turn must emit llm.request_started; a "
+            "`> 1` gate drops the first-turn thinking timer (#342s hang)"
+        )
+        # The emit carries the first-call label and the timer channel.
+        first = next(e for e in emitted if e[0] == "llm.request_started")
+        assert first[1] == "_thinking_timer"
+        assert "#1" in first[2]
+
+    def test_no_emit_when_budget_exhausted(self, monkeypatch):
+        """The loop never enters an iteration when there is no budget, so no
+        API call is counted and no signal fires — proves the emit is bound to
+        a real request, not unconditional."""
+        emitted = self._drive_first_turn(monkeypatch, budget_remaining=0)
+        signals = [e[0] for e in emitted]
+        assert "llm.request_started" not in signals, (
+            "with no iteration budget the turn makes no API call, so the "
+            "thinking signal must not fire"
+        )
 
 
 # ── Part B: the pre-seed race must not drop the signal ───────────────────────

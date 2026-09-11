@@ -14,6 +14,8 @@
  * steps over ~280ms is what Playwright's action cursor settles on too.
  */
 
+import { isMacPlatform } from '@/lib/platform'
+
 import type { PreviewInputHandle } from './preview-input'
 
 export interface DrivePoint {
@@ -116,6 +118,16 @@ export async function pressKey(input: PreviewInputHandle, key: string): Promise<
   await wait(KEY_MS)
 }
 
+/** Native select-all modifier for Electron `sendInputEvent`.
+ *
+ *  Sending both `control` and `meta` at once is Control+Command+A on macOS
+ *  and Ctrl+Win+A on Windows — neither is the OS select-all chord, so the
+ *  field is not cleared and `drive_preview` type appends instead of replacing.
+ */
+export function selectAllModifiers(): string[] {
+  return isMacPlatform() ? ['meta'] : ['control']
+}
+
 /** Select-all inside whatever has focus, which for a focused field is that
  *  field's own text and nothing else. This replaced a triple-click: a triple
  *  click is a POINTER gesture, so it selects whatever paragraph sits under the
@@ -123,7 +135,7 @@ export async function pressKey(input: PreviewInputHandle, key: string): Promise<
  *  leaving pages with their body text highlighted. There is no `char` phase —
  *  a chord is not text entry, and sending one types a literal 'a'. */
 export async function selectAll(input: PreviewInputHandle): Promise<void> {
-  const chord = ['control', 'meta']
+  const chord = selectAllModifiers()
 
   input.send({ keyCode: 'a', modifiers: chord, type: 'keyDown' })
   input.send({ keyCode: 'a', modifiers: chord, type: 'keyUp' })

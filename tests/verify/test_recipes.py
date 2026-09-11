@@ -143,13 +143,42 @@ class TestPythonDetection:
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         recipe = detect_recipe(tmp_path)
         assert recipe.bootstrap == ["pip install -e ."]
-        assert recipe.test == ["python -m unittest discover"]
+        assert recipe.test == []
 
-    def test_pytest_when_tests_dir(self, tmp_path):
+    @pytest.mark.parametrize(
+        "files,expected",
+        [
+            ({"tests/.keep": ""}, []),
+            ({"scripts/validator.py": "print('valid')\n"}, []),
+            ({"venv/lib/test_dependency.py": "def test_dependency(): pass\n"}, []),
+            (
+                {"tests/test_sample.py": "import unittest\nclass TestSample(unittest.TestCase):\n    def test_ok(self): pass\n"},
+                ["python -m unittest discover"],
+            ),
+            ({"tests/unit/test_nested.py": "def test_nested():\n    assert True\n"}, ["python -m pytest"]),
+            (
+                {"tests/test_custom_base.py": "class TestCase: pass\nclass TestSample(TestCase):\n    def test_ok(self): pass\n"},
+                ["python -m pytest"],
+            ),
+            (
+                {
+                    "tests/test_unit.py": "from unittest import TestCase\nclass UnitTest(TestCase):\n    def test_ok(self): pass\n",
+                    "tests/integration_test.py": "def test_integration():\n    assert True\n",
+                },
+                ["python -m pytest"],
+            ),
+        ],
+    )
+    def test_python_runner_follows_real_test_declarations(self, tmp_path, files, expected):
         (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
-        (tmp_path / "tests").mkdir()
+        for relative, content in files.items():
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
         recipe = detect_recipe(tmp_path)
-        assert recipe.test == ["pytest"]
+        assert recipe.test == expected
+        assert not (tmp_path / ".pytest_cache").exists()
+        assert not list(tmp_path.rglob("__pycache__"))
 
 
 class TestOtherEcosystems:

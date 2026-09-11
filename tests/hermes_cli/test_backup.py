@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import sqlite3
 import stat
 import zipfile
@@ -276,6 +277,20 @@ class TestIterBackupFiles:
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
         assert "hermes-agent" in skipped
+
+    @pytest.mark.linux_only
+    def test_skips_unix_sockets(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        socket_path = root / "gateway.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gateway_socket:
+            gateway_socket.bind(str(socket_path))
+
+            selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+
+        assert "gateway.sock" not in selected
 
 
 # ---------------------------------------------------------------------------

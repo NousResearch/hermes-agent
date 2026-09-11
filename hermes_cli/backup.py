@@ -228,9 +228,21 @@ def _iter_external_files(base: Path) -> List[Path]:
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
+                     if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
     return files
+
+
+def _is_non_regular_path(path: Path) -> bool:
+    """True for symlinks, sockets, devices, and other non-regular filesystem entries.
+
+    A failed ``lstat`` is not treated as an exclusion: the archive writer must see the path and
+    report the read failure instead of silently claiming a complete backup.
+    """
+    try:
+        return not stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -267,7 +279,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+            if _should_exclude(rel) or _is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():

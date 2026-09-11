@@ -9,7 +9,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, WindowDecision, initial_window, launch_args, ub_logits_bytes)
+    RUNTIME_OVERHEAD_BYTES, WindowDecision, initial_window, launch_args, ub_logits_bytes,
+    validate_tensor_placement)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -100,7 +101,7 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
 
 
 def _preset_for(gguf: Path, budget: HardwareBudget,
-                mtp_capable: set[str]) -> PresetEntry | None:
+                mtp_capable: set[str], *, tensor_placement: str = "host") -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
 
@@ -136,7 +137,8 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
     # The launch flags MUST match the pricing above (same entry/is_mtp/posture).
     keys = _args_to_keys(launch_args(
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=mtp_prefill,
-        mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+        mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3,
+        tensor_placement=tensor_placement))
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -165,15 +167,18 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
+                     mtp_capable: set[str] | None = None,
+                     *, tensor_placement: str = "host") -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
+    validate_tensor_placement(tensor_placement)
     from hermes_cli.local_runtime.bootstrap import staged_in
 
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir, require_complete=False):
-        entry = _preset_for(gguf, budget, mtp_capable or set())
+        entry = _preset_for(gguf, budget, mtp_capable or set(),
+                            tensor_placement=tensor_placement)
         if entry is None:
             continue
         entries.append(entry)

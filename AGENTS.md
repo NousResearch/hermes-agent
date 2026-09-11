@@ -420,5 +420,4 @@ extract, not to regex around it.
 
 Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
-session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
-`hermes-agent-dev` skill, not here.
+session-storage, ...).

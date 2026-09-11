@@ -188,8 +188,9 @@ Do not mutate a Hermes environment with raw pip or uv commands.
 
 PM's runtime contains `ruamel.yaml`, `packaging`, `tomli-w`, and `truststore`, not the application
 dependency tree. CLI commands and application-requested installs and repairs run
-there; read-only path and installed-environment lookups remain local. PM never
-adds its dependencies to an already-running agent's imports. First-party YAML
+there. Read-only path and installed-tool lookups remain local. Environment
+currency checks use a ready PM worker. PM never adds its dependencies to an
+already-running agent's imports. First-party YAML
 readers and writers use ruamel; third-party packages can still require PyYAML in
 the application environment. Failure receipts remain stdlib-only.
 
@@ -199,10 +200,10 @@ OpenSSL paths do not locate it. No application dependencies or certificate-path
 override are required. After the first install, PM rebuilds its small environment
 against the managed Python on the next invocation; subsequent invocations reuse it.
 
-When lazy installs are disabled, an existing PM runtime can still check whether
-the application environment is current. If PM itself is missing or outdated,
-the request fails without downloading tools or dependencies. Run an explicit
-`hermes pm install` to prepare PM first.
+`pm.venv_is_current()` checks through an existing PM worker, even when lazy
+installs are disabled. It never bootstraps PM for a probe. If the manager
+runtime is unavailable, it returns false without downloading tools or
+dependencies. Run an explicit `hermes pm install` to prepare PM first.
 
 Native bundles and Docker images stage this same PM lock through the shared
 runtime builder. Termux supplies its verified offline wheelhouse to that
@@ -359,6 +360,11 @@ Use the public `pm` module for Python dependency work:
 | `pm.ensure_environment(name, requirements, explicit=True)` | Prepare and select an isolated dependency generation. Return its Python path. |
 | `pm.ensure_python_tool(name, requirements, executable, explicit=True)` | Prepare an isolated tool and return its executable path. |
 | `pm.environment_python(name)` / `pm.python_tool(name, executable)` | Read selected paths without installing anything. |
+| `pm.venv_is_current()` | Ask a ready PM worker whether application dependencies are current. Return false if the manager runtime is unavailable. |
+
+`pm.stage_manager_runtime(...)` is the bootstrap exception. It stages PM's own
+locked runtime through the direct private engine because that runtime cannot
+build itself through its worker. It does not expose uv to the caller.
 
 `pm.build_env` is the command-line interface for explicit builds and lock work.
 Run `python -m pm.build_env --help` for its supported options. By default, project
@@ -366,8 +372,8 @@ builds use the committed lock. `--resolve` resolves before building. `--python`
 selects an explicit build interpreter. `--sealed` removes build-time `.pth`
 references. `--offline` and `--cache` control dependency acquisition.
 
-PM must already be able to start in the invoking Python. These build commands
-are not an interpreter bootstrap. They do not modify a running application's
+For application environment builds, PM must already be able to start in the
+invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
 remain Nix-owned. Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.

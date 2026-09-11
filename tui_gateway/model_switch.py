@@ -5,15 +5,25 @@ time (method_ctx.bind_module), so they reference server.py globals bare."""
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+logger = logging.getLogger(__name__)
 
 
 def _persist_model_switch(result) -> None:
     # Targeted key writes: a full `model:` block rewrite via save_config() would destroy
     # sibling keys the user set there (`model_slots`, `model_fallback`, ...).
+    # Guard: only persist when a profile-home override is active (#107860); otherwise
+    # get_hermes_home() resolves to the DEFAULT profile and the switch leaks across profiles.
+    from hermes_constants import get_hermes_home_override
+    if not get_hermes_home_override():
+        logger.warning(
+            "Skipping config.yaml persist for model switch: no active profile override. "
+            "The write would target the wrong profile (#107860).")
+        return
     from cli import save_config_value
     save_config_value("model.default", result.new_model)
     save_config_value("model.provider", result.target_provider)

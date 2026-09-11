@@ -579,8 +579,28 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     no ``checkpoint_fullfsync`` — on Darwin an interrupted ``REINDEX``/``VACUUM``/``writable_schema`` rewrite leaves
     half-written b-tree pages. Autocommit (``isolation_level=None``): DDL and ``VACUUM`` are illegal inside an
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
-    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again."""
-    conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again.
+
+    Opened through :func:`hermes_cli.sqlite_safe_read.connect_tracked` so the fd is registered for its whole
+    lifetime: the repair paths hold the strongest locks in the process (``_open_exclusive`` keeps
+    ``locking_mode=EXCLUSIVE`` across the snapshot → strategies → promotion window, and the write-health probe
+    opens a ``BEGIN IMMEDIATE`` reservation). While untracked, every byte-level probe of a *live* state.db — the
+    zeroed-file detector, header verification, kanban's post-commit page check — was allowed to ``open()``/
+    ``close()`` the file, which cancels every POSIX advisory lock this process holds on it
+    (https://sqlite.org/howtocorrupt.html#_posix_advisory_locks_canceled_by_a_separate_thread_doing_close_)
+    and lets an external writer commit into a database the repair still believes it owns (#63386).
+    """
+    try:
+        from hermes_cli.sqlite_safe_read import connect_tracked
+    except ImportError:
+        # Scaffold/embed installs without hermes_cli: the durable connection stays, only the guard is off.
+        logger.debug("hermes_cli.sqlite_safe_read unavailable; opening %s untracked "
+                     "(byte-probe guard inactive in this install)", db_path)
+        conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    else:
+        # Open through THIS module's sqlite3.connect so tests patching it keep control of the fd.
+        conn = connect_tracked(db_path, tracking_path=db_path, connect_fn=sqlite3.connect,
+                               timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 

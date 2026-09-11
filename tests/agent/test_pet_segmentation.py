@@ -103,3 +103,28 @@ def test_row_frames_collapsed_abstains_without_a_reference():
 
 def test_row_frames_collapsed_reports_a_row_with_no_art():
     assert atlas.row_frames_collapsed([_frame(92, 145, opaque=False) for _ in range(6)], (92, 145)) == "row has no visible frames"
+
+
+def test_row_frames_collapsed_rejects_a_uniformly_shrunk_row():
+    # A uniformly shrunk row (reference 92x145, frames ~40x60) walks past a
+    # width-only test scaled by measured height — expected_w = med_h * ref_w /
+    # ref_h is invariant under uniform shrink — yet compose rejects each cell
+    # for being too short once ``validate_atlas`` runs, after every row has been
+    # paid for. Rejecting on EITHER axis closes that gap.
+    reference = (92, 145)
+    reason = atlas.row_frames_collapsed([_frame(40, 60) for _ in range(6)], reference)
+    assert reason is not None and "short" in reason
+
+
+def test_unrelated_segmentation_valueerror_is_not_reclassified(monkeypatch):
+    # A broad ``except ValueError`` around the whole slicing block turns ANY
+    # ValueError into UnsegmentableStripError, which tells the orchestrator to
+    # skip its remaining strict (paid) retries — even when the failure is not in
+    # the art at all. Only the decision points may raise the structural type.
+    def boom(*_args, **_kwargs):
+        raise ValueError("unrelated failure deep in segmentation")
+
+    monkeypatch.setattr(atlas, "_component_crops", boom)
+    with pytest.raises(ValueError) as excinfo:
+        atlas.extract_strip_frames(_strip_of([140] * 6), 6, method="components")
+    assert not isinstance(excinfo.value, atlas.UnsegmentableStripError)

@@ -455,16 +455,31 @@ def _is_multi_pose_outlier(width: int, height: int, med_w: int, med_h: int) -> b
     return width > max(med_w * 3.0, med_w + 96) and height <= med_h * 1.6
 
 
+def collapse_limits(ref_w: int, ref_h: int) -> tuple[int, int]:
+    """Minimum ``(width, height)`` a whole pose may have against a *ref_w* x *ref_h* reference.
+
+    ONE home for the collapse thresholds. :func:`_check_atlas_cells` compares each
+    state's median box against the atlas-wide median; the pre-compose gate
+    (:func:`row_frames_collapsed`) compares a row's median box against the base
+    silhouette. Sharing them keeps the cheap per-row gate from being a strict
+    subset of the expensive post-compose crash, where one bad row sinks the whole
+    atlas after every row has been paid for.
+    """
+    return max(32, round(ref_w * 0.42)), max(40, round(ref_h * 0.50))
+
+
 def row_frames_collapsed(frames: list, reference_size: tuple[int, int] | None = None) -> str | None:
-    """Describe a row whose frames are slivers of a body rather than whole poses, else ``None``.
+    """Describe a row whose frames are fragments of a body rather than whole poses, else ``None``.
 
     Lenient slicing salvages a strip the strict pass rejected by cutting at gutters
-    or equal slots, which can yield thin vertical fragments that still pass
+    or equal slots, which can yield fragments that still pass
     :func:`_validate_extracted_frames` (they match each other, so no frame is a
     *relative* outlier) and only surface once compose's global-median collapse
-    guard rejects the whole atlas — after every row has been paid for. Comparing
-    the row's median frame width against the width the reference silhouette
-    implies at that median height catches that per row.
+    guard rejects the whole atlas — after every row has been paid for. Rejecting on
+    EITHER axis (:func:`collapse_limits` against the reference silhouette) is what
+    makes the gate a superset of that crash: a uniformly shrunk row fails the
+    height floor even though a width-only test scaled by measured height — which is
+    invariant under uniform shrink — would let it pass.
     """
     boxes = [box for f in frames if (box := f.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0).getbbox()) is not None]
     if not boxes:
@@ -475,12 +490,11 @@ def row_frames_collapsed(frames: list, reference_size: tuple[int, int] | None = 
     ref_w, ref_h = reference_size
     if ref_w <= 0 or ref_h <= 0:
         return None
-    # A pose may legitimately be narrower than the reference (a jump tucks the
-    # limbs in, a run leans); only a silhouette far thinner than the character
-    # at the SAME height is a sliver.
-    expected_w = med_h * (ref_w / ref_h)
-    if med_w < expected_w * 0.40:
-        return f"frames are {med_w}x{med_h}px slivers (expected ~{round(expected_w)}px wide for a {ref_w}x{ref_h}px character)"
+    min_w, min_h = collapse_limits(ref_w, ref_h)
+    if med_w < min_w:
+        return f"frames are {med_w}x{med_h}px slivers (expected >={min_w}px wide for a {ref_w}x{ref_h}px character)"
+    if med_h < min_h:
+        return f"frames are {med_w}x{med_h}px too short (expected >={min_h}px tall for a {ref_w}x{ref_h}px character)"
     return None
 
 
@@ -520,23 +534,23 @@ def extract_strip_frames(
     hatching passes ``fit=False`` so :func:`normalize_cells` can register the whole pet with one shared scale.
     """
     strip = remove_background(_load_rgba(strip), chroma_key=chroma_key)
+    frames = _component_crops(strip, frame_count, require_padding=True) or _slot_crops(strip, frame_count, require_padding=True)
+    if frames is None:
+        if method == "components":
+            raise UnsegmentableStripError(f"could not segment {frame_count} padded sprites from strip")
+        frames = _component_crops(strip, frame_count, require_padding=False)
+    if frames is None:
+        frames = _salvage_frames(strip, frame_count)
     try:
-        frames = _component_crops(strip, frame_count, require_padding=True) or _slot_crops(strip, frame_count, require_padding=True)
-        if frames is None:
-            if method == "components":
-                raise UnsegmentableStripError(f"could not segment {frame_count} padded sprites from strip")
-            frames = _component_crops(strip, frame_count, require_padding=False)
-        if frames is None:
-            frames = _salvage_frames(strip, frame_count)
         _validate_extracted_frames(frames, frame_count)
-    except UnsegmentableStripError:
-        raise
     except ValueError as exc:
-        # A strip that fails strict extraction or validation has the defect in
-        # the art itself (merged/touching poses) — lenient slicing can only
-        # forgive it, not fix it. Surface that structurally so the orchestrator
-        # can skip the remaining strict (paid) retries instead of substring-
-        # matching error text (#87739).
+        # A strip that passes slicing but fails validation has the defect in the
+        # art itself (merged/touching poses) — lenient slicing can only forgive
+        # it, not fix it. Surface that structurally so the orchestrator can skip
+        # the remaining strict (paid) retries instead of substring-matching error
+        # text (#87739). Raise the dedicated type HERE, at the decision point,
+        # rather than wrapping the whole block: any other ValueError from the
+        # slicing helpers is a bug, not an unsegmentable strip.
         if method == "components":
             raise UnsegmentableStripError(str(exc)) from exc
         raise
@@ -679,7 +693,8 @@ def _check_atlas_cells(atlas) -> tuple[list[str], list[str], list[str]]:
             errors.append(f"state '{state}' contains a multi-pose frame outlier")
         # Per-state collapse guard: one malformed row must not pass on the
         # strength of the healthy ones.
-        collapsed = med_w < max(32, round(global_med_w * 0.42)) or med_h < max(40, round(global_med_h * 0.50))
+        min_w, min_h = collapse_limits(global_med_w, global_med_h)
+        collapsed = med_w < min_w or med_h < min_h
         if (global_med_w and global_med_h) and collapsed:
             errors.append(f"state '{state}' appears collapsed (median {med_w}x{med_h}px, global median {global_med_w}x{global_med_h}px)")
     data = atlas.tobytes()

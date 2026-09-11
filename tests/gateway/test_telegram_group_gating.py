@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
 
 
@@ -23,6 +23,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     native_mention_only_chats=None,
+    bots_require_mention=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -73,6 +74,8 @@ def _make_adapter(
         # the parent environment; production adapters without this explicit key
         # still fall back to the env var.
         extra["native_mention_only_chats"] = []
+    if bots_require_mention is not None:
+        extra["bots_require_mention"] = bots_require_mention
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -231,7 +234,8 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
 
 
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
-    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
+    from gateway.platforms.base import Platform, SessionSource
+    from gateway.platforms.event import MessageEvent, MessageType
 
     adapter = _make_adapter(
         require_mention=True,
@@ -987,3 +991,56 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def _bot_sender_message(
+    text="hello", *, chat_id=-100, sender_id=555, reply_to_bot=False, entities=None
+):
+    """Group message authored by another bot (is_bot=True, id != this bot's 999)."""
+    msg = _group_message(
+        text,
+        chat_id=chat_id,
+        from_user_id=sender_id,
+        reply_to_bot=reply_to_bot,
+        entities=entities,
+    )
+    msg.from_user.is_bot = True
+    return msg
+
+
+def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
+    """With require_mention alone the quote-reply-to-bot branch returns True unconditionally, so
+    two bots admitting each other's messages answer each other forever. The flag closes exactly
+    that path; a bot message that does @mention this bot still goes through."""
+    loop_adapter = _make_adapter(require_mention=True)
+    assert (
+        loop_adapter._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is True
+    )
+
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    assert (
+        gated._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is False
+    )
+
+    text = "@hermes_bot ping"
+    assert (
+        gated._should_process_message(
+            _bot_sender_message(text, entities=[_mention_entity(text)])
+        )
+        is True
+    )
+
+
+def test_human_reply_unaffected_by_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+
+    assert (
+        gated._should_process_message(_group_message("replying", reply_to_bot=True))
+        is True
+    )

@@ -1,7 +1,10 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
 // `*.request` event the Python side emits while it blocks the agent thread
@@ -103,9 +106,38 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
+// External password-manager unlock (agent/vault_backends). Resolved via
+// vault.unlock.respond {request_id, password}; "" keeps the manager locked.
+export interface VaultUnlockRequest extends KeyedPrompt {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
+const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
+
+// "Save this login" for the page the agent is on (tools/browser_vault_tool). Resolved via
+// vault.save_login.respond {request_id, login: JSON {identifier, password}}; "" declines.
+export interface VaultSaveLoginRequest extends KeyedPrompt {
+  origin: string
+  site: string
+  requestId: string
+}
+
+const vaultSave = keyedPromptStore<VaultSaveLoginRequest>()
+
+// Second-factor code for the page the agent is on. Resolved via vault.code.respond
+// {request_id, code}; "" skips.
+export interface VaultCodeRequest extends KeyedPrompt {
+  site: string
+  hint: string
+  requestId: string
+}
+
+const vaultCode = keyedPromptStore<VaultCodeRequest>()
 
 // Inline approval anchors, keyed by session: a tile's inline bar mounting must
 // not suppress the PRIMARY session's floating fallback (and vice versa).
@@ -119,21 +151,43 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
   setApprovalRequest(request)
 
   if (gateway && request.requestId && request.sessionId) {
-    await gateway.request('approval.received', {
-      request_id: request.requestId,
-      session_id: request.sessionId
-    })
+    try {
+      await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.received', {
+        request_id: request.requestId,
+        session_id: request.sessionId
+      })
+    } catch (error) {
+      if (isSessionGoneForBackgroundPolling(error)) {
+        markSessionGone(request.sessionId)
+
+        return
+      }
+
+      throw error
+    }
   }
 }
 
 export async function replayPendingApproval(gateway: ApprovalGateway | null, sessionId: string | null): Promise<void> {
-  if (!gateway || !sessionId) {
+  if (!gateway || !sessionId || isSessionGone(sessionId)) {
     return
   }
 
-  const rawResult = await gateway.request('approval.pending', {
-    session_id: sessionId
-  })
+  let rawResult: unknown
+
+  try {
+    rawResult = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
+      session_id: sessionId
+    })
+  } catch (error) {
+    if (isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sessionId)
+
+      return
+    }
+
+    throw error
+  }
 
   const result =
     rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
@@ -191,14 +245,44 @@ export const $secretRequest = secret.$active
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
 
+export const $vaultUnlockRequest = vaultUnlock.$active
+export const setVaultUnlockRequest = vaultUnlock.set
+export const clearVaultUnlockRequest = vaultUnlock.clear
+export const $vaultUnlockRequests = vaultUnlock.$all
+export const sessionVaultUnlockRequest = (sessionId: string | null) =>
+  computed(vaultUnlock.$all, all => all[keyFor(sessionId)] ?? null)
+
+export const $vaultSaveLoginRequest = vaultSave.$active
+export const setVaultSaveLoginRequest = vaultSave.set
+export const clearVaultSaveLoginRequest = vaultSave.clear
+export const $vaultSaveLoginRequests = vaultSave.$all
+export const sessionVaultSaveLoginRequest = (sessionId: string | null) =>
+  computed(vaultSave.$all, all => all[keyFor(sessionId)] ?? null)
+
+export const $vaultCodeRequest = vaultCode.$active
+export const setVaultCodeRequest = vaultCode.set
+export const clearVaultCodeRequest = vaultCode.clear
+export const $vaultCodeRequests = vaultCode.$all
+export const sessionVaultCodeRequest = (sessionId: string | null) =>
+  computed(vaultCode.$all, all => all[keyFor(sessionId)] ?? null)
+
 // True when the active session is blocked on the user (clarify question or an
 // approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
 // (agent/pet/state.py): the turn is paused on you, not working — so callers can
 // suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
 // decide, instead of treating the wait as an in-flight turn.
 export const $activeSessionAwaitingInput = computed(
-  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
-  (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
+  [
+    $clarifyRequest,
+    $approvalRequest,
+    $sudoRequest,
+    $secretRequest,
+    $vaultUnlockRequest,
+    $vaultSaveLoginRequest,
+    $vaultCodeRequest
+  ],
+  (clarify, approval, sudo, secret, vault, save, code) =>
+    Boolean(clarify || approval || sudo || secret || vault || save || code)
 )
 
 /** True when `sessionId` is parked on a blocking prompt that typing cannot
@@ -210,28 +294,43 @@ export const $activeSessionAwaitingInput = computed(
 export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
   const key = keyFor(sessionId)
 
-  return Boolean(approval.$all.get()[key] || sudo.$all.get()[key] || secret.$all.get()[key])
+  return Boolean(
+    approval.$all.get()[key] ||
+    sudo.$all.get()[key] ||
+    secret.$all.get()[key] ||
+    vaultUnlock.$all.get()[key] ||
+    vaultSave.$all.get()[key] ||
+    vaultCode.$all.get()[key]
+  )
 }
 
 /** Reactive twin of `hasBlockingPromptRequest`, for the composer's busy-action
  *  affordance (the primary button must advertise queue, not steer, while the
  *  turn is parked on a prompt Enter can't answer). */
 export const sessionBlockingPrompt = (sessionId: string | null) =>
-  computed([approval.$all, sudo.$all, secret.$all], (approvals, sudos, secrets) => {
-    const key = keyFor(sessionId)
+  computed(
+    [approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (approvals, sudos, secrets, vaults, saves, codes) => {
+      const key = keyFor(sessionId)
 
-    return Boolean(approvals[key] || sudos[key] || secrets[key])
-  })
+      return Boolean(approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key])
+    }
+  )
 
 /** Per-session `awaitingInput` — the tile composer's counterpart of
  *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
  *  active one). */
 export function sessionAwaitingInput(sessionId: string | null) {
-  return computed([$clarifyRequests, approval.$all, sudo.$all, secret.$all], (clarify, approvals, sudos, secrets) => {
-    const key = keyFor(sessionId)
+  return computed(
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (clarify, approvals, sudos, secrets, vaults, saves, codes) => {
+      const key = keyFor(sessionId)
 
-    return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
-  })
+      return Boolean(
+        clarify[key] || approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key]
+      )
+    }
+  )
 }
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
@@ -241,6 +340,9 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
+    vaultUnlock.reset()
+    vaultSave.reset()
+    vaultCode.reset()
     $approvalInlineAnchors.set({})
 
     return
@@ -249,4 +351,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
   approval.clear(sessionId)
   sudo.clear(sessionId)
   secret.clear(sessionId)
+  vaultUnlock.clear(sessionId)
+  vaultSave.clear(sessionId)
+  vaultCode.clear(sessionId)
 }

@@ -533,13 +533,63 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
 
 
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check)."""
+    """Unlink a stale PID file, never a running gateway's (#102790).
+
+    The lock probe can falsely report inactive while the sibling
+    ``gateway_state.json`` (or the pid/lock records themselves) still names a
+    live gateway PID — unlinking then makes every liveness surface report a
+    healthy gateway as stopped. All paths resolve against *pid_path*'s dir,
+    never the process-level HERMES_HOME.
+
+    The record checks alone are not synchronized with the unlink: a gateway
+    can hold ``gateway.lock`` while its startup metadata is still empty, or a
+    new owner can acquire the lock after the records are read — both name no
+    PID yet the owner is alive. So the delete itself runs while holding the
+    runtime lock (acquire fails = live owner = refuse), and ``gateway.lock``
+    is never unlinked: it stays the stable rendezvous path.
+    """
     if not cleanup_stale:
         return
-    _clear_running_pid_cache()
-    for path in (pid_path, _get_gateway_lock_path(pid_path)):
+    lock_path = _get_gateway_lock_path(pid_path)
+
+    def _sibling_names_live_gateway() -> bool:
+        # ponytail: extra sibling reads on the cleanup path only; skip if this ever shows in profiles.
         with contextlib.suppress(Exception):
-            path.unlink(missing_ok=True)
+            for record in (
+                _read_pid_record(pid_path),
+                _read_gateway_lock_record(lock_path),
+                _read_json_file(pid_path.with_name(_RUNTIME_STATUS_FILE)),
+            ):
+                if not isinstance(record, dict):
+                    continue
+                if recorded_gateway_home_conflicts(record, expected_home=pid_path.parent):
+                    continue  # Another profile's record never vetoes this profile's cleanup.
+                pid = _live_pid_from_record(record)
+                if pid is not None and _record_matches_live_gateway_pid(record, pid):
+                    return True  # Live gateway owns these files — refuse to unlink.
+        return False
+
+    if _sibling_names_live_gateway():
+        return
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        return
+    try:
+        if not _try_acquire_file_lock(handle):
+            return  # Lock held: a live owner exists even when no record names it yet.
+        try:
+            if _sibling_names_live_gateway():
+                return  # Records published between the first read and the acquire.
+            _clear_running_pid_cache()
+            with contextlib.suppress(Exception):
+                pid_path.unlink(missing_ok=True)
+        finally:
+            _release_file_lock(handle)
+    finally:
+        with contextlib.suppress(OSError):
+            handle.close()
 
 
 def _try_acquire_file_lock(handle) -> bool:

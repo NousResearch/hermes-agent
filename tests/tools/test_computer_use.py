@@ -2511,7 +2511,13 @@ class TestBoundsSpaceNote:
                            bounds=(3771, 0, 69, 60), app="")]
         note = _bounds_space_note(elems, 1455, 791)
         assert note is not None
-        assert "native desktop coordinates" in note
+        # The note must NOT claim coordinate= clicks expect the native space or
+        # suggest scaling raw bounds (#105560): it warns and points at the
+        # reliable paths.
+        assert "NOT screenshot-local" in note
+        assert "element index" in note
+        assert "native desktop coordinates" not in note
+        assert "derive" not in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
@@ -2647,20 +2653,27 @@ class TestCaptureScreenshotPersistence:
 
 
 class TestBoundsScaleField:
-    def test_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
+    def test_no_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use.tool import _capture_response
 
         # Live repro geometry: 1455x791 screenshot, native bounds to 3799.
+        # #105560: a raw-bounds/screenshot mismatch does NOT establish a uniform
+        # scale, so bounds_scale must not be emitted and the summary must not
+        # carry an "estimated scale" hint that sends clicks into the wrong space.
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3730, 0, 69, 60), app="")]
         cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
                             elements=elems, app="chrome.exe",
                             window_title="", png_bytes_len=0)
         out = json.loads(_capture_response(cap))
-        assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
-        assert f"~{out['bounds_scale']}x" in out["summary"]
+        assert out.get("bounds_scale") is None
+        # No "estimated scale ~Nx (screenshot position x N ≈ native coordinate)"
+        # guidance segment and no native-space claim.
+        assert "estimated scale" not in out.get("summary", "")
+        assert "native coordinate" not in out.get("summary", "")
+        assert "element index" in out.get("summary", "")
 
     def test_no_scale_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
@@ -2671,3 +2684,43 @@ class TestBoundsScaleField:
         assert _bounds_scale(elems, 1455, 791) is None
         assert _bounds_scale([], 1455, 791) is None
         assert _bounds_scale(elems, 0, 0) is None
+
+
+class TestIssue105560RawBoundsNotConvertible:
+    """#105560: on Windows, raw UIA element bounds (desktop/offset space) were
+    described as 'native desktop coordinates' with an 'estimated scale' hint,
+    while coordinate=[x,y] is window-local screenshot pixels. The mismatch is
+    not proof of a uniform scale, so no scale may be emitted and the note must
+    not tell the model to derive or scale click points from raw bounds."""
+
+    def test_issue_geometry_yields_no_scale_and_no_bad_guidance(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_hints
+
+        # The issue's exact repro: UIA frame [148,181,190,36] in a 230x156
+        # screenshot space. Old code returned scale 1.47 and claimed
+        # "coordinate= clicks expect the native space".
+        elems = [UIElement(index=0, role="button",
+                           label="Download / Скачать",
+                           bounds=[148, 181, 190, 36], app=None)]
+        scale, note = _bounds_hints(elems, 230, 156)
+
+        assert scale is None
+        assert note is not None
+        # No numeric scale factor, no native-space claim, no derive/scale
+        # instruction (explanatory "dpi scale" as a possible cause is fine).
+        assert "estimated scale" not in note
+        assert "native desktop coordinates" not in note
+        assert "derive" not in note
+        assert "clicks expect the native space" not in note
+        # Warns bounds are not screenshot-local and steers to reliable paths.
+        assert "NOT screenshot-local" in note
+        assert "element index" in note
+
+    def test_fit_still_returns_no_note(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_hints
+
+        elems = [UIElement(index=0, role="button", label="OK",
+                           bounds=[10, 10, 50, 20], app=None)]
+        assert _bounds_hints(elems, 230, 156) == (None, None)

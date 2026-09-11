@@ -107,7 +107,7 @@ class MCPServerRunMixin:
                     return "shutdown"
                 if self._recycle_if_due():
                     return "recycle"
-                if time.monotonic() < next_keepalive:
+                if self._native_config_managed and time.monotonic() < next_keepalive:
                     continue
                 next_keepalive = time.monotonic() + keepalive_interval
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a

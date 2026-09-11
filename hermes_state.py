@@ -1108,6 +1108,10 @@ class SessionDB(
         conn = self._conn
         setconfig = getattr(conn, "setconfig", None)
         if flag is None or setconfig is None:
+            # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
+            # getattr: __init__ binds no retirement capability when either half is missing,
+            # and close() must agree with that decision or the lost handle would neither
+            # setconfig nor pin.
             return False
         try:
             setconfig(flag, True)

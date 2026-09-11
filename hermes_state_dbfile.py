@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import struct
 import sys
@@ -302,19 +303,8 @@ def _parse_sqlite_header(header: bytes) -> Dict[str, Any]:
     return {"valid": True, "page_size": 65536 if raw_page_size == 1 else raw_page_size, **parsed}
 
 
-def _write_json_durably(path: Path, payload: Dict[str, Any]) -> None:
-    part = path.with_name(path.name + ".part")
-    with open(part, "w", encoding="utf-8") as out:
-        json.dump(payload, out, indent=2, sort_keys=True)
-        out.write("\n")
-        out.flush()
-        os.fsync(out.fileno())
-    os.replace(part, path)
-
-
 def capture_retired_wal_generation(
     db_path, *, sidecar_identity: Dict[str, tuple], trigger: str,
-    main_image_max_bytes: int = RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES,
 ) -> Path:
     """Durably capture the lost WAL generation this process still holds open; return the artifact dir.
 
@@ -378,7 +368,7 @@ def capture_retired_wal_generation(
         main_size = os.stat(db_path).st_size
         main: Dict[str, Any] = {"identity": list(_stat_db_file_identity(db_path) or ()) or None,
                                 "size": main_size, "header": _parse_sqlite_header(header)}
-        if main_size <= main_image_max_bytes:
+        if main_size <= RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES:
             main.update(mode="copied", **_copy_main_image(db_path, staging / db_path.name, size=main_size))
         else:
             header_file = staging / (db_path.name + ".header")
@@ -386,13 +376,17 @@ def capture_retired_wal_generation(
             _fsync_path(header_file)
             main.update(mode="header_only", file=header_file.name, bytes=len(header))
         manifest["main"] = main
-        _write_json_durably(staging / RETIRED_GENERATION_MANIFEST, manifest)
+        # Late import: utils pulls agent-side deps; the capture must stay dependency-light.
+        from utils import atomic_json_write
+        atomic_json_write(staging / RETIRED_GENERATION_MANIFEST, manifest, sort_keys=True)
         _fsync_path(staging)
         os.replace(staging, final)
         _fsync_path(final.parent)
     except RetiredGenerationCaptureError:
+        shutil.rmtree(staging, ignore_errors=True)
         raise
     except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
         raise RetiredGenerationCaptureError(
             f"could not write the retired WAL generation of {db_path} under {staging}: {exc}") from exc
     return final

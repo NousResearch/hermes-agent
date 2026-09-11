@@ -92,6 +92,13 @@ const config: Config = {
             from: '/guides/build-a-hermes-plugin',
             to: '/developer-guide/plugins',
           },
+          {
+            // Removed after the Nemotron 3 Ultra free promo ended
+            // (Nebius partnership, June 4-18). Point at the evergreen
+            // Nous Portal walkthrough instead.
+            from: '/guides/run-nemotron-3-ultra-free',
+            to: '/guides/run-hermes-with-nous-portal',
+          },
         ],
       },
     ],

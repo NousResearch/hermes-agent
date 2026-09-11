@@ -57,6 +57,8 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
+    # API responses and legacy state belong to the source profile, not its clone.
+    "response_store.db", "response_store.db-wal", "response_store.db-shm", "hermes_state.db",
     "cron",
 })
 

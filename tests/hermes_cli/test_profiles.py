@@ -190,6 +190,22 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    @pytest.mark.parametrize("source_name", ["default", "source"])
+    def test_clone_all_keeps_runtime_databases_out_of_new_profile(self, profile_env, source_name):
+        source = profile_env / ".hermes" if source_name == "default" else create_profile("source", no_alias=True)
+        databases = ("response_store.db", "response_store.db-wal", "response_store.db-shm", "hermes_state.db")
+        (source / "workspace").mkdir(exist_ok=True)
+        for name in databases:
+            (source / name).write_text("source history")
+            (source / "workspace" / name).write_text("user file")
+
+        cloned = create_profile("fresh", clone_from=source_name, clone_all=True, no_alias=True)
+
+        for name in databases:
+            assert not (cloned / name).exists(), name
+            assert (cloned / "workspace" / name).read_text() == "user file"
+            assert (source / name).read_text() == "source history"
+
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).

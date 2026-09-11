@@ -1421,3 +1421,168 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+DSML_MARKER = "<\uff5cDSML\uff5c"
+
+# Measured verbatim against deepseek.v3.2 on Converse with a single
+# ``get_weather`` tool, "What is the weather in Tokyo?".
+MEASURED_LEAK = ("I'll get the current weather in Tokyo for you.\n\n"
+                 + DSML_MARKER + "function_calls")
+MEASURED_CLEAN = "I'll get the current weather in Tokyo for you."
+
+# Also measured on the non-streaming path: sometimes there is no prose at all
+# and the text block is nothing but whitespace plus the fragment. The cut has to
+# be able to empty the content out.
+MEASURED_LEAK_WITHOUT_PROSE = "\n\n" + DSML_MARKER + "function_calls"
+
+# Three consecutive runs of the same prompt. The marker arrived WHOLE in every
+# one; only the boundaries around it moved.
+MEASURED_DELTA_SPLITS = [
+    ["I'll get the current weather in Tokyo for you.\n\n" + DSML_MARKER + "function",
+     "_calls"],
+    ["I'll get the current weather in Tokyo for you.\n\n" + DSML_MARKER + "function_calls"],
+    ["I'll get the current weather in Tokyo for you.\n\n",
+     DSML_MARKER + "function_calls"],
+]
+
+
+def _leaky_tool_call_stream(text_deltas):
+    """Text deltas first, THEN the toolUse block -- the measured event order."""
+    stream = [{"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}]
+    stream += [{"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": d}}}
+               for d in text_deltas]
+    stream += [
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"contentBlockStart": {"contentBlockIndex": 1, "start": {
+            "toolUse": {"toolUseId": "t1", "name": "get_weather"}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {
+            "toolUse": {"input": '{"city":"Tokyo"}'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 1}},
+        {"messageStop": {"stopReason": "tool_use"}},
+    ]
+    return {"stream": stream}
+
+
+class TestStripToolCallScaffolding:
+    def test_the_delimiter_is_fullwidth_not_an_ascii_pipe(self):
+        """``"|" in "<｜DSML｜function_calls"`` is False. The two render almost
+        identically, so this pins the codepoint rather than the glyph."""
+        assert ord(DSML_MARKER[1]) == 0xFF5C
+        assert "|" not in DSML_MARKER
+
+    def test_the_measured_leak_is_cut_back_to_the_prose(self):
+        from agent.bedrock_adapter import strip_tool_call_scaffolding
+        assert strip_tool_call_scaffolding(MEASURED_LEAK) == MEASURED_CLEAN
+
+    def test_the_leaked_fragment_is_unterminated(self):
+        """Why the cut runs to end-of-text instead of matching a block: Bedrock
+        truncates the scaffolding, so there is no closing tag and no inner
+        element for a balanced-block regex to match."""
+        assert "invoke" not in MEASURED_LEAK
+        assert "parameter" not in MEASURED_LEAK
+        assert "</" not in MEASURED_LEAK
+
+    @pytest.mark.parametrize("text", [
+        "", "plain answer", "a pipe | is fine", "trailing space kept   ",
+        "code: a <b> c </b>",
+    ])
+    def test_text_without_a_marker_is_returned_unchanged(self, text):
+        from agent.bedrock_adapter import strip_tool_call_scaffolding
+        assert strip_tool_call_scaffolding(text) == text
+
+    def test_everything_after_the_marker_goes_not_just_the_marker(self):
+        from agent.bedrock_adapter import strip_tool_call_scaffolding
+        assert strip_tool_call_scaffolding(
+            "answer" + DSML_MARKER + "function_calls trailing junk") == "answer"
+
+    def test_only_the_first_marker_matters(self):
+        from agent.bedrock_adapter import strip_tool_call_scaffolding
+        assert strip_tool_call_scaffolding(
+            "a" + DSML_MARKER + "x" + DSML_MARKER + "y") == "a"
+
+
+class TestScaffoldingDeltaFilter:
+    @pytest.mark.parametrize("deltas", MEASURED_DELTA_SPLITS)
+    def test_every_measured_split_is_caught(self, deltas):
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        shown = "".join(f.feed(d) for d in deltas) + f.flush()
+        assert DSML_MARKER not in shown
+        assert shown.startswith(MEASURED_CLEAN)
+
+    def test_marker_split_one_character_per_delta(self):
+        """SYNTHETIC. Bedrock delivered the marker whole in all 23 runs measured,
+        so this is the defence the hold-back exists for, not a reproduction."""
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        shown = "".join(f.feed(c) for c in ("hi" + DSML_MARKER + "fn")) + f.flush()
+        assert shown == "hi"
+
+    def test_a_partial_marker_that_turns_out_to_be_prose_is_released(self):
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        shown = f.feed("cost is <") + f.feed(DSML_MARKER[1] + " lower") + f.flush()
+        assert shown == "cost is <" + DSML_MARKER[1] + " lower"
+
+    def test_partial_marker_at_end_of_stream_is_emitted_not_eaten(self):
+        """An interrupt or max_tokens can end a stream mid-marker. Showing a few
+        stray characters beats silently losing real output."""
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        assert f.feed("answer" + DSML_MARKER[:4]) + f.flush() == "answer" + DSML_MARKER[:4]
+
+    def test_suppression_persists_across_later_deltas(self):
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        f.feed("a" + DSML_MARKER + "fn")
+        assert f.feed("more junk") == ""
+        assert f.flush() == ""
+
+    def test_a_clean_stream_is_passed_through_verbatim(self):
+        from agent.bedrock_adapter import _ScaffoldingDeltaFilter
+        f = _ScaffoldingDeltaFilter()
+        deltas = ["The ", "weather ", "in Tokyo ", "is fine."]
+        assert "".join(f.feed(d) for d in deltas) + f.flush() == "".join(deltas)
+
+
+class TestScaffoldingLeakThroughPublicEntryPoints:
+    def test_non_streaming_is_cleaned_and_keeps_the_tool_call(self):
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {"output": {"message": {"role": "assistant", "content": [
+            {"text": MEASURED_LEAK},
+            {"toolUse": {"toolUseId": "t1", "name": "get_weather",
+                         "input": {"city": "Tokyo"}}}]}},
+            "stopReason": "tool_use", "usage": {}}
+        msg = normalize_converse_response(response).choices[0].message
+        assert msg.content == MEASURED_CLEAN
+        assert msg.tool_calls[0].function.name == "get_weather"
+
+    def test_text_that_is_nothing_but_scaffolding_becomes_none(self):
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {"output": {"message": {"role": "assistant", "content": [
+            {"text": MEASURED_LEAK_WITHOUT_PROSE},
+            {"toolUse": {"toolUseId": "t1", "name": "get_weather", "input": {}}}]}},
+            "stopReason": "tool_use", "usage": {}}
+        msg = normalize_converse_response(response).choices[0].message
+        assert msg.content is None
+        assert msg.tool_calls
+
+    @pytest.mark.parametrize("deltas", MEASURED_DELTA_SPLITS)
+    def test_streaming_leak_never_reaches_the_display(self, deltas):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        shown = []
+        result = stream_converse_with_callbacks(
+            _leaky_tool_call_stream(deltas), on_text_delta=shown.append)
+        assert DSML_MARKER not in "".join(shown)
+        assert result.choices[0].message.content == MEASURED_CLEAN
+        assert result.choices[0].message.tool_calls
+
+    def test_a_model_that_does_not_leak_streams_identically(self):
+        """The no-op guarantee: a clean stream reaches the display byte for byte."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        shown = []
+        deltas = ["The weather ", "in Tokyo ", "is fine."]
+        stream_converse_with_callbacks(
+            _leaky_tool_call_stream(deltas), on_text_delta=shown.append)
+        assert "".join(shown) == "".join(deltas)

@@ -326,6 +326,55 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    def test_launch_adds_sandbox_flags_when_host_needs_them(self, tmp_path):
+        """Root / Docker / AppArmor-userns hosts need --no-sandbox on THIS launch too.
+
+        agent-browser's own launch receives the flags through AGENT_BROWSER_ARGS, but the
+        real-profile launcher builds Chrome's argv directly. Without them Chrome exits rc=1
+        ("Running as root without --no-sandbox is not supported") before writing
+        DevToolsActivePort, and the caller reports "Chrome exited during startup (another
+        instance may hold the profile copy)" — a red herring that hides the real cause.
+        """
+        import tools.browser_tool as bt
+        self._reset()
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        def launch_argv():
+            captured.clear()
+            with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+                 patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+                 patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+                 patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+                 patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+                 patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                              side_effect=[None, "http://127.0.0.1:41000"]), \
+                 patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+                 patch.object(bt.subprocess, "run", return_value=proc), \
+                 patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+                bt_real_profile._real_profile_cdp()
+            self._reset()
+            return captured["chrome_argv"]
+
+        with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=True):
+            argv = launch_argv()
+        assert "--no-sandbox" in argv
+        assert "--disable-dev-shm-usage" in argv
+
+        with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=False):
+            argv = launch_argv()
+        assert "--no-sandbox" not in argv
+        assert "--disable-dev-shm-usage" not in argv
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

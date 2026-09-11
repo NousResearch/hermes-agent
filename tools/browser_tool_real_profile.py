@@ -163,6 +163,14 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     except OSError:
         pass
     chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
+    # Chromium refuses to start as root, and is unreliable inside Docker or on hosts with
+    # apparmor_restrict_unprivileged_userns=1, unless --no-sandbox is passed. agent-browser's own
+    # launch gets those flags through AGENT_BROWSER_ARGS (_session._apply_chromium_sandbox_args),
+    # but this launch builds argv directly, so it must ask the same question here — otherwise
+    # Chrome exits rc=1 before writing DevToolsActivePort and the caller reports the misleading
+    # "Chrome exited during startup (another instance may hold the profile copy)".
+    if _session._needs_chromium_sandbox_bypass():
+        chrome_argv += ["--no-sandbox", "--disable-dev-shm-usage"]
     _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")

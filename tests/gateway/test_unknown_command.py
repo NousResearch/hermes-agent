@@ -279,7 +279,8 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
+@pytest.mark.parametrize("available", [True, False])
+async def test_command_hook_rewrite_routes_to_plugin(monkeypatch, available):
     """A rewrite decision should re-resolve the command and route to the new one."""
     import gateway.run as gateway_run
 
@@ -309,20 +310,24 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     )
     from hermes_cli import plugins as _plugins_mod
 
-    monkeypatch.setattr(
-        _plugins_mod,
-        "get_plugin_commands",
-        lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
+    manager = PluginManager(scope_key="/tmp/hermes-rewritten-command-test")
+    context = PluginContext(PluginManifest(name="neutral-rewrite", source="user"), manager)
+    handler = MagicMock(side_effect=lambda args: f"metrics {args}")
+    context.register_command(
+        "metricas", handler, description="Metrics", args_hint="dias:7",
+        availability=lambda invocation: available and invocation.execution_kind == "root",
     )
-    monkeypatch.setattr(
-        _plugins_mod,
-        "get_plugin_command_handler",
-        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
-    )
+    monkeypatch.setattr(_plugins_mod, "_ensure_plugins_discovered", lambda: manager)
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert result == "metrics dias:7"
+    if available:
+        assert result == "metrics dias:7"
+        handler.assert_called_once_with("dias:7")
+    else:
+        assert "Unknown command" in result
+        handler.assert_not_called()
+    runner._run_agent.assert_not_awaited()
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]

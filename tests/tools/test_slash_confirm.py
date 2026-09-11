@@ -124,3 +124,15 @@ class TestClearIfStale:
     def test_returns_false_for_missing_entry(self):
         cleared = slash_confirm.clear_if_stale("nobody")
         assert cleared is False
+
+
+class TestResolveNoHandler:
+    @pytest.mark.asyncio
+    async def test_resolve_with_falsy_handler_returns_none(self):
+        """When the stored handler is None/falsy, resolve returns None."""
+        slash_confirm.register("sess1", "cid1", "cmd", None)  # type: ignore[arg-type]
+        result = await slash_confirm.resolve("sess1", "cid1", "once")
+        assert result is None
+        # Entry should still be popped.
+        assert slash_confirm.get_pending("sess1") is None
+

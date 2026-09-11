@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -211,8 +212,18 @@ class ByteRoverMemoryProvider(MemoryProvider):
         """Extract insights from the last 10 user/assistant messages before compression discards them."""
         if not self._auto_extract_enabled("pre-compression flush") or not messages:
             return ""
-        parts = [f"{msg.get('role', '')}: {msg.get('content', '')[:500]}" for msg in messages[-10:]
-                 if msg.get("role", "") in {"user", "assistant"} and isinstance(msg.get("content", ""), str) and msg.get("content", "").strip()]
+        parts = []
+        skip_turn = False
+        # Establish turn state before clipping: a bare skill may precede the window.
+        for index, msg in enumerate(messages):
+            role, content = msg.get("role"), msg.get("content", "")
+            if role not in {"user", "assistant"} or not isinstance(content, str):
+                continue
+            if role == "user":
+                content = extract_user_instruction_from_skill_message(content)
+                skip_turn = not content
+            if index >= len(messages) - 10 and not skip_turn and content.strip():
+                parts.append(f"{role}: {content[:500]}")
         if parts:
             self._curate_in_background("[Pre-compression context]\n" + "\n".join(parts), name="brv-flush", what="pre-compression flush",
                                        on_done=f"ByteRover pre-compression flush: {len(parts)} messages")

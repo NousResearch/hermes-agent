@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from agent.secret_scope import get_secret, is_multiplex_active
 from tools.registry import tool_error
 
@@ -425,8 +426,22 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         if not self._can_write() or not self._session_id:
             return
-        cleaned = [{"role": m.get("role"), "content": content} for m in messages or []
-                   if m.get("role") in {"user", "assistant"} and (content := _clean_text_for_capture(str(m.get("content", ""))))]
+        cleaned = []
+        skip_turn = False
+        for message in messages or []:
+            role = message.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            raw = str(message.get("content", ""))
+            if role == "user":
+                raw = extract_user_instruction_from_skill_message(raw)
+                # A bare skill invocation and its replies carry no user instruction.
+                skip_turn = not raw
+            if skip_turn:
+                continue
+            content = _clean_text_for_capture(raw)
+            if content:
+                cleaned.append({"role": role, "content": content})
         if not cleaned or (len(cleaned) == 1 and len(cleaned[0]["content"]) < 20):
             return
         self._ingest(self._session_id, cleaned, {"message_count": len(cleaned)}, "Supermemory session ingest failed", level=logging.WARNING)

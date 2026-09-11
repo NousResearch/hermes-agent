@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 from utils import is_truthy_value
 from .store import MemoryStore
@@ -247,7 +248,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 content = pre
             elif content is None or is_compaction_summary_message(msg):
                 continue
-            if not isinstance(content, str) or len(content) < 10:
+            content = extract_user_instruction_from_skill_message(content)
+            if not content or len(content) < 10:
                 continue
             for patterns, category in _EXTRACT_CATEGORIES:
                 if any(p.search(content) for p in patterns):

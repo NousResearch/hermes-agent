@@ -15,6 +15,7 @@
 import { getHermesConfigRecord, type McpTestResult, testMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
+import { getServers } from '@/lib/mcp-servers'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
@@ -48,8 +49,10 @@ let timer: ReturnType<typeof setInterval> | null = null
 // Bumped on profile switch; in-flight sweeps compare and bail so a slow
 // profile-A probe can't record (or notify) into profile B's state.
 let sweepEpoch = 0
-// Sweeps are chained, never concurrent — sequential probes, no parallel bursts.
-let sweepChain: Promise<void> = Promise.resolve()
+// At most one sweep runs and one follow-up is remembered. Reconnect storms
+// still request a fresh pass, but cannot append an unbounded backlog.
+let sweepInFlight: Promise<void> | null = null
+let sweepQueued = false
 let offGatewayState: (() => void) | null = null
 let offProfile: (() => void) | null = null
 
@@ -106,10 +109,9 @@ async function sweep(): Promise<void> {
     return
   }
 
-  const raw = config.mcp_servers
-
-  const servers =
-    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, Record<string, unknown>>) : {}
+  // getServers drops non-object entries (a bare `name:` in config.yaml parses
+  // as `null`), so isUrlServer below never reads `.url` off a null entry.
+  const servers = getServers(config)
 
   for (const [name, server] of Object.entries(servers)) {
     if (!isUrlServer(server)) {
@@ -143,7 +145,24 @@ async function sweep(): Promise<void> {
 }
 
 function queueSweep(): void {
-  sweepChain = sweepChain.then(sweep, sweep)
+  if (sweepInFlight) {
+    sweepQueued = true
+
+    return
+  }
+
+  sweepInFlight = sweep()
+
+  const settled = () => {
+    sweepInFlight = null
+
+    if (sweepQueued) {
+      sweepQueued = false
+      queueSweep()
+    }
+  }
+
+  sweepInFlight.then(settled, settled)
 }
 
 function arm(): void {
@@ -156,6 +175,8 @@ function arm(): void {
 }
 
 function disarm(): void {
+  sweepQueued = false
+
   if (timer !== null) {
     clearInterval(timer)
     timer = null

@@ -30,6 +30,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 from cli import HermesCLI
 
 
@@ -167,7 +168,7 @@ class TestToggleYoloEndToEnd:
     def test_toggle_yolo_bypasses_dangerous_command_check(self):
         stand_in = _make_stand_in()
 
-        token = approval_module.set_current_session_key(SESSION_KEY)
+        token = approval_context.set_current_session_key(SESSION_KEY)
         try:
             with patch("cli._cprint"):
                 HermesCLI._toggle_yolo(stand_in)  # YOLO ON
@@ -179,7 +180,7 @@ class TestToggleYoloEndToEnd:
                 f"YOLO toggle should auto-approve dangerous commands, got: {result}"
             )
         finally:
-            approval_module.reset_current_session_key(token)
+            approval_context.reset_current_session_key(token)
 
 
 

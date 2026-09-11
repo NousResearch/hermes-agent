@@ -96,7 +96,7 @@ class _CaptureTransport:
     def __init__(self):
         self.sent = None
         self.sent_platform = None
-        # No concrete fronted identities ⇒ _platform_is_fronted is a no-op here.
+        # No concrete fronted identities ⇒ fronts_platform is a no-op here.
         self._identities = []
 
     def set_inbound_handler(self, h):  # noqa: D401
@@ -109,7 +109,7 @@ class _CaptureTransport:
 
 
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     src = SessionSource(
@@ -123,7 +123,7 @@ def _make_event(chat_id="chan-1", scope_id="scope-9"):
 
 def _make_dm_event(chat_id="dm-1", user_id="user-42"):
     """An inbound DM: no scope_id, carries the authentic author user_id."""
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     src = SessionSource(
@@ -144,7 +144,7 @@ def _make_scoped_event_with_author(
     guild scope_id and an author). Used to prove the adapter re-attaches BOTH
     discriminators so the connector can fall back author-first when the guild
     has no route row (managed agents join guilds dynamically)."""
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     src = SessionSource(
@@ -226,7 +226,7 @@ async def test_send_typing_tags_egress_platform():
     """Phase 1.5: a multi-platform gateway must egress typing through the
     platform the chat lives on, exactly like send() — the underlying platform
     learned from the inbound event tags the frame."""
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     t = _CaptureTransport()

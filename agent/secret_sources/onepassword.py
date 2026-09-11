@@ -1,559 +1,299 @@
 """1Password (`op` CLI) secret source.
 
-Resolve provider credentials from 1Password ``op://vault/item/field``
-references at process startup so they don't have to live in plaintext in
-``~/.hermes/.env``.
-
-Design summary
---------------
-
-* Users map environment-variable names to official 1Password secret
-  references in ``secrets.onepassword.env``::
-
-      secrets:
-        onepassword:
-          enabled: true
-          env:
-            OPENAI_API_KEY: "op://Private/OpenAI/api key"
-            ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
-
-* After ``.env`` loads, each reference is resolved with a single
-  ``op read -- <reference>`` call and injected into ``os.environ`` (the
-  same point in startup as the Bitwarden source).
-* Authentication is whatever the user's ``op`` CLI already uses — a
-  service-account token (``OP_SERVICE_ACCOUNT_TOKEN``) for headless boxes,
-  or a desktop/interactive session (``OP_SESSION_*``).  Hermes never
-  authenticates on the user's behalf; it shells out to an already-trusted,
-  already-authenticated CLI.
-* Failures NEVER block startup.  A missing ``op`` binary, expired auth, a
-  bad reference, or a permission error each surface a one-line warning and
-  Hermes continues with whatever credentials ``.env`` already had.
-
-The atomic-write / ``0600`` / TTL cache mechanics are shared with the other
-backends via :mod:`agent.secret_sources._cache` — successful, complete pulls
-are cached in-process and on disk under ``<hermes_home>/cache/op_cache.json``
-so back-to-back short-lived ``hermes`` invocations don't re-shell ``op`` for
-every reference.  The disk file holds only resolved secret *values*; auth
-material is fingerprinted, never stored.
+Users map env-var names to ``op://vault/item/field`` references in
+``secrets.onepassword.env``; each is resolved with one ``op read -- <ref>``
+call using whatever auth the user's ``op`` already has (``OP_SERVICE_ACCOUNT_TOKEN``
+headless, ``OP_SESSION_*`` interactive) — Hermes never authenticates on the
+user's behalf, and failures never block startup. Complete pulls are cached
+in-process and under ``<hermes_home>/cache/op_cache.json`` (values only; auth
+material is fingerprinted, never stored).
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import shutil
-import subprocess
+import subprocess  # noqa: F401 — tests monkeypatch ``op.subprocess.run``
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from agent.secret_sources._cache import (
-    CachedFetch,
-    DiskCache,
-    FetchResult,
-    is_valid_env_name,
+from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
+from agent.secret_sources.base import (
+    ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
+    get_source_environment, is_valid_env_name, run_cli,
 )
-from agent.secret_sources.base import ErrorKind, SecretSource
-from agent.secret_sources.base import get_source_environment
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Configuration constants
-# ---------------------------------------------------------------------------
-
-# How long to wait for a single `op read`, in seconds.
 _OP_RUN_TIMEOUT = 30
 
-# Default env var the official `op` CLI reads for service-account auth.  Users
-# can point `service_account_token_env` at a different name; we always export
-# the value to the child as OP_SERVICE_ACCOUNT_TOKEN, which is what `op` itself
-# looks for.
+# `op` itself reads OP_SERVICE_ACCOUNT_TOKEN; `service_account_token_env` lets
+# the user source it from another name, and _op_child_env normalizes it back.
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 
-# ANSI stripping for `op` diagnostics we surface uses the shared
-# tools.ansi_strip.strip_ansi (full ECMA-48: CSI, OSC, DCS/SOS/PM/APC,
-# C1) so a control sequence can't reposition the cursor or hide text
-# after a redaction marker.
-
-# Env vars the `op` child actually needs.  We build a minimal allowlisted env
-# rather than copying all of os.environ (which, post-dotenv, holds every
-# provider credential) into the child — tighter blast radius if `op` or
-# anything it execs ever misbehaves.  OP_SESSION_* and the token are added
+# Minimal allowlisted child env (never the full post-dotenv os.environ, which
+# holds every provider credential). OP_SESSION_* and the token are added
 # dynamically in _op_child_env().
 _OP_ENV_ALLOWLIST = (
-    "PATH",
-    "HOME",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "SystemRoot",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "XDG_CONFIG_HOME",
-    "XDG_RUNTIME_DIR",
-    "OP_ACCOUNT",
-    "OP_CONNECT_HOST",
-    "OP_CONNECT_TOKEN",
+    "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
+    "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR",
+    "OP_ACCOUNT", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN",
     # Lets a user skip op's desktop-app integration probe (which can hang with
     # no timeout on a wedged desktop container) and go straight to token auth.
     "OP_LOAD_DESKTOP_APP_SETTINGS",
 )
 
-
-# ---------------------------------------------------------------------------
-# Cache
-# ---------------------------------------------------------------------------
-
-# In-process cache.  The key folds in str(home_path) so a HERMES_HOME switch
-# inside one long-lived process (e.g. the gateway) can't return another
-# profile's secrets from L1.  The disk layer omits home from its serialized
-# key because the file already lives under the home dir (see _disk_key_str).
+# L1 key folds in str(home_path) so a HERMES_HOME switch inside one long-lived
+# process (the gateway) can't return another profile's secrets. The disk key
+# omits home because the file already lives under <home>/cache/.
 _CacheKey = Tuple[str, str, str, str]  # (auth_fp, account, home, refs_fp)
-_CACHE: Dict[_CacheKey, CachedFetch] = {}
-
 _DISK_CACHE_BASENAME = "op_cache.json"
 
 
 def _disk_key_str(cache_key: _CacheKey) -> str:
-    """Serialize a cache key for on-disk storage, omitting home_path.
-
-    The disk file is already partitioned by home (it lives under
-    ``<home>/cache/``), so the path provides the home dimension; folding it
-    into the key string too would be redundant.
-    """
     auth_fp, account, _home, refs_fp = cache_key
     return f"{auth_fp}|{account}|{refs_fp}"
 
 
-_DISK_CACHE: DiskCache = DiskCache(
-    _DISK_CACHE_BASENAME, key_serializer=_disk_key_str
+_STORE: SecretCache[_CacheKey] = SecretCache(_DISK_CACHE_BASENAME, key_serializer=_disk_key_str)
+_CACHE = _STORE.memory  # tests flush L1 directly
+
+_MISSING_BINARY_HINT = (
+    "Install the 1Password CLI (https://developer.1password.com/docs/cli/get-started/) "
+    "or set secrets.onepassword.binary_path."
+)
+
+# First matching rule wins.
+_OP_ERROR_RULES = (
+    (ErrorKind.TIMEOUT, ("timed out",)),
+    (ErrorKind.BINARY_MISSING, ("not found on path", "not an executable", "failed to invoke")),
+    (ErrorKind.AUTH_FAILED, ("unauthorized", "not signed in", "session expired",
+                             "authentication", "401", "403")),
+    (ErrorKind.EMPTY_VALUE, ("empty value",)),
+    (ErrorKind.NETWORK, ("network", "connection", "resolve host", "dns")),
 )
 
 
-def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    """Path to the on-disk cache (exposed for tests and direct callers)."""
-    return _DISK_CACHE.path(home_path)
+def _classify_op_error(message: str) -> ErrorKind:
+    return classify_cli_error(message, _OP_ERROR_RULES)
 
 
-# ---------------------------------------------------------------------------
-# Reference validation + fingerprinting
-# ---------------------------------------------------------------------------
-
-
-def _validate_references(
-    references: Optional[Dict[str, str]],
-) -> Tuple[Dict[str, str], List[str]]:
-    """Return ``(valid_refs, warnings)`` from an ``env`` mapping.
-
-    A reference is kept only if its target env-var name is a valid POSIX
-    name and the value is a stripped ``op://…`` reference string.  Everything
-    else produces a warning and is dropped (never fatal).
-    """
+def _validate_references(references: Optional[Dict[str, str]]) -> Tuple[Dict[str, str], List[str]]:
+    """``(valid_refs, warnings)``: keep valid env names bound to stripped ``op://`` strings."""
     valid: Dict[str, str] = {}
     warnings: List[str] = []
     for name, ref in (references or {}).items():
         if not is_valid_env_name(name):
             warnings.append(f"Skipping {name!r}: not a valid env-var name")
-            continue
-        if not isinstance(ref, str):
+        elif not isinstance(ref, str):
             warnings.append(f"Skipping {name!r}: reference is not a string")
-            continue
-        cleaned = ref.strip()
-        if not cleaned.startswith("op://"):
-            warnings.append(
-                f"Skipping {name!r}: {ref!r} is not an op:// secret reference"
-            )
-            continue
-        valid[name] = cleaned
+        elif not ref.strip().startswith("op://"):
+            warnings.append(f"Skipping {name!r}: {ref!r} is not an op:// secret reference")
+        else:
+            valid[name] = ref.strip()
     return valid, warnings
 
 
 def _auth_fingerprint(token_env: str) -> str:
-    """SHA-256 prefix over the auth material `op` would use.
-
-    Folds in the service-account token, ``OP_ACCOUNT``, the 1Password Connect
-    ``OP_CONNECT_HOST``/``OP_CONNECT_TOKEN``, and *all* ``OP_SESSION_*`` vars
-    (the names `op` actually exports for interactive sessions —
-    ``OP_SESSION_<account_shorthand>``).  Signing out and into a different
-    identity therefore changes the cache key, so a value cached under a
-    previous identity is never served under a new one.  Never logged or
-    displayed; the raw token never leaves this hash.
-    """
+    """SHA-256 prefix over everything `op` would authenticate with (token, account,
+    Connect host/token, ``OP_SESSION_*``), so a new identity never sees old cached values."""
     source_env = get_source_environment()
-    parts: List[str] = [
-        f"token={source_env.get(token_env, '')}",
-        f"account={source_env.get('OP_ACCOUNT', '')}",
-        f"connect_host={source_env.get('OP_CONNECT_HOST', '')}",
-        f"connect_token={source_env.get('OP_CONNECT_TOKEN', '')}",
-    ]
-    for key in sorted(source_env):
-        if key.startswith("OP_SESSION_"):
-            parts.append(f"{key}={source_env[key]}")
-    material = "\n".join(parts)
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    parts: List[str] = [f"{label}={source_env.get(var, '')}" for label, var in (
+        ("token", token_env), ("account", "OP_ACCOUNT"),
+        ("connect_host", "OP_CONNECT_HOST"), ("connect_token", "OP_CONNECT_TOKEN"))]
+    parts += [f"{key}={source_env[key]}" for key in sorted(source_env) if key.startswith("OP_SESSION_")]
+    return _fingerprint("\n".join(parts))
 
 
 def _refs_fingerprint(references: Dict[str, str]) -> str:
-    """SHA-256 prefix over the configured name→reference mapping."""
-    material = "\n".join(f"{name}={references[name]}" for name in sorted(references))
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
-
-
-# ---------------------------------------------------------------------------
-# Binary discovery
-# ---------------------------------------------------------------------------
+    return _fingerprint("\n".join(f"{name}={references[name]}" for name in sorted(references)))
 
 
 def find_op(binary_path: str = "") -> Optional[Path]:
-    """Resolve a usable ``op`` binary, or None.
-
-    When ``binary_path`` is set it is used verbatim and PATH is NOT consulted
-    — pinning an absolute path is a way to avoid trusting whatever ``op`` shows
-    up first on ``PATH``.  A pinned-but-missing path returns None (the caller
-    surfaces a clear error) rather than silently falling back.
-    """
-    if binary_path:
-        pinned = Path(binary_path)
-        if pinned.exists() and os.access(pinned, os.X_OK):
-            return pinned
+    """Resolve a usable ``op`` binary, or None. A pinned ``binary_path`` is used
+    verbatim — pinned-but-missing returns None rather than falling back to PATH."""
+    found = binary_path or shutil.which("op")
+    if not found or (binary_path and not os.access(binary_path, os.X_OK)):
         return None
-    found = shutil.which("op")
-    return Path(found) if found else None
-
-
-# ---------------------------------------------------------------------------
-# `op read` invocation
-# ---------------------------------------------------------------------------
+    return Path(found)
 
 
 def _scrub(text: str) -> str:
-    """Remove ANSI control sequences and trim, for safe message surfacing."""
+    """Full ECMA-48 ANSI strip (so a control sequence can't hide text after a redaction marker) + trim."""
     from tools.ansi_strip import strip_ansi
 
-    # strip_ansi removes well-formed sequences; drop any stray lone ESC too.
     return strip_ansi(text).replace("\x1b", "").strip()
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:
-    """Build a minimal allowlisted environment for the ``op`` child process."""
     source_env = get_source_environment()
-    env: Dict[str, str] = {}
-    for key in _OP_ENV_ALLOWLIST:
-        val = source_env.get(key)
-        if val is not None:
-            env[key] = val
-    # Desktop / interactive session credentials.
-    for key, val in source_env.items():
-        if key.startswith("OP_SESSION_"):
-            env[key] = val
-    # `op` reads OP_SERVICE_ACCOUNT_TOKEN regardless of which env var the user
-    # configured Hermes to source it from, so normalize to that name here.
+    env = {k: source_env[k] for k in _OP_ENV_ALLOWLIST if k in source_env}
+    env.update((k, v) for k, v in source_env.items() if k.startswith("OP_SESSION_"))
     if token_value:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     env["NO_COLOR"] = "1"
     return env
 
 
-def _run_op_read(
-    op: Path,
-    reference: str,
-    *,
-    account: str = "",
-    token_value: str = "",
-) -> str:
-    """Resolve a single ``op://`` reference to its value.
-
-    Raises :class:`RuntimeError` on any failure — including a ``returncode 0``
-    with empty output, which would otherwise silently clobber a good
-    ``.env``/shell credential with ``""``.
-    """
+def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
+    """Resolve one ``op://`` reference; raises ``RuntimeError`` on any failure, including
+    an exit-0 empty value (applying it would clobber a good credential with ``""``)."""
     cmd: List[str] = [str(op), "read"]
     if account:
         cmd += ["--account", account]
-    # `--` terminates option parsing so a reference can never be mis-parsed as
-    # an `op` flag even if validation is ever loosened.
-    cmd += ["--", reference]
+    cmd += ["--", reference]  # `--` so a reference can never parse as an op flag
 
-    try:
-        proc = subprocess.run(  # noqa: S603 — op path is user-trusted, argv list
-            cmd,
-            env=_op_child_env(token_value),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_OP_RUN_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}"
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(f"failed to invoke op: {exc}") from exc
+    proc = run_cli(cmd, env=_op_child_env(token_value), timeout=_OP_RUN_TIMEOUT, label="op",
+                   timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}", stdin=None)
 
     if proc.returncode != 0:
         err = _scrub(proc.stderr or "")[:200]
         if err:
             raise RuntimeError(f"op read failed for {reference!r}: {err}")
-        raise RuntimeError(
-            f"op read exited {proc.returncode} for {reference!r}"
-        )
+        raise RuntimeError(f"op read exited {proc.returncode} for {reference!r}")
 
-    # `op` appends a trailing newline; strip only that so a value with
-    # intentional internal/edge spaces survives.  But a value that is empty or
-    # whitespace-only is treated as empty: applying it would silently clobber a
-    # good .env/shell credential with effectively nothing.
+    # Strip only op's trailing newline so intentional edge spaces survive.
     value = (proc.stdout or "").rstrip("\r\n")
     if not value.strip():
         raise RuntimeError(f"op read returned an empty value for {reference!r}")
     return value
 
 
-# ---------------------------------------------------------------------------
-# Fetch
-# ---------------------------------------------------------------------------
-
-
 def fetch_onepassword_secrets(
-    *,
-    references: Dict[str, str],
-    account: str = "",
-    token_env: str = _DEFAULT_TOKEN_ENV,
-    binary: Optional[Path] = None,
-    binary_path: str = "",
-    use_cache: bool = True,
-    cache_ttl_seconds: float = 300,
-    home_path: Optional[Path] = None,
+    *, references: Dict[str, str], account: str = "", token_env: str = _DEFAULT_TOKEN_ENV,
+    binary: Optional[Path] = None, binary_path: str = "", use_cache: bool = True,
+    cache_ttl_seconds: float = 300, home_path: Optional[Path] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Resolve ``references`` (name → ``op://…``) to ``(secrets, warnings)``.
 
-    Raises :class:`RuntimeError` only when no ``op`` binary is available — a
-    fatal "can't fetch anything" condition.  Per-reference failures (expired
-    auth, bad reference, empty value) are collected as warnings and the
-    reference is dropped, so one bad entry never sinks the rest.
-
-    Only a complete, error-free pull is cached, so a transient auth failure
-    isn't frozen in for the whole TTL window.
+    Raises ``RuntimeError`` only when no ``op`` binary is available; per-ref
+    failures become warnings. Only a complete, error-free pull is cached, so a
+    transient auth failure isn't frozen in for the whole TTL window.
     """
     valid, warnings = _validate_references(references)
     if not valid:
         return {}, warnings
 
     token_value = get_source_environment().get(token_env, "").strip()
-    cache_key: _CacheKey = (
-        _auth_fingerprint(token_env),
-        account or "",
-        str(home_path) if home_path is not None else "",
-        _refs_fingerprint(valid),
-    )
+    cache_key: _CacheKey = (_auth_fingerprint(token_env), account or "",
+                            str(home_path) if home_path is not None else "", _refs_fingerprint(valid))
 
     if use_cache:
-        cached = _CACHE.get(cache_key)
-        if cached and cached.is_fresh(cache_ttl_seconds):
+        cached = _STORE.lookup(cache_key, cache_ttl_seconds, home_path)
+        if cached is not None:
             return dict(cached.secrets), warnings
-        disk_cached = _DISK_CACHE.read(cache_key, cache_ttl_seconds, home_path)
-        if disk_cached is not None:
-            # Promote into L1 so later fetches in this process skip the disk read.
-            _CACHE[cache_key] = disk_cached
-            return dict(disk_cached.secrets), warnings
 
     op = binary or find_op(binary_path)
     if op is None:
-        raise RuntimeError(
-            "op CLI not found.  Install the 1Password CLI "
-            "(https://developer.1password.com/docs/cli/get-started/) or set "
-            "secrets.onepassword.binary_path to its absolute location."
-        )
+        raise RuntimeError("op CLI not found.  Install the 1Password CLI "
+                           "(https://developer.1password.com/docs/cli/get-started/) or set "
+                           "secrets.onepassword.binary_path to its absolute location.")
 
     secrets: Dict[str, str] = {}
     read_errors = 0
     for name in sorted(valid):
         try:
-            secrets[name] = _run_op_read(
-                op, valid[name], account=account, token_value=token_value
-            )
+            secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
         except RuntimeError as exc:
             warnings.append(str(exc))
             read_errors += 1
 
     if use_cache and not read_errors and secrets:
-        entry = CachedFetch(secrets=dict(secrets), fetched_at=time.time())
-        _CACHE[cache_key] = entry
-        _DISK_CACHE.write(cache_key, entry, cache_ttl_seconds, home_path)
+        _STORE.store(cache_key, CachedFetch(secrets=dict(secrets), fetched_at=time.time()),
+                     cache_ttl_seconds, home_path)
 
     return secrets, warnings
 
 
-# ---------------------------------------------------------------------------
-# Public entry point — called from hermes_cli.env_loader
-# ---------------------------------------------------------------------------
+def _missing_binary_error(binary_path: str) -> str:
+    if binary_path:
+        return f"secrets.onepassword.binary_path ({binary_path!r}) is not an executable op binary."
+    return ("secrets.onepassword.enabled is true but the op CLI was not found on PATH.  Install it "
+            "(https://developer.1password.com/docs/cli/get-started/) or set secrets.onepassword.binary_path.")
 
 
 def apply_onepassword_secrets(
-    *,
-    enabled: bool,
-    env: Optional[Dict[str, str]] = None,
-    account: str = "",
-    service_account_token_env: str = _DEFAULT_TOKEN_ENV,
-    binary_path: str = "",
-    override_existing: bool = True,
-    cache_ttl_seconds: float = 300,
-    home_path: Optional[Path] = None,
+    *, enabled: bool, env: Optional[Dict[str, str]] = None, account: str = "",
+    service_account_token_env: str = _DEFAULT_TOKEN_ENV, binary_path: str = "",
+    override_existing: bool = True, cache_ttl_seconds: float = 300, home_path: Optional[Path] = None,
 ) -> FetchResult:
-    """Resolve configured ``op://`` references and set them on ``os.environ``.
-
-    Called by ``load_hermes_dotenv()`` after the .env files have loaded.
-    Intentionally defensive — any failure returns a :class:`FetchResult` with
-    ``error`` set (or surfaces warnings); it never raises.
-
-    Parameters mirror the ``secrets.onepassword.*`` config keys so the caller
-    can splat the dict in.  References that are already satisfied by the
-    current environment (when ``override_existing`` is false) are skipped
-    *before* fetching, so ``op`` is never invoked for a value that would be
-    discarded.
-    """
+    """Resolve configured ``op://`` references and set them on ``os.environ``
+    (``hermes secrets onepassword sync --apply``). Never raises. Refs already
+    satisfied by the env (when ``override_existing`` is false) and the token var
+    are skipped *before* fetching, so ``op`` never runs for a discarded value."""
     result = FetchResult()
-
     if not enabled:
         return result
 
     valid, warnings = _validate_references(env)
     result.warnings.extend(warnings)
 
-    # Skip-before-fetch: never resolve a reference we'd only throw away.
-    refs_to_fetch: Dict[str, str] = {}
-    for name, ref in valid.items():
-        if name == service_account_token_env:
-            # Never let a resolved secret clobber the very token used to auth.
-            result.skipped.append(name)
-            continue
-        if not override_existing and os.environ.get(name):
-            result.skipped.append(name)
-            continue
-        refs_to_fetch[name] = ref
+    def _guarded(name: str) -> bool:
+        """True when ``name`` must not be applied (token var or env already set)."""
+        return name == service_account_token_env or (not override_existing and bool(os.environ.get(name)))
 
+    result.skipped.extend(n for n in valid if _guarded(n))
+    refs_to_fetch = {n: ref for n, ref in valid.items() if not _guarded(n)}
     if not refs_to_fetch:
         return result
 
     binary = find_op(binary_path)
     result.binary_path = binary
     if binary is None:
-        if binary_path:
-            result.error = (
-                f"secrets.onepassword.binary_path ({binary_path!r}) is not an "
-                "executable op binary."
-            )
-        else:
-            result.error = (
-                "secrets.onepassword.enabled is true but the op CLI was not "
-                "found on PATH.  Install it "
-                "(https://developer.1password.com/docs/cli/get-started/) or set "
-                "secrets.onepassword.binary_path."
-            )
+        result.error = _missing_binary_error(binary_path)
         return result
 
     try:
         secrets, fetch_warnings = fetch_onepassword_secrets(
-            references=refs_to_fetch,
-            account=account,
-            token_env=service_account_token_env,
-            binary=binary,
-            cache_ttl_seconds=cache_ttl_seconds,
-            home_path=home_path,
-        )
+            references=refs_to_fetch, account=account, token_env=service_account_token_env,
+            binary=binary, cache_ttl_seconds=cache_ttl_seconds, home_path=home_path)
     except RuntimeError as exc:
         result.error = str(exc)
         return result
 
     result.secrets = secrets
     result.warnings.extend(fetch_warnings)
-
     for name, value in secrets.items():
-        # The token-var and override guards already filtered refs_to_fetch, but
-        # re-check defensively in case the fetch layer ever returns extras.
-        if name == service_account_token_env:
-            if name not in result.skipped:
-                result.skipped.append(name)
-            continue
-        if not override_existing and os.environ.get(name):
+        if _guarded(name):  # defensive re-check: keys should already be ⊆ refs_to_fetch
             if name not in result.skipped:
                 result.skipped.append(name)
             continue
         os.environ[name] = value
         result.applied.append(name)
-
     return result
 
 
-# ---------------------------------------------------------------------------
-# SecretSource adapter — the registry-facing wrapper around this module.
-# ---------------------------------------------------------------------------
-
-
 class OnePasswordSource(SecretSource):
-    """1Password as a registered secret source.
-
-    Thin adapter over the module's fetch machinery.  ``fetch()`` only
-    *fetches* — precedence, override semantics, conflict warnings, and
-    the ``os.environ`` writes are the orchestrator's job
-    (see ``agent.secret_sources.registry.apply_all``).
-
-    1Password is a **mapped** source: the user explicitly binds each env
-    var to an ``op://`` reference under ``secrets.onepassword.env``, so
-    its claims outrank bulk sources (e.g. a Bitwarden project dump) on
-    contested vars.
-    """
+    """1Password as a registered **mapped** source (explicit per-var bindings, so
+    its claims outrank bulk sources on contested vars)."""
 
     name = "onepassword"
     label = "1Password"
     shape = "mapped"
     scheme = "op"
-
-    def override_existing(self, cfg: dict) -> bool:
-        # Default True: an explicit VAR→op:// binding is the strongest
-        # user intent there is — leaving a stale .env line in place
-        # should not silently defeat it (same rotation rationale as
-        # Bitwarden).
-        return bool(isinstance(cfg, dict) and cfg.get("override_existing", True))
-
-    def protected_env_vars(self, cfg: dict):
-        token_env = _DEFAULT_TOKEN_ENV
-        if isinstance(cfg, dict):
-            token_env = str(cfg.get("service_account_token_env") or token_env)
-        return frozenset({token_env})
+    token_env_key = "service_account_token_env"
+    default_token_env = _DEFAULT_TOKEN_ENV
+    # override_existing defaults True: an explicit VAR→op:// binding is the
+    # strongest user intent; a stale .env line must not silently defeat it.
+    override_existing_default = True
+    _AUTH_HINT = ("Run `hermes secrets onepassword token` to paste a fresh service-account token "
+                  "({token_env}), or `op signin` for an interactive session.")
+    remediation_hints = {ErrorKind.AUTH_FAILED: _AUTH_HINT, ErrorKind.AUTH_EXPIRED: _AUTH_HINT,
+                         ErrorKind.BINARY_MISSING: _MISSING_BINARY_HINT}
 
     def config_schema(self) -> dict:
         return {
             "enabled": {"description": "Master switch", "default": False},
-            "env": {
-                "description": "Map of ENV_VAR -> op://vault/item/field reference",
-                "default": {},
-            },
-            "account": {
-                "description": "op --account shorthand (empty = default account)",
-                "default": "",
-            },
-            "service_account_token_env": {
-                "description": "Env var holding the service-account token "
-                               "(unset = desktop/interactive session)",
-                "default": _DEFAULT_TOKEN_ENV,
-            },
-            "binary_path": {
-                "description": "Pin the op binary (empty = resolve via PATH)",
-                "default": "",
-            },
-            "cache_ttl_seconds": {
-                "description": "Disk+memory cache TTL; 0 disables",
-                "default": 300,
-            },
-            "override_existing": {
-                "description": "Resolved values overwrite .env/shell values",
-                "default": True,
-            },
+            "env": {"description": "Map of ENV_VAR -> op://vault/item/field reference", "default": {}},
+            "account": {"description": "op --account shorthand (empty = default account)", "default": ""},
+            "service_account_token_env": {"description": "Env var holding the service-account token "
+                                                         "(unset = desktop/interactive session)",
+                                          "default": _DEFAULT_TOKEN_ENV},
+            "binary_path": {"description": "Pin the op binary (empty = resolve via PATH)", "default": ""},
+            "cache_ttl_seconds": {"description": "Disk+memory cache TTL; 0 disables", "default": 300},
+            "override_existing": {"description": "Resolved values overwrite .env/shell values", "default": True},
         }
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
@@ -561,122 +301,60 @@ class OnePasswordSource(SecretSource):
         result = FetchResult()
 
         env_map = cfg.get("env")
-        valid, warnings = _validate_references(
-            env_map if isinstance(env_map, dict) else None
-        )
+        valid, warnings = _validate_references(env_map if isinstance(env_map, dict) else None)
         result.warnings.extend(warnings)
         if not valid:
             if not warnings:
-                result.error = (
-                    "secrets.onepassword.enabled is true but the env: map is "
-                    "empty.  Add ENV_VAR: op://vault/item/field entries."
-                )
-                result.error_kind = ErrorKind.NOT_CONFIGURED
+                result.fail("secrets.onepassword.enabled is true but the env: map is "
+                            "empty.  Add ENV_VAR: op://vault/item/field entries.", ErrorKind.NOT_CONFIGURED)
             return result
 
         binary_path = str(cfg.get("binary_path") or "")
         binary = find_op(binary_path)
         result.binary_path = binary
         if binary is None:
-            if binary_path:
-                result.error = (
-                    f"secrets.onepassword.binary_path ({binary_path!r}) is "
-                    "not an executable op binary."
-                )
-            else:
-                result.error = (
-                    "secrets.onepassword.enabled is true but the op CLI was "
-                    "not found on PATH.  Install it "
-                    "(https://developer.1password.com/docs/cli/get-started/) "
-                    "or set secrets.onepassword.binary_path."
-                )
-            result.error_kind = ErrorKind.BINARY_MISSING
-            return result
-
-        try:
-            ttl = float(cfg.get("cache_ttl_seconds", 300))
-        except (TypeError, ValueError):
-            ttl = 300.0
+            return result.fail(_missing_binary_error(binary_path), ErrorKind.BINARY_MISSING)
 
         try:
             secrets, fetch_warnings = fetch_onepassword_secrets(
-                references=valid,
-                account=str(cfg.get("account") or ""),
-                token_env=str(
-                    cfg.get("service_account_token_env") or _DEFAULT_TOKEN_ENV
-                ),
-                binary=binary,
-                cache_ttl_seconds=ttl,
-                home_path=home_path,
-            )
+                references=valid, account=str(cfg.get("account") or ""), token_env=self.token_env(cfg),
+                binary=binary, cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
+                home_path=home_path)
         except RuntimeError as exc:
-            result.error = str(exc)
-            result.error_kind = _classify_op_error(str(exc))
-            return result
+            return result.fail(str(exc), _classify_op_error(str(exc)))
 
         result.secrets = secrets
         result.warnings.extend(fetch_warnings)
         return result
 
-    def remediation(self, kind, cfg: dict) -> str:
-        if kind in (ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
-            token_env = _DEFAULT_TOKEN_ENV
-            if isinstance(cfg, dict):
-                token_env = str(cfg.get("service_account_token_env") or token_env)
-            return (
-                "Run `hermes secrets onepassword token` to paste a fresh "
-                f"service-account token ({token_env}), or `op signin` for an "
-                "interactive session."
-            )
-        if kind == ErrorKind.BINARY_MISSING:
-            return (
-                "Install the 1Password CLI "
-                "(https://developer.1password.com/docs/cli/get-started/) or "
-                "set secrets.onepassword.binary_path."
-            )
-        return super().remediation(kind, cfg)
-
-
-def _classify_op_error(message: str) -> ErrorKind:
-    """Best-effort mapping of op failure text onto the shared taxonomy."""
-    lowered = message.lower()
-    if "timed out" in lowered:
-        return ErrorKind.TIMEOUT
-    if "not found on path" in lowered or "not an executable" in lowered \
-            or "failed to invoke" in lowered:
-        return ErrorKind.BINARY_MISSING
-    if any(tok in lowered for tok in ("unauthorized", "not signed in",
-                                      "session expired", "authentication",
-                                      "401", "403")):
-        return ErrorKind.AUTH_FAILED
-    if "empty value" in lowered:
-        return ErrorKind.EMPTY_VALUE
-    if any(tok in lowered for tok in ("network", "connection", "resolve host",
-                                      "dns")):
-        return ErrorKind.NETWORK
-    return ErrorKind.INTERNAL
-
-
-# ---------------------------------------------------------------------------
-# Test hook — used by hermetic tests to flush the cache between cases.
-# ---------------------------------------------------------------------------
-
 
 def clear_caches(home_path: Optional[Path] = None) -> None:
-    """Drop in-process AND disk caches.
-
-    Used after a token rotation (`hermes secrets onepassword token`) so
-    the next startup resolves fresh with the new credential instead of
-    serving values cached under the old token's fingerprint.
-    """
-    _CACHE.clear()
-    _DISK_CACHE.clear(home_path)
+    """Drop in-process AND disk caches (after a token rotation, so the next
+    startup resolves fresh instead of serving values cached under the old token)."""
+    _STORE.clear(home_path)
 
 
-def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
-    """Clear in-process AND disk caches.
+_reset_cache_for_tests = clear_caches
 
-    Tests can pass ``home_path`` to scope the disk cleanup to a tmpdir.
-    Without it we fall back to the same default resolution as the writer.
-    """
-    clear_caches(home_path)
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import hashlib  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'DiskCache': ('agent.secret_sources._cache', 'DiskCache'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

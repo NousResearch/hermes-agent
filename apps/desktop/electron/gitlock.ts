@@ -26,7 +26,10 @@ function gitProcessRunning(): Promise<boolean> {
         ? ['tasklist', ['/FI', 'IMAGENAME eq git.exe', '/FO', 'CSV']]
         : ['pgrep', ['-x', 'git']]
 
-    execFile(cmd, args, { timeout: 10_000 }, (error, stdout) => {
+    // windowsHide: on Windows this tasklist probe runs from the GUI-subsystem
+    // Electron main process, so without it every update-check poll allocates
+    // (and flashes) a visible console window for the child (#96694).
+    execFile(cmd, args, { timeout: 10_000, windowsHide: true }, (error, stdout) => {
       if (process.platform === 'win32') {
         // tasklist exits 0 either way; presence is signaled in stdout.
         resolve(Boolean(stdout && stdout.toLowerCase().includes('git.exe')))

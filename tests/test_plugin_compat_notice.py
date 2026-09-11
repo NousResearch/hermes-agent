@@ -155,11 +155,23 @@ def test_discovery_refreshes_report_file(tmp_path, monkeypatch):
     from hermes_cli.plugins_manifest import PluginManifest
     real = PluginManifest(name="oldpaths", version="0.1", description="t", source="user", path=str(plugin))
     mgr = PluginManager(scope_key=str(tmp_path))
+    real_scan_plugin = pc.scan_plugin
+    scans = 0
+
+    def counting_scan_plugin(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan_plugin(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "scan_plugin", counting_scan_plugin)
     mgr._refresh_plugin_compat_report([real])
     data = json.loads((tmp_path / "r.json").read_text())
     assert list(data["plugins"]) == ["oldpaths"] and data["in_effect"] is False
+    mgr._refresh_plugin_compat_report([real])
+    assert scans == 1
     (plugin / "__init__.py").write_text("from tools.tool_backend_helpers import prefers_gateway\ndef register(ctx):\n    pass\n")
     mgr._refresh_plugin_compat_report([real])
+    assert scans == 2
     assert not (tmp_path / "r.json").exists()
 
 

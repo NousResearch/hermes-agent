@@ -1323,56 +1323,50 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         async def _handler(event):
-            source = event.source
-            # In-process only (serialization ignores dynamic attrs); route ≠ admitting bot.
-            source._authorization_profile_home = default_home
-            if (
-                not getattr(source, "profile", None)
-                and getattr(source, "profile_route_rejected", False) is not True
-                and not self._stamp_routed_profile(source)
-            ):
-                # Read by the ``_handle_message`` ingress gate, which drops fail-closed.
-                source.profile_route_rejected = True
-            profile_home = (
-                self._resolve_profile_home_for_source(source)
-                if getattr(source, "profile", None) else default_home
-            )
+            # A rejected route still enters ``_handle_message``, whose ingress gate drops it fail-closed.
+            profile_home = self._admit_primary_source(event.source, default_home) or default_home
             async with _async_profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 
         return _handler
 
     def _make_default_profile_busy_session_handler(self):
-        """Scope primary busy messages like normal routed messages.
-
-        A primary adapter admits a message under its own allowlist, while a
-        multiplex route can run its session under a secondary profile. Busy
-        callbacks bypass the normal handler, so carry both identities here.
-        """
+        """Busy-path twin of ``_make_default_profile_message_handler``: busy callbacks bypass the message
+        handler, so the routed scope and transport-home authorization must be re-established here or the
+        follow-up is authorized in whatever scope is ambient (#103717)."""
         from gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
 
         async def _handler(event, _session_key):
             source = event.source
-            source._authorization_profile_home = default_home
-            if (
-                not getattr(source, "profile", None)
-                and getattr(source, "profile_route_rejected", False) is not True
-                and not self._stamp_routed_profile(source)
-            ):
-                source.profile_route_rejected = True
-            if getattr(source, "profile_route_rejected", False) is True:
-                return True
-            profile_home = (
-                self._resolve_profile_home_for_source(source)
-                if getattr(source, "profile", None) else default_home
-            )
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return True  # rejected route: swallow, same disposition as the ingress gate
             async with _async_profile_runtime_scope(profile_home):
                 return await self._handle_active_session_busy_message(
                     event, self._session_key_for_source(source)
                 )
 
         return _handler
+
+    def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
+        """Stamp the transport home (authorization) and routed profile on a primary-adapter source and
+        return the runtime home to scope the turn under; ``None`` when the route targets an unserved
+        profile. ``_authorization_profile_home`` is in-process only (serialization ignores dynamic attrs);
+        route ≠ admitting bot."""
+        source._authorization_profile_home = default_home
+        if (
+            not getattr(source, "profile", None)
+            and getattr(source, "profile_route_rejected", False) is not True
+            and not self._stamp_routed_profile(source)
+        ):
+            source.profile_route_rejected = True
+        if getattr(source, "profile_route_rejected", False) is True:
+            return None
+        return (
+            self._resolve_profile_home_for_source(source)
+            if getattr(source, "profile", None) else default_home
+        )
 
     def _stamp_routed_profile(self, source) -> bool:
         """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""

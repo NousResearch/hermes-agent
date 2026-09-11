@@ -58,6 +58,7 @@ class TestBrowserCleanup:
                 return_value={"success": True},
             ) as mock_run,
             patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch("tools.browser_tool_real_profile._terminate_real_profile_chrome") as mock_rp,
         ):
             bt_lifecycle.cleanup_browser("task-1")
 
@@ -65,6 +66,7 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+        mock_rp.assert_called_once_with()
 
 
     def test_emergency_cleanup_clears_all_tracking_state(self):

@@ -459,9 +459,9 @@ export function getLatestSessionMessages(
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
-  const tailScope = { ...connectionScoped(), ...sessionScoped(profile) }
+  const route = { ...connectionScoped(), ...sessionScoped(profile) }
   // Normalize only the lookup key; backfill must replay the original route.
-  const ownerScope = { ...tailScope, connectionId: tailScope.connectionId || ambientOwnerConnectionId() }
+  const owner = { ...route, connectionId: route.connectionId || ambientOwnerConnectionId() }
 
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
@@ -484,11 +484,11 @@ export function getLatestSessionMessages(
     // untagged read there lands on the ambient profile (`'default'` when
     // none is active). `null` is a custom HERMES_HOME and stays distinct.
     const servedProfile = page.profile === undefined ? getApiRequestProfile() || 'default' : page.profile
-    const resolvedOwnerScope = { ...ownerScope, profile: ownerScope.profile || servedProfile }
-    recordTranscriptTail(id, page, tailScope, resolvedOwnerScope)
+    const resolvedOwner = { ...owner, profile: owner.profile || servedProfile }
+    recordTranscriptTail(id, page, route, resolvedOwner)
 
     if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, tailScope, resolvedOwnerScope)
+      recordTranscriptTail(page.session_id, page, route, resolvedOwner)
     }
 
     return page

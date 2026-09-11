@@ -275,6 +275,15 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         interrupt_for_session(
             session_key=str(session_key or "") if _tui_owns_lifecycle else "",
             origin_ui_session_id=_lifecycle_own_sid(session), reason=end_reason)
+    # Session-persistent code kernels (execute_code) share this owner key and must die at the same boundary —
+    # the gateway's /stop and /new paths already clear_session() (approval.py), but a TUI/Desktop session that
+    # ends here otherwise leaves its kernels alive until the NEXT execute_code in this process triggers the
+    # lazy idle sweep, orphaning a live interpreter per finished conversation. Only when the TUI owns the
+    # lifecycle: a viewer tab over a gateway-owned session must not kill the gateway's kernels.
+    if _tui_owns_lifecycle and session_key:
+        with contextlib.suppress(Exception):
+            from tools.approval import clear_session
+            clear_session(str(session_key))
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):

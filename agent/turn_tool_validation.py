@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
+from agent.message_sanitization import coalesce_tool_call_id, mark_interrupted_tool_tail
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -52,9 +52,10 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
 
 def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
-    tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
+    tail; stamp interruption provenance as interrupt aborts do so the API-copy sanitizer
+    closes the next turn's tool→user provider-side (#48879, #63292).
     This path never reaches finalize_turn, so persist here."""
-    close_interrupted_tool_sequence(messages, final_response)
+    mark_interrupted_tool_tail(messages)
     agent._persist_session(messages, conversation_history)
     return {
         "final_response": final_response,

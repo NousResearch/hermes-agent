@@ -394,7 +394,8 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    interrupted_tool_tail INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (

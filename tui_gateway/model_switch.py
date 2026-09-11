@@ -5,10 +5,12 @@ time (method_ctx.bind_module), so they reference server.py globals bare."""
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+logger = logging.getLogger(__name__)
 
 
 def _persist_model_switch(result) -> None:

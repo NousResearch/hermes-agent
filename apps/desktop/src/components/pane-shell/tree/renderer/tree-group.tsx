@@ -500,7 +500,7 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || topEdge) && (
         <div
-          className="flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className={cn('flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)', topEdge && 'relative z-60')}
           data-panel-header=""
           style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
         >

@@ -175,3 +175,53 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
             profile_env.unlink()
         raise
     return profile_env
+def _ensure_local_embedded_runtime() -> bool:
+    """Auto-install the ``hindsight-all`` package when local_embedded mode is
+    configured but the runtime modules are missing.
+
+    ``hindsight-all`` provides the top-level ``hindsight`` module (needed by
+    ``from hindsight import HindsightEmbedded``) plus the embedded daemon and
+    sentence-transformers. The standard ``hindsight-client`` pip dependency in
+    ``plugin.yaml`` only covers cloud / local_external modes.
+
+    Returns True when the embedded runtime is available (either already installed
+    or freshly installed), False if the install was skipped or failed.
+    """
+    try:
+        import hindsight  # noqa: F401
+        import hindsight_embed.daemon_embed_manager  # noqa: F401
+        return True
+    except ImportError:
+        pass
+
+    try:
+        from tools.lazy_deps import install_specs
+        outcome = install_specs(["hindsight-all>=0.6.1"], timeout=180)
+        if outcome.ok:
+            logger.info("hindsight-all installed successfully")
+            import importlib
+            importlib.invalidate_caches()
+            for mod in list(sys.modules.keys()):
+                if mod.startswith(("hindsight", "hindsight_embed", "sentence_transformers")):
+                    sys.modules.pop(mod, None)
+            try:
+                import hindsight  # noqa: F401
+                import hindsight_embed.daemon_embed_manager  # noqa: F401
+                import sentence_transformers  # noqa: F401
+                return True
+            except ImportError as exc:
+                logger.warning("hindsight-all installed but import still fails: %s", exc)
+                return False
+        elif outcome.blocked:
+            logger.warning("Auto-install of hindsight-all unavailable (lazy installs disabled): %s",
+                           outcome.reason)
+        else:
+            logger.warning("Auto-install of hindsight-all failed: %s",
+                           (outcome.stderr or "").strip() or "install error")
+        return False
+    except ImportError:
+        logger.warning("tools.lazy_deps not available for auto-install; cannot install hindsight-all")
+        return False
+    except Exception as exc:
+        logger.warning("Auto-install of hindsight-all raised unexpected error: %s", exc)
+        return False

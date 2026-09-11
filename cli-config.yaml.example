@@ -773,7 +773,8 @@ compression:
 
   # The newest messages keep their full results: this fraction of the context
   # window is the protected verbatim tail (floored at 12000 tokens), and its
-  # message floor/cap derive from `protect_last_n` above so a session of tiny
+  # message safety bounds are internal constants (currently 8-60 messages) and
+  # are deliberately NOT derived from `protect_last_n` above, so a session of tiny
   # messages cannot swallow the whole history into the tail. Default 0.025.
   tool_result_projection_tail_ratio: 0.025
 

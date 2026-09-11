@@ -30,16 +30,21 @@ Invariants (each one has a test in ``tests/agent/test_tool_result_projection.py`
    already carries a ``<persisted-output>`` block is projected only when its existing file
    still verifies (the cache is pruned on a 24h schedule); otherwise its preview stays.
 3. **A protected verbatim tail** keeps the working set live: ``tail_ratio`` of the window
-   (floored), plus a message floor and cap derived from the existing ``protect_last_n`` knob.
+   (floored at 12K tokens), with internal message bounds (8–60) that are deliberately NOT derived
+   from ``compression.protect_last_n`` — that knob governs what a compaction summary keeps, and its
+   default would put most of a tool-heavy session inside the tail.
 4. **Errors, multimodal results, small results, and structured results declaring
    ``projection_safe: false`` are never projected.**
 5. **Monotone and sticky.** A row projected once stays projected and its stub is a pure
    function of the row's own bytes, so the wire prefix is byte-stable between passes: only
    committing a pass costs a prompt-cache break.
-6. **Two phases, and the commit cannot fail halfway.** Phase 1 discovers candidates and decides
-   on estimates without touching disk; phase 2 persists, verifies, and re-checks the economics
-   on what actually survived; then a single in-memory loop rewrites the wire. A declined pass
-   writes nothing, and an unexpected error leaves the request as the assembly produced it.
+6. **Two phases, and the commit cannot fail halfway.** Phase 1 discovers candidates and decides on
+   estimates without touching disk; phase 2 persists, verifies, and re-checks BOTH economic gates
+   on what actually survived (a row that failed verification stays complete in the request, which
+   makes the invalidated region bigger than phase 1 assumed); then a single in-memory loop rewrites
+   the wire. A pass rejected by the pre-persistence gate writes nothing — verification can leave
+   spillover files for rows it then declines, which is the store the tool path uses on the same 24h
+   prune schedule — and an unexpected error leaves the request as the assembly produced it.
 
 Row identity is ``(tool_call_id, content digest)`` — the same key for the dump file and for the
 stickiness set, because a bare ``tool_call_id`` is not unique (imported/merged history carries
@@ -375,25 +380,38 @@ def is_candidate(msg: Any, policy: ProjectionPolicy) -> bool:
 # ── backend / env resolution ─────────────────────────────────────────────────
 
 
-def _backend_is_remote() -> bool:
-    """Whether the configured terminal backend runs the tools somewhere else (fail-soft)."""
+def _backend_is_remote() -> Optional[bool]:
+    """``True`` = remote backend, ``False`` = host-side, ``None`` = could not be determined.
+
+    Tri-state on purpose: assuming "host-side" when resolution fails would be fail-open for exactly
+    the case this check exists for (a plugin- or config-registered remote backend), and the failure
+    mode is a stub pointing at a path the sandbox cannot read. Unknown is treated by the caller as
+    "not confirmed local", so an env is required before anything is projected.
+    """
     try:
         from tools.env_probe import (
             _REMOTE_BACKENDS, _plugin_backend_is_remote, _resolve_terminal_backend,
         )
 
         backend = _resolve_terminal_backend()
-        return backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend)
+        return bool(backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend))
     except Exception:
-        logger.debug("Terminal backend resolution failed; assuming host-side", exc_info=True)
-        return False
+        logger.debug("Terminal backend resolution failed; treating readability as unconfirmed", exc_info=True)
+        return None
 
 
 def _resolve_active_env(agent: Any):
-    """Best-effort live terminal env for this agent, or None."""
+    """Best-effort live terminal env for this agent, or None.
+
+    The sandbox is registered in ``_active_environments`` under the turn's ``effective_task_id``,
+    which the turn prologue stores as ``agent._current_task_id`` (it is a fresh UUID when the caller
+    passes no task id). ``session_id`` is deliberately NOT a fallback: a stale session-scoped id can
+    resolve to a DIFFERENT sandbox, and verifying a path against the wrong sandbox is worse than
+    declining to project.
+    """
     task_id = (
-        getattr(agent, "task_id", None) or getattr(agent, "_task_id", None)
-        or getattr(agent, "session_id", None)
+        getattr(agent, "_current_task_id", None) or getattr(agent, "task_id", None)
+        or getattr(agent, "_task_id", None)
     )
     if not task_id:
         return None
@@ -439,10 +457,15 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
     cache_capable = bool(getattr(agent, "_use_prompt_caching", False))
     if env == "auto":
         env = _resolve_active_env(agent)
-    if _backend_is_remote() and env is None:
-        # A host path is no proof of readability inside Docker/SSH/Modal, and with no sandbox
-        # there is nothing to probe or copy into. Unconfirmed recovery = no projection.
-        logger.debug("Tool-result projection skipped: remote backend with no live env to verify against")
+    backend_remote = _backend_is_remote()
+    if backend_remote is not False and env is None:
+        # A host path is no proof of readability inside Docker/SSH/Modal, and with no sandbox there
+        # is nothing to probe or copy into. `None` (backend could not be resolved) lands here too:
+        # when in doubt this optimization must decline rather than risk a dead pointer.
+        logger.debug(
+            "Tool-result projection skipped: %s backend with no live env to verify against",
+            "remote" if backend_remote else "unresolved",
+        )
         return 0
 
     state = projection_state_for(agent)
@@ -490,7 +513,7 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
     if approved and cache_capable:
         # The rewrite invalidates the cached prefix from the first stub onward, and that region
         # is re-prefilled once. Require the reclaim to cover it.
-        break_cost = _estimate_region_tokens(api_messages, planned)
+        break_cost = _estimate_region_tokens(api_messages, {e["idx"]: e["estimate"] for e in planned})
         approved = fresh_reclaim >= break_cost
         if not approved:
             logger.debug(
@@ -512,14 +535,29 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
         max(0, entry["old_tokens"] - _estimate_tokens([{**entry["msg"], "content": entry["stub"]}]))
         for entry in fresh_stubs
     )
-    # Verification can drop rows (a dead persisted path, a sandbox copy that failed), so the
-    # economics are re-checked on what actually survived before the wire is touched.
-    if real_reclaim < trigger:
-        logger.debug(
-            "Tool-result projection declined after verification: %s reclaimed of %s estimated",
-            f"{real_reclaim:,}", f"{fresh_reclaim:,}",
-        )
-        fresh_stubs = []
+    # Verification can drop rows (a dead persisted path, a sandbox copy that failed). Those rows stay
+    # COMPLETE in the request, so the invalidated region grows and BOTH gates have to be re-checked on
+    # what actually survived — a phase-1 approval assumed every planned row became a stub.
+    if fresh_stubs:
+        declined = real_reclaim < trigger
+        if declined:
+            logger.debug(
+                "Tool-result projection declined after verification: %s reclaimed of %s estimated",
+                f"{real_reclaim:,}", f"{fresh_reclaim:,}",
+            )
+        elif cache_capable:
+            actual_break_cost = _estimate_region_tokens(
+                api_messages, {e["idx"]: e["stub"] for e in fresh_stubs}
+            )
+            if real_reclaim < actual_break_cost:
+                declined = True
+                logger.debug(
+                    "Tool-result projection declined after verification: reclaim %s below the "
+                    "recomputed cache-break cost %s",
+                    f"{real_reclaim:,}", f"{actual_break_cost:,}",
+                )
+        if declined:
+            fresh_stubs = []
     stubs = fresh_stubs + _verified_stubs(sticky_plan, env, fresh=False)
     return _commit(api_messages, stubs, state, reclaimed=real_reclaim)
 
@@ -564,17 +602,19 @@ def _confirmed_stub(entry: Dict[str, Any], env: Any) -> Optional[str]:
     )
 
 
-def _estimate_region_tokens(api_messages: List[Dict[str, Any]], planned: List[Dict[str, Any]]) -> int:
-    """Tokens the provider re-prefills after the rewrite: everything from the first planned stub
-    onward, measured at its POST-projection size — that region is what gets re-processed. Using
-    the pre-projection bytes here overstates the break cost by roughly the whole request and
-    silently disables the pass on every cached route."""
-    if not planned:
+def _estimate_region_tokens(api_messages: List[Dict[str, Any]], replacement: Dict[int, str]) -> int:
+    """Tokens the provider re-prefills after the rewrite: everything from the first replacement
+    onward, measured at its POST-rewrite size — that region is what gets re-processed.
+
+    ``replacement`` maps a row index to the content that will be there. Phase 1 passes the planned
+    stub estimates, phase 2 the verified stubs; measuring pre-rewrite bytes instead would overstate
+    the break by roughly a whole request and silently disable the pass on every cached route.
+    """
+    if not replacement:
         return 0
-    first_index = min(entry["idx"] for entry in planned)
-    stubs = {entry["idx"]: entry["estimate"] for entry in planned}
+    first_index = min(replacement)
     region = [
-        {**msg, "content": stubs[idx]} if idx in stubs else msg
+        {**msg, "content": replacement[idx]} if idx in replacement else msg
         for idx, msg in enumerate(api_messages[first_index:], start=first_index)
     ]
     return _estimate_tokens(region)

@@ -583,8 +583,9 @@ DEFAULT_CONFIG = {
         # projection_safe: false are never projected.
         "tool_result_projection_min_result_chars": 4000,
         # The newest messages keep their full results: this fraction of the context window is the
-        # protected verbatim tail (floored at 12K tokens), with its message floor and cap derived
-        # from protect_last_n so a session of tiny messages cannot swallow the whole history.
+        # protected verbatim tail (floored at 12K tokens), whose message floor and cap are internal
+        # constants (currently 8-60 messages, deliberately NOT derived from protect_last_n) so a
+        # session of tiny messages cannot swallow the whole history.
         "tool_result_projection_tail_ratio": 0.025,
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites

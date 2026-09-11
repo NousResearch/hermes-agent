@@ -13,6 +13,7 @@ Mirrors the construction/patching conventions of
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -342,6 +343,47 @@ def test_remote_backend_declines_when_the_sandbox_cannot_read_it(monkeypatch):
     assert all(not is_projected_tool_result(m["content"]) for m in msgs if m.get("role") == "tool")
 
 
+def test_the_turn_task_id_is_the_key_the_sandbox_registry_uses(monkeypatch):
+    """The sandbox is registered under the turn's ``effective_task_id``, which the turn prologue
+    stores as ``agent._current_task_id`` (it is a fresh UUID when the caller passes no task id).
+    Looking anywhere else — ``session_id`` especially — finds no env, which turns remote support off
+    on the real path while every unit test that hands ``env=`` in explicitly still passes."""
+    from tools.terminal_tool import _active_environments
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    env = _FakeRemoteEnv(readable=True)
+    agent = _agent()
+    agent.session_id = "session-abc"                 # plausible-looking, and NOT the sandbox key
+    agent._current_task_id = "turn-123"
+    assert getattr(agent, "_task_id", None) is None  # the key the first version looked for
+
+    with patch.dict(_active_environments, {"turn-123": env}, clear=True):
+        assert proj._resolve_active_env(agent) is env
+        msgs = _build(16, big_indices=set(range(10)))
+        # end to end, through ``env="auto"``: the remote ladder is actually reachable
+        assert project_stale_tool_results(agent, msgs) >= 4
+        assert _stub_path(_content(msgs, "call_0")).startswith("/root/.hermes/")
+        assert env.probed
+
+
+def test_an_unresolved_backend_is_fail_closed(monkeypatch):
+    """``_backend_is_remote`` is tri-state: if resolution fails we do NOT know the backend is
+    host-side, and assuming it would hand the model a host path it may not be able to open."""
+    # The real resolver, with its import broken, must answer "unknown" — not "local".
+    with patch.dict(sys.modules, {"tools.env_probe": None}):
+        assert proj._backend_is_remote() is None
+
+    msgs = _build(16, big_indices=set(range(10)))
+    with patch.object(proj, "_backend_is_remote", return_value=None):
+        assert project_stale_tool_results(_agent(), msgs, env=None) == 0
+    assert all(not is_projected_tool_result(m["content"]) for m in msgs if m.get("role") == "tool")
+
+    # ...but unknown WITH a live env to probe is fine: readability is still confirmed.
+    msgs = _build(16, big_indices=set(range(10)))
+    with patch.object(proj, "_backend_is_remote", return_value=None):
+        assert project_stale_tool_results(_agent(), msgs, env=_FakeRemoteEnv(readable=True)) >= 4
+
+
 def test_store_ladder_contract():
     """The storage helper is the single place the ladder lives: host path locally, verified
     path on a remote env, and None whenever readability cannot be confirmed."""
@@ -486,6 +528,63 @@ def test_cache_capable_routes_need_a_bigger_pile_of_stale_bytes():
     policy = resolve_policy(_agent(_compressor(tool_result_projection_min_tokens=0)))
     assert trigger_tokens(policy, WINDOW, True) > trigger_tokens(policy, WINDOW, False)
     assert trigger_tokens(policy, 8_000, True) > 0
+
+
+def test_recomputed_break_cost_declines_a_pass_that_verification_shrank():
+    """Phase 1 approves against a region where EVERY planned row became a stub. If verification
+    then drops rows, those rows stay complete in the request, the invalidated region grows, and the
+    reclaim can stop paying for it — so the second gate has to be recomputed, not assumed."""
+    def _build_uneven():
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(14):
+            cid = f"call_{i}"
+            # One huge row sits AFTER the first stub, so dropping it leaves the region that gets
+            # re-prefilled holding its full bytes while the reclaim shrinks.
+            chars = 300_000 if i == 3 else 20_000
+            msgs.append(_assistant_call(cid, args=json.dumps({"path": f"src/f{i}.py"})))
+            msgs.append(_tool_msg(cid, chr(65 + i) * chars))
+        return _with_buffer(msgs)
+
+    cc = _compressor(tool_result_projection_min_tokens=0)
+
+    # Control: with every planned row verified, the same session is projectable.
+    msgs = _build_uneven()
+    assert project_stale_tool_results(_agent(cc, caching=True), msgs) >= 4
+
+    # Now the single largest candidate fails verification. The survivors still clear the
+    # stale-pile trigger, so only a recomputed cache-break cost can stop the commit.
+    msgs = _build_uneven()
+    snapshot = json.dumps(msgs, sort_keys=True)
+    real_confirm = proj._confirmed_stub
+    dropped_keys: list[str] = []
+
+    def _drop_the_big_ones(entry, env):
+        if entry["old_tokens"] > 50_000:
+            dropped_keys.append(entry["key"].token())
+            return None
+        return real_confirm(entry, env)
+
+    estimates = {"n": 0}
+    real_estimate = proj._estimate_region_tokens
+
+    def _counting_estimate(*args, **kwargs):
+        estimates["n"] += 1
+        return real_estimate(*args, **kwargs)
+
+    with patch.object(proj, "_confirmed_stub", side_effect=_drop_the_big_ones), \
+         patch.object(proj, "_estimate_region_tokens", side_effect=_counting_estimate):
+        assert project_stale_tool_results(_agent(cc, caching=True), msgs) == 0
+
+    assert dropped_keys, "the test must actually drop rows in phase 2"
+    assert estimates["n"] == 2, "phase 1 decision + the post-verification recheck"
+    assert json.dumps(msgs, sort_keys=True) == snapshot, "a declined pass must not touch the wire"
+
+
+def test_tail_message_bounds_are_internal_constants():
+    """``protect_last_n`` governs what a compaction summary keeps; deriving the tail from it would
+    put most of a tool-heavy session inside the protected region (its default is 20 messages)."""
+    floor, cap = proj.tail_bounds(resolve_policy(_agent(_compressor(protect_last_n=200))), WINDOW)[1:]
+    assert (floor, cap) == (proj.DEFAULT_TAIL_FLOOR_MESSAGES, proj.DEFAULT_TAIL_MESSAGE_CAP)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

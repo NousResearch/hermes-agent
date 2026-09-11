@@ -132,28 +132,33 @@ def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
     assert external.start_kwargs == {"interval": 13}
 
 
-def test_desktop_ticker_honours_allowlist_and_yields_to_default_multiplexer(monkeypatch, _providers, tmp_path):
-    """The Desktop ticker mirrors the multiplexer's served set (allowlist) and stands down for a
-    satellite the live default multiplexer already ticks — that profile has no gateway.pid of its
-    own, so the per-home liveness check alone lets both tickers race for its fires (#107485)."""
+def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkeypatch, _providers, tmp_path):
+    """The Desktop ticker mirrors the multiplexer's served set (default + every live profile dir)
+    and stands down, per tick, for a profile already owned by a gateway: its own running gateway,
+    or the live default multiplexer that already ticks it — such a satellite has no gateway.pid
+    of its own, so the per-home liveness check alone lets both tickers race for its fires
+    (#107485, #108428)."""
     import hermes_cli.profiles as profiles_mod
     import yaml
 
     _sp, builtin = _providers
     root = tmp_path / ".hermes"
-    for name in ("worker", "guest"):
+    for name in ("worker", "guest", "solo"):
         (root / "profiles" / name).mkdir(parents=True)
-    (root / "config.yaml").write_text(yaml.safe_dump(
-        {"gateway": {"multiplex_profiles": True, "multiplex_profile_allowlist": ["worker"]}}))
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: root / "profiles")
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    monkeypatch.setattr(
+        profiles_mod, "_check_gateway_running", lambda home: home == root / "profiles" / "solo")
     monkeypatch.setattr(profiles_mod, "_served_by_running_multiplexer", lambda name: name == "worker")
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=0)
 
-    assert [name for name, _ in builtin.start_kwargs["profile_homes"]] == ["default", "worker"]
+    assert [name for name, _ in builtin.start_kwargs["profile_homes"]] == [
+        "default", "guest", "solo", "worker"]
     gate = builtin.start_kwargs["profile_gate"]
     assert gate("default", root) is True
+    assert gate("guest", root / "profiles" / "guest") is True
     assert gate("worker", root / "profiles" / "worker") is False
+    assert gate("solo", root / "profiles" / "solo") is False

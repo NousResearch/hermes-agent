@@ -435,7 +435,9 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
 #: toolset on a checklist, an unchecking user's config is byte-identical to one saved before it existed and this
 #: rule would turn the opt-out back on (stuck checkbox). ``check_fn``-gated toolsets cost nothing here; never
 #: probe a remote service from this path — it runs on every CLI start, gateway session and cron tick.
-_RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset()
+#: ``connections`` shipped in #106842 (unreleased at v2026.9.7); empty this set in the release after the
+#: one that ships it, as 76e306c458 did for ``bfl``.
+_RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset({"connections"})
 
 
 def _enable_recently_shipped_toolsets(enabled_toolsets: Set[str], config: dict, platform: str) -> None:

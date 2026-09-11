@@ -974,10 +974,13 @@ class PluginContext:
     def register_skill(
         self, name: str, path: Path, description: str = "",
         frontmatter: Optional[Mapping[str, Any]] = None,
+        *, list_in_awareness: bool = False,
     ) -> PluginRegistration:
         """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``.
-        Not in ``~/.hermes/skills/`` nor ``<available_skills>`` — explicit loads only. Raises
-        ``ValueError`` (``':'``/invalid chars) or ``FileNotFoundError``."""
+        Metadata omitted by native plugins is hydrated from ``SKILL.md``. ``list_in_awareness``
+        opts the namespaced Skill into ``<available_skills>``; explicit-only remains the default.
+        Raises ``ValueError``
+        (``':'``/invalid chars) or ``FileNotFoundError``."""
         from agent.skill_utils import _NAMESPACE_RE
         if ":" in name:
             raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
@@ -990,9 +993,24 @@ class PluginContext:
         qualified = f"{namespace}:{name}"
         if self.manifest.portable and qualified in self._manager._plugin_skills:
             raise ValueError(f"Plugin skill '{qualified}' is already registered")
+        resolved_frontmatter = dict(frontmatter or {})
+        if frontmatter is None or not description:
+            try:
+                from agent.skill_utils import _normalize_skill_description, parse_frontmatter
+                parsed_frontmatter, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+                if frontmatter is None:
+                    resolved_frontmatter = parsed_frontmatter
+                if not description:
+                    description = (
+                        _normalize_skill_description(resolved_frontmatter)
+                        or _normalize_skill_description(parsed_frontmatter)
+                    )
+            except Exception as exc:
+                logger.warning("Could not hydrate plugin skill metadata from %s: %s", path, exc)
         entry = {
             "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "bare_name": name,
-            "description": description, "frontmatter": dict(frontmatter or {}),
+            "description": description, "frontmatter": resolved_frontmatter,
+            "list_in_awareness": bool(list_in_awareness),
         }
         return self._register_entry("skill", qualified, self._manager._plugin_skills, entry,
                                     "Plugin %s registered skill: %s", qualified)
@@ -1459,6 +1477,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             {
                 "name": qualified, "description": str(entry.get("description", "")),
                 "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
+                "list_in_awareness": bool(entry.get("list_in_awareness", False)),
             } for qualified, entry in sorted(self._plugin_skills.items())
         ]
 

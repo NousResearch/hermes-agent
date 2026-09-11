@@ -11,6 +11,43 @@ import pytest
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
+def test_skills_prompt_passes_session_plugin_metadata_and_platform(tmp_path):
+    from agent.system_prompt import _skills_prompt
+
+    plugin_skills = [{"name": "probe:skill", "description": "Plugin", "frontmatter": {}}]
+    agent = _make_agent(
+        valid_tool_names={"skills_list"},
+        platform="telegram",
+        _plugin_skill_metadata=plugin_skills,
+    )
+    with (
+        patch("agent.system_prompt._agent_skills_dir", return_value=tmp_path / "skills"),
+        patch("agent.coding_context.coding_compact_skill_categories", return_value=frozenset()),
+        patch("model_tools.get_toolset_for_tool", return_value="skills"),
+        patch("agent.system_prompt._pb.build_skills_system_prompt", return_value="skills") as build,
+    ):
+        assert _skills_prompt(agent) == "skills"
+
+    assert build.call_args.kwargs["plugin_skills"] == plugin_skills
+    assert build.call_args.kwargs["session_platform"] == "telegram"
+
+
+def test_load_tools_captures_profile_plugin_skill_metadata():
+    from agent.agent_init import _load_tools
+
+    plugin_skills = [{"name": "probe:skill", "description": "Plugin", "frontmatter": {}}]
+    manager = SimpleNamespace(list_plugin_skill_metadata=lambda: plugin_skills)
+    agent = SimpleNamespace(quiet_mode=True)
+    with (
+        patch("hermes_cli.plugins.discover_plugins"),
+        patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+    ):
+        _load_tools(agent, [], [])
+
+    assert agent._plugin_skill_metadata == plugin_skills
+
+
 def _make_agent(**overrides):
     base = dict(
         load_soul_identity=False,

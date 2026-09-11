@@ -1044,9 +1044,13 @@ def _init_fallback_chain(agent, fallback_model):
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
+    agent._plugin_skill_metadata = []
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
+        # Freeze plugin Skill metadata with the same profile-scoped registry snapshot as tools.
+        # The system prompt must remain byte-stable for the life of the conversation.
+        agent._plugin_skill_metadata = get_plugin_manager().list_plugin_skill_metadata()
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 

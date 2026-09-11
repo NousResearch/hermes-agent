@@ -203,6 +203,11 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
+def current_environment_fingerprint() -> Tuple[Tuple[str, bool], ...]:
+    """Current known environment gates for context-sensitive discovery caches."""
+    return tuple((name, _detect_environment(name)) for name in sorted(_ENV_DETECTORS))
+
+
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
 
 

@@ -66,6 +66,31 @@ def _load_cfg(home):
 
 class TestProfileScopedSkills:
 
+    def test_api_reports_active_gated_and_plugin_states(self, client, isolated_profiles, monkeypatch):
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: [
+            {"name": "ready", "description": "", "category": "x",
+             "platform_compatible": True, "environment_compatible": True},
+            {"name": "mac-only", "description": "", "category": "x",
+             "platform_compatible": False, "environment_compatible": True},
+            {"name": "probe:skill", "description": "", "category": "plugin",
+             "platform_compatible": True, "environment_compatible": True,
+             "_source_type": "plugin"},
+        ])
+
+        response = client.get("/api/skills")
+        assert response.status_code == 200
+        rows = {row["name"]: row for row in response.json()}
+
+        assert rows["ready"]["enabled"] is rows["ready"]["available"] is True
+        assert rows["ready"]["gated_by"] is None
+        assert rows["mac-only"]["enabled"] is True
+        assert rows["mac-only"]["available"] is False
+        assert rows["mac-only"]["gated_by"] == "platform"
+        assert rows["probe:skill"]["provenance"] == "plugin"
+        assert "_source_type" not in rows["probe:skill"]
+
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

@@ -54,7 +54,7 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
                     if entry.is_dir(follow_symlinks=False):
                         m = max(m, entry.stat(follow_symlinks=False).st_mtime)
         sig.append((str(d), m))
-    return (tuple(sig), frozenset(disabled), platform)
+    return (tuple(sig), frozenset(disabled), platform, _skill_utils.current_environment_fingerprint())
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)
@@ -184,9 +184,48 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
+def _append_registered_plugin_skills(
+    skills: List[Dict[str, Any]], *, include_gated: bool,
+) -> List[Dict[str, Any]]:
+    """Append unique registered plugin Skills with the listing surface's gate semantics."""
+    result = [dict(skill) for skill in skills]
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+        seen_names = {skill["name"] for skill in result}
+        for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+            frontmatter = plugin_skill.get("frontmatter", {})
+            platform_compatible = skill_matches_platform(frontmatter)
+            environment_compatible = skill_matches_environment(frontmatter)
+            name = plugin_skill["name"]
+            if (name in seen_names or (not include_gated and (
+                    not platform_compatible or not environment_compatible or _is_skill_disabled(name)))):
+                continue
+            row = {
+                **{
+                    key: value for key, value in plugin_skill.items()
+                    if key not in {"frontmatter", "list_in_awareness"}
+                },
+                "description": _truncate_description(plugin_skill.get("description", "")),
+            }
+            if include_gated:
+                row.update(
+                    platform_compatible=platform_compatible,
+                    environment_compatible=environment_compatible,
+                    _source_type="plugin",
+                    _source_display=f"plugin:{name.split(':', 1)[0]}",
+                )
+            result.append(row)
+            seen_names.add(name)
+    except Exception:
+        logger.debug("Plugin skill listing failed", exc_info=True)
+    return result
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    by name; cached per session. ``skip_disabled=True`` is the complete inventory path: it
+    ignores disabled state and retains gated rows with compatibility flags."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -197,7 +236,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return [dict(s) for s in cached[2]]
+        cached_skills = [dict(s) for s in cached[2]]
+        return _append_registered_plugin_skills(cached_skills, include_gated=True) if skip_disabled else cached_skills
     skills = []
     seen_names: set = set()
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
@@ -207,7 +247,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+                platform_compatible = skill_matches_platform(frontmatter)
+                environment_compatible = skill_matches_environment(frontmatter)
+                if not skip_disabled and (not platform_compatible or not environment_compatible):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:
@@ -217,8 +259,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                row = {"name": name, "description": _truncate_description(description),
+                       "category": _get_category_from_path(skill_md)}
+                if skip_disabled:
+                    row.update(platform_compatible=platform_compatible,
+                               environment_compatible=environment_compatible)
+                skills.append(row)
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -226,7 +272,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return [dict(s) for s in skills]
+    result = [dict(s) for s in skills]
+    return _append_registered_plugin_skills(result, include_gated=True) if skip_disabled else result
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -238,17 +285,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
-        try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
-            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
-                frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
-                    continue
-                all_skills.append(plugin_skill)
-        except Exception:
-            logger.debug("Plugin skill listing failed", exc_info=True)
+        all_skills = _append_registered_plugin_skills(_find_all_skills(), include_gated=False)
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})

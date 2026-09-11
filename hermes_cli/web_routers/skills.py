@@ -354,18 +354,30 @@ async def get_skills(profile: Optional[str] = None):
             skills = _find_all_skills(skip_disabled=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > agent, where
+            # without a per-skill manifest read): plugin > hub > bundled > agent, where
             # "agent" covers agent-authored AND local hand-made skills — the ones
             # the user may edit/delete from the UI.
             bundled_names = _read_bundled_manifest_names()
             hub_names = _read_hub_installed_names()
         for s in skills:
             s["enabled"] = s["name"] not in disabled
+            s["available"] = (
+                s["enabled"] and s.get("platform_compatible", True)
+                and s.get("environment_compatible", True)
+            )
+            s["gated_by"] = (
+                "platform" if not s.get("platform_compatible", True)
+                else "environment" if not s.get("environment_compatible", True)
+                else None
+            )
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
-                "hub" if s["name"] in hub_names
+                "plugin" if s.get("_source_type") == "plugin"
+                else "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
                 else "agent")
+            s.pop("_source_type", None)
+            s.pop("_source_display", None)
         return skills
 
     return await asyncio.to_thread(_run)

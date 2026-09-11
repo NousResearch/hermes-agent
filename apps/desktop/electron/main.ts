@@ -1526,6 +1526,17 @@ function promotePoolEntry(entry: any): void {
   entry.localBackendSpawnRequest?.promote?.('foreground')
 }
 
+// A passive read (background tile reconcile, #103375) may only be served by a
+// backend that already exists: it never cold-starts a pooled child, never
+// takes a slot, and never refreshes lastActiveAt, so an open-but-unviewed tile
+// cannot keep the pool saturated. Callers treat the rejection as "nothing to
+// refresh yet"; primary-routed profiles are always warm and never reach here.
+function assertNotPassiveSpawn(passive: boolean, poolKey: string): void {
+  if (passive) {
+    throw new Error(`Passive read: no warm backend for "${poolKey}"`)
+  }
+}
+
 // Land a spawn failure in desktop.log. A background slot-wait timeout is
 // routine under a saturated pool (the next hydration pass retries), so it is
 // logged as such instead of as a backend-start failure.
@@ -11475,9 +11486,10 @@ function profileRouteOptions(profile, request?) {
 // Resolve a backend connection for the given profile, per the routing table in
 // resolveProfileBackendRoute(). An empty / unknown profile resolves to the
 // primary, so legacy callers are unchanged.
-async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnPriority } = {}) {
+async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
+  const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
 
@@ -11508,7 +11520,9 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
+    if (!passive) {
+      existing.lastActiveAt = Date.now()
+    }
 
     if (spawnPriority === 'foreground') {
       promotePoolEntry(existing)
@@ -11520,6 +11534,7 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     return connection
   }
 
+  assertNotPassiveSpawn(passive, key)
   evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
@@ -11564,9 +11579,10 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
+  const passive = Boolean(opts.passive)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
@@ -11623,7 +11639,7 @@ async function ensureRegistryBackend(
   const primary = await reuseMatchingPrimarySshBackend({
     connectionId: id,
     effectiveFingerprint: resolveRegistryEffectiveFingerprint,
-    ensurePrimary: () => ensureBackend(profile, { spawnPriority }),
+    ensurePrimary: () => ensureBackend(profile, { passive, spawnPriority }),
     profile,
     registry,
     source
@@ -11644,7 +11660,7 @@ async function ensureRegistryBackend(
   // Desktop window starts two isolated servers whose transient runtime ids
   // are not interchangeable.
   if (id === registry.primary && source.kind !== 'local' && source.kind !== 'ssh') {
-    const primaryDescriptor = await ensureBackend(profile)
+    const primaryDescriptor = await ensureBackend(profile, { passive })
 
     if (registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)) {
       return {
@@ -11674,7 +11690,7 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { spawnPriority })
+      return ensureBackend(profile, { passive, spawnPriority })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -11686,7 +11702,9 @@ async function ensureRegistryBackend(
     const existingLocal = backendPool.get(localRoute.poolKey)
 
     if (existingLocal) {
-      existingLocal.lastActiveAt = Date.now()
+      if (!passive) {
+        existingLocal.lastActiveAt = Date.now()
+      }
 
       if (spawnPriority === 'foreground') {
         promotePoolEntry(existingLocal)
@@ -11695,6 +11713,7 @@ async function ensureRegistryBackend(
       return existingLocal.connectionPromise
     }
 
+    assertNotPassiveSpawn(passive, localRoute.poolKey)
     evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
@@ -11731,7 +11750,10 @@ async function ensureRegistryBackend(
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
+    if (!passive) {
+      existing.lastActiveAt = Date.now()
+    }
+
     const connectionPromise = existing.connectionPromise
 
     // A remote process can die while its local SSH forward stays LISTENing.
@@ -11743,7 +11765,7 @@ async function ensureRegistryBackend(
         connectionPromise,
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
-        reconnect: () => ensureRegistryBackend(id, profile),
+        reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -11765,6 +11787,7 @@ async function ensureRegistryBackend(
     )
   }
 
+  assertNotPassiveSpawn(passive, key)
   evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
@@ -16590,39 +16613,17 @@ async function dispatchRegistryApiRequest(
   routeProfile = request?.profile,
   requestProfile = request?.profile
 ) {
-  // Passive tile reconcile must never cold-start a pooled backend (#103375):
-  // fail fast when no warm entry exists instead of spawning a child and
-  // starving the pool. Interactive opens (passive:false) keep the normal spawn.
-  if (request?.passive) {
-    const poolKey = backendScopeKey(registryConnectionId, routeProfile)
-    const entry = backendPool.get(poolKey)
-
-    if (!entry) {
-      throw new Error(`Passive read: no warm backend for "${poolKey}"`)
-    }
-
-    const connection = await entry.connectionPromise
-    const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
-
-    const response = await fetchJsonForBackend(connection, requestPath, {
-      method: request?.method,
-      body: request?.body,
-      upload: request?.upload,
-      timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-    })
-
-    return (request?.method || 'GET').toUpperCase() === 'GET'
-      ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
-      : response
-  }
-
   // Claim-guarded (#90812): every registry-scoped REST call funnels through
   // here, so it can race a renderer's own WS reconnect dial for the same
   // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-  // SSH tunnel / remote dashboard.
-  const connection: any = await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-    ensureRegistryBackend(registryConnectionId, routeProfile)
-  )
+  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
+  // OUT of the claim: an interactive open coalescing onto an in-flight
+  // passive read would otherwise inherit its "no warm backend" rejection.
+  const connection: any = request?.passive
+    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+        ensureRegistryBackend(registryConnectionId, routeProfile)
+      )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -16707,26 +16708,7 @@ async function handleHermesApiRequest(request) {
   let response
 
   try {
-    // Passive reads (tile reconciles) must not spawn pool backends (#103375).
-    // If the target is pooled and has no warm entry, fail fast without
-    // consuming a slot; interactive reads keep the normal ensureBackend path.
-    // Primary route (backendProfile === null) always has a backend (startHermes).
-    const isPassivePooled = Boolean(request?.passive && routeProfile && apiRoute.backendProfile)
-
-    let connection
-
-    if (isPassivePooled) {
-      const key = String(routeProfile).trim()
-      const entry = backendPool.get(key) || backendPool.get(backendScopeKey(null, key))
-
-      if (!entry) {
-        throw new Error(`Passive read: no warm backend for profile "${key}"`)
-      }
-
-      connection = await entry.connectionPromise
-    } else {
-      connection = await ensureBackend(routeProfile)
-    }
+    const connection = await ensureBackend(routeProfile, { passive: request?.passive })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`

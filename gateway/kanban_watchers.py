@@ -131,7 +131,7 @@ class GatewayKanbanWatchersMixin:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
-    async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
+    async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task, operational: bool = False) -> None:
         """Upload artifact files referenced by a completed kanban task.
 
         Sources, in priority order: ``event_payload['artifacts']``,
@@ -160,6 +160,15 @@ class GatewayKanbanWatchersMixin:
         from gateway.platforms.base import BasePlatformAdapter
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
+            return
+
+        if operational:
+            # The operational Telegram sender owns both identity verification
+            # and the fixed destination; no profile adapter or topic metadata
+            # is involved in artifact delivery.
+            from tools.operational_sender import send_operational_document
+            for path in candidates:
+                await asyncio.to_thread(send_operational_document, path)
             return
 
         from urllib.parse import quote as _quote

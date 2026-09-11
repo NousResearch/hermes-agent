@@ -146,6 +146,9 @@ _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 def get_default_hermes_root() -> Path:
     """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``."""
     global _default_hermes_root_memo
+    explicit_root = os.environ.get("HERMES_ROOT", "").strip()
+    if explicit_root:
+        return Path(explicit_root).expanduser()
     native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
     memo = _default_hermes_root_memo

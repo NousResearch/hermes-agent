@@ -3492,9 +3492,46 @@ class _StreamingCall(StreamingWaitMonitor):
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
+            if self._unmask_server_error_with_nonstreaming(e):
+                return False
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
         self.result["error"] = e
         return False
+
+    def _unmask_server_error_with_nonstreaming(self, e: Exception) -> bool:
+        """One non-streaming re-issue when a 5xx killed the stream before any delta.
+
+        Some gateways validate the request only on their non-streaming path and crash
+        opaquely ("500 something went wrong") when streaming — the real 4xx, with its
+        actionable message, never reaches the user through stream retries. One
+        non-streaming probe surfaces it: on success the response is delivered and the
+        session flips to non-streaming (the _adopt_final_response latch); on a probe 4xx
+        that error REPLACES the opaque 5xx. Any other probe failure keeps the original
+        error. True = handled (caller must not overwrite result); False = propagate ``e``.
+        """
+        status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+        if not isinstance(status, int) or status < 500 or self.deltas_were_sent["yes"]:
+            return False
+        probe_kwargs = {k: v for k, v in self.api_kwargs.items() if k not in ("stream", "stream_options")}
+        try:
+            probe = interruptible_api_call(self.agent, probe_kwargs)
+        except Exception as probe_err:
+            probe_status = getattr(probe_err, "status_code", None) or getattr(
+                getattr(probe_err, "response", None), "status_code", None)
+            if isinstance(probe_status, int) and probe_status < 500:
+                # The provider's REAL validation error beats the opaque 5xx.
+                logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
+                self.result["error"] = probe_err
+                return True
+            logger.info("Non-streaming unmask probe failed: %s", probe_err)
+            return False
+        logger.info("Streaming 5xx re-issued non-streaming successfully; switching %s/%s to non-streaming.",
+                    self.agent.provider or "unknown", self.agent.model or "unknown")
+        self._quiet(self.agent._buffer_status,
+                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded. "
+                    "Disabling streaming for this session.")
+        self.result["response"] = self._adopt_final_response(probe)
+        return True
 
     def _call_wire(self, stream_attempt_id: int):
         if self.agent.api_mode != "anthropic_messages":

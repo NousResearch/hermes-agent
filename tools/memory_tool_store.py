@@ -3,7 +3,9 @@ Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independe
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
+import difflib
 import logging
+import re
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -61,6 +63,20 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
+
+
+def _fuzzy_candidates(pattern: str, entries: List[str], k: int = 3) -> List[Dict[str, Any]]:
+    """Up to *k* entries most similar to *pattern*, for no-match ``patch`` feedback."""
+    probe = re.sub(r"[.^$*+?{}\[\]\\|()]", " ", pattern).strip().lower() or pattern.lower()
+    scored = [
+        {
+            "snippet": entry[:120] + ("..." if len(entry) > 120 else ""),
+            "confidence": round(difflib.SequenceMatcher(None, probe, entry.lower()).ratio(), 3),
+        }
+        for entry in entries
+    ]
+    scored.sort(key=lambda c: c["confidence"], reverse=True)
+    return scored[:k]
 
 
 class MemoryStore:
@@ -243,6 +259,58 @@ class MemoryStore:
         if scan_error := _scan_memory_content(new_content):
             return _error(scan_error)
         return self._edit(target, old_text.strip(), new_content)
+
+    def patch(self, target: str, pattern: str, new_content: str) -> Dict[str, Any]:
+        """Regex-replace the first matching span inside a memory entry.
+
+        Unlike ``replace`` (exact ``old_text`` substring, whole-entry swap),
+        ``patch`` compiles *pattern* as IGNORECASE|DOTALL and substitutes only
+        the matched span, so whitespace/wording drift does not miss. On no
+        match it returns the closest existing entries. Single-op only.
+        """
+        if not pattern or not pattern.strip():
+            return _error("pattern cannot be empty.")
+        new_content = (new_content or "").strip()
+        if not new_content:
+            return _error("new_content cannot be empty. Use 'remove' to delete entries.")
+        if scan_error := _scan_memory_content(new_content):
+            return _error(scan_error)
+        try:
+            regex = re.compile(pattern, re.IGNORECASE | re.DOTALL)
+        except re.error as e:
+            return _error(f"Invalid regex pattern: {e}")
+
+        patched: List[str] = []
+
+        def _apply(entries, limit):
+            matches = [(i, e) for i, e in enumerate(entries) if regex.search(e)]
+            if not matches:
+                return self._consolidation_failure(_error(
+                    f"No entry matched pattern '{pattern}'.",
+                    candidates=_fuzzy_candidates(pattern, entries)))
+            if len({e for _, e in matches}) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return _error(
+                    f"Pattern '{pattern}' matched multiple entries. Tighten the pattern.",
+                    matches=previews)
+            idx = matches[0][0]
+            # Literal replacement: a lambda stops re.sub from expanding \1 etc.
+            new_entry = regex.sub(lambda _m: new_content, entries[idx], count=1)
+            replaced = entries[:idx] + [new_entry] + entries[idx + 1:]
+            new_total = len(ENTRY_DELIMITER.join(replaced))
+            if new_total > limit:
+                return self._failure_with_entries(target, (
+                    f"Patch would put memory at {new_total:,}/{limit:,} chars. "
+                    f"Shorten the new content, or 'remove' other stale or less "
+                    f"important entries to make room (see current_entries below), "
+                    f"then retry — all in this turn."))
+            patched.append(new_entry)
+            return replaced, "Entry patched."
+
+        result = self._mutate(target, _apply)
+        if result.get("success") is True and patched:
+            result["patched_entry"] = patched[0]
+        return result
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""

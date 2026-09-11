@@ -63,6 +63,7 @@ The agent uses the `memory` tool with these actions:
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
+- **patch** — Rewrite just the matched span inside an entry (uses a regex via `pattern`)
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 
@@ -78,6 +79,20 @@ memory(action="replace", target="memory",
 ```
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
+
+### Regex Patching
+
+`replace` swaps the whole entry and only finds it via an exact `old_text` substring, so it fails whenever the wording or whitespace has drifted. `patch` locates the entry with a regex (`IGNORECASE | DOTALL`) and rewrites only the matched span, leaving the rest of the entry's formatting alone:
+
+```python
+# If memory contains "Deploy target is staging.example.com (rebuild nightly)"
+memory(action="patch", target="memory",
+       pattern=r"staging\.example\.com",
+       content="prod.example.com")
+# -> "Deploy target is prod.example.com (rebuild nightly)"
+```
+
+`content` is inserted literally — backslashes and group references like `\1` are not expanded. If the pattern matches nothing, the response lists the closest existing entries so the pattern can be refined without re-reading the whole store; if it matches several distinct entries, the write is refused and you're asked to tighten it. `patch` is single-op only — it can't appear inside the batch `operations` array.
 
 ## Two Targets Explained
 

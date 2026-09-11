@@ -80,12 +80,14 @@ def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Option
 
 # action -> (store call, gate (summary, detail) text) for the live tool path and staged replay.
 _STORE_ACTIONS = {
-    "add": (lambda store, target, content, old_text: store.add(target, content),
-            lambda label, content, old_text: (f"add to {label}", content or "")),
-    "replace": (lambda store, target, content, old_text: store.replace(target, old_text, content),
-                lambda label, content, old_text: (f"replace in {label}", f"old: {old_text}\nnew: {content}")),
-    "remove": (lambda store, target, content, old_text: store.remove(target, old_text),
-               lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
+    "add": (lambda store, target, content, old_text, pattern=None: store.add(target, content),
+            lambda label, content, old_text, pattern=None: (f"add to {label}", content or "")),
+    "replace": (lambda store, target, content, old_text, pattern=None: store.replace(target, old_text, content),
+                lambda label, content, old_text, pattern=None: (f"replace in {label}", f"old: {old_text}\nnew: {content}")),
+    "remove": (lambda store, target, content, old_text, pattern=None: store.remove(target, old_text),
+               lambda label, content, old_text, pattern=None: (f"remove from {label}", old_text or "")),
+    "patch": (lambda store, target, content, old_text, pattern=None: store.patch(target, pattern or "", content or ""),
+              lambda label, content, old_text, pattern=None: (f"patch {label}", f"pattern: {pattern}\nnew: {content}"))}
 
 
 def _batch_op_line(op: Dict[str, Any]) -> str:
@@ -97,18 +99,21 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],
-                      operations: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      operations: Optional[List[Dict[str, Any]]] = None,
+                      pattern: Optional[str] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(f"apply {len(operations)} op(s) to {label}",
                               "\n".join(_batch_op_line(op) for op in operations),
                               {"action": "batch", "target": target, "operations": operations})
-    return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+    payload = {"action": action, "target": target, "content": content, "old_text": old_text}
+    if action == "patch":
+        payload["pattern"] = pattern
+    return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text, pattern), payload)
 
 
-def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
+def _validate_single_op(store, action, target, content, old_text, pattern=None) -> Optional[str]:
     """Validate BEFORE the gate so an invalid write is rejected now, not at approve time.
     Missing ``old_text`` is recoverable (it can't be schema-required — needs a combinator
     the Codex backend rejects): return the inventory plus a retry instruction."""
@@ -123,13 +128,16 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
+    if action == "patch" and (not pattern or not content):
+        missing = "pattern" if not pattern else "content"
+        return tool_error(f"{missing} is required for 'patch' action.", success=False)
     return None
 
 
-_BG_DELETE_ACTIONS = ("replace", "remove")
+_BG_DELETE_ACTIONS = ("replace", "remove", "patch")
 
 
-def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
+def _background_delete_gate(action, operations, target="memory", content=None, old_text=None, pattern=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
@@ -146,7 +154,8 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
         return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
-               {"action": action, "target": target, "content": content, "old_text": old_text})
+               {"action": action, "target": target, "content": content, "old_text": old_text,
+                **({"pattern": pattern} if action == "patch" else {})})
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
@@ -171,10 +180,11 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                pattern: str = None, store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape)."""
+    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape).
+    ``pattern`` is the regex for the single-op ``patch`` action."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
@@ -196,13 +206,13 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
             return gate_result
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
     if action not in _STORE_ACTIONS:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
-    invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(action, None, target, content, old_text)
-               or _apply_write_gate(action, target, content, old_text))
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, patch", success=False)
+    invalid = (_validate_single_op(store, action, target, content, old_text, pattern)
+               or _background_delete_gate(action, None, target, content, old_text, pattern)
+               or _apply_write_gate(action, target, content, old_text, pattern=pattern))
     if invalid is not None:
         return invalid
-    return json.dumps(_STORE_ACTIONS[action][0](store, target, content, old_text), ensure_ascii=False)
+    return json.dumps(_STORE_ACTIONS[action][0](store, target, content, old_text, pattern), ensure_ascii=False)
 
 
 def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -256,7 +266,9 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
-    return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "")
+    return _STORE_ACTIONS[action][0](
+        store, target, payload.get("content") or "", payload.get("old_text") or "",
+        payload.get("pattern"))
 
 
 MEMORY_SCHEMA = {
@@ -270,7 +282,8 @@ MEMORY_SCHEMA = {
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
+        "single lone change. patch (regex rewrite of a span inside one entry) is single-op "
+        "only — it cannot appear inside operations.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
@@ -290,8 +303,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "replace", "remove", "patch"],
+                "description": "The action to perform (single-op shape). Omit when using 'operations'. patch rewrites a regex-matched span inside one entry."
             },
             "target": {
                 "type": "string",
@@ -309,6 +322,10 @@ MEMORY_SCHEMA = {
             "new_text": {
                 "type": "string",
                 "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
+            },
+            "pattern": {
+                "type": "string",
+                "description": "REQUIRED for 'patch' (single-op only): regex locating the span to rewrite (IGNORECASE | DOTALL). The matched span is replaced; the rest of the entry is kept. Cannot be used inside 'operations'."
             },
             "operations": {
                 "type": "array",
@@ -367,7 +384,7 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""), target=args.get("target", "memory"), store=kw.get("store"),
-        **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
+        **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations", "pattern")}),
     check_fn=check_memory_requirements,
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides)

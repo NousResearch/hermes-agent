@@ -130,7 +130,12 @@ def test_first_attempt_preflight_leaves_non_foundry_untouched(provider, base_url
     assert "annotations" not in _assistant_text_part(kwargs)
 
 
-def test_streaming_retry_preflight_forwards_the_same_azure_context(monkeypatch):
+@pytest.mark.parametrize("provider,base_url", [
+    ("azure-foundry", "https://gateway.corp.example/v1"),
+    ("az", "https://r.openai.azure.com/openai/v1"),
+    ("az", "https://r.services.ai.azure.com/openai/v1"),
+])
+def test_streaming_retry_preflight_forwards_the_same_azure_context(monkeypatch, provider, base_url):
     """``perform_api_call`` re-preflights ``next_api_kwargs`` before streaming; it must
     forward the identical provider/base_url context as the first attempt."""
     from agent import turn_api_call
@@ -143,11 +148,11 @@ def test_streaming_retry_preflight_forwards_the_same_azure_context(monkeypatch):
     real_preflight = transport.preflight_kwargs
 
     def spy(api_kwargs, **kw):
-        seen.update(kw)
+        seen.update(real_preflight(api_kwargs, **kw))
         raise _Stop()
 
     transport.preflight_kwargs = spy
-    agent = _agent(provider="azure-foundry", base_url="https://gateway.corp.example/v1")
+    agent = _agent(provider=provider, base_url=base_url)
     agent._get_transport = lambda: transport
     monkeypatch.setattr(turn_api_call, "_should_stream", lambda a: True)
 
@@ -161,8 +166,5 @@ def test_streaming_retry_preflight_forwards_the_same_azure_context(monkeypatch):
     with pytest.raises(_Stop):
         turn_api_call.perform_api_call(agent, **call_kwargs)
 
-    assert seen["is_azure_foundry"] is True
-    assert seen["provider"] == "azure-foundry"
-    assert seen["base_url"] == "https://gateway.corp.example/v1"
-    # And the real preflight with that context keeps the id.
-    assert _reasoning(real_preflight(dict(_REASONING_KWARGS), **seen))["id"] == "rs_live"
+    assert _reasoning(seen)["id"] == "rs_live"
+    assert _assistant_text_part(seen)["annotations"] == []

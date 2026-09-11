@@ -1730,7 +1730,7 @@ class TestAzureFoundryWireShape:
         )
         return msg["content"][0]
 
-    # ── Detection: provider id and host must agree ────────────────────
+    # ── Wire shape uses the shared Azure Responses classification ────
 
     @pytest.mark.parametrize(
         "base_url,provider",
@@ -1741,8 +1741,7 @@ class TestAzureFoundryWireShape:
             ("https://R.OPENAI.AZURE.COM/openai/v1", None),
             # Provider-detected: a registered azure-foundry entry behind a gateway/proxy
             # URL is still Foundry and still needs the id. Regression guard for the
-            # two-predicate drift where post-tool suppression saw Foundry but the wire
-            # shape did not.
+            # host-only wire-shape detection that missed registered providers.
             ("https://gateway.corp.example/v1", "azure-foundry"),
             ("", "azure-foundry"),
         ],
@@ -1792,16 +1791,23 @@ class TestAzureFoundryWireShape:
             ({}, False),
         ],
     )
-    def test_foundry_predicate(self, params, expected):
-        from agent.transports.codex import _is_azure_foundry_responses
+    def test_azure_wire_shape_predicate(self, params, expected):
+        from agent.transports.codex import _is_azure_responses
 
-        assert _is_azure_foundry_responses(params) is expected
+        assert _is_azure_responses(params) is expected
 
-    def test_post_tool_suppression_and_wire_shape_agree(self, transport):
-        """Suppression and wire shape key off the same predicate: a Foundry provider
-        behind a proxy gets BOTH behaviours (id on non-tool turns, no encrypted
-        reasoning replay on the post-tool turn)."""
-        params = {"base_url": "https://gateway.corp.example/v1", "provider": "azure-foundry"}
+    @pytest.mark.parametrize("provider,base_url,suppressed", [
+        ("azure-foundry", "https://gateway.corp.example/v1", True),
+        ("az", "https://r.services.ai.azure.com/openai/v1", True),
+        ("az", "https://r.openai.azure.com/openai/v1", False),
+    ])
+    def test_wire_shape_preserves_upstream_post_tool_policy(self, transport, provider, base_url, suppressed):
+        """Wire-shape repair must not broaden main's narrower post-tool suppression.
+
+        Resource hosts under a custom provider still replay the newest reasoning;
+        registered Foundry providers and project gateways suppress it after tools.
+        """
+        params = {"base_url": base_url, "provider": provider}
         kw = transport.build_kwargs("gpt-5.5", self._reasoning_history(), [], **params)
         assert self._reasoning_item(kw)["id"] == "rs_1"
 
@@ -1816,7 +1822,13 @@ class TestAzureFoundryWireShape:
             {"role": "tool", "tool_call_id": "call_1", "content": "done"},
         ]
         kw = transport.build_kwargs("gpt-5.5", post_tool, [], **params)
-        assert not [i for i in kw["input"] if i.get("type") == "reasoning"]
+        reasoning = [i for i in kw["input"] if i.get("type") == "reasoning"]
+        if suppressed:
+            assert reasoning == []
+            assert kw["include"] == []
+        else:
+            assert reasoning == [{"type": "reasoning", "id": "rs_2", "encrypted_content": "enc", "summary": []}]
+            assert kw["include"] == ["reasoning.encrypted_content"]
 
     # ── preflight ─────────────────────────────────────────────────────
 

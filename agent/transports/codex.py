@@ -352,19 +352,12 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
 
 
 def _is_azure_foundry_responses(params: dict[str, Any]) -> bool:
-    """True for Microsoft Foundry's Responses API (provider id, else host match — not substring).
-
-    Single Foundry predicate for the transport: post-tool reasoning suppression and the
-    Foundry wire shape (reasoning ``id``, ``annotations`` on ``output_text``) both key off it,
-    and it must agree with the auxiliary client's host list (#63257). Both Foundry hostnames
-    count — ``services.ai.azure.com`` and the ``openai.azure.com`` resource endpoints.
-    """
+    """True for Microsoft Foundry's Responses API (provider id, else host match — not substring)."""
     from utils import base_url_host_matches
 
     if str(params.get("provider") or "").strip().lower() == "azure-foundry":
         return True
-    url = str(params.get("base_url") or "")
-    return base_url_host_matches(url, "services.ai.azure.com") or base_url_host_matches(url, "openai.azure.com")
+    return base_url_host_matches(str(params.get("base_url") or ""), "services.ai.azure.com")
 
 
 def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
@@ -522,7 +515,7 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
-            is_azure_foundry=kwargs.get("is_azure_foundry") is True or _is_azure_foundry_responses(kwargs),
+            is_azure_foundry=kwargs.get("is_azure_foundry") is True or _is_azure_responses(kwargs),
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
@@ -571,7 +564,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
-        is_azure_foundry = _is_azure_foundry_responses(params)
+        is_azure_foundry = _is_azure_responses(params)
         # Foundry 400s on encrypted-reasoning replay only in the post-tool follow-up turn.
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
             _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
@@ -750,7 +743,7 @@ class ResponsesApiTransport(ProviderTransport):
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
-        is_azure_foundry = is_azure_foundry or _is_azure_foundry_responses(
+        is_azure_foundry = is_azure_foundry or _is_azure_responses(
             {"provider": provider, "base_url": base_url}
         )
         normalized = _preflight_codex_api_kwargs(

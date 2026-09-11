@@ -351,7 +351,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -369,7 +369,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -409,6 +409,200 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+
+class TestBundledResourceEnvPropagation:
+    """#85357: launchd/systemd start the venv python directly, bypassing the
+    ``hermes`` wrapper, so the generated unit must carry the wrapper's
+    ``HERMES_BUNDLED_*`` resource pointers or a Homebrew/Nix-supervised gateway
+    finds zero bundled plugins ("No adapter available for <platform>")."""
+
+    _RESOURCE_VARS = (
+        "HERMES_BUNDLED_PLUGINS",
+        "HERMES_BUNDLED_SKILLS",
+        "HERMES_BUNDLED_LOCALES",
+        "HERMES_OPTIONAL_SKILLS",
+        "HERMES_TUI_DIR",
+    )
+
+    def _clear(self, monkeypatch):
+        for name in self._RESOURCE_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+    def test_launchd_plist_propagates_bundled_resource_env(self, tmp_path, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "absent.plist"
+        )
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "/opt/homebrew/share/hermes-agent/plugins")
+        monkeypatch.setenv("HERMES_TUI_DIR", "/opt/homebrew/share/hermes-agent/tui")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>HERMES_BUNDLED_PLUGINS</key>" in plist
+        assert "<string>/opt/homebrew/share/hermes-agent/plugins</string>" in plist
+        assert "<key>HERMES_TUI_DIR</key>" in plist
+        assert "<string>/opt/homebrew/share/hermes-agent/tui</string>" in plist
+        # Vars that aren't set must not be emitted.
+        assert "HERMES_BUNDLED_SKILLS" not in plist
+
+    def test_launchd_plist_omits_bundled_env_when_unset(self, tmp_path, monkeypatch):
+        self._clear(monkeypatch)
+        # No env and no prior on-disk plist → nothing to carry forward.
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "absent.plist"
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        for name in self._RESOURCE_VARS:
+            assert name not in plist
+
+    def test_systemd_user_unit_propagates_bundled_resource_env(self, tmp_path, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "absent.service"
+        )
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "/nix/store/abc-hermes/share/plugins")
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", "/nix/store/abc-hermes/share/skills")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert 'Environment="HERMES_BUNDLED_PLUGINS=/nix/store/abc-hermes/share/plugins"' in unit
+        assert 'Environment="HERMES_BUNDLED_SKILLS=/nix/store/abc-hermes/share/skills"' in unit
+        assert "HERMES_TUI_DIR" not in unit
+
+    def test_systemd_user_unit_omits_bundled_env_when_unset(self, tmp_path, monkeypatch):
+        self._clear(monkeypatch)
+        # No env and no prior on-disk unit → nothing to carry forward.
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "absent.service"
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        for name in self._RESOURCE_VARS:
+            assert name not in unit
+
+    def test_blank_bundled_env_value_is_skipped(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "   ")
+
+        assert gateway_cli._bundled_resource_env_pairs() == []
+
+    def test_launchd_plist_xml_escapes_bundled_value(self, tmp_path, monkeypatch):
+        """A bundled prefix with XML-special chars (e.g. a ``Research & Dev``
+        directory) must not emit malformed plist XML that launchd refuses."""
+        self._clear(monkeypatch)
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "absent.plist"
+        )
+        monkeypatch.setenv(
+            "HERMES_BUNDLED_PLUGINS", "/opt/Research & <Dev>/hermes/plugins"
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert (
+            "<string>/opt/Research &amp; &lt;Dev&gt;/hermes/plugins</string>"
+            in plist
+        )
+        # The raw ampersand/brackets must never reach the rendered XML.
+        assert "Research & <Dev>" not in plist
+        # And the document is still well-formed XML.
+        import xml.dom.minidom
+
+        xml.dom.minidom.parseString(plist)
+
+    def test_systemd_unit_escapes_percent_quote_and_backslash(self, tmp_path, monkeypatch):
+        """systemd expands ``%`` specifiers and treats ``"``/``\\`` specially in a
+        quoted ``Environment=`` value, so a bundled path with those characters
+        must be escaped or the unit value is truncated/rewritten."""
+        self._clear(monkeypatch)
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "absent.service"
+        )
+        monkeypatch.setenv(
+            "HERMES_BUNDLED_PLUGINS", r'/srv/100%/a"b\c/plugins'
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert (
+            r'Environment="HERMES_BUNDLED_PLUGINS=/srv/100%%/a\"b\\c/plugins"'
+            in unit
+        )
+        # No lone/literal specifier or unescaped quote leaks into the directive.
+        assert "100%/" not in unit
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "/opt/homebrew/share/hermes-agent/plugins",
+            r'/srv/100%/a"b\c/plugins',
+            "/nix/store/x%%y/a\\b\"c/plugins",
+            "/path/with/%specifier/and %% double",
+        ],
+    )
+    def test_systemd_env_value_escape_round_trips(self, value):
+        """Whatever we escape into a unit must parse back out unchanged, or the
+        merge-forward fallback would carry a corrupted pointer."""
+        escaped = gateway_cli._systemd_env_value_escape(value)
+        assert gateway_cli._systemd_env_value_unescape(escaped) == value
+
+    def test_launchd_regeneration_preserves_prior_bundled_env(self, tmp_path, monkeypatch):
+        """#85357 regression guard: a later plist rewrite from a context WITHOUT
+        the wrapper's env must not silently drop pointers the install baked in."""
+        self._clear(monkeypatch)
+        plist_path = tmp_path / "hermes-gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        # Install-time render carries the wrapper's pointers into the plist.
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "/opt/homebrew/share/hermes-agent/plugins")
+        monkeypatch.setenv("HERMES_TUI_DIR", "/opt/homebrew/share/hermes-agent/tui")
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        # Ordinary restart from a non-wrapper environment: the vars are gone.
+        self._clear(monkeypatch)
+        regenerated = gateway_cli.generate_launchd_plist()
+
+        assert "<string>/opt/homebrew/share/hermes-agent/plugins</string>" in regenerated
+        assert "<string>/opt/homebrew/share/hermes-agent/tui</string>" in regenerated
+
+    def test_launchd_live_env_overrides_prior_bundled_env(self, tmp_path, monkeypatch):
+        """The live wrapper environment wins over a stale on-disk pointer."""
+        self._clear(monkeypatch)
+        plist_path = tmp_path / "hermes-gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "/old/prefix/plugins")
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", "/new/prefix/plugins")
+        regenerated = gateway_cli.generate_launchd_plist()
+
+        assert "<string>/new/prefix/plugins</string>" in regenerated
+        assert "/old/prefix/plugins" not in regenerated
+
+    def test_systemd_regeneration_preserves_prior_bundled_env(self, tmp_path, monkeypatch):
+        """systemd counterpart of the launchd regression guard, incl. escaped chars."""
+        self._clear(monkeypatch)
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", r'/srv/100%/a"b\c/plugins')
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", "/srv/skills")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+
+        self._clear(monkeypatch)
+        regenerated = gateway_cli.generate_systemd_unit(system=False)
+
+        assert (
+            r'Environment="HERMES_BUNDLED_PLUGINS=/srv/100%%/a\"b\\c/plugins"'
+            in regenerated
+        )
+        assert 'Environment="HERMES_BUNDLED_SKILLS=/srv/skills"' in regenerated
 
 
 class TestGatewayStopCleanup:
@@ -1810,7 +2004,7 @@ class TestSystemUnitPathRemapping:
         project.mkdir(parents=True)
         venv_bin = project / "venv" / "bin"
         venv_bin.mkdir(parents=True)
-        (venv_bin / "python").write_text("")
+        (venv_bin / "python").write_text("", encoding="utf-8")
 
         target_home = "/home/alice"
 
@@ -2220,7 +2414,7 @@ class TestSystemdInstallOffersLegacyRemoval:
         assert remove_called["invoked"] is False
         # New unit should still have been written
         assert unit_path.exists()
-        assert unit_path.read_text() == "unit text\n"
+        assert unit_path.read_text(encoding="utf-8") == "unit text\n"
 
     def test_install_skips_legacy_check_when_none_present(
         self, tmp_path, monkeypatch
@@ -2314,9 +2508,9 @@ class TestSystemScopeWizardPreCheck:
         sys_dir.mkdir()
         usr_dir.mkdir()
         if system_present:
-            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         if user_present:
-            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n")
+            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",
@@ -2368,7 +2562,7 @@ class TestGatewayCommandCatchesSystemScopeError:
         usr_dir = tmp_path / "usr"
         sys_dir.mkdir()
         usr_dir.mkdir()
-        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -146,3 +147,63 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us — scope resolution
+# ---------------------------------------------------------------------------
+
+class _FakeSystemctl:
+    """Answers per scope; only the user-manager argv carries ``--user``."""
+
+    def __init__(self, user_stdout, system_stdout, user_rc=0, system_rc=0):
+        self._by_scope = {True: (user_rc, user_stdout), False: (system_rc, system_stdout)}
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        is_user = "--user" in argv
+        self.calls.append(list(argv))
+        rc, out = self._by_scope[is_user]
+        return subprocess.CompletedProcess(argv, rc, out, "")
+
+
+class TestSystemdTimeoutStopUs:
+
+    def test_falls_through_when_user_scope_answers_not_found(self, monkeypatch):
+        # systemd answers exit-0 about a unit it does not have — with its own default
+        # (DefaultTimeoutStopSec=1min 30s) — which must not be read as the unit's budget.
+        fake = _FakeSystemctl(
+            user_stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+            system_stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+        )
+        monkeypatch.setattr(sf.subprocess, "run", fake)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert "--user" in fake.calls[0] and "--user" not in fake.calls[1]
+
+    def test_user_scope_wins_when_the_unit_really_is_loaded_there(self, monkeypatch):
+        fake = _FakeSystemctl(
+            user_stdout="LoadState=loaded\nTimeoutStopUSec=1min 30s\n",
+            system_stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+        )
+        monkeypatch.setattr(sf.subprocess, "run", fake)
+        assert sf._systemd_timeout_stop_us("signal-cli.service") == 90 * 1_000_000
+        assert len(fake.calls) == 1
+
+    def test_returns_none_when_no_scope_knows_the_unit(self, monkeypatch):
+        fake = _FakeSystemctl(
+            user_stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+            system_stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+        )
+        monkeypatch.setattr(sf.subprocess, "run", fake)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_nonzero_exit_is_skipped(self, monkeypatch):
+        fake = _FakeSystemctl(
+            user_stdout="", system_stdout="", user_rc=1, system_rc=0,
+        )
+        monkeypatch.setattr(sf.subprocess, "run", fake)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_unit_meeting_the_expected_budget_is_aligned(self):
+        # drain 180 + cron 30 = 210s expected; a unit at exactly 210 is NOT stale.
+        assert sf.resolve_systemd_timeout_stop_sec(180, 30) == 210

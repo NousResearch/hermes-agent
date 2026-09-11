@@ -471,12 +471,19 @@ class SessionSchemaMixin:
                 )
                 foreign_holders = self._foreign_state_db_holders()
                 holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
+                if holder_pids != record.get("holder_pids"):  # the reap changed who is blocking
+                    holders_since, holders_attempts = now, 1
         futile = bool(holder_pids) and (
             holders_attempts >= _FTS_HOLDER_FUTILE_ATTEMPTS and now - holders_since >= _FTS_HOLDER_FUTILE_SECONDS
         )
+        # Every holder is an identifiable live process: the flock can serialise the rebuild against
+        # them, so a futile window ends the deferral. A pid <= 0 holder is the "could not prove
+        # quiescence" sentinel the flock cannot speak for, so that case keeps deferring (fail closed).
+        proceeding = futile and all(pid > 0 for pid, _path in foreign_holders)
         diagnostic = {
             "first_seen": first_seen, "last_seen": now, "attempts": attempts, "holder_pids": holder_pids,
-            "holders_since": holders_since, "holders_attempts": holders_attempts, "futile": futile,
+            "holders_since": holders_since, "holders_attempts": holders_attempts,
+            "futile": futile and not proceeding, "proceeding": proceeding,
         }
         cursor.execute(
             "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -486,20 +493,14 @@ class SessionSchemaMixin:
             self._fts_deferred_holder_pids = None
             return False
         self._fts_deferred_holder_pids = holder_pids
-        if futile and all(pid > 0 for pid, _path in foreign_holders):
-            # A supervised peer never satisfies the orphan reap, so deferring to it forever
-            # means the messages_fts triggers keep failing every canonical INSERT (#106393:
-            # five days, 292 deferrals). Proceed: the rebuild is one BEGIN IMMEDIATE SQL
-            # transaction serialised by the fts_rebuild_admission flock and does no WAL
-            # surgery, so holder absence is not its safety. An uninspectable holder (pid <= 0)
-            # is the "could not prove quiescence" sentinel the flock cannot speak for, so that
-            # case keeps deferring (fail closed).
+        if proceeding or futile:  # _holder_cmdline reads /proc per holder; only these branches log it
+            blocked_by = (holders_attempts, (now - holders_since) / 60.0,
+                          ", ".join(f"pid {pid}: {_holder_cmdline(pid)}" for pid in holder_pids))
+        if proceeding:
             logger.error(
                 "state.db FTS repair has been blocked by the same holder(s) for %d deferrals over %.0f min "
                 "(%s); the holders look permanent, so proceeding with the rebuild under the cross-process "
-                "rebuild lock instead of deferring again.",
-                holders_attempts, (now - holders_since) / 60.0,
-                ", ".join(f"pid {pid}: {_holder_cmdline(pid)}" for pid in holder_pids),
+                "rebuild lock instead of deferring again.", *blocked_by,
             )
             return False
         if futile:
@@ -507,8 +508,7 @@ class SessionSchemaMixin:
                 "state.db FTS repair has been blocked by the same holder(s) for %d deferrals over %.0f min "
                 "(%s); waiting is futile. Stop ONLY the other holder(s) — this process keeps running and its "
                 "own retry admits the rebuild within %.0fs of the holder leaving. `hermes doctor` shows this.",
-                holders_attempts, (now - holders_since) / 60.0,
-                ", ".join(f"pid {pid}: {_holder_cmdline(pid)}" for pid in holder_pids), _FTS_STALE_RETRY_SECONDS,
+                *blocked_by, _FTS_STALE_RETRY_SECONDS,
             )
         elif attempts >= _FTS_HOLDER_ESCALATE_ATTEMPTS and now - first_seen >= _FTS_HOLDER_ESCALATE_SECONDS:
             logger.error(

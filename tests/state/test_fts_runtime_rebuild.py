@@ -845,12 +845,12 @@ class TestRuntimeFtsRebuild:
             assert reopened._defer_stale_fts_for_holders(cursor, holders) is False
             reopened._conn.commit()
             record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
-            assert record.get("futile") is True and record["holder_pids"] == [4242]
-            assert "4242" in doctor_blob()
+            assert record.get("proceeding") is True and record["holder_pids"] == [4242]
+            assert "4242" in doctor_blob() and "rebuild is now attempted" in doctor_blob()
         finally:
             reopened.close()
 
-    def _seed_futile_holders(self, db, tmp_path, monkeypatch, holders):
+    def _seed_futile_holders(self, db, tmp_path, monkeypatch, holders, after_reap=None):
         """Stale FTS plus a deferral record already past the futile window for *holders*;
         the rebuild body is stubbed so the assertion is about admission, not SQLite's FTS5 build."""
         db_path = tmp_path / "state.db"
@@ -874,9 +874,13 @@ class TestRuntimeFtsRebuild:
         )
         raw.commit()
         raw.close()
-        monkeypatch.setattr(SessionDB, "_foreign_state_db_holders", lambda self: list(holders))
+        scans = [list(holders), list(after_reap if after_reap is not None else holders)]
         monkeypatch.setattr(
-            SessionDB, "_reap_inactive_orphan_desktop_holders", lambda self, h, *, min_age_seconds: [],
+            SessionDB, "_foreign_state_db_holders", lambda self: list(scans.pop(0) if len(scans) > 1 else scans[0]),
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, h, *, min_age_seconds: [9] if after_reap is not None else [],
         )
         monkeypatch.setattr(
             hermes_state_schema.time, "time", lambda: 1.0 + 100 * hermes_state_schema._FTS_HOLDER_FUTILE_SECONDS,
@@ -920,6 +924,25 @@ class TestRuntimeFtsRebuild:
             assert rebuilds == []
             assert reopened._fts_stale is True
             assert json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) or "{}").get("futile") is True
+        finally:
+            reopened.close()
+
+    def test_reap_that_changes_the_holder_set_restarts_the_futile_window(self, db, tmp_path, monkeypatch):
+        """A window accrued against one PID set must not authorise the rebuild against a DIFFERENT
+        set that only appeared after the orphan reap rescan."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path, rebuilds = self._seed_futile_holders(
+            db, tmp_path, monkeypatch,
+            [(4242, str(tmp_path / "state.db-wal"))],
+            after_reap=[(5151, str(tmp_path / "state.db-wal"))],
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert rebuilds == []
+            record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) or "{}")
+            assert record["holder_pids"] == [5151] and record["holders_attempts"] == 1
+            assert not record.get("proceeding")
         finally:
             reopened.close()
 

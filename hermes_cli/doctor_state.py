@@ -81,7 +81,12 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     deferral = stats.get("fts_rebuild_deferral")
     if isinstance(deferral, dict):
         pids = deferral.get("holder_pids") or "unknown"
-        if deferral.get("futile"):
+        if deferral.get("proceeding"):
+            lines.append(("warn", f"state.db FTS repair was blocked by the same holder(s) PID(s) {pids} for "
+                          f"{deferral.get('holders_attempts') or '?'} consecutive deferral(s); the rebuild is now "
+                          "attempted under the cross-process lock",
+                          "(see errors.log if it keeps failing; stopping the listed processes is not required)"))
+        elif deferral.get("futile"):
             lines.append(("warn", f"state.db FTS repair is blocked by the same holder(s) PID(s) {pids} for "
                           f"{deferral.get('holders_attempts') or '?'} consecutive deferral(s); waiting is futile",
                           "(stop ONLY the listed process(es) — the gateway keeps running and its own retry "

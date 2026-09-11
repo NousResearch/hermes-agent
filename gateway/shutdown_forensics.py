@@ -199,13 +199,15 @@ def check_systemd_timing_alignment(
         return None  # Not running under systemd (or at least not directly)
     # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
     unit_name: Optional[str] = None
+    cgroup_path: Optional[str] = None
     with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
         for line in fh:
             parts = reversed(line.strip().split("/"))
             unit_name = next((p for p in parts if p.endswith(".service")), None)
             if unit_name:
+                cgroup_path = line.strip().split(":", 2)[-1]
                 break
-    if (timeout_us := _systemd_timeout_stop_us(unit_name) if unit_name else None) is None:
+    if (timeout_us := _systemd_timeout_stop_us(unit_name, cgroup_path) if unit_name else None) is None:
         return None
     timeout_stop_sec = timeout_us / 1_000_000.0
     expected = float(resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout))
@@ -214,9 +216,14 @@ def check_systemd_timing_alignment(
             "mismatch": timeout_stop_sec < expected}
 
 
-def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
-    for flag in (["--user"], []):
+def _systemd_timeout_stop_us(unit_name: str, cgroup_path: Optional[str] = None) -> Optional[int]:
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds. The cgroup path says which manager
+    launched this process: under ``/system.slice/`` ask the system manager first, so an inactive
+    same-named user unit with a stale ``TimeoutStopSec`` cannot yield a false mismatch; otherwise
+    ``--user`` first (hermes' usual).
+    """
+    flag_order = ([], ["--user"]) if cgroup_path and "/system.slice/" in cgroup_path else (["--user"], [])
+    for flag in flag_order:
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],

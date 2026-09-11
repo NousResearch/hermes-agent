@@ -1837,6 +1837,84 @@ class TestRestartLoopGuard:
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
 
+class TestBoundedLocalFallback:
+    """Native local scan results must not trigger a second script read."""
+
+    @pytest.fixture
+    def local_guard(self, monkeypatch, tmp_path):
+        from functools import partial
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        from tools import process_registry
+        from tools.terminal_tool_guards import gateway_lifecycle_block
+
+        execute = Mock(return_value={"output": "printf safe\n", "returncode": 0})
+        read_bytes = Mock(side_effect=AssertionError("unexpected host reopen"))
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+        guard = partial(
+            gateway_lifecycle_block,
+            env=SimpleNamespace(cwd=str(tmp_path), execute=execute),
+            env_type="local",
+            cwd=str(tmp_path),
+            workdir=None,
+            session_key="bounded-local-fallback",
+        )
+        return guard, read_bytes, execute
+
+    @pytest.mark.parametrize("kind", [
+        "binary",
+        "directory",
+        pytest.param("dangling", marks=pytest.mark.require_symlinks),
+    ])
+    def test_native_skips_do_not_reopen_locally(self, tmp_path, local_guard, kind):
+        import shlex
+
+        script = tmp_path / "candidate.sh"
+        if kind == "binary":
+            script.write_bytes(b"\x7fELF" + bytes(64))
+        elif kind == "directory":
+            script.mkdir()
+        else:
+            script.symlink_to(tmp_path / "missing.sh")
+        guard, read_bytes, execute = local_guard
+
+        assert guard(command=f"bash {shlex.quote(str(script))}") is None
+
+        read_bytes.assert_not_called()
+        execute.assert_not_called()
+
+    @pytest.mark.parametrize("scan", ["skipped", "race-changed"])
+    def test_local_callback_stays_empty_after_scan(self, monkeypatch, tmp_path, local_guard, scan):
+        import cron.lifecycle_guard as lifecycle_guard
+
+        script = tmp_path / "candidate.sh"
+        script.write_bytes(b"\x7fELF" + bytes(64))
+        replacement = tmp_path / "replacement.sh"
+        replacement.write_text("printf safe\n", encoding="utf-8")
+        callback_results = []
+
+        def simulated_scan(command, *, cwd, read_remote_script):
+            if scan == "race-changed":
+                replacement.replace(script)
+            callback_results.append(read_remote_script(str(script)))
+            return False
+
+        monkeypatch.setattr(
+            lifecycle_guard, "contains_gateway_lifecycle_command_or_referenced_script",
+            simulated_scan,
+        )
+        guard, read_bytes, execute = local_guard
+
+        assert guard(command="bash candidate.sh") is None
+
+        assert callback_results == [""]
+        read_bytes.assert_not_called()
+        execute.assert_not_called()
+
+
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
 
@@ -1873,6 +1951,10 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         fake_env = _RemoteEnv()
         fake_env.cwd = "/remote/workspace"
         self._patch_env(monkeypatch, fake_env, inside_gateway=True)
+        monkeypatch.setattr(tt, "_get_env_config", lambda: {
+            "env_type": "ssh", "cwd": "/remote/workspace", "timeout": 60,
+            "lifetime_seconds": 3600,
+        })
 
         result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
 

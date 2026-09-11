@@ -50,6 +50,32 @@ def _ic_slot(agent, lock_attr: str, slot: str):
     return getattr(agent, slot)
 
 
+def _ic_queue_correction_note(agent, slot: str, note: Optional[str], mode: Optional[str]) -> None:
+    """Attach a per-turn model note (+ display-only mode label) to the pending ``slot`` correction:
+    notes concatenate, the label is last-wins. Call it under the slot's own lock. Module-level and
+    ``getattr``-based on purpose — an ``__init__``-less stub must stay usable (``_ic_lock`` contract)."""
+    note = (note or "").strip()
+    mode = (mode or "").strip()
+    if not note and not mode:
+        return
+    if note:
+        existing_note = getattr(agent, f"{slot}_note", "") or ""
+        setattr(agent, f"{slot}_note", f"{existing_note}\n\n{note}" if existing_note else note)
+    if mode:
+        setattr(agent, f"{slot}_mode", mode)
+
+
+def _ic_take_correction_note(agent, slot: str) -> "tuple[str, str]":
+    """One-shot consume of the note/label queued for the pending ``slot`` correction (empty strings
+    when none). Stub-safe like ``_ic_queue_correction_note``: no lock, no attributes, no failure."""
+    with _ic_lock(agent, f"{slot}_lock"):
+        note = getattr(agent, f"{slot}_note", "") or ""
+        mode = getattr(agent, f"{slot}_mode", "") or ""
+        setattr(agent, f"{slot}_note", "")
+        setattr(agent, f"{slot}_mode", "")
+    return note, mode
+
+
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
     if getattr(agent, "api_mode", None) != "codex_app_server":
@@ -228,28 +254,8 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
-            self._queue_correction_note("_pending_steer", note, mode)
+            _ic_queue_correction_note(self, "_pending_steer", note, mode)
         return True
-
-    def _queue_correction_note(self, slot: str, note: Optional[str], mode: Optional[str]) -> None:
-        """Attach a per-turn model note (+ display-only mode label) to the pending ``slot`` correction:
-        notes concatenate, the label is last-wins. Call under the slot's own lock."""
-        note = (note or "").strip()
-        mode = (mode or "").strip()
-        if note:
-            existing_note = getattr(self, f"{slot}_note", "") or ""
-            setattr(self, f"{slot}_note", f"{existing_note}\n\n{note}" if existing_note else note)
-        if mode:
-            setattr(self, f"{slot}_mode", mode)
-
-    def _take_correction_note(self, slot: str) -> "tuple[str, str]":
-        """One-shot consume of the note/label queued for the pending ``slot`` correction."""
-        with _ic_lock(self, f"{slot}_lock"):
-            note = getattr(self, f"{slot}_note", "") or ""
-            mode = getattr(self, f"{slot}_mode", "") or ""
-            setattr(self, f"{slot}_note", "")
-            setattr(self, f"{slot}_mode", "")
-        return note, mode
 
     def redirect(self, text: str, note: Optional[str] = None, mode: Optional[str] = None) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
@@ -299,7 +305,7 @@ class InterruptControlMixin:
             self._pending_redirect = (
                 f"{existing}\n\n[Additional user correction]\n{cleaned}" if existing else cleaned
             )
-            self._queue_correction_note("_pending_redirect", note, mode)
+            _ic_queue_correction_note(self, "_pending_redirect", note, mode)
             self._interrupt_requested = True
             self._interrupt_message = None
 

@@ -1679,7 +1679,6 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "fire" },
-    { name = "firecrawl-anydoc" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "markdown" },
@@ -1762,6 +1761,9 @@ dingtalk = [
     { name = "alibabacloud-dingtalk" },
     { name = "dingtalk-stream" },
     { name = "qrcode" },
+]
+doc-extract = [
+    { name = "firecrawl-anydoc" },
 ]
 edge-tts = [
     { name = "edge-tts" },
@@ -1946,7 +1948,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = "==0.133.1" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = "==1.2.1" },
     { name = "fire", specifier = "==0.7.1" },
-    { name = "firecrawl-anydoc", specifier = "==0.2.4" },
+    { name = "firecrawl-anydoc", marker = "extra == 'doc-extract'", specifier = "==0.2.4" },
     { name = "firecrawl-py", marker = "extra == 'firecrawl'", specifier = "==4.17.0" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = "==2.194.0" },
     { name = "google-auth", marker = "extra == 'google'", specifier = "==2.55.1" },
@@ -2051,7 +2053,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "doc-extract", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

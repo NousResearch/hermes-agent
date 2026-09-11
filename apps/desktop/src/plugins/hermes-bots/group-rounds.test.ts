@@ -164,7 +164,9 @@ describe('round lifecycle', () => {
         turn: async () => {
           await gate
 
-          if (outcome === 'failure') {throw new Error('member failed')}
+          if (outcome === 'failure') {
+            throw new Error('member failed')
+          }
 
           return '(pass)'
         }
@@ -611,6 +613,7 @@ describe('attachments', () => {
     const room = await loadRoom({
       failAttach: { 'file.attach': Object.assign(new Error('pdftoppm not installed'), { code: 5028 }) }
     })
+
     const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'notes.pdf' }
 
     room.rounds.sendToGroupChat('PdfFail', [{ name: 'research', title: '' }], 'summarize this', null, [pdf])

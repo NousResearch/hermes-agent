@@ -21,7 +21,7 @@ function wire(res: ReturnType<typeof makeResponse>) {
     isTimedOut: () => timedOut,
     clearTimer,
     resolve,
-    reject,
+    reject
   })
 
   return {
@@ -30,7 +30,7 @@ function wire(res: ReturnType<typeof makeResponse>) {
     clearTimer,
     timeOut: () => {
       timedOut = true
-    },
+    }
   }
 }
 
@@ -74,16 +74,18 @@ describe('OAuth session response', () => {
       { status: 0, body: 'missing status', headers: {} },
       { status: 200, body: ' \n<!doctype html><html></html>', headers: {}, error: /got HTML/ },
       { status: 200, body: '{}', headers: { 'Content-Type': 'text/html' }, error: /got HTML/ },
-      { status: 200, body: '{"partial":', headers: {}, error: /Invalid JSON/ },
+      { status: 200, body: '{"partial":', headers: {}, error: /Invalid JSON/ }
     ]
 
     for (const entry of cases) {
       const res = makeResponse(entry.status, entry.headers)
       const state = wire(res)
+
       // Splitting every byte also covers UTF-8 characters split across chunks.
       for (const byte of Buffer.from(entry.body)) {
         res.emit('data', Buffer.from([byte]))
       }
+
       res.emit('end')
 
       // Late terminal events must not overwrite either success or rejection.
@@ -99,6 +101,7 @@ describe('OAuth session response', () => {
         expect(state.resolve).not.toHaveBeenCalled()
         expect(state.reject).toHaveBeenCalledTimes(1)
         const error = state.reject.mock.calls[0][0]
+
         if (entry.error) {
           expect(error.message).toMatch(entry.error)
           expect(readStatusCode(error)).toBeNaN()

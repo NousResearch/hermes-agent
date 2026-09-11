@@ -370,16 +370,18 @@ describe('primary failure foreground isolation', () => {
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
 
-    act(() => snapshot.resolve({
-      error: 'Your remote gateway session has expired.',
-      fakeMode: false,
-      message: 'previous rejection',
-      phase: 'backend.error',
-      progress: 94,
-      retryable: false,
-      running: false,
-      timestamp: Date.now()
-    }))
+    act(() =>
+      snapshot.resolve({
+        error: 'Your remote gateway session has expired.',
+        fakeMode: false,
+        message: 'previous rejection',
+        phase: 'backend.error',
+        progress: 94,
+        retryable: false,
+        running: false,
+        timestamp: Date.now()
+      })
+    )
     await flushAsync()
     expect($desktopBoot.get().error).toBeNull()
     expect($desktopBoot.get().visible).toBe(false)
@@ -393,6 +395,7 @@ describe('primary failure foreground isolation', () => {
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
     render(<Harness />)
     await flushAsync()
+
     const newer = {
       error: null,
       fakeMode: false,
@@ -403,6 +406,7 @@ describe('primary failure foreground isolation', () => {
       running: true,
       timestamp: Date.now()
     }
+
     act(() => desktop.emitBootProgress(newer))
     act(() => snapshot.resolve({ ...newer, error: 'Your remote gateway session has expired.', running: false }))
     await flushAsync()

@@ -27,10 +27,13 @@ export async function resolveRemoteOauthTicket(
   try {
     return await deps.mintGatewayWsTicket(baseUrl, headers)
   } catch (error) {
-    throw makeNousCloudBackendDownError(baseUrl, error) ?? gatewayTicketFailure(
-      error,
-      oauthTicketFailureAuthMessage(hadNativeSession),
-      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+    throw (
+      makeNousCloudBackendDownError(baseUrl, error) ??
+      gatewayTicketFailure(
+        error,
+        oauthTicketFailureAuthMessage(hadNativeSession),
+        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+      )
     )
   }
 }

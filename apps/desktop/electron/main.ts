@@ -263,11 +263,7 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
-import {
-  oauthSessionIsLive,
-  resolveJsonBody,
-  resolveReadinessProbeAuth
-} from './native-auth-decisions'
+import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,

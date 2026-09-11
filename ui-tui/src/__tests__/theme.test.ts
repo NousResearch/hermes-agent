@@ -620,6 +620,44 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(color.diffRemovedWord).toBe('#f00')
   })
 
+  it('gives the dark theme dark diff backgrounds with high-contrast foregrounds (#38359)', async () => {
+    const { DARK_THEME, LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    // WCAG relative luminance, local to the test so assertions are independent
+    // of the implementation under test.
+    const relLuminance = (rgb: string) => {
+      const [r, g, b] = rgb.match(/\d+/g)!.map(Number)
+
+      const channel = (v: number) => {
+        const c = v / 255
+
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+      }
+
+      return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!)
+    }
+
+    const contrast = (a: string, b: string) => {
+      const la = relLuminance(a)
+      const lb = relLuminance(b)
+      const [hi, lo] = la >= lb ? [la, lb] : [lb, la]
+
+      return (hi + 0.05) / (lo + 0.05)
+    }
+
+    // Dark diff backgrounds must actually be darker than their light-theme counterparts.
+    expect(relLuminance(DARK_THEME.color.diffAdded)).toBeLessThan(relLuminance(LIGHT_THEME.color.diffAdded))
+    expect(relLuminance(DARK_THEME.color.diffRemoved)).toBeLessThan(relLuminance(LIGHT_THEME.color.diffRemoved))
+
+    // Foreground/background pairs need WCAG AA-level (4.5:1) readable contrast
+    // on the dark backgrounds.
+    expect(contrast(DARK_THEME.color.diffAddedWord, DARK_THEME.color.diffAdded)).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(DARK_THEME.color.diffRemovedWord, DARK_THEME.color.diffRemoved)).toBeGreaterThanOrEqual(4.5)
+
+    // Added/removed dark foregrounds follow the same high-contrast foreground model.
+    expect(DARK_THEME.color.diffAddedWord).toBe(DARK_THEME.color.diffRemovedWord)
+  })
+
   it('maps the status bar from skin status_bar_* keys', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 

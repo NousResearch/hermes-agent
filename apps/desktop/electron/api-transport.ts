@@ -191,7 +191,26 @@ function httpStatusError(statusCode, text, statusMessage?) {
 
 /** Read side of httpStatusError: the HTTP status an error carries, NaN when it carries none. */
 function readStatusCode(error: unknown): number {
-  return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
+  if (!error || typeof error !== 'object') {
+    return NaN
+  }
+  const rawStatus = (error as { statusCode?: unknown; status?: unknown; response?: { status?: unknown } }).statusCode ??
+    (error as { status?: unknown }).status ??
+    (error as { response?: { status?: unknown } }).response?.status
+  if (rawStatus !== undefined && rawStatus !== null) {
+    const num = Number(rawStatus)
+    if (!Number.isNaN(num) && num > 0) {
+      return num
+    }
+  }
+  const message = (error as { message?: unknown }).message
+  if (typeof message === 'string') {
+    const match = message.match(/^(\d{3})(?::|\s|$)/)
+    if (match) {
+      return Number(match[1])
+    }
+  }
+  return NaN
 }
 
 export {

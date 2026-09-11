@@ -181,6 +181,25 @@ class TestAncestorPrefix:
 
 
 class TestLogicalDisplayLineage:
+    def test_reset_child_does_not_expose_or_resume_from_compression_parent(self, db):
+        db.create_session("parent", source="desktop")
+        db.append_message("parent", "user", "parent private transcript")
+        db.end_session("parent", "compression")
+        db.create_session(
+            "reset-child",
+            source="desktop",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.append_message("reset-child", "user", "new conversation")
+
+        assert db.find_live_compression_child("parent") is None
+        assert db.resolve_resume_session_id("parent") == "parent"
+        assert db.get_compression_lineage("reset-child") == ["reset-child"]
+        assert _texts(db.get_display_messages("reset-child")) == [
+            ("user", "new conversation"),
+        ]
+
     def test_direct_delegate_excludes_parent_transcript(self, db):
         db.create_session("root", source="telegram")
         db.append_message("root", "user", "root turn")

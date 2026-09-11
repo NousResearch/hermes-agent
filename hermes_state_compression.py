@@ -34,6 +34,9 @@ _CHAIN_STEP_SQL = f"""
                       AND COALESCE(
                             json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from'), ''
                           ) != parent.id
+                      AND COALESCE(
+                            json_extract(COALESCE(child.model_config, '{{}}'), '$._reset_from'), ''
+                          ) != parent.id
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -101,7 +104,7 @@ class SessionCompressionMixin:
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
                 + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="") + " LIMIT 1",
-                (session_id, session_id, session_id)).fetchone()
+                (session_id, session_id, session_id, session_id)).fetchone()
             if superseded is not None:
                 return None
             conn.execute(
@@ -140,7 +143,7 @@ class SessionCompressionMixin:
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id, parent_session_id, parent_session_id, parent_session_id),
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -164,7 +167,7 @@ class SessionCompressionMixin:
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id, session_id, session_id, session_id),
             ).fetchone()
             if child is not None:
                 return False
@@ -678,6 +681,14 @@ class SessionCompressionMixin:
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
         if not parent_id or self._is_explicit_fork_child_row(child):
+            return False
+        cfg = child.get("model_config")
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                cfg = None
+        if isinstance(cfg, dict) and cfg.get("_reset_from") == parent_id:
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")

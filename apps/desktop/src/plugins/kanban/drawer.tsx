@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   host,
+  Input,
   Loader,
   LogView,
   Textarea,
@@ -175,6 +176,77 @@ function MetaRow({ children, label }: { children: ReactNode; label: string }) {
       <span className="text-(--ui-text-quaternary)">{label}</span>
       <span className="min-w-0 truncate text-(--ui-text-secondary)">{children}</span>
     </>
+  )
+}
+
+function PriorityField({
+  label,
+  onSave,
+  priority
+}: {
+  label: string
+  onSave: (priority: number) => Promise<unknown>
+  priority: number
+}) {
+  const [draft, setDraft] = useState(String(priority))
+  const [pending, setPending] = useState(false)
+  const focused = useRef(false)
+
+  useEffect(() => {
+    if (!focused.current && !pending) {
+      setDraft(String(priority))
+    }
+  }, [pending, priority])
+
+  const reset = () => setDraft(String(priority))
+
+  const save = async () => {
+    focused.current = false
+    const next = Number(draft)
+
+    if (!draft.trim() || !Number.isInteger(next) || next === priority) {
+      reset()
+
+      return
+    }
+
+    setPending(true)
+
+    try {
+      await onSave(next)
+    } catch (err) {
+      reset()
+      host.notify({ kind: 'error', message: errText(err) })
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Input
+      aria-label={label}
+      className="w-20"
+      disabled={pending}
+      onBlur={() => void save()}
+      onChange={event => setDraft(event.target.value)}
+      onFocus={() => {
+        focused.current = true
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          event.currentTarget.blur()
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          reset()
+        }
+      }}
+      size="sm"
+      step={1}
+      type="number"
+      value={draft}
+    />
   )
 }
 
@@ -588,6 +660,14 @@ export function TaskDrawer({
     void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
   }
 
+  const savePriority = async (priority: number) => {
+    await patchTask(id!, { priority })
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: taskKey(slug, id!) }),
+      qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
+    ])
+  }
+
   // Optimistic status change against the task cache; rolls back + toasts on a
   // rejected transition (the backend enforces the workflow).
   const moveMut = useMutation({
@@ -763,7 +843,9 @@ export function TaskDrawer({
                   onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                 />
               </MetaRow>
-              {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
+              <MetaRow label={k.metaPriority}>
+                <PriorityField label={k.metaPriority} onSave={savePriority} priority={task.priority ?? 0} />
+              </MetaRow>
               {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
               {task.workspace_path && (
                 <MetaRow label={k.workspace}>

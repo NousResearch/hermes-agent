@@ -142,14 +142,8 @@ def _projected_tip_source_sql(session_alias: str = "s") -> str:
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(
-                          COALESCE(child.model_config, '{{}}'),
-                          '$._branched_from'
-                      ) IS NULL
-                      AND json_extract(
-                          COALESCE(child.model_config, '{{}}'),
-                          '$._delegate_from'
-                      ) IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                 )
                 WHERE child_rank = 1

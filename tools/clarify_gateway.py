@@ -28,6 +28,15 @@ class _ClarifyEntry:
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
 
+    def signature(self) -> Dict[str, object]:
+        return {
+            "clarify_id": self.clarify_id,
+            "session_key": self.session_key,
+            "question": self.question,
+            "choices": list(self.choices) if self.choices else None,
+            "multi_select": bool(self.multi_select),
+        }
+
 
 _lock = threading.RLock()
 _entries: Dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
@@ -87,11 +96,41 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
-def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
-    """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
+def get_pending_by_id(
+    clarify_id: str,
+    *,
+    session_key: Optional[str] = None,
+) -> Optional[Dict[str, object]]:
+    """Return a snapshot of an unresolved clarify request.
+
+    ``session_key`` lets transports bind an opaque request identifier to the
+    run/session that owns it without exposing the mutable queue entry.
+    """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None or entry.event.is_set():
+        if (
+            entry is None
+            or entry.event.is_set()
+            or (session_key is not None and entry.session_key != session_key)
+        ):
+            return None
+        return entry.signature()
+
+
+def resolve_gateway_clarify(
+    clarify_id: str,
+    response: str,
+    *,
+    session_key: Optional[str] = None,
+) -> bool:
+    """Unblock the waiter on ``clarify_id``; False if wrong session/already resolved/unknown."""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if (
+            entry is None
+            or entry.event.is_set()
+            or (session_key is not None and entry.session_key != session_key)
+        ):
             return False
         entry.response = str(response) if response is not None else ""
         entry.event.set()

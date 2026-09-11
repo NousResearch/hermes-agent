@@ -152,7 +152,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
-    assert "not processed" in response
+    assert runner._FAILED_TURN_NOTICE in response
 
     transcript_rows = [
         call.args[1]
@@ -160,7 +160,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
         if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
     ]
     assert [row["role"] for row in transcript_rows] == ["user", "assistant"]
-    assert "not processed" in transcript_rows[-1]["content"]
+    assert transcript_rows[-1]["content"] == runner._FAILED_TURN_NOTICE
 
     # The next unrelated input remains its own turn instead of alternation repair
     # merging the failed mutating request into it.

@@ -1530,8 +1530,6 @@ class GatewayTurnMixin:
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
         response = str(response or "").strip()
-        if notice in response:
-            return response
         return f"{response}\n\n{notice}" if response else notice
 
     def _hmwa_failed_turn_notice(self, agent_result):
@@ -1549,13 +1547,6 @@ class GatewayTurnMixin:
         ):
             return self._PARTIAL_FAILED_TURN_NOTICE
         return self._FAILED_TURN_NOTICE
-
-    @staticmethod
-    def _hmwa_failed_turn_boundary_row(notice, ts):
-        """Gateway-owned assistant row closing a failed turn: a user-only tail lets alternation repair
-        merge this request into an unrelated future message and replay stale side effects. Carries
-        only the stable safety statement, never raw provider details."""
-        return {"role": "assistant", "content": notice, "timestamp": ts}
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -1663,10 +1654,12 @@ class GatewayTurnMixin:
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
+        failed_turn_notice=None,
     ):
         """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
         transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
-        cached agent's message count."""
+        cached agent's message count. *failed_turn_notice* is the SAME string the user was shown; it
+        closes the failed turn as a gateway-owned assistant row."""
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
         store = self.async_session_store
@@ -1708,10 +1701,13 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
-                    # The boundary belongs to the user row it closes; a deduped retry already has one.
-                    await store.append_to_transcript(
-                        sid, self._hmwa_failed_turn_boundary_row(self._hmwa_failed_turn_notice(agent_result), ts),
-                    )
+                    # Gateway-owned assistant row closing the failed turn: a user-only tail lets
+                    # alternation repair merge this request into an unrelated future message and replay
+                    # stale side effects. Belongs to the user row it closes — a deduped retry has one.
+                    await store.append_to_transcript(sid, {
+                        "role": "assistant", "timestamp": ts,
+                        "content": failed_turn_notice or self._hmwa_failed_turn_notice(agent_result),
+                    })
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.
@@ -1816,10 +1812,10 @@ class GatewayTurnMixin:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
-                await self.async_session_store.append_to_transcript(
-                    session_entry.session_id,
-                    self._hmwa_failed_turn_boundary_row(self._PARTIAL_FAILED_TURN_NOTICE, time.time()),
-                )
+                # Same boundary row as the persist path: tool effects are unknown after an exception.
+                await self.async_session_store.append_to_transcript(session_entry.session_id, {
+                    "role": "assistant", "content": self._PARTIAL_FAILED_TURN_NOTICE, "timestamp": time.time(),
+                })
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
@@ -2058,8 +2054,11 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
-            if agent_failed_early and not is_context_overflow_failure:
-                response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
+            failed_turn_notice = None
+            if (agent_failed_early or hidden_reasoning_incomplete) and not is_context_overflow_failure:
+                failed_turn_notice = self._hmwa_failed_turn_notice(agent_result)
+            if agent_failed_early and failed_turn_notice:
+                response = self._hmwa_add_failed_turn_notice(response, failed_turn_notice)
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
@@ -2068,7 +2067,7 @@ class GatewayTurnMixin:
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
-                is_context_overflow_failure=is_context_overflow_failure,
+                is_context_overflow_failure=is_context_overflow_failure, failed_turn_notice=failed_turn_notice,
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

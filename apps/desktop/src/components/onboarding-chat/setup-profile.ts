@@ -115,7 +115,9 @@ export function guideSourceConnectionId(guideStoredId: null | string | undefined
 export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {
   if (
     $setupHandoff.get() !== null ||
-    (guide.storedId && readHandoffReceipt(handoffReceiptKey(guide.connectionId, guide.storedId))?.status === 'accepted')
+    (guide.storedId &&
+      readHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(guide.storedId), guide.storedId))?.status ===
+        'accepted')
   ) {
     return false
   }

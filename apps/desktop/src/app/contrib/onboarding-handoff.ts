@@ -145,7 +145,8 @@ export function useOnboardingHandoff({
         }
 
         $setupSession.set(setupSession)
-        const receiptKey = handoffReceiptKey(connectionId, setupSession.storedId)
+        // Resume only has the guide's stored id, so its source must also key the saved receipt.
+        const receiptKey = handoffReceiptKey(guideSourceConnectionId(setupSession.storedId), setupSession.storedId)
         receipt = readHandoffReceipt(receiptKey)
         const owner: HandoffReceipt['owner'] = receipt?.owner ?? { connectionId, profile: BUILD_PROFILE }
         // Save facts before session.create freezes the new agent's memory.

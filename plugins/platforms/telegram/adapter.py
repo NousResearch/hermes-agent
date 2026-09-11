@@ -1557,7 +1557,9 @@ class TelegramAdapter(BasePlatformAdapter):
         extra = getattr(getattr(self, "config", None), "extra", None) or {}
         return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
 
-    def _is_user_authorized_from_message(self, message: Message) -> bool:
+    def _is_user_authorized_from_message(
+        self, message: Message, *, allow_pairing: bool = True,
+    ) -> bool:
         """Check if the sender of a Telegram message is authorized.
 
         Intake prefilter that runs BEFORE text batching, event construction,
@@ -1568,6 +1570,7 @@ class TelegramAdapter(BasePlatformAdapter):
         allowlist still pass through so the normal pairing flow can run.
         Unknown DMs with an allowlist still pass through when pairing is the
         effective unauthorized-DM behavior (explicit platform override).
+        Guest pre-download checks disable that pairing exception.
         """
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
@@ -1662,7 +1665,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if authorized:
             return True
         # Unauthorized DM that the gateway would pair: forward so pairing can run.
-        return self._should_pass_unauthorized_dm_for_pairing(source)
+        return allow_pairing and self._should_pass_unauthorized_dm_for_pairing(source)
 
     def _guest_inline_message_ids_cache(self) -> Dict[str, str]:
         """Return the per-adapter guest query to inline-message cache."""
@@ -10314,7 +10317,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         try:
-            file_obj = await source.get_file()
+            # Raw guest payloads contain file_id-only namespaces; SDK media
+            # objects provide the bound get_file shortcut.
+            get_file = getattr(source, "get_file", None)
+            if callable(get_file):
+                file_obj = await get_file()
+            else:
+                file_obj = await self._bot.get_file(source.file_id)
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
@@ -10324,8 +10333,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if cached is None:
             return
-        event.reply_to_media_urls.append(cached.path)
-        event.reply_to_media_types.append(cached.media_type)
+        # The runner consumes these lists even for text turns. The old
+        # reply_to_media_* fields no longer exist on MessageEvent.
+        event.media_urls.append(cached.path)
+        event.media_types.append(cached.media_type)
         event.text = self._append_observed_note(
             event.text,
             f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
@@ -10345,7 +10356,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return msg.audio, getattr(msg.audio, "file_name", "") or "", "", "audio"
         if msg.document:
             doc = msg.document
-            return doc, doc.file_name or "", (doc.mime_type or "").lower(), None
+            return (
+                doc,
+                getattr(doc, "file_name", None) or "",
+                (getattr(doc, "mime_type", None) or "").lower(),
+                None,
+            )
         return None, "", "", None
 
     @staticmethod
@@ -10735,6 +10751,23 @@ class TelegramAdapter(BasePlatformAdapter):
         if guest_context is None:
             return
         message = guest_context.message
+        # Authorize the summoning caller, not the visible message's author,
+        # before downloading any reply attachment.
+        from types import SimpleNamespace
+        caller_id = guest_context.caller_user_id or self._guest_api_id(
+            getattr(message, "from_user", None)
+        )
+        auth_message = SimpleNamespace(
+            chat=SimpleNamespace(
+                id=f"{_TELEGRAM_GUEST_CHAT_PREFIX}{guest_context.guest_query_id}",
+                type="private",
+            ),
+            from_user=SimpleNamespace(id=caller_id, full_name=guest_context.caller_user_name),
+        )
+        if not caller_id or not self._is_user_authorized_from_message(
+            auth_message, allow_pairing=False,
+        ):
+            return
         text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
         event = self._build_message_event(
             message,
@@ -10754,6 +10787,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source.user_name = guest_context.caller_user_name
         event.source.chat_id = f"{_TELEGRAM_GUEST_CHAT_PREFIX}{guest_context.guest_query_id}"
         event.source.chat_type = "dm"
+        await self._cache_replied_media(message, event)
         await self.handle_message(event)
 
 

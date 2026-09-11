@@ -38,7 +38,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Restart Hermes Agent. On startup it:
+Restart Hermes Agent. On startup it will:
 
 1. Connects to the server.
 2. Discovers available tools.

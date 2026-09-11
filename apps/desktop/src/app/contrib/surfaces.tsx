@@ -29,14 +29,15 @@ import { StatusbarControls } from '../shell/statusbar-controls'
 
 import { latestChatActions, latestSidebarActions } from './latest-actions'
 import { setStatusbarItemGroup, useStatusbarContributions } from './panes'
+import { loadArtifactsView, loadMessagingView, loadSkillsView } from './route-loaders'
 import type { SidebarActions, WiringActions } from './types'
 
 // Same lazy-view split as DesktopController — pages load on demand. The
 // full-page views the workspace route table mounts live here; overlay views
 // (agents/settings/…) are the controller's and stay in wiring.tsx.
-const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
-const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
+const ArtifactsView = lazy(async () => ({ default: (await loadArtifactsView()).ArtifactsView }))
+const MessagingView = lazy(async () => ({ default: (await loadMessagingView()).MessagingView }))
+const SkillsView = lazy(async () => ({ default: (await loadSkillsView()).SkillsView }))
 
 export function LegacySessionRedirect() {
   const { sessionId } = useParams()

@@ -2611,11 +2611,6 @@ class GatewayTurnMixin:
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
-        # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
-        _display_cfg = user_config.get("display", {})
-        if not isinstance(_display_cfg, dict):
-            _display_cfg = {}
-
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -2626,24 +2621,10 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = "tool_progress" in _display_cfg or any(
-            isinstance(cfg, dict) and key in cfg
-            for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
-        )
-        progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
-        # Operator intent vs tier default: True when a human WROTE a mode (config or env). A ``null``
-        # value is inheritance, not intent — the resolver skips None (display_config.py), so a bare
-        # key with no value must not read as "explicitly off".
-        _tool_progress_explicit = bool(_env_tp) or any(
-            isinstance(cfg, dict) and cfg.get(key) is not None
-            for cfg, key in (
-                (_display_cfg, "tool_progress"), (_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key),
-            )
+        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
+        from gateway.display_config import resolve_tool_progress
+        progress_mode, _tool_progress_explicit = resolve_tool_progress(
+            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"

@@ -6,6 +6,10 @@ description: "Authoritative reference for Hermes terminal commands and command f
 
 # CLI Commands Reference
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 This page covers the **terminal commands** you run from your shell.
 
 For in-chat slash commands, see [Slash Commands Reference](./slash-commands.md).
@@ -1441,7 +1445,7 @@ python -m acp_adapter
 Install support first:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
@@ -1707,7 +1711,7 @@ Start the Hermes **backend server** — the JSON-RPC/WebSocket gateway the [desk
 hermes dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. (For a headless backend with no browser UI — e.g. what the desktop app spawns — use [`hermes serve`](#hermes-serve) above.) Requires `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
+Launch the web dashboard to manage configuration, API keys, and sessions. For a headless backend, use [`hermes serve`](#hermes-serve). FastAPI, Uvicorn, and the platform PTY helper are core dependencies. The `web` extra adds exact HTTP-stack constraints and is selected by standard PM setup through `all`. If dependencies are damaged, run `hermes pm repair`. The embedded Chat tab requires a POSIX PTY environment, such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard).
 
 | Option | Default | Description |
 |--------|---------|-------------|

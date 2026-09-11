@@ -836,7 +836,7 @@ slack:
 After gateway config changes, deploys, or restarts, run this synthetic smoke target:
 
 ```bash
-uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+scripts/run_tests.sh tests/gateway/test_slack_peer_agent_smoke.py -q
 ```
 
 This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.

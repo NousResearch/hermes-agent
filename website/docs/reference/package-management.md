@@ -176,13 +176,15 @@ not select `dev` or install JS workspaces. It also skips setup's user-facing
 installation work: shell configuration, launchers, `.env`, and bundled skills.
 Run the setup script separately if you want that full installation workflow.
 
-The bootstrap uses uv to install and locate Python, then waits for uv to exit.
-PM uses the staged uv to prepare its own small, locked Python environment
-before downloading its managed tools, reading plugin configuration, or resolving
-application dependencies. Its project is deliberately
-independent of the application workspace: a broken application dependency must
-not prevent its dependency manager from starting. Each uv subprocess exits before
-PM runs, so it cannot hold the uv executable that PM needs to replace.
+Before Python exists, the shell bootstrap acquires the pinned interpreter.
+Once Python can run, it hands dependency work to PM. PM's private engine
+prepares its small, locked runtime before resolving application dependencies.
+Its project is independent of the application workspace: a broken application
+dependency must not prevent the dependency manager from starting.
+
+uv is a private PM implementation detail. Application code, setup flows, and
+build callers request Python operations, not uv executables or command arguments.
+Do not mutate a Hermes environment with raw pip or uv commands.
 
 PM's runtime contains `ruamel.yaml`, `packaging`, `tomli-w`, and `truststore`, not the application
 dependency tree. CLI commands and application-requested installs and repairs run
@@ -305,10 +307,16 @@ to this installation's existing Python selection. Extras accumulate through PM
 sync. `pm install dev` is not a supported command: `dev` is an extra, not a tool.
 After changing extras, reactivate before starting another Python process.
 
-For a new project dependency, edit `pyproject.toml` and regenerate `uv.lock`
-with `uv lock`. For JS dependencies, update the owning package manifest and
-lock. Do not edit PM facts or generated workspaces. Unrecorded pip installs
-are not durable and can disappear when PM selects a new environment.
+For a new project dependency, edit `pyproject.toml` and regenerate `uv.lock`:
+
+```bash
+python -m pm.build_env --source . --lock-only
+```
+
+This resolves the source lock without creating or selecting an application
+environment. Use the checkout's prepared Python. For JS dependencies, update
+the owning package manifest and lock. Do not edit PM facts or generated
+workspaces, and do not install packages directly into a selected generation.
 
 ### Test and editor environments
 
@@ -316,9 +324,16 @@ PM's `dev` extra does not make a bare store Python suitable for the canonical
 test runner. The runner clears `PYTHONPATH` and needs an interpreter with pytest
 installed in its own environment. Use the contributor guide's
 [independent test environment](/developer-guide/contributing#manual-development-and-test-environment)
-with `uv sync --extra dev --group test`, then run `scripts/run_tests.sh`
-(through Bash on Windows). The `test` dependency group includes native launcher
-test dependencies and does not enter a packaged runtime.
+with this command from the prepared checkout:
+
+```bash
+python -m pm.build_env --source . --out .venv --extra dev --group test
+```
+
+The output must not exist. To regenerate it, stop its processes and intentionally
+remove only that disposable environment first. PM never deletes an existing
+output. Then run `scripts/run_tests.sh` (through Bash on Windows). The `test`
+dependency group includes native launcher tests and does not enter a packaged runtime.
 
 The runner checks repository `.venv`, repository `venv`, and the standard
 source-install venv before using `HERMES_PYTHON` as a fallback. Read its startup
@@ -330,6 +345,32 @@ directory to this checkout, and launch `hermes` as the script. Keep its
 `HERMES_HOME` separate from production. Terminal activation does not configure
 an editor that was already running. Do not point an editor at a transient PM
 generation or a signed application's Python executable.
+
+### Python operation interfaces
+
+Use the public `pm` module for Python dependency work:
+
+| Operation | Ownership |
+|---|---|
+| `pm.sync_venv(extras, explicit=True)` | Prepare and select the complete application dependency union, including enabled plugins. |
+| `pm.sync_venv(repair=True, explicit=True)` | Replay the recorded dependency set in a new application generation. |
+| `pm.build_environment(source=..., out=..., explicit=True)` | Build and validate a fresh caller-owned output. No plugin discovery or application selection. |
+| `pm.lock_project(source, explicit=True)` | Refresh an explicit project's lock without selecting an environment. |
+| `pm.ensure_environment(name, requirements, explicit=True)` | Prepare and select an isolated dependency generation. Return its Python path. |
+| `pm.ensure_python_tool(name, requirements, executable, explicit=True)` | Prepare an isolated tool and return its executable path. |
+| `pm.environment_python(name)` / `pm.python_tool(name, executable)` | Read selected paths without installing anything. |
+
+`pm.build_env` is the command-line interface for explicit builds and lock work.
+Run `python -m pm.build_env --help` for its supported options. By default, project
+builds use the committed lock. `--resolve` resolves before building. `--python`
+selects an explicit build interpreter. `--sealed` removes build-time `.pth`
+references. `--offline` and `--cache` control dependency acquisition.
+
+PM must already be able to start in the invoking Python. These build commands
+are not an interpreter bootstrap. They do not modify a running application's
+imports or replace its selected environment. Nix's declarative uv2nix builds
+remain Nix-owned. Package-manager commands for unrelated projects or agent
+sandboxes do not manage Hermes itself.
 
 ## Commands
 

@@ -9,7 +9,7 @@ interfaces, not proof that every distribution passed native acceptance.
 
 | Layer | Responsibility | Implementation |
 |---|---|---|
-| Dependency providers | Prepare tools, Python environments, JavaScript dependencies, and native bindings | PM/uv, `scripts/build/node-deps.mjs`, `scripts/build/python_env.py`, Nix, and Termux |
+| Dependency providers | Prepare tools, Python environments, JavaScript dependencies, and native bindings | PM (`pm.build_environment`), `scripts/build/node-deps.mjs`, Nix, and Termux |
 | Product builders | Compile icons/TUI/web/desktop UI or assemble a runnable agent from prepared inputs | `scripts/generate_icons.py` and `scripts/build/` |
 | Distribution adapters | Select products and package them for their target | `scripts/bundles/`, `Dockerfile`, `nix/`, and `scripts/termux/` |
 
@@ -33,10 +33,11 @@ select an agent payload.
 
 ## Build and packaging entrypoints
 
-Build a desktop distribution from a checkout at its release tag:
+Build a desktop distribution from a checkout at its release tag. Use its
+PM-prepared Python 3.14. The driver delegates Python dependency preparation to PM:
 
 ```sh
-uv run --no-project --python 3.14 python scripts/bundles/desktop.py --tag=vX.Y.Z
+python -m scripts.bundles.desktop --tag=vX.Y.Z
 ```
 
 `desktop.py` requires exactly one of `--tag` or `--commit`. Commit builds

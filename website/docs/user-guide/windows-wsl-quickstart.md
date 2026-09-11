@@ -277,7 +277,7 @@ it on the Windows side and have it jump into WSL for you:
 That opens Windows Terminal, starts your WSL distro, drops you in your Linux
 home directory, and launches Hermes. If `hermes` is not on PATH yet, open WSL
 once manually and run `source ~/.bashrc`, or replace the command with
-`uv run hermes` inside your project checkout.
+`python hermes` inside your PM-activated project checkout.
 
 Optional polish:
 

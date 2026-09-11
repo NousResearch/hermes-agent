@@ -6,6 +6,9 @@ description: "将 Hermes Agent 配置为飞书或 Lark 机器人"
 
 # 飞书 / Lark 配置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 可作为全功能机器人与飞书和 Lark 集成。连接后，你可以在私信或群聊中与 Agent 对话，在 home chat 中接收 cron job 结果，并通过标准 gateway 流程发送文本、图片、音频和文件附件。
 
 该集成支持两种连接模式：
@@ -512,9 +515,9 @@ WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 
 
 | 问题 | 解决方法 |
 |---------|-----|
-| `lark-oapi not installed` | 安装 SDK：`pip install lark-oapi` |
-| `websockets not installed; websocket mode unavailable` | 安装 websockets：`pip install websockets` |
-| `aiohttp not installed; webhook mode unavailable` | 安装 aiohttp：`pip install aiohttp` |
+| `lark-oapi not installed` | 安装 SDK：`python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
+| `websockets not installed; websocket mode unavailable` | 安装 websockets：`hermes pm repair` |
+| `aiohttp not installed; webhook mode unavailable` | 安装 aiohttp：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | 设置两个环境变量，或通过 `hermes gateway setup` 配置 |
 | `Another local Hermes gateway is already using this Feishu app_id` | 同一时间只能有一个 Hermes 实例使用相同的 app_id。请先停止另一个 gateway。 |
 | 机器人在群聊中不响应 | 确保机器人被 @提及，检查 `FEISHU_GROUP_POLICY`，若策略为 `allowlist` 则验证发送者是否在 `FEISHU_ALLOWED_USERS` 中 |

@@ -96,25 +96,19 @@ scripts/run_tests.sh -v --tb=long             # pass-through pytest flags
 ```
 
 - Tests auto-redirect `HERMES_HOME` to temp dirs — never touch real `~/.hermes/`.
-- The script probes `.venv`, then `venv`, then the shared worktree venv.
-- **Windows:** the wrapper is POSIX-only; see `references/windows-quirks.md`
-  for the direct-pytest workaround.
+- Prepare Python through the PM developer workflow before building a test environment.
+- Run `python -m pm.build_env --source . --out .venv --extra dev --group test`.
+  The output must not exist. Stop its processes and intentionally remove only
+  that disposable environment before regeneration.
+- The runner probes repository `.venv`, `venv`, and the standard source-install
+  venv before falling back to `HERMES_PYTHON`. Each candidate must contain pytest.
+- **Windows:** run the same wrapper through Git Bash. See `references/windows-quirks.md`.
+- After dependency changes, run `python -m pm.build_env --source . --lock-only`.
+  Do not mutate Hermes environments with raw pip or uv commands.
 
-**Cross-platform test guards:** tests using POSIX-only syscalls need a skip marker. Common ones already in the codebase:
-- Symlink creation → `@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")` (see `tests/cron/test_cron_script.py`)
-- POSIX file modes (0o600, etc.) → `@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")` (see `tests/hermes_cli/test_auth_toctou_file_modes.py`)
-- `signal.SIGALRM` → Unix-only (per-test timeouts no longer use it directly; see the win32 timeout-method shim in `tests/conftest.py::pytest_configure`)
-- Live Winsock / Windows-specific regression tests → `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
-
-**Monkeypatching `sys.platform` is not enough** when the code under test also calls `platform.system()` / `platform.release()` / `platform.mac_ver()`. Those functions re-read the real OS independently, so a test that sets `sys.platform = "linux"` on a Windows runner will still see `platform.system() == "Windows"` and route through the Windows branch. Patch all three together:
-
-```python
-monkeypatch.setattr(sys, "platform", "linux")
-monkeypatch.setattr(platform, "system", lambda: "Linux")
-monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
-```
-
-See `tests/agent/test_prompt_builder.py::TestEnvironmentHints` for a worked example.
+Host-specific tests run on the real host. Use one `@pytest.mark.platforms(...)`
+marker per test, such as `@pytest.mark.platforms("windows", arch="arm64")`.
+Do not fake the host by patching `sys.platform` or platform probes.
 
 ### System prompt's execution-environment block
 

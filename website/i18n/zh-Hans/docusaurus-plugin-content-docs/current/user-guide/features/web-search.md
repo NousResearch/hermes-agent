@@ -7,6 +7,9 @@ sidebar_position: 6
 
 # 网页搜索与提取
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商支持：
 
 - **`web_search`** — 搜索网页并返回排序结果
@@ -27,7 +30,7 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | 付费 |
 | **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
 
-Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `pip install ddgs`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
+Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
 
 **按能力拆分：** 搜索和提取可分别使用不同的提供商——例如搜索使用 SearXNG（免费），提取使用 Firecrawl。详见下方[按能力配置](#per-capability-configuration)。
 

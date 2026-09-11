@@ -110,7 +110,6 @@ A well-built third-party-product plugin can clear automated review and still be 
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
 ### PM developer environment
@@ -143,39 +142,38 @@ restores the prior shell environment.
 
 ### Manual development and test environment
 
-Use Python 3.14 (`>=3.14,<3.15`). Keep a development environment outside the
-source tree if an agent will operate on that checkout. Leave PM activation
-before this sequence. Keep the same development `HERMES_HOME` when running it.
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Run these commands from that checkout with its prepared Python. Keep the same
+development `HERMES_HOME`. PM must be able to start before it can build another
+environment. On Windows, initialize the native C++ build environment for your
+architecture before building source dependencies.
 
-This environment is for tests and editor tools. Its own interpreter includes
-pytest without relying on PM's `PYTHONPATH`. On Windows, initialize the native
-C++ build environment for your architecture before building source dependencies.
-
-POSIX:
+Build an independent interpreter for tests and editor tools:
 
 ```bash
-uv venv "$HOME/.hermes/venvs/hermes-dev" --python 3.14
-export UV_PROJECT_ENVIRONMENT="$HOME/.hermes/venvs/hermes-dev"
-uv sync --locked --extra all --extra dev
-export HERMES_PYTHON="$UV_PROJECT_ENVIRONMENT/bin/python"
-"$HERMES_PYTHON" hermes --version
+python -m pm.build_env --source . --out .venv --extra dev --group test
 ```
 
-PowerShell:
+PM builds from the committed lock and checks dependency consistency before
+returning the new interpreter. The `test` group includes native launcher test
+dependencies and does not enter the application runtime. If tests require
+another declared feature, add its `--extra`.
 
-```powershell
-$devEnv = Join-Path $env:LOCALAPPDATA 'hermes-dev-env'
-uv venv $devEnv --python 3.14
-$env:UV_PROJECT_ENVIRONMENT = $devEnv
-uv sync --locked --extra all --extra dev
-$env:HERMES_PYTHON = Join-Path $devEnv 'Scripts/python.exe'
-& $env:HERMES_PYTHON hermes --version
-```
+The output must not exist, even as an empty directory or symlink. To regenerate
+it after a dependency change, stop its processes and intentionally remove only
+that disposable environment first. PM does not delete an existing destination.
+Do not run raw pip or uv commands to change a PM-built environment.
 
-This environment is for source development and tests. It does not replace
-PM's tool store or a packaged app's dependency selection.
-Run `uv pip check --python` with this environment's interpreter to check its dependencies.
-Do not install into an MSIX payload or point a bundled app at this environment.
+To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
+path. Set `HERMES_PYTHON` to that environment's interpreter:
+
+- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+
+The canonical runner discovers repository `.venv` automatically. It clears
+`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+This test environment does not replace PM's application selection or tool
+store. Do not point a bundled app at it or install into an MSIX payload.
 
 For an isolated development instance, select a disposable `HERMES_HOME` before
 starting the source command. Use `python hermes setup` to configure it rather
@@ -728,7 +726,7 @@ that touches the OS, assume *any* platform can hit your code path.
    ```
 
    If you specifically need the hermes wrapper (it has a stdlib fallback
-   for scaffold-phase imports before pip install finishes), use
+   for scaffold-phase imports before PM finishes dependency preparation), use
    `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.

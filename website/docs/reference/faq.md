@@ -6,6 +6,10 @@ description: "Frequently asked questions and solutions to common issues with Her
 
 # FAQ & Troubleshooting
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Quick answers and fixes for the most common questions and issues.
 
 ---
@@ -433,7 +437,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install core messaging gateway dependencies
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
@@ -559,7 +563,7 @@ hermes chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 # For npm-based servers, ensure Node.js is available
 node --version

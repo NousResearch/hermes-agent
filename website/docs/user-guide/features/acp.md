@@ -6,6 +6,10 @@ description: "Use Hermes Agent inside ACP-compatible editors and collaboration p
 
 # ACP Host Integration
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent can run as an ACP server, letting ACP-compatible hosts talk to
 Hermes over stdio. Editors can render:
 
@@ -40,7 +44,7 @@ It intentionally excludes things that do not fit typical editor UX, such as mess
 Install Hermes normally, then add the ACP extra from the install checkout:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 This installs the `agent-client-protocol` dependency and enables:
@@ -376,7 +380,7 @@ Check:
 
 - For manual/local development, verify the host command points to `hermes acp`.
 - Hermes is installed and on your PATH.
-- The ACP extra is installed (`cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'`).
+- The ACP extra is installed (`cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"`).
 
 ### ACP starts but immediately errors
 

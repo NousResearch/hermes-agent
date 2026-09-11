@@ -822,9 +822,15 @@ async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
 
 @pytest.mark.asyncio
 async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
-    """Missing artifact paths are silently skipped — they may have been
-    referenced by name only. The notifier must not crash and must still
-    deliver any artifacts that do exist."""
+    """Missing artifact paths are silently skipped at delivery time.
+
+    Complete-time validation now rejects worker-declared durable paths that
+    never existed, so this test injects a ghost path into the stored completed
+    event after a successful complete — modeling the race where a file vanishes
+    between complete and notify. The notifier must not crash and must still
+    deliver any artifacts that do exist.
+    """
+    import json
     import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_notify as kbn
@@ -838,6 +844,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
+    missing_pdf = tmp_path / "missing.pdf"
 
     conn = kbc.connect()
     try:
@@ -849,12 +856,49 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
-        kt._handle_complete({
-            "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+        rejected = json.loads(kt._handle_complete({
+            "summary": "one real, one missing artifact",
+            "artifacts": [str(real_pdf), str(missing_pdf)],
+        }))
+        assert "still in-flight" in rejected["error"]
+        with kbc.connect() as conn:
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "ready"
+            assert not any(event.kind == "completed" for event in kb.list_events(conn, tid))
+        assert real_pdf.read_bytes() == b"%PDF-fake"
+
+        result = kt._handle_complete({
+            "summary": "one real artifact",
+            "artifacts": [str(real_pdf)],
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+    assert "error" not in json.loads(result)
+
+    # Simulate a path that disappears (or was only named for reference) after
+    # completion by patching the stored completed event payload.
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["payload"] or "{}")
+        payload["artifacts"] = [
+            str(real_pdf),
+            str(missing_pdf),
+        ]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), row["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

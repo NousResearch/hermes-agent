@@ -2735,16 +2735,58 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
+def _validate_durable_artifact(artifact: str) -> None:
+    """Reject a declared durable artifact that cannot be handed off.
+
+    Completion may reference artifacts outside the scratch workspace;
+    they are handed off by path alone, so each must exist, be a regular
+    file, be readable, and be non-empty, or the task must not complete.
+    """
+    path = Path(artifact)
+    if not path.exists():
+        raise ArtifactPreservationError(
+            f"declared durable artifact does not exist: {artifact}"
+        )
+    if not path.is_file():
+        raise ArtifactPreservationError(
+            f"declared durable artifact is not a regular file: {artifact}"
+        )
+    if not os.access(path, os.R_OK):
+        raise ArtifactPreservationError(
+            f"declared durable artifact is not readable: {artifact}"
+        )
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ArtifactPreservationError(
+            f"declared durable artifact is not readable: {artifact}"
+        ) from exc
+    if size == 0:
+        raise ArtifactPreservationError(
+            f"declared durable artifact is empty: {artifact}"
+        )
+
+
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy scratch-workspace completion artifacts before cleanup removes them.
+
+    Artifacts outside the scratch workspace are validated (not copied) so
+    completion cannot reference a file that does not exist or cannot be read.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
 
     workspace = _scratch_workspace(conn, task_id)
     if workspace is None:
+        # Non-scratch or missing workspace: still validate durable artifacts
+        # so a completion referencing a nonexistent path is rejected (#53699).
+        for item in raw_artifacts:
+            artifact = str(item).strip() if isinstance(item, str) else ""
+            if artifact:
+                _validate_durable_artifact(artifact)
         return
     is_managed, board = _managed_scratch_path_info(workspace)
     if not is_managed:
@@ -2775,10 +2817,12 @@ def _persist_scratch_completion_artifacts(
         try:
             resolved_src = src.resolve()
         except OSError:
+            _validate_durable_artifact(artifact)
             persisted.append(artifact)
             continue
 
         if not resolved_src.is_relative_to(workspace_root):
+            _validate_durable_artifact(artifact)
             persisted.append(artifact)
             continue
 

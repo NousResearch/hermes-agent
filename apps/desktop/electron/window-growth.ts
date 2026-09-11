@@ -39,7 +39,7 @@ const MAX_WORK_AREA = 0.92
 export function growWindowBounds(
   request: GrowRequest | null | undefined,
   { bounds, frameWidth = 0, workArea, zoom = 1 }: GrowInputs
-): { height: number; width: number; x: number; y: number } {
+) {
   const dip = (value: number | undefined, round: (n: number) => number) =>
     Math.max(0, Math.min(MAX_DELTA_PX, round((Number(value) || 0) * zoom)))
 

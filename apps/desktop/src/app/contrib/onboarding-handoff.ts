@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/api/client'
+import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
 import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
 import type { ClientSessionState } from '@/app/types'
 import {
@@ -62,9 +63,8 @@ import {
   retrySetupHandoff,
   saveHandoffReceipt
 } from './handoff-receipt'
+import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
-/** Derived, not restated: the seed rows this hook passes through are whatever
- *  the builders produce, so the shape can never drift out of sync. */
 type SeedMessage = ReturnType<typeof buildChatOnboardingSeedMessages>[number]
 
 interface SetupStatus {
@@ -97,13 +97,42 @@ export interface OnboardingHandoffOptions {
     seedMessages?: SeedMessage[],
     overrides?: SessionCreateOverrides
   ) => Promise<null | string>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
-  resumeSession: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>
+  requestGateway: AmbientGatewayRequest
+  resumeSession: ReturnType<typeof useSessionActions>['resumeSession']
   /** Runs `create` with the session-create leg pinned to `profile` instead of
    *  the selected chat's owner. The caller owns the mechanism (its own
    *  `requestGateway` is what reads the pin); the hook only needs to say which
    *  backend the new session belongs on. */
   runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
+}
+
+interface GuideSession {
+  id: string
+  resolved_id?: string
+}
+
+async function adoptGuideSession(
+  canonical: GuideSession,
+  freeTier: SetupStatus['free_tier'],
+  resumeSession: OnboardingHandoffOptions['resumeSession'],
+  guideRequest: AmbientGatewayRequest
+): Promise<void> {
+  await resumeSession(canonical.resolved_id ?? canonical.id, true)
+  const adoptedRuntimeId = $activeSessionId.get()
+  $chatOnboardingThreadIds.set(adoptedRuntimeId ? [canonical.id, adoptedRuntimeId] : [canonical.id])
+  $setupSession.set({
+    profile: SETUP_PROFILE,
+    runtimeId: adoptedRuntimeId ?? canonical.id,
+    storedId: canonical.id
+  })
+
+  if (freeTier) {
+    await guideRequest('config.set', {
+      session_id: adoptedRuntimeId ?? canonical.id,
+      key: 'reasoning',
+      value: 'minimal'
+    })
+  }
 }
 
 /** Returns the first-chat kickoff; wires the handoff and check-in effects. */
@@ -149,7 +178,7 @@ export function useOnboardingHandoff({
 
       // The exact title is the durable registry: a relaunch adopts the guide
       // before creating, so UNIQUE(title) cannot strand an untitled duplicate.
-      const registryHit = await guideRequest<{ sessions?: { id: string; resolved_id?: string }[] }>('session.list', {
+      const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
         include_hidden: true,
         title: SETUP_CHAT_TITLE
       }).catch(() => null)
@@ -157,32 +186,20 @@ export function useOnboardingHandoff({
       const canonical = registryHit?.sessions?.[0]
 
       if (canonical?.id) {
-        await resumeSession(canonical.resolved_id ?? canonical.id, true)
-        const adoptedRuntimeId = $activeSessionId.get()
-        $chatOnboardingThreadIds.set(adoptedRuntimeId ? [canonical.id, adoptedRuntimeId] : [canonical.id])
-        $setupSession.set({
-          profile: SETUP_PROFILE,
-          runtimeId: adoptedRuntimeId ?? canonical.id,
-          storedId: canonical.id
-        })
-
-        if (record.free_tier) {
-          await guideRequest('config.set', {
-            session_id: adoptedRuntimeId ?? canonical.id,
-            key: 'reasoning',
-            value: 'minimal'
-          })
-        }
+        await adoptGuideSession(canonical, record.free_tier, resumeSession, guideRequest)
 
         // runGuideKickoff records the guided phase only after adoption.
         return true
       }
 
+      const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
+
+      if (record.free_tier) {
+        createOverrides.reasoningEffort = 'minimal'
+      }
+
       const runtimeId = await runCreatePinnedTo(SETUP_PROFILE, () =>
-        createBackendSessionForSend(null, seedMessages, {
-          title: SETUP_CHAT_TITLE,
-          ...(record.free_tier ? { reasoningEffort: 'minimal' } : {})
-        })
+        createBackendSessionForSend(null, seedMessages, createOverrides)
       )
 
       if (!runtimeId) {

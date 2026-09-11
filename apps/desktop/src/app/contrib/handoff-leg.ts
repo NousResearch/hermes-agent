@@ -1,9 +1,13 @@
 /** Stored-id recovery and per-session brief painting adapted from alt-glitch's
  * 487823507711c2d26da8fd1684be78f12966d14d. Failed/uncertain submits retain the
  * original session; they must never close it or start a second build. */
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 import type { ClientSessionState } from '@/app/types'
 import type { HandoffPlan } from '@/components/onboarding-chat/setup-profile'
 import type { SessionMessage } from '@/types/hermes'
+
+import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 export const BUILD_PROFILE = 'default'
 
@@ -34,7 +38,11 @@ export interface HandoffSnapshot {
 export interface HandoffDeps {
   create: () => Promise<Pick<HandoffReceipt, 'runtimeId' | 'storedId' | 'owner'>>
   personalize: () => Promise<void>
-  request: <T>(owner: HandoffReceipt['owner'], method: string, params: Record<string, unknown>) => Promise<T>
+  request: <T>(
+    owner: HandoffReceipt['owner'],
+    method: string,
+    params: NonNullable<Parameters<AmbientGatewayRequest>[1]>
+  ) => Promise<T>
   read: () => HandoffReceipt | null
   save: (receipt: HandoffReceipt) => void
   bind: (receipt: HandoffReceipt, running: boolean, snapshot?: HandoffSnapshot) => void
@@ -44,12 +52,21 @@ export interface HandoffDeps {
  * generic server error, like a lost ACK, may follow a side effect. */
 const PREFLIGHT_REJECTIONS = new Set([4001, 4004, 4009, 4018, 4090, 4091, 4120, 4121, 5070, 5071, 5072, 5122])
 
-function rejectionCode(error: unknown): number | undefined {
-  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'number') {
-    return error.code
-  }
+interface HydratedHandoffSnapshot extends HandoffSnapshot {
+  messages: SessionMessage[]
+}
 
-  return undefined
+function verifyHandoffSnapshot(snapshot: HandoffSnapshot): asserts snapshot is HydratedHandoffSnapshot {
+  if (
+    snapshot.hydrating ||
+    snapshot.messages_omitted ||
+    !snapshot.session_id ||
+    !snapshot.session_key ||
+    !Array.isArray(snapshot.messages) ||
+    (snapshot.running !== true && snapshot.running !== false)
+  ) {
+    throw new Error('Could not verify the first build. Retry when the connection recovers.')
+  }
 }
 
 export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recoverGone = true): Promise<HandoffReceipt> {
@@ -66,16 +83,7 @@ export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recover
       omit_messages: false
     })
 
-    if (
-      snapshot.hydrating ||
-      snapshot.messages_omitted ||
-      !snapshot.session_id ||
-      !snapshot.session_key ||
-      !Array.isArray(snapshot.messages) ||
-      typeof snapshot.running !== 'boolean'
-    ) {
-      throw new Error('Could not verify the first build. Retry when the connection recovers.')
-    }
+    verifyHandoffSnapshot(snapshot)
 
     receipt = { ...receipt, runtimeId: snapshot.session_id }
 
@@ -123,7 +131,7 @@ export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recover
       throw new Error('The first build did not acknowledge starting. Check its session before retrying.')
     }
   } catch (error) {
-    const code = rejectionCode(error)
+    const code = error instanceof JsonRpcGatewayError ? error.code : undefined
 
     if (code !== undefined && PREFLIGHT_REJECTIONS.has(code)) {
       receipt = { ...receipt, status: 'created' }

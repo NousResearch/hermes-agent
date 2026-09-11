@@ -1,21 +1,26 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
 
-import { type HandoffDeps, type HandoffReceipt, startHandoff } from './handoff-leg'
+import { type HandoffDeps, type HandoffReceipt, type HandoffSnapshot, startHandoff } from './handoff-leg'
+
+type HandoffTestResponse = HandoffSnapshot | { status?: string }
 
 function harness() {
   let receipt: HandoffReceipt | null = null
 
-  const request = vi.fn(async (_owner: HandoffReceipt['owner'], method: string): Promise<Record<string, unknown>> => {
-    if (method === 'session.resume') {
-      return { session_id: 'runtime-2', session_key: 'stored', running: false, messages: [] }
-    }
+  const request = vi.fn(
+    async (_owner: HandoffReceipt['owner'], method: string): Promise<HandoffTestResponse> => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-2', session_key: 'stored', running: false, messages: [] }
+      }
 
-    if (method === 'prompt.submit') {
-      throw Object.assign(new Error('Provider unavailable'), { code: 4090 })
-    }
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError('Provider unavailable', { code: 4090 })
+      }
 
-    return {}
-  })
+      return {}
+    }
+  )
 
   const deps: HandoffDeps = {
     create: vi.fn(async () => ({
@@ -24,6 +29,7 @@ function harness() {
       owner: { connectionId: 'source-a', profile: 'default' as const }
     })),
     personalize: vi.fn(async () => undefined),
+    // SAFETY: The fixture supplies the response contract for each RPC used by startHandoff.
     request: request as HandoffDeps['request'],
     read: () => receipt,
     save: value => {
@@ -42,7 +48,7 @@ describe('first-build handoff', () => {
     'retries storage refusal %i after repair without creating a second session',
     async code => {
       const h = harness()
-      h.request.mockRejectedValueOnce(Object.assign(new Error('Storage unavailable'), { code }))
+      h.request.mockRejectedValueOnce(new JsonRpcGatewayError('Storage unavailable', { code }))
       await expect(startHandoff(h.deps, task)).rejects.toThrow('Storage unavailable')
       expect(h.receipt()).toMatchObject({ storedId: 'stored', status: 'created' })
 
@@ -61,13 +67,13 @@ describe('first-build handoff', () => {
     'does not accept refusal %i from stale running alone or repeat it while busy',
     async code => {
       const h = harness()
-      h.request.mockRejectedValueOnce(Object.assign(new Error('Preflight refused'), { code }))
+      h.request.mockRejectedValueOnce(new JsonRpcGatewayError('Preflight refused', { code }))
       await expect(startHandoff(h.deps, task)).rejects.toThrow('Preflight refused')
       h.request.mockImplementation(async () => ({
         session_id: 'runtime-1',
         session_key: 'stored',
         running: true,
-        messages: [{ role: 'user', text: 'hidden setup seed', display_kind: 'hidden' }]
+        messages: [{ role: 'user', content: 'hidden setup seed', display_kind: 'hidden' as const }]
       }))
       await expect(startHandoff(h.deps, task)).rejects.toThrow('no duplicate was sent')
       expect(h.receipt()?.status).toBe('created')
@@ -115,7 +121,7 @@ describe('first-build handoff', () => {
         return { session_id: 'runtime-2', session_key: 'stored', running: false, messages: [] }
       }
 
-      throw Object.assign(new Error('Internal error'), { code: -32603 })
+      throw new JsonRpcGatewayError('Internal error', { code: -32603 })
     })
     await expect(startHandoff(h.deps, task)).rejects.toThrow('Internal error')
     expect(h.receipt()?.status).toBe('submitting')
@@ -123,7 +129,7 @@ describe('first-build handoff', () => {
 
   it('recovers a reaped runtime once and reconciles a lost ACK without resubmitting or minting a duplicate', async () => {
     const h = harness()
-    h.request.mockImplementation(async (_profile, method) => {
+    h.request.mockImplementation(async (_profile, method): Promise<HandoffTestResponse> => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-2', session_key: 'stored', running: false, messages: [] }
       }
@@ -132,7 +138,7 @@ describe('first-build handoff', () => {
         const submits = h.request.mock.calls.filter(([, name]) => name === 'prompt.submit').length
 
         if (submits === 1) {
-          throw Object.assign(new Error('session not found'), { code: 4001 })
+          throw new JsonRpcGatewayError('session not found', { code: 4001 })
         }
 
         throw new Error('connection closed after send')

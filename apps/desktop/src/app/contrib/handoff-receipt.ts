@@ -27,10 +27,6 @@ export function handoffReceiptKey(connection: null | string, guideStoredId: stri
   return `hermes.onboarding.handoff.v1.connection.${encodeURIComponent(connection ?? 'ambient')}.profile.default.guide.${encodeURIComponent(guideStoredId)}`
 }
 
-/** A receipt owner is either a registry source id or null, the ambient route. */
-const isOwnerConnection = (value: unknown): value is null | string =>
-  value === null || (typeof value === 'string' && value.length > 0)
-
 export function readHandoffReceipt(key: string): HandoffReceipt | null {
   const unsaved = unsavedReceipts.get(key)
 
@@ -54,16 +50,20 @@ export function readHandoffReceipt(key: string): HandoffReceipt | null {
     )
   }
 
+  // JSON cannot encode a constructor function: only primitive strings have
+  // String as their constructor here. Validate without coercing corrupt ids.
+  const hasTextFields = [value?.storedId, value?.runtimeId, value?.task, value?.brief].every(
+    field => field?.constructor === String
+  )
+
+  const connectionId = value?.owner?.connectionId
+  const validConnection = connectionId === null || (connectionId?.constructor === String && connectionId.length > 0)
+
   if (
-    !value ||
-    typeof value.storedId !== 'string' ||
+    !hasTextFields ||
     !value.storedId ||
-    typeof value.runtimeId !== 'string' ||
-    typeof value.task !== 'string' ||
-    typeof value.brief !== 'string' ||
-    !value.owner ||
-    !isOwnerConnection(value.owner.connectionId) ||
-    value.owner.profile !== 'default' ||
+    !validConnection ||
+    value.owner?.profile !== 'default' ||
     !['build', 'plugin', 'machine-setup'].includes(value.plan) ||
     !['created', 'submitting', 'accepted'].includes(value.status)
   ) {

@@ -25,8 +25,39 @@ afterEach(() => {
 it('rejects corrupt receipts instead of treating them as permission to create again', () => {
   const key = handoffReceiptKey('source-a', 'guide')
   expect(key).not.toBe(handoffReceiptKey('source-b', 'guide'))
-  localStorage.setItem(key, '{broken')
-  expect(() => readHandoffReceipt(key)).toThrow('could not be read')
+  const malformed = ['{broken', 'null', 'false', '0', '[]', '{}']
+  const nonText: (null | boolean | number | object)[] = [null, false, 0, [], {}, { constructor: 'String' }]
+
+  for (const field of ['storedId', 'runtimeId', 'task', 'brief']) {
+    malformed.push(...nonText.map(value => JSON.stringify({ ...receipt, [field]: value })))
+  }
+
+  malformed.push(
+    ...nonText
+      .filter(value => value !== null)
+      .map(connectionId => JSON.stringify({ ...receipt, owner: { ...receipt.owner, connectionId } }))
+  )
+  malformed.push(JSON.stringify({ ...receipt, storedId: '' }))
+
+  for (const raw of malformed) {
+    localStorage.setItem(key, raw)
+    expect(() => readHandoffReceipt(key)).toThrow('could not be read')
+  }
+
+  saveHandoffReceipt(key, {
+    ...receipt,
+    runtimeId: '',
+    task: '',
+    brief: '',
+    owner: { connectionId: null, profile: 'default' }
+  })
+  expect(readHandoffReceipt(key)).toEqual({
+    ...receipt,
+    runtimeId: '',
+    task: '',
+    brief: '',
+    owner: { connectionId: null, profile: 'default' }
+  })
 })
 
 it('retains the identity in memory if disk persistence fails so retry cannot recreate', () => {

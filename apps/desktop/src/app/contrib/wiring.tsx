@@ -158,7 +158,7 @@ import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
-import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 
@@ -324,16 +324,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
   )
 
-  const requestGateway = useCallback(
-    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+  const requestGateway = useCallback<AmbientGatewayRequest>(
+    (method, params, timeoutMs, signal) => {
       // The selected guide owns existing-session traffic, but not the new build.
       const handoffProfile = handoffCreateProfileRef.current
 
       if (handoffProfile !== null && HANDOFF_CREATE_LEG_METHODS.has(method)) {
-        return requestGatewayForProfile<T>(handoffProfile, method, params ?? {}, timeoutMs, signal)
+        return requestGatewayForProfile(handoffProfile, method, params ?? {}, timeoutMs, signal)
       }
 
-      return dispatchSessionRpc<T>(method, params, timeoutMs, signal)
+      return dispatchSessionRpc(method, params, timeoutMs, signal)
     },
     [dispatchSessionRpc]
   )

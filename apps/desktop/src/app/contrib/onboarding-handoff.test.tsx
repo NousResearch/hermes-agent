@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -71,6 +72,7 @@ vi.mock('@/store/session', async () => {
   }
 })
 
+import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
 import type { ClientSessionState } from '@/app/types'
 import { startChatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import {
@@ -153,7 +155,7 @@ beforeEach(() => {
     }
 
     if (method === 'prompt.submit' && profile === 'default') {
-      throw Object.assign(new Error('Provider unavailable'), { code: 4090 })
+      throw new JsonRpcGatewayError('Provider unavailable', { code: 4090 })
     }
 
     return { status: 'streaming' }
@@ -183,10 +185,13 @@ describe('the real onboarding handoff effect', () => {
 
     if (starts) {
       expect(buildChatOnboardingSeedMessages).toHaveBeenCalledWith(undefined, record.free_tier !== true)
-      expect(h.options.createBackendSessionForSend).toHaveBeenCalledWith(null, [], {
-        title: 'Welcome to Hermes',
-        ...(record.free_tier ? { reasoningEffort: 'minimal' } : {})
-      })
+      const createOverrides: SessionCreateOverrides = { title: 'Welcome to Hermes' }
+
+      if (record.free_tier) {
+        createOverrides.reasoningEffort = 'minimal'
+      }
+
+      expect(h.options.createBackendSessionForSend).toHaveBeenCalledWith(null, [], createOverrides)
     }
 
     expect(mocks.request.mock.calls.some(([, , method]) => method === 'config.set')).toBe(false)

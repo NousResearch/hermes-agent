@@ -263,7 +263,11 @@ export function useVoiceConversation({
 
   const settleAfterSpeech = useCallback(
     (barged: boolean, stoppedDuringSetup = false) => {
-      if (barged || !awaitingSpokenResponseRef.current) {
+      const stoppedExternally =
+        stoppedDuringSetup ||
+        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
+
+      if (barged || stoppedExternally || !awaitingSpokenResponseRef.current) {
         awaitingSpokenResponseRef.current = false
         consumePendingResponse()
       }
@@ -282,16 +286,13 @@ export function useVoiceConversation({
 
       dropSpeechSession()
 
-      // If stopVoicePlayback() was called externally (Stop button, end), the
-      // voice-playback sequence has advanced past what we captured at speech
-      // start — don't auto-start the next sentence, the user chose to stop.
-      const stoppedByUser =
-        stoppedDuringSetup ||
-        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
-
+      // An external stopVoicePlayback() (Stop/Esc) silences the current reply;
+      // it does not end hands-free conversation mode. end() owns that path and
+      // clears pendingStartRef before disabling the loop. While still enabled,
+      // always re-arm so the user can speak immediately after cutting TTS.
       speechStartSequenceRef.current = 0
 
-      if (enabledRef.current && !stoppedByUser) {
+      if (enabledRef.current) {
         pendingStartRef.current = true
       }
 

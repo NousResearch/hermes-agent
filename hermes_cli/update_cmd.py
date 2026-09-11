@@ -478,14 +478,53 @@ def _update_check_fetch_popen_kwargs() -> dict:
 
 def _terminate_update_check_fetch(proc: subprocess.Popen) -> bool:
     """Stop and reap a timed-out fetch tree; report whether cleanup may safely sweep."""
-    from hermes_cli._subprocess_compat import kill_process_tree
+    if sys.platform == "win32":
+        from hermes_cli._subprocess_compat import windows_hide_flags
 
-    kill_process_tree(proc)
-    try:
+        try:
+            killed = subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait(timeout=5)
+            return False
+        if killed.returncode != 0:
+            proc.kill()
         proc.wait(timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return True
+        return killed.returncode == 0
+
+    import signal
+
+    pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    with suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=1)
+
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=5)
+    deadline = _time.monotonic() + 5
+    while _time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        _time.sleep(0.05)
+    return False
 
 
 def _run_update_check_fetch(

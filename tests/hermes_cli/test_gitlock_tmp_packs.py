@@ -111,3 +111,12 @@ def test_process_probe_failure_blocks_cleanup(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fail_probe)
 
     assert gitlock._git_proc_running() is True
+
+
+def test_process_probe_nonzero_failure_blocks_cleanup(monkeypatch):
+    import hermes_cli.gitlock as gitlock
+
+    failed = subprocess.CompletedProcess(["tasklist"], 2, stdout="", stderr="failed")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: failed)
+
+    assert gitlock._git_proc_running() is True

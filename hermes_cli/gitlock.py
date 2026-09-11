@@ -32,10 +32,15 @@ def _git_proc_running() -> bool:
         if os.name == "nt":
             proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            return "git.exe" in proc.stdout.lower()
+            return proc.returncode != 0 or any(
+                line.lower().startswith('"git.exe",')
+                for line in proc.stdout.splitlines()
+            )
         proc = subprocess.run(["pgrep", "-x", "git"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=10)
-        return proc.returncode == 0
+        # pgrep: 0 = match, 1 = no match, >1 = probe error. Only an explicit
+        # no-match result permits destructive cleanup.
+        return proc.returncode != 1
     except Exception:
         logger.debug("git process probe failed; skipping cleanup", exc_info=True)
         return True

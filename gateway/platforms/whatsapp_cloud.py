@@ -101,11 +101,28 @@ def _interactive_inner(raw_message: Dict[str, Any]) -> Dict[str, Any]:
     return inter.get("button_reply") or inter.get("list_reply") or {}
 
 
+def _contacts_body(raw_message: Dict[str, Any]) -> str:
+    """Shared contact cards as ``[Contact: <name> <numbers…>]`` lines; Meta sends no caption."""
+    lines = []
+    for contact in raw_message.get("contacts") or []:
+        if not isinstance(contact, dict):
+            continue
+        name = contact.get("name")
+        formatted = str(name.get("formatted_name") or "").strip() if isinstance(name, dict) else ""
+        numbers = [
+            number for phone in contact.get("phones") or [] if isinstance(phone, dict)
+            for number in [str(phone.get("phone") or phone.get("wa_id") or "").strip()] if number
+        ]
+        lines.append(f"[Contact: {' '.join([formatted or 'unknown', *numbers])}]")
+    return "\n".join(lines)
+
+
 # Inbound message type → body text extractor; media kinds use the caption.
 _BODY_BY_KIND = {
     "text": lambda m: (m.get("text") or {}).get("body"),
     "button": lambda m: (m.get("button") or {}).get("text"),
     "interactive": lambda m: _interactive_inner(m).get("title"),
+    "contacts": _contacts_body,
     **{kind: (lambda m, k=kind: (m.get(k) or {}).get("caption")) for kind in _INBOUND_MEDIA_KINDS},
 }
 

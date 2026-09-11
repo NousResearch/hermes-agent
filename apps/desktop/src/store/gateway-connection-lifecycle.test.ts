@@ -573,7 +573,10 @@ describe('secondary stalled-dial budget', () => {
     const slotTimeout = () =>
       new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)')
 
-    const getConnectionFor = vi.fn().mockResolvedValueOnce(descriptorFor('homelab', 'bot-a')).mockRejectedValue(slotTimeout())
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(slotTimeout())
 
     installDesktop({ getConnectionFor })
 

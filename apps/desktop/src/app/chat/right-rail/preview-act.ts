@@ -358,7 +358,15 @@ async function driveAction(
     return { error: 'Could not work out where that element is on screen.', success: false }
   }
 
-  await glideTo(input, found.point)
+  // `sendInputEvent` expects coordinates in device-pixel space, but the engine
+  // reports the target's centre in CSS pixels. On a fractional-DPR display the
+  // two diverge: sending the raw CSS point lands the click ~1/DPR short of the
+  // target and it misses. Scale by the page's DPR (1 on ordinary displays, so
+  // this is a no-op there). electron/electron#53050 is the underlying bug.
+  const dpr = found.devicePixelRatio ?? 1
+  const aimPoint = dpr > 0 && dpr !== 1 ? { x: Math.round(found.point.x * dpr), y: Math.round(found.point.y * dpr) } : found.point
+
+  await glideTo(input, aimPoint)
 
   if (action.kind === 'click') {
     await clickAt(input)

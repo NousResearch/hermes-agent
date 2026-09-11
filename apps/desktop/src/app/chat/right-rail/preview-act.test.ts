@@ -108,14 +108,15 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
   /** A pane that answers the locate trip with a fixed on-screen point, and the
    *  read-back trip with an empty inventory. Returns the input spy. */
-  const withDrivenPane = () => {
+  const withDrivenPane = (locate: { devicePixelRatio?: number; point?: { x: number; y: number } } = {}) => {
+    const { devicePixelRatio, point = { x: 120, y: 80 } } = locate
     const tabId = openBrowserTab()
     const send = vi.fn()
 
     cleanups.push(
       registerPreviewScriptRunner(tabId, async code =>
         code.includes('"kind":"locate"')
-          ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 120, y: 80 }, success: true })
+          ? JSON.stringify({ acted: 'looking at button "Save"', devicePixelRatio, point, success: true })
           : // `hit` is the page's witness that the real pointerdown arrived.
             JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
       )
@@ -143,6 +144,30 @@ describe('actOnActivePreview (drive_preview tool)', () => {
       y: 80
     })
     expect(result.acted).toBe('clicked button "Save"')
+  })
+
+  it('scales the click point by the page devicePixelRatio (fractional-DPR fix)', async () => {
+    const send = withDrivenPane({ devicePixelRatio: 1.256, point: { x: 120, y: 80 } })
+
+    await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    // sendInputEvent expects device-pixel coords; the raw CSS point would land
+    // ~1/DPR short. The aim point must be multiplied by the reported DPR.
+    expect(send.mock.calls.map(([event]) => event).find(event => event.type === 'mouseDown')).toMatchObject({
+      x: Math.round(120 * 1.256),
+      y: Math.round(80 * 1.256)
+    })
+  })
+
+  it('does not scale when devicePixelRatio is absent (defaults to 1)', async () => {
+    const send = withDrivenPane({ point: { x: 120, y: 80 } })
+
+    await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    expect(send.mock.calls.map(([event]) => event).find(event => event.type === 'mouseDown')).toMatchObject({
+      x: 120,
+      y: 80
+    })
   })
 
   it('types by pressing keys, after selecting whatever the field held', async () => {

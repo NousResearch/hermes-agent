@@ -93,6 +93,10 @@ export interface PreviewActResult {
   elements?: PreviewElement[]
   error?: string
   note?: string
+  /** The page's device-pixel ratio, reported alongside `point` so the caller can
+   *  translate a CSS-px target into the coordinate space `sendInputEvent` expects
+   *  (see preview-act.ts). Absent on synthetic/fallback paths — treat as 1. */
+  devicePixelRatio?: number
   /** Viewport centre of a located target, for aiming real pointer input at it. */
   point?: { x: number; y: number }
   success: boolean

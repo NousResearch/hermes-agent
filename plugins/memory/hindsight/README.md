@@ -99,7 +99,26 @@ Per-session, workstream-scoped recall for Desktop sessions. Desktop sessions do 
 - `thread_routing.json` must contain a bare domain key — e.g. `{"myproject": {"extra_tags": ["myproject"]}}` — for each domain being routed. A key without the `<platform>:<id>` colon form is a domain key; it uses the same entry shape and validation as thread keys.
 - The routed domain's memories must already carry those tags. This filters memories that already carry the selected tags; it does **not** infer tags from folders or context files, backfill existing memories, or add domain tags to retains. Retain and channel-tag generation are unchanged.
 
-Both files are profile-scoped (`~/.hermes/hindsight/`), so multi-profile setups do not share values. `config.json` and `thread_routing.json` are loaded at provider initialize(); changing either file requires provider reinitialization (another recall call is not enough). The session working directory is resolved per recall call.
+Both files are profile-scoped and live under the **selected profile's** Hermes home: `$HERMES_HOME/hindsight/config.json` and `$HERMES_HOME/hindsight/thread_routing.json`. `$HERMES_HOME` resolves per `get_hermes_home()` — a context-local override first, then the `HERMES_HOME` environment variable, then the default `~/.hermes` — so in a named profile the files belong in that profile's home, not in the default profile's `~/.hermes`. Add them as additions to the existing connection config:
+
+**Settings keys** — `$HERMES_HOME/hindsight/config.json` (add to your existing connection config):
+
+```json
+{
+  "desktop_context_root": "/srv/workspaces",
+  "recall_sync": true
+}
+```
+
+**Routing table** — `$HERMES_HOME/hindsight/thread_routing.json` (a bare domain-key table):
+
+```json
+{
+  "myproject": { "extra_tags": ["myproject"] }
+}
+```
+
+Profiles do not read each other's files, with one legacy exception: `thread_routing.json` has no legacy path, but `config.json` does — `_load_config()` still falls back to the shared `~/.hindsight/config.json` when the profile's own `config.json` does not exist, so a profile that has never created one can pick up Hindsight settings from that legacy shared file. Both files are loaded at provider initialize(); changing either file requires provider reinitialization (another recall call is not enough). The session working directory is resolved per recall call.
 
 **Matching**
 

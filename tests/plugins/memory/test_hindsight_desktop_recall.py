@@ -730,8 +730,13 @@ class TestDiscordRegression:
     def test_desktop_domain_branch_never_shadows_thread_override(self, tmp_path, monkeypatch):
         # platform == "desktop" AND a platform:thread override already applied:
         # the thread override stays authoritative (§3.2 disjoint condition).
+        # Correction #10b: the control starts from a NONEMPTY CONFIGURED
+        # recall_tags/recall_tags_match baseline, so the override must be shown
+        # to REPLACE that baseline (not intersect/merge with it), and neither
+        # the configured baseline tags nor the Desktop domain's tags may leak.
         p, client, root = _desktop_provider(
             tmp_path, monkeypatch, platform="desktop", thread_id="thread-C",
+            config=_BASELINE_CFG,
             routing={
                 "desktop:thread-C": {"extra_tags": ["thread-scoped"]},
                 "infrastructure": {"extra_tags": ["infrastructure"]},
@@ -745,6 +750,10 @@ class TestDiscordRegression:
             runtime_cwd._SESSION_CWD.reset(token)
         kwargs = client.recall_calls[0]
         assert kwargs["tags"] == ["channel:desktop:thread-C", "thread-scoped"]
+        assert kwargs["tags_match"] == "any_strict"
+        # Replace, don't merge: neither the configured baseline filter nor the
+        # competing Desktop domain's extra_tags leak into the override.
+        assert "baseline-tag" not in kwargs["tags"]
         assert "infrastructure" not in kwargs["tags"]
         # Correction #10b: the platform:thread override is NOT an active
         # Desktop domain match -> reflect forwards no tag filter.

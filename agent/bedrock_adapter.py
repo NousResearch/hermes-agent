@@ -369,12 +369,47 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
 
 
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
-    """Live-discover Bedrock model IDs; None on failure/empty so callers use the static list."""
+    """Live-discover Bedrock model IDs; None on failure/empty so callers use the static list.
+
+    Bare foundation-model IDs that are covered by a discovered inference
+    profile are dropped: on on-demand Bedrock accounts the bare ID is not
+    invokable (HTTP 400, "Retry ... with the ID or ARN of an inference
+    profile"), so offering it in the ``/model`` picker persists an
+    un-invokable model to config. This mirrors the profile-preferring
+    dedup the setup wizard already applies in ``model_setup_flows.py``.
+    """
     with suppress(Exception):
         discovered = discover_bedrock_models(resolve_bedrock_runtime_region())
         if discovered:
-            return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
+            return merge_bedrock_openai_model_ids(
+                _dedup_profile_covered_ids([m["id"] for m in discovered])
+            )
     return None
+
+
+# Regional inference-profile prefixes. A profile ID like
+# ``us.anthropic.claude-fable-5`` covers the bare foundation model
+# ``anthropic.claude-fable-5`` (its base ID with the prefix stripped).
+_PROFILE_PREFIXES = ("us.", "global.", "eu.", "ap.", "jp.")
+
+
+def _dedup_profile_covered_ids(ids: List[str]) -> List[str]:
+    """Drop bare foundation-model IDs that a discovered profile already covers.
+
+    Given a mix of inference-profile IDs (``us.anthropic.claude-fable-5``)
+    and bare foundation-model IDs (``anthropic.claude-fable-5``), keep every
+    profile ID and every bare ID that has no profile sibling, but drop bare
+    IDs whose profile counterpart is present. Order is preserved.
+    """
+    profile_bases = {
+        mid.split(".", 1)[1]
+        for mid in ids
+        if mid.startswith(_PROFILE_PREFIXES)
+    }
+    return [
+        mid for mid in ids
+        if mid.startswith(_PROFILE_PREFIXES) or mid not in profile_bases
+    ]
 
 
 # --- Tool-calling / prompt-cache capability detection ---

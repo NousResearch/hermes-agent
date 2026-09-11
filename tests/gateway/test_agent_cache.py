@@ -292,6 +292,21 @@ class TestExtractCacheBustingConfig:
         assert "tools.registry_generation" in out
         assert calls == ([] if provider is None else [("p", False)])
 
+    def test_terminal_backend_change_busts_cached_agent(self):
+        from gateway.run import GatewayRunner
+
+        local = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "local"}}
+        )
+        remote = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "ssh"}}
+        )
+
+        assert local["terminal.backend"] == "local"
+        assert remote["terminal.backend"] == "ssh"
+        assert local != remote
+
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""

@@ -44,6 +44,8 @@ _RUNNER_CAPTURE_BYTES = 1_000_000
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
 RUNNER_CELL_SOURCE = '''\
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+_RPC_CELL_SCOPE = getattr(__import__("builtins"), "_HERMES_RPC_CELL_SCOPE", threading.local())
+setattr(__import__("builtins"), "_HERMES_RPC_CELL_SCOPE", _RPC_CELL_SCOPE)
 
 
 def _clip(text):
@@ -54,13 +56,29 @@ def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    previous_cell_token = getattr(_RPC_CELL_SCOPE, "token", None)
+    previous_rpc_dir = getattr(_RPC_CELL_SCOPE, "rpc_dir", None)
+    _RPC_CELL_SCOPE.token = request.get("rpc_cell_token", "")
+    _RPC_CELL_SCOPE.rpc_dir = request.get("rpc_dir", "")
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
-    except SystemExit as exc:
-        status, trace = "exit", "SystemExit: " + repr(exc.code)
-    except BaseException:
-        status, trace = "error", traceback.format_exc()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
+        except SystemExit as exc:
+            status, trace = "exit", "SystemExit: " + repr(exc.code)
+        except BaseException:
+            status, trace = "error", traceback.format_exc()
+    finally:
+        if previous_cell_token is None:
+            with contextlib.suppress(AttributeError):
+                del _RPC_CELL_SCOPE.token
+        else:
+            _RPC_CELL_SCOPE.token = previous_cell_token
+        if previous_rpc_dir is None:
+            with contextlib.suppress(AttributeError):
+                del _RPC_CELL_SCOPE.rpc_dir
+        else:
+            _RPC_CELL_SCOPE.rpc_dir = previous_rpc_dir
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
@@ -236,11 +254,17 @@ class CellAuthority:
     refused instead of running under a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, session_id: Optional[str] = None,
+                 enabled_toolsets: Optional[List[str]] = None,
+                 disabled_toolsets: Optional[List[str]] = None):
         import contextvars
         self.task_id = task_id
+        self.session_id = session_id
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
         self.ctx = contextvars.copy_context()
         self.active = True
+        self.rpc_cell_token = secrets.token_urlsafe(32)
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
@@ -272,7 +296,15 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            kwargs = {"task_id": self.task_id}
+            if self.session_id is not None:
+                kwargs["session_id"] = self.session_id
+            from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+            if tool_name in BRIDGE_TOOL_NAMES:
+                kwargs["enabled_toolsets"] = self.enabled_toolsets
+                kwargs["disabled_toolsets"] = self.disabled_toolsets
+            return handle_function_call(tool_name, tool_args, **kwargs)
         finally:
             if previous is not None:
                 try:
@@ -447,23 +479,24 @@ def shutdown_kernels_for_owner(owner: str) -> None:
 atexit.register(shutdown_all_kernels)
 
 
+def _bind_cell_dispatch(kernel: SessionKernel, request_token: str):
+    """Bind one RPC request to the authority whose token it presented."""
+    authority = kernel.cell_authority
+    if authority is None or not authority.active:
+        return None
+    if not secrets.compare_digest(request_token.encode(), authority.rpc_cell_token.encode()):
+        return None
+    return authority.dispatch
+
+
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
-    """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
-    its 300s idle timeout, and a kernel idles longer between cells, so re-accept until teardown
-    (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO frozen
-    authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
+    """Serve tool RPC for the kernel's whole life without freezing one cell's authority."""
     from tools.code_execution_rpc import _rpc_server_loop
-    from tools.registry import tool_error
-    def _dispatch(tool_name: str, tool_args: dict) -> str:
-        authority = kernel.cell_authority
-        if authority is None:
-            return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
-        return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+                         bind_dispatch=lambda token: _bind_cell_dispatch(kernel, token))
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -743,6 +776,8 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    session_id: Optional[str] = None, enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
@@ -752,7 +787,9 @@ def execute_in_session_kernel(
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         session_id=session_id, enabled_toolsets=enabled_toolsets,
+                         disabled_toolsets=disabled_toolsets)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -766,11 +803,18 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool,
+              session_id: Optional[str] = None, enabled_toolsets: Optional[List[str]] = None,
+              disabled_toolsets: Optional[List[str]] = None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(
+        task_id,
+        session_id=session_id,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+    )
     with kernel.lock:
         try:
             if kernel.proc is None:
@@ -781,7 +825,11 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             kernel.tool_call_counter[0] = 0
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            kernel.proc.stdin.write((json.dumps({
+                "id": uuid.uuid4().hex,
+                "code": code,
+                "rpc_cell_token": authority.rpc_cell_token,
+            }) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
             result = _cell_result(

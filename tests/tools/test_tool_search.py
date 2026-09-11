@@ -463,6 +463,7 @@ class TestHandleFunctionCallIntegration:
             turn_id="private-turn",
             api_request_id="private-request",
             tool_call_id="private-call",
+            disabled_toolsets=[],
         )
 
         assert json.loads(result) == {"results": []}

@@ -278,11 +278,18 @@ def _tool_defs_cache_key(
         wisdom_entitled = bool(is_entitled())
     except Exception:
         wisdom_entitled = False
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        terminal_backend = _get_env_config().get("env_type")
+    except Exception:
+        terminal_backend = None
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, wisdom_entitled,
+        terminal_backend,
     )
 
 
@@ -359,8 +366,14 @@ def _rewrite_execute_code(td: Dict[str, Any], available: set) -> Optional[Dict[s
     """List only sandbox tools that are actually available."""
     # Without this, the model sees "web_search is available in execute_code" even when the API key isn't
     # configured or the toolset is disabled (#560-discord).
-    from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
-    return _fn_def(build_execute_code_schema(SANDBOX_ALLOWED_TOOLS & available, mode=_get_execution_mode()))
+    from tools.code_execution_tool import (
+        DEFERRED_BRIDGE_TOOLS,
+        DIRECT_SANDBOX_TOOLS,
+        _get_execution_mode,
+        build_execute_code_schema,
+    )
+    sandbox_tools = DIRECT_SANDBOX_TOOLS | (DEFERRED_BRIDGE_TOOLS & available)
+    return _fn_def(build_execute_code_schema(sandbox_tools, mode=_get_execution_mode()))
 
 
 def _discord_rewriter(schema_fn_name: str):
@@ -502,11 +515,9 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
     # Registry returns only tools whose check_fn passes.
     filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
-
     if not quiet_mode:
-        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(_last_resolved_tool_names)}"
+        current_names = [t["function"]["name"] for t in filtered_tools]
+        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(current_names)}"
               if filtered_tools else "🛠️  No tools selected (all filtered out or unavailable)")
     # Normalize schema shapes llama.cpp's grammar converter rejects (bare
     # "type": "object", string-valued nodes from malformed MCP servers).
@@ -533,6 +544,19 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
+
+    # Tool Search assembly changes the final model-facing surface. Rebuild
+    # execute_code after it so local sessions advertise only bridges they can
+    # actually call.
+    final_names = {t["function"]["name"] for t in filtered_tools}
+    if "execute_code" in final_names:
+        for index, tool_def in enumerate(filtered_tools):
+            if tool_def.get("function", {}).get("name") == "execute_code":
+                filtered_tools[index] = _rewrite_execute_code(tool_def, final_names)
+                break
+
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     return filtered_tools
 
@@ -708,6 +732,10 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None
     if not ts.is_bridge_tool(function_name):
         return None
+    if enabled_toolsets is None and disabled_toolsets is None:
+        return tool_error(
+            "Tool Search bridges require an explicit session toolset scope."
+        ), None
     # Un-collapsed catalog scoped to the session's toolsets, so a restricted
     # session (subagent, kanban worker) can't reach the whole registry via the bridge.
     try:
@@ -811,7 +839,9 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: Dict[str, Any], original_args: Dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool) -> Any:
+                  *, user_task: Optional[str], enabled_tools: Optional[List[str]],
+                  enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]],
+                  skip_tool_execution_middleware: bool) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: Dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
@@ -819,6 +849,8 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+        dispatch_kwargs["enabled_toolsets"] = enabled_toolsets
+        dispatch_kwargs["disabled_toolsets"] = disabled_toolsets
     else:
         dispatch_kwargs["user_task"] = user_task
 
@@ -945,7 +977,9 @@ def handle_function_call(
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
-                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
+                               enabled_tools=enabled_tools, enabled_toolsets=enabled_toolsets,
+                               disabled_toolsets=disabled_toolsets,
+                               skip_tool_execution_middleware=skip_tool_execution_middleware)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)

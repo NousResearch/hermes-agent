@@ -2223,6 +2223,15 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
         return None, function_args
 
 
+def registry_toolset_scope(agent) -> tuple[Optional[List[str]], Optional[List[str]]]:
+    """Return the agent's filters, marking the default all-tools surface as explicit."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    if enabled is None and disabled is None:
+        disabled = []
+    return enabled, disabled
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
@@ -2279,6 +2288,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             return result
     else:
+        enabled_toolsets, disabled_toolsets = registry_toolset_scope(agent)
+
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
@@ -2286,8 +2297,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
             if skip_tool_execution_middleware:

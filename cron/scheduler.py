@@ -2093,7 +2093,7 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
     from gateway.session_context import _VAR_MAP
 
-    reset_secret_source_cache()
+    reset_secret_source_cache(_get_hermes_home())
     load_hermes_dotenv(hermes_home=_get_hermes_home())
 
     delivery_target = _resolve_delivery_target(job)

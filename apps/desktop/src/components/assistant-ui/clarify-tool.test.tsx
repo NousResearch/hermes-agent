@@ -608,6 +608,47 @@ describe('readClarifyBatchResult', () => {
   })
 })
 
+describe('ClarifyTool submit shortcut', () => {
+  it('submits selected choices with Cmd/Ctrl+Enter without toggling the focused option', async () => {
+    for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+      const { request } = renderLiveClarify({ multiSelect: true })
+      const choice = screen.getByRole('button', { name: /staging/ })
+      fireEvent.click(choice)
+      choice.focus()
+      fireEvent.keyDown(choice, { key: 'Enter', ...modifier })
+      await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        request_id: 'request-1',
+        answer: '["staging"]'
+      })
+      cleanup()
+    }
+  })
+
+  it('submits a complete batch from its text field while preserving incomplete and multiline input', async () => {
+    for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+      const request = renderLiveBatch()
+      const field = screen.getByPlaceholderText('Type your answer…')
+      fireEvent.change(field, { target: { value: 'packet' } })
+      field.focus()
+      fireEvent.keyDown(field, { key: 'Enter', ...modifier })
+      expect(request).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: /red/ }))
+      fireEvent.keyDown(field, { key: 'Enter', shiftKey: true })
+      fireEvent.keyDown(field, { key: 'Enter', isComposing: true, ...modifier })
+      expect(request).not.toHaveBeenCalled()
+      fireEvent.keyDown(field, { key: 'Enter', ...modifier })
+      await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+      expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+        answer: 'packet',
+        question_id: 'q1',
+        request_id: 'request-batch'
+      })
+      cleanup()
+    }
+  })
+})
+
 describe('ClarifyTool batch card', () => {
   it('renders every question at once', () => {
     renderLiveBatch()

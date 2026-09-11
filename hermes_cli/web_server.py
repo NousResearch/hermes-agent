@@ -72,6 +72,7 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
     _report_port_in_use,
     _start_parent_death_watchdog,
     _warm_gateway_module,
+    _wisdom_checker_loop,
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
@@ -226,6 +227,7 @@ async def _lifespan(app: "FastAPI"):
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
+    wisdom_checker_task = asyncio.create_task(_wisdom_checker_loop())
 
     # Managed local runtime (local_runtime.enabled): bring llama-server back so a
     # restart doesn't strand a llamacpp main model. Off-thread and best-effort;
@@ -242,6 +244,14 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
+    from hermes_cli.free_tier_bootstrap import start_background_bootstrap
+
+    start_background_bootstrap()
+
     try:
         yield
     finally:
@@ -253,6 +263,7 @@ async def _lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
+        wisdom_checker_task.cancel()
         await PTY_REGISTRY.close_all()
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
@@ -940,6 +951,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     mcp as _mcp_routes,
     ops as _ops_routes,
     skills as _skills_routes,
+    wisdom as _wisdom_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
@@ -970,6 +982,7 @@ app.include_router(_ops_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
+app.include_router(_wisdom_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)

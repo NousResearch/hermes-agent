@@ -2062,13 +2062,35 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
     })
 
 
+def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
+    """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
+    ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
+    or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
+    parts = str(claim.get("by") or "").split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return False
+    try:
+        import socket
+        if parts[0] != socket.gethostname():
+            return False
+        from gateway.status import _pid_exists
+        return not _pid_exists(int(parts[1]))
+    except Exception:
+        return False
+
+
 def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
-    """True for a well-formed claim aged within ``[0, ttl)``: future-dated (clock/TZ skew) or
-    malformed claims count as stale so they can never wedge a job."""
+    """True for a well-formed claim aged within ``[0, ttl)`` whose owner is not provably dead:
+    future-dated (clock/TZ skew) or malformed claims count as stale so they can never wedge a
+    job, and a same-host owner pid that has exited releases the claim immediately instead of
+    after the TTL (a killed ``hermes cron run`` otherwise blocks the next manual run for the
+    full window with "already being fired")."""
     if not isinstance(claim, dict) or not claim.get("at"):
         return False
     claimed_at = _parse_aware(claim["at"])
-    return claimed_at is not None and 0 <= (now - claimed_at).total_seconds() < ttl_seconds
+    if claimed_at is None or not (0 <= (now - claimed_at).total_seconds() < ttl_seconds):
+        return False
+    return not _claim_owner_is_dead(claim)
 
 
 _REARM_RECURRING_ERROR = (

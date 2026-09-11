@@ -3920,20 +3920,45 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             logger.debug("[Discord] Could not schedule admin notify task: %s", e)
         return False
 
+    @staticmethod
+    async def _alert_adapters_and_config(runner, profile):
+        """``(adapter_map, gateway_config)`` of the profile owning this adapter. Default/primary: the
+        runner's own. Secondary: ``_profile_adapters[profile]`` and the config loaded under that
+        profile's runtime scope (its ``home_channel`` entries live in ITS config.yaml)."""
+        if not profile:
+            return runner.adapters, runner.config
+        adapters = runner._adapters_for_profile(profile)
+        if adapters is runner.adapters:  # profile IS the primary
+            return adapters, runner.config
+        from gateway.config import load_gateway_config
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+        async with _async_profile_runtime_scope(get_profile_dir(profile)):
+            return adapters, load_gateway_config()
+
     async def _notify_unauthorized_slash(
         self, user_name: str, user_id: str, chan_id, guild_id, command_text: str, reason: str,
     ) -> None:
         """Best-effort operator alert: TELEGRAM first, then SLACK; no-op without a home channel.
-        A soft failure (``SendResult(success=False)``, e.g. rate-limit) continues the fallback chain."""
+        A soft failure (``SendResult(success=False)``, e.g. rate-limit) continues the fallback chain.
+        Under multiplex the alert stays inside THIS adapter's profile: its own adapter map (fail closed
+        when the profile has no Telegram/Slack bot) and its own home channels — never the default
+        profile's bot or channel, which is what a bare ``runner.adapters`` lookup resolves."""
         runner = getattr(self, "gateway_runner", None)
         if not runner:
             return
+        profile = getattr(self, "_owner_profile", None)
+        try:
+            adapters, config = await self._alert_adapters_and_config(runner, profile)
+        except Exception as e:
+            logger.debug("[Discord] Admin notify: profile %r resolution failed: %s", profile, e)
+            return
         for target in (Platform.TELEGRAM, Platform.SLACK):
             try:
-                adapter = runner.adapters.get(target)
+                adapter = adapters.get(target)
                 if not adapter:
                     continue
-                home = runner.config.get_home_channel(target)
+                home = config.get_home_channel(target)
                 if not home or not getattr(home, "chat_id", None):
                     continue
                 msg = (

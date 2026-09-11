@@ -155,7 +155,6 @@ class LlamaServerSupervisor:
             "--host", "127.0.0.1",
             "--port", str(self.port),
             "--api-key", self.api_key,
-            "--models-dir", str(self.models_dir),
             "--models-max", str(self.models_max),
             # Residency contract: a chat request to a staged-but-unloaded model loads it (slow
             # first token) instead of a bare 400/404 after an eject.
@@ -170,6 +169,8 @@ class LlamaServerSupervisor:
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]
+        else:
+            cmd += ["--models-dir", str(self.models_dir)]
         cmd += self.extra_args
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         if self._log_handle is not None:

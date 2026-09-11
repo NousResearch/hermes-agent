@@ -74,8 +74,8 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
-    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "replaced", "disk",
-    "unknown",
+    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "replaced",
+    "deleted_wal", "disk", "unknown",
 )
 
 
@@ -182,6 +182,9 @@ _PERSISTENCE_CAUSE_BY_TYPE = (
     (SessionTurnLeaseLostError, "turn_lease"),
     (CompressionSessionClosedError, "compression_closed"),
     (CompressionSessionBusyError, "compression"),
+    # The WAL-generation error subclasses StateDbReplacedError so existing write diversion keeps
+    # working; classify it first because its recovery artifact and operator action are different.
+    (DeletedWalGenerationError, "deleted_wal"),
     (StateDbReplacedError, "replaced"),
     (StateDbCorruptError, "corrupt"),
 )
@@ -189,7 +192,9 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("turn lease",), "turn_lease"),
     (("closed by compression",), "compression_closed"),
     (("being compressed", "compression lease"), "compression"),
-    (("was replaced underneath", "deleted state.db-wal", "deleted state.db-shm"), "replaced"),
+    # RPC-wrapped errors lose their exception type; retain the same sidecar/main-file split.
+    (("deleted state.db-wal", "deleted state.db-shm"), "deleted_wal"),
+    (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),
 )
@@ -200,7 +205,8 @@ def classify_persistence_error(exc_or_str) -> str:
     matches: "locked" = busy, retry; "disk" = full/read-only/permissions;
     "compression" = a live lease refused the write; "compression_closed" = adopt
     the rotated session id; "turn_lease" = fencing, not storage; "corrupt" =
-    file damage (repair path, not disk space); "replaced" = stop writing."""
+    file damage (repair path, not disk space); "replaced" = main-file replacement;
+    "deleted_wal" = a retired sidecar generation requiring capture inspection."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,

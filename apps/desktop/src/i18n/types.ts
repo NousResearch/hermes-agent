@@ -5,9 +5,177 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
+import type { WisdomMuteCopy, WisdomSyncCopy } from '@hermes/shared'
+
 import type { TipId } from '@/lib/tips/catalog'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+
+export interface WisdomTranslations {
+  syncRecovery?: WisdomSyncCopy
+  notificationPreferences: WisdomMuteCopy
+  title: string
+  loading: string
+  unavailable: string
+  setup: string
+  setupDisclosure: string
+  setupAction: string
+  settingUp: string
+  scanLocal: string
+  orgWide: string
+  sharedSkills: (count: number) => string
+  localCandidates: (count: number) => string
+  contributionWorkflow: string
+  potential: string
+  potentialHelp: string
+  noSuggestions: string
+  browseLocal: (count: number) => string
+  browseLocalHelp: string
+  ownerReview: string
+  ownerReviewHelp: string
+  noDrafts: string
+  noShared: string
+  noDescription: string
+  serverScanPassed: string
+  localOnly: string
+  qualifiedLocally: string
+  qualificationFirst: (organizationName?: string | null) => string
+  qualificationReturning: string
+  savedLocally: string
+  prepare: string
+  continueDraft: string
+  reviewExact: string
+  runSetupStep: string
+  confirmSetupPrerequisite: string
+  setupCommand: string
+  setupStepApprovalNotice: string
+  openDraft: string
+  draftState: (state: string) => string
+  authoritative: string
+  versionHistory: string
+  versions: string
+  versionDetails: (version: number) => string
+  immutableVersion: string
+  published: (date: string) => string
+  releaseExplanation: string
+  viewInPortal: string
+  backToSkill: string
+  backToVersions: string
+  prepareTitle: string
+  prepareNotice: string
+  ownerDescription: string
+  systemSpecification: string
+  cancel: string
+  submit: string
+  submitting: string
+  readEvery: string
+  publishToTeam: string
+  submitForApproval: string
+  publishLocalNotice: string
+  submitLocalNotice: string
+  reloadReview: string
+  editReview: string
+  editOwnerDescription: string
+  unsavedChanges: string
+  saveAndRescan: string
+  savingRevision: string
+  resetChanges: string
+  reviewedHashes: string
+  ownerReviewExact: string
+  localOverlay: string
+  close: string
+  approve: string
+  publishing: string
+  proposalTitle: string
+  localSuggestion: string
+  preparingLocal: string
+  whySuggested: string
+  sharePrompt: string
+  reviewFirst: string
+  notNow: string
+  yes: string
+  share: string
+  sharePreparationNotice: string
+  reviewPreviousPage: string
+  reviewNextPage: string
+  muteNotificationsSoon: string
+  unmuteNotificationsSoon: string
+  openCollective: string
+  prepareExact: string
+  skillName: string
+  whatItDoes: string
+  editDefaultsNotice: string
+  detailedRequirements: string
+  hideDetailedRequirements: string
+  specificationNotice: string
+  openFullReview: string
+  sendPrivateReview: string
+  saveLocal: string
+  savingLocal: string
+  source: string
+  preview: string
+  localDraft: string
+  serverReviewed: string
+  serverEnforced: string
+  localAdvisory: string
+  qualificationLabel: string
+  scanPassed: string
+  reviewFindings: string
+  scanAvailable: string
+  scanUnavailable: string
+  reviewed: string
+  contentHash: string
+  authorDescriptionHash: string
+  packageManifestHash: string
+  serverReviewNotice: string
+  decline: string
+  approvePublish: string
+  checkUpdates: (count: number) => string
+  checking: string
+  refreshShared: string
+  refreshingShared: string
+  installReferenceLabel: string
+  installReferencePlaceholder: string
+  installReferenceHelp: string
+  reviewInstall: string
+  planningInstall: string
+  updateModeLabel: string
+  updateModeDefault: string
+  updateModeManual: string
+  updateModeAutomatic: string
+  updateModeRequired: string
+  updateModeHelp: string
+  updateModePlan: (mode: string) => string
+  install: string
+  uninstall: string
+  checkSkill: string
+  updateAvailable: (version?: number) => string
+  reviewUpdate: string
+  installed: (version: number, mode: string) => string
+  confirmAction: (action: string) => string
+  acceptCompatibility: string
+  acceptSensitive: string
+  preserveModified: string
+  alreadyCurrent: string
+  ownerCopyLabel: string
+  serverFactsLabel: string
+  notifications: string
+  activityReady: (count: number) => string
+  aSkill: string
+  decisionPublished: (skill: string) => string
+  decisionChanges: (skill: string) => string
+  decisionDeclined: (skill: string) => string
+  decisionChanged: (skill: string, state: string) => string
+  installedNotice: (skill: string, version?: string) => string
+  updatedNotice: (skill: string, version?: string) => string
+  updateNotice: (skill: string, version?: string) => string
+  newSkillNotice: (skill: string) => string
+  unavailableNotice: (skill: string) => string
+  archivedNotice: (skill: string) => string
+  takedownNotice: (skill: string) => string
+  viewSkill: string
+  markSeen: string
+}
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -56,6 +224,35 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
+  };
+  connectors: {
+    title: string
+    connect: string
+    skip: string
+    cancel: string
+    retry: string
+    grant: string
+    connected: string
+    skipped: string
+    disabled: string
+    failed: string
+    needsAuth: string
+    opening: string
+    waiting: string
+    timeout: string
+    keepWaiting: string
+    refresh: string
+    statusError: string
+    connectError: string
+    unavailable: string
+    ownerMissing: string
+    search: string
+    empty: string
+    continue: string
+    continueBusy: string
+    continueFailed: string
+    disclaimer: string
+    execution: string
   }
   sessionImport: {
     title: string
@@ -391,7 +588,7 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
+      vault: string
     }
     plugins: {
       title: string
@@ -407,11 +604,6 @@ export interface Translations {
       kinds: { bundled: string; disk: string; runtime: string }
       agentHalfMissing: string
       agentHalfMissingTip: string
-      agent: {
-        title: string
-        movedToCapabilities: string
-        openCapabilities: string
-      }
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -422,7 +614,7 @@ export interface Translations {
         includesHeading: string
         agentLabel: string
         desktopLabel: string
-        agentTargetLocal: (profile: string) => string
+        agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
@@ -432,6 +624,7 @@ export interface Translations {
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
+        desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -442,6 +635,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -453,6 +650,76 @@ export interface Translations {
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string
+      }
+    }
+    vault: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      loadFailed: string
+      empty: string
+      emptyDesc: string
+      add: string
+      addTitle: string
+      addDescription: string
+      added: string
+      adding: string
+      addConfirm: string
+      kindField: string
+      kinds: Record<'address' | 'login' | 'payment', string>
+      labelField: string
+      labelPlaceholder: string
+      labelRequired: string
+      originField: string
+      originPlaceholder: string
+      originPlaceholderCheckout: string
+      originInvalid: string
+      identifierTypeField: string
+      identifierTypes: Record<'email' | 'phone' | 'username', string>
+      identifierField: string
+      identifierShown: (identifier: string) => string
+      passwordField: string
+      loginFieldsRequired: string
+      cardNumberField: string
+      cardNameField: string
+      expMonthField: string
+      expYearField: string
+      cvcField: string
+      postalField: string
+      addressLine1Field: string
+      addressLine2Field: string
+      cityField: string
+      stateField: string
+      countryField: string
+      optional: string
+      createdOn: (date: string) => string
+      deleteAction: string
+      otpField: string
+      otpPlaceholder: string
+      otpHint: string
+      twoFactorBadge: string
+      deleteTitle: string
+      deleteDescription: (label: string) => string
+      deleteConfirm: string
+      sources: {
+        title: string
+        blurb: string
+        toggleFailed: string
+        notInstalled: (name: string) => string
+        disabledDesc: string
+        lockedDesc: string
+        unlockedDesc: string
+        statusLocked: string
+        statusNotDetected: string
+        statusOff: string
+        statusUnlocked: string
+        unlock: string
+        unlocking: string
+        lock: string
+        unlocked: (name: string) => string
+        unlockTitle: (name: string) => string
+        unlockDescription: string
+        masterPasswordPlaceholder: string
       }
     }
     notifications: {
@@ -498,6 +765,10 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      appActionsTitle: string
+      appActionsDesc: string
+      appActionsLeft: string
+      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -1252,13 +1523,16 @@ export interface Translations {
   }
 
   skills: {
+    collective: WisdomTranslations
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
     tabMcp: string
+    tabCollective: string
     all: string
     searchSkills: string
     searchToolsets: string
+    searchCollective: string
     refresh: string
     refreshing: string
     loading: string
@@ -1304,6 +1578,23 @@ export interface Translations {
     skillArchivedMessage: string
     tabPlugins: string
     plugins: {
+      agentTitle: string
+      agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
       empty: string
       emptyHint: string
       loadFailed: string
@@ -1316,6 +1607,8 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string
@@ -1672,6 +1965,38 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
+    restartNeeded: string
+    restartNow: string
+    restarting: string
+    restartFailedManual: string
+    telegramQr: {
+      title: string
+      subtitle: string
+      quickSetup: string
+      recommended: string
+      quickHelp: string
+      createWithQr: string
+      starting: string
+      replaceWarning: string
+      scanHint: string
+      waiting: string
+      expiresIn: (remaining: string) => string
+      expired: string
+      openTelegram: string
+      ready: string
+      allowedUsers: string
+      ownerDetected: string
+      addAtLeastOne: string
+      userIdPlaceholder: string
+      add: string
+      numericOnly: string
+      saveAndRestart: string
+      applying: string
+      pairingExpired: string
+      stillWaiting: (detail: string) => string
+      savedRestarting: string
+      savedRestartFailed: (detail: string) => string
+    }
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
   }
@@ -2059,6 +2384,7 @@ export interface Translations {
     noSessions: string
     noFilterMatches: string
     projects: {
+      showAllSessions: string
       sectionLabel: string
       home: string
       autoDiscovered: string
@@ -2586,6 +2912,15 @@ export interface Translations {
     versionDetailsUncommittedChanges: string
   }
 
+  /** The guided first run's pre-written opening line — banked, not generated,
+   *  so the first paint costs no model time. Translated per locale because the
+   *  model is told to speak the user's language from its first real turn, and
+   *  an English opener above a Japanese reply reads as two different agents.
+   *  `nameSuggestion` offers the OS account name as a default. */
+  guidedGreeting: {
+    line: string
+    nameSuggestion: (name: string) => string
+  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -2709,6 +3044,55 @@ export interface Translations {
     change: string
     startChatting: string
     docs: (provider: string) => string
+  }
+
+  freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
+    // First-launch introduction (ready screen + composer strip).
+    readyTitle: string
+    readyCaption: string
+    begin: string
+    signInInstead: string
+    otherProviders: string
+    stripTitle: string
+    stripBody: string
+    openModelPicker: string
+    dismiss: string
+    // Statusbar chip.
+    /** The status-bar chip's label: the provider name alone; the model id and the sign-in follow it. */
+    providerName: string
+    statusLabel: (model: string) => string
+    // Sign-in dialog.
+    signIn: string
+    signInHeading: string
+    settingUp: string
+    codeBody: string
+    copyLink: string
+    doNotShare: string
+    waiting: string
+    finishingHeading: string
+    finishingBody: string
+    signedInAs: (email: string) => string
+    signedIn: string
+    completedBody: string
+    defaultModel: string
+    change: string
+    done: string
+    notNow: string
+    tryAgain: string
+    startAgain: string
+    didNotComplete: string
+    rejectedBody: string
+    supersededBody: string
+    timedOutHeading: string
+    timedOutBody: string
+    retiredBody: string
+    errorBody: string
+    alreadySignedInHeading: string
+    alreadySignedInBody: string
   }
 
   modelPicker: {
@@ -2836,6 +3220,7 @@ export interface Translations {
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
+      toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
@@ -3146,6 +3531,12 @@ export interface Translations {
       /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
       errorStartNewSession: string
       errorSwitchProvider: string
+      /** One-click recovery for an expired/revoked OAuth grant: re-runs that
+       *  provider's sign-in flow (auth layer, authKind 'oauth'). */
+      errorSignInAgain: (provider: string) => string
+      /** Explains WHY the turn failed for an OAuth 401 — the raw body
+       *  ("HTTP 401: User not found.") doesn't say "sign in again". */
+      errorOauthExpired: (provider: string) => string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string
@@ -3288,6 +3679,28 @@ export interface Translations {
     secretTitle: string
     secretDesc: string
     secretPlaceholder: string
+    vaultUnlockSendFailed: string
+    vaultUnlockTitle: (name: string) => string
+    vaultUnlockDesc: (name: string) => string
+    vaultSaveSendFailed: string
+    vaultSaveTitle: (site: string) => string
+    vaultSaveDesc: (origin: string) => string
+    vaultSaveIdentifierLabel: string
+    vaultSaveIdentifierPlaceholder: string
+    vaultSavePasswordPlaceholder: string
+    vaultSaveFootnote: string
+    vaultSaveDecline: string
+    vaultSaveConfirm: string
+    vaultCodeSendFailed: string
+    vaultCodeTitle: (site: string) => string
+    vaultCodeDesc: (site: string) => string
+    vaultCodeLabel: string
+    vaultCodeFootnote: string
+    vaultCodeSkip: string
+    vaultCodeConfirm: string
+    vaultUnlockPlaceholder: string
+    vaultUnlockKeepLocked: string
+    vaultUnlockConfirm: string
   }
 
   desktop: {
@@ -3321,6 +3734,8 @@ export interface Translations {
     readOnlyTranscriptSendBlocked: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
+    poolSlotTimeoutBody: string
+    poolSlotTimeoutOpenSettings: string
     resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string

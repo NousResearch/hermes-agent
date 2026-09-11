@@ -22,45 +22,41 @@
  * directly instead of grepping main.ts source text.
  */
 
-export interface PoolStopEntry<Process = unknown> {
-  process?: Process
+export interface PoolStopEntry {
+  process?: unknown
 }
 
-export interface PoolStopperDeps<Process = unknown> {
+export interface PoolStopperDeps {
   /** The live backend pool. Entries are evicted synchronously on stop. */
-  pool: Map<string, PoolStopEntry<Process>>
+  pool: Map<string, PoolStopEntry>
   /** Signal the child (tree/group kill per platform). Synchronous. */
-  stopChild: (child: Process | undefined) => void
+  stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
-  waitForExit: (child: Process | undefined) => Promise<void>
+  waitForExit: (child: unknown) => Promise<void>
 }
 
 export interface PoolStopper {
   /** The in-flight stop for a key, if any — await before respawning it. */
   inFlight: (key: string) => Promise<void> | undefined
+  /** Whether the pool has a local child or an already-evicted stop in flight. */
+  hasPending: () => boolean
   /** Stop one pooled backend; concurrent calls share the same promise. */
   stop: (key: string) => Promise<void>
-  /** Stop every pooled backend currently in the pool. */
+  /** Stop every pooled backend and join stops already in flight. */
   stopAll: () => Promise<void>
 }
 
-interface PendingStop<Process> {
-  entry: PoolStopEntry<Process>
-  completion: Promise<void>
-  failed: boolean
-}
-
-export function createPoolStopper<Process>(deps: PoolStopperDeps<Process>): PoolStopper {
-  const stops = new Map<string, PendingStop<Process>>()
+export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
+  const stops = new Map<string, Promise<void>>()
 
   function stop(key: string): Promise<void> {
     const inFlight = stops.get(key)
 
-    if (inFlight && !inFlight.failed) {
-      return inFlight.completion
+    if (inFlight) {
+      return inFlight
     }
 
-    const entry = inFlight?.entry ?? deps.pool.get(key)
+    const entry = deps.pool.get(key)
 
     if (!entry) {
       return Promise.resolve()
@@ -73,27 +69,23 @@ export function createPoolStopper<Process>(deps: PoolStopperDeps<Process>): Pool
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
-    })().then(
-      () => { stops.delete(key) },
-      error => { pending.failed = true; throw error }
-    )
+    })().finally(() => {
+      stops.delete(key)
+    })
 
-    const pending: PendingStop<Process> = { entry, completion: stopping, failed: false }
-
-    stops.set(key, pending)
+    stops.set(key, stopping)
 
     return stopping
   }
 
   return {
-    inFlight: key => stops.get(key)?.completion,
+    inFlight: key => stops.get(key),
+    hasPending: () => stops.size > 0 || [...deps.pool.values()].some(entry => entry.process != null),
     stop,
     stopAll: async () => {
-      const pending = new Set([...deps.pool.keys(), ...stops.keys()])
-      const results = await Promise.allSettled([...pending].map(stop))
-      const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      const currentStops = [...deps.pool.keys()].map(stop)
 
-      if (errors.length) { throw new AggregateError(errors, 'Backend pool shutdown failed') }
+      await Promise.all(new Set([...stops.values(), ...currentStops]))
     }
   }
 }

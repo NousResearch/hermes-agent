@@ -18,6 +18,12 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import {
+  $transcriptTailBySessionId,
+  clearTranscriptTailPaging,
+  recordTranscriptTail,
+  transcriptTailState
+} from '@/store/transcript-tail'
 
 import {
   $gatewaySwitching,
@@ -64,6 +70,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     $stalledSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
+    clearTranscriptTailPaging()
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
@@ -77,6 +84,27 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it("forgets the previous backend's in-memory paging state", () => {
+    const page = {
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        id: index,
+        role: 'user' as const,
+        content: '',
+        timestamp: 1
+      })),
+      pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
+    }
+
+    recordTranscriptTail('recycled-id', page, { connectionId: 'local', profile: 'default' })
+
+    wipeSessionListsForGatewaySwitch()
+
+    // A same-id session on the next backend must resolve its own tail alone.
+    recordTranscriptTail('recycled-id', page, { connectionId: 'remote-1', profile: 'default' })
+    expect(Object.keys($transcriptTailBySessionId.get())).toHaveLength(1)
+    expect(transcriptTailState('recycled-id')?.possiblyTruncated).toBe(true)
   })
 
   it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {

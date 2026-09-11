@@ -1277,8 +1277,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if not enabled_names:
             return
         try:
-            reset_secret_source_cache()
-            load_hermes_dotenv()
+            # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
+            # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
+            # wiped their snapshots; a routed discovery must rebuild the profile it just dropped.
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            reset_secret_source_cache(home)
+            load_hermes_dotenv(hermes_home=home)
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
                          ", ".join(sorted(enabled_names)))
         except Exception as exc:

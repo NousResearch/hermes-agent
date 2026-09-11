@@ -108,8 +108,11 @@ def test_idle_exactly_at_threshold():
 
 
 import os
+import shutil
 import socket as _socket
+import tempfile
 import threading
+from pathlib import Path
 
 
 from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
@@ -121,10 +124,39 @@ from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
 
 _FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891234f"}
 
+# sockaddr_un.sun_path is 104 bytes on macOS/BSD and 108 on Linux (incl. NUL).
+_SUN_PATH_MAX = 100
 
-def _fake_flaps(tmp_path, status_line, capture):
+
+@pytest.fixture()
+def short_sock_dir():
+    """A directory short enough that ``<dir>/fly-api.sock`` fits in sun_path.
+
+    pytest's ``tmp_path`` nests deep enough on macOS and on CI runners that a
+    socket bound under it fails with ``OSError: AF_UNIX path too long``. The
+    production path is the fixed ``/.fly/api`` so the length limit never
+    applies there; only the fake flaps server needs a short home.
+    """
+    candidates = [tempfile.gettempdir(), "/tmp"]
+    for base in candidates:
+        try:
+            path = Path(tempfile.mkdtemp(prefix="s2z-", dir=base))
+        except OSError:
+            continue
+        if len(str(path / "fly-api.sock").encode()) <= _SUN_PATH_MAX:
+            break
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        pytest.skip(f"no temp dir short enough for an AF_UNIX socket (tried {candidates})")
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _fake_flaps(sock_dir, status_line, capture):
     """One-shot unix-socket HTTP server standing in for flaps."""
-    sock_path = str(tmp_path / "fly-api.sock")
+    sock_path = str(sock_dir / "fly-api.sock")
     server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     server.bind(sock_path)
     server.listen(1)
@@ -151,9 +183,9 @@ def _fake_flaps(tmp_path, status_line, capture):
 
 
 @pytest.mark.platforms("linux")
-def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    sock_path, t = _fake_flaps(short_sock_dir, "200 OK", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
     t.join(timeout=5)
     request = captured[0].decode()
@@ -166,9 +198,9 @@ def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
 
 
 @pytest.mark.platforms("linux")
-def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    sock_path, t = _fake_flaps(short_sock_dir, "412 Precondition Failed", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
     t.join(timeout=5)
 

@@ -63,6 +63,26 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     assert "~/.hermes/backups" not in sent[0]
 
 
+def test_format_turn_completion_corrupt_names_the_sessions_own_store(monkeypatch, tmp_path):
+    """Recovery commands target the store that failed, not the process default (#105887).
+
+    A Desktop ``serve`` backend launched on the root home hosts named-profile sessions
+    whose SessionDB is ``profiles/<name>/state.db``; guidance built from the process
+    default would tell the operator to inspect/repair the root database.
+    """
+    from run_agent import AIAgent
+
+    root = tmp_path / "root"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    failing = root / "profiles" / "research" / "state.db"
+
+    explanation = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt", db_path=failing
+    )
+    assert f"--source {failing} --inspect-only" in explanation
+    assert f"--source {root / 'state.db'}" not in explanation
+
+
 def test_format_turn_completion_corrupt_never_names_the_live_db():
     """The 'corrupt' cause must not direct a raw sqlite3 shell at the live DB.
 

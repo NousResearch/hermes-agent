@@ -512,12 +512,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         return row
 
     variant = choice.variant
-    # Same overhead the launch decision prices (runtime buffers + vision projector + microbatch/MTP
-    # logits): the row must advertise the window the model will actually get, not a paper number.
-    overhead = (context_policy.RUNTIME_OVERHEAD_BYTES
-                + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                + context_policy.ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    decision = context_policy.initial_window(entry.profile(variant), budget, overhead_bytes=overhead)
+    decision = entry.launch_plan(variant, budget).decision
     download_total = entry.download_bytes(variant)
     row.update({
         "fits": True, "model_id": variant.model_id, "quant": variant.quant,

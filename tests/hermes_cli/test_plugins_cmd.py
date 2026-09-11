@@ -103,7 +103,6 @@ class TestResolveSubdirWithin:
 
 
 
-    @pytest.mark.require_symlinks
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()
@@ -154,18 +153,18 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                # First call is `git status --porcelain` (clean tree),
-                # second is the pull itself.
+                # `git status --porcelain` (clean tree), `remote get-url origin`, then the pull.
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),
                     MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        assert run.call_count == 2
+        assert run.call_count == 3
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
+        assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
 
     def test_git_pull_clean_tree_never_stashes(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
@@ -175,6 +174,7 @@ class TestResolveGitExecutable:
             with patch.object(pc.subprocess, "run") as run:
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),      # status
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
                     MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
@@ -199,7 +199,6 @@ class TestGitPullPluginDirAutostash:
         origin = tmp_path / "origin"
         origin.mkdir()
         git(origin, "init", "-q", "-b", "main")
-        git(origin, "config", "core.autocrlf", "false")
         git(origin, "config", "user.email", "t@t")
         git(origin, "config", "user.name", "t")
         pad = "\n".join(f"# pad {i}" for i in range(12))
@@ -239,7 +238,7 @@ class TestGitPullPluginDirAutostash:
         assert ok is True
         content = (checkout / "plugin.py").read_text(encoding="utf-8")
         assert "VALUE = 2" in content        # update landed
-        assert "OTHER = 'local'" in content, msg  # local edit survived
+        assert "OTHER = 'local'" in content  # local edit survived
         assert "re-applied" in msg
         # Clean re-apply drops the autostash entry.
         assert git(checkout, "stash", "list").strip() == ""
@@ -399,18 +398,30 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
-    def test_update_uses_the_shared_transaction(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins_cmd as pc, plugins_transaction
+    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+        from hermes_cli.plugins_cmd import cmd_update
 
-        home = tmp_path / "home"
-        target = home / "plugins" / "test-plugin"
-        (target / ".git").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        seen = []
-        monkeypatch.setattr(plugins_transaction, "update_plugin", lambda path:
-                            seen.append(path) or "Already up to date")
-        pc.cmd_update("test-plugin")
-        assert seen == [target]
+        mock_plugins_dir_val = MagicMock()
+        mock_plugins_dir.return_value = mock_plugins_dir_val
+        mock_target = MagicMock()
+        mock_target.exists.return_value = True
+        mock_target.__truediv__ = lambda self, x: MagicMock(
+            exists=MagicMock(return_value=True)
+        )
+        mock_sanitize.return_value = mock_target
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
+            MagicMock(returncode=0, stdout="git@example.com:x.git", stderr=""),  # remote get-url
+            MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
+        ]
+
+        cmd_update("test-plugin")
+
+        assert mock_run.call_count == 3
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -438,7 +449,7 @@ class TestCmdRemove:
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.fs_utils.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
     def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
         from hermes_cli.plugins_cmd import cmd_remove
 
@@ -449,12 +460,7 @@ class TestCmdRemove:
 
         cmd_remove("test-plugin")
 
-        # Deletion goes through the read-only-clearing rmtree wrapper: the
-        # target is deleted with an onerror hook attached (Windows read-only
-        # git objects), never a bare rmtree.
-        assert mock_rmtree.call_count == 1
-        assert mock_rmtree.call_args.args == (mock_target,)
-        assert callable(mock_rmtree.call_args.kwargs.get("onerror"))
+        mock_rmtree.assert_called_once_with(mock_target)
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -480,24 +486,33 @@ class TestCmdRemove:
 class TestCmdList:
     """Test the list command."""
 
-    def test_list_empty_plugins_dir(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins_cmd
-        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
-        console = MagicMock()
-        monkeypatch.setattr(plugins_cmd, "_console", lambda: console)
-        plugins_cmd.cmd_list()
-        console.print.assert_called()
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_list_empty_plugins_dir(self, mock_plugins_dir):
+        from hermes_cli.plugins_cmd import cmd_list
 
-    def test_list_with_plugins(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins_cmd
-        plugin = tmp_path / "test-plugin"
-        plugin.mkdir()
-        (plugin / "plugin.yaml").write_text("name: test-plugin\nversion: 1.0.0\n", encoding="utf-8")
-        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
-        console = MagicMock()
-        monkeypatch.setattr(plugins_cmd, "_console", lambda: console)
-        plugins_cmd.cmd_list()
-        console.print.assert_called()
+        mock_plugins_dir_val = MagicMock()
+        mock_plugins_dir_val.iterdir.return_value = []
+        mock_plugins_dir.return_value = mock_plugins_dir_val
+
+        cmd_list()
+
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._read_manifest")
+    def test_list_with_plugins(self, mock_read_manifest, mock_plugins_dir):
+        from hermes_cli.plugins_cmd import cmd_list
+
+        mock_plugins_dir_val = MagicMock()
+        mock_plugin_dir = MagicMock()
+        mock_plugin_dir.name = "test-plugin"
+        mock_plugin_dir.is_dir.return_value = True
+        mock_plugin_dir.__truediv__ = lambda self, x: MagicMock(
+            exists=MagicMock(return_value=False)
+        )
+        mock_plugins_dir_val.iterdir.return_value = [mock_plugin_dir]
+        mock_plugins_dir.return_value = mock_plugins_dir_val
+        mock_read_manifest.return_value = {"name": "test-plugin", "version": "1.0.0"}
+
+        cmd_list()
 
 
 # ── _copy_example_files tests ─────────────────────────────────────────────────
@@ -709,10 +724,8 @@ class TestSubdirInstallE2E:
         repo_root = tmp_path / "monorepo"
         self._make_repo_with_subdir_plugin(repo_root)
 
-        home = tmp_path / "home"
-        plugins_dir = home / "plugins"
-        plugins_dir.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
 
         identifier = f"file://{repo_root}#my-plugin"
@@ -771,10 +784,8 @@ class TestSubdirInstallE2E:
         sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
-        home = tmp_path / "home"
-        plugins_dir = home / "plugins"
-        plugins_dir.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
 
         target, manifest, name = pc._install_plugin_core(

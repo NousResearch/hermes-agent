@@ -318,10 +318,24 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
+            # Checkpoint-lock premise (#40177): a bare connect runs WAL recovery and the checkpoint joins the
+            # live WAL — under a running gateway that second-writer handling corrupts state.db. Skip instead.
+            from hermes_state_holders import live_writer_holds_db
+            from hermes_state_repair import _connect_repair_durable
+            if live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
+                # Honest disjunction (gate C1): a True here means "held OR
+                # unprovable" — the DatabaseError lane fires when SQLite
+                # cannot open the file at all, with nobody holding it. Never
+                # assert a live writer as fact.
+                check_warn("WAL checkpoint skipped: cannot prove state.db is quiet",
+                           "(a live writer holds it, or it is unreadable — stop the profile's gateway "
+                           "and re-run 'hermes doctor --fix')")
+                return f.issues.append("Large WAL file — cannot prove state.db is quiet (stop the profile's "
+                                       "gateway first, then re-run 'hermes doctor --fix' to checkpoint)")
+            import contextlib
             import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            conn.close()
+            with contextlib.closing(sqlite3.connect(str(state_db_path))) as conn:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")
             f.fixed += 1
         elif size > 10 * 1024 * 1024:  # 10 MB

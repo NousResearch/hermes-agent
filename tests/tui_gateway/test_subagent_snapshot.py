@@ -224,3 +224,30 @@ def test_reattach_does_not_adopt_foreign_or_retired_generations(runtime):
         assert call("subagent.steer", via=new, subagent_id=sid, text="deny")["result"]["status"] == "rejected"
         assert not call("subagent.interrupt", via=new, subagent_id=sid)["result"]["found"]
     assert effects == []
+
+
+def test_any_attach_path_carries_subagent_authority_without_registry_sync(runtime):
+    """Authority follows the live session slot, not a per-record transport copy. Every reattach site
+    (prompt.submit, queued-prompt drain, resume, activate, future ones) goes through
+    _attach_session_transport; none of them may need to remember a registry sync step."""
+    from tools.delegate_tool_child_run import _register_child
+
+    server, owner, old, call = runtime
+    new = type("Transport", (), {"write": lambda self, frame: True})()
+    steered, stopped = [], []
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            steer=lambda text: steered.append(text) or True,
+                            hard_interrupt=lambda text: stopped.append(text))
+    _register_child(child, None, "owned", owner_session_id="ui-owner",
+                    owner_transport=old, owner_session_record=owner)
+    owner["transport"] = server._detached_ws_transport
+    assert server._attach_session_transport(owner, new)
+    assert [r["subagent_id"] for r in call("subagent.list", via=new)["result"]["subagents"]] == ["child"]
+    assert call("subagent.steer", via=new, subagent_id="child", text="go")["result"]["status"] == "queued"
+    assert call("subagent.interrupt", via=new, subagent_id="child")["result"]["found"]
+    assert steered == ["go"] and len(stopped) == 1
+    # The detached pre-reconnect transport lost membership and with it every control.
+    for method in ("list", "steer", "interrupt"):
+        denied = call("subagent." + method, via=old, subagent_id="child", text="stale")
+        assert "error" in denied or denied["result"].get("status") == "rejected"
+    assert steered == ["go"] and len(stopped) == 1

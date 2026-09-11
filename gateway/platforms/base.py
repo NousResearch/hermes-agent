@@ -734,6 +734,8 @@ _CACHE_DIR_IMPORT_DEFAULTS = {
     "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR, "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
     "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR}
 
+# Launch-time homes: fine for the static ALLOW roots below (per-profile cache roots are
+# enumerated at check time), never for the credential DENY side — see _credential_home_roots.
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -795,11 +797,24 @@ def _profile_cache_roots() -> List[Path]:
     profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
     when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
     """
+    return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _profile_dirs() -> List[Path]:
+    """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
-        profile_dirs = [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
+        return [p for p in (_HERMES_ROOT / "profiles").iterdir() if p.is_dir()]
     except OSError:
         return []
-    return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+
+
+def _credential_home_roots() -> List[Path]:
+    """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
+    (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
+    and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
+    the allow side — a denylist frozen at import covers only the launch profile, so a
+    ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn would upload it."""
+    return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
 def _kanban_root() -> Path:
@@ -858,7 +873,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
 
@@ -2213,9 +2228,9 @@ class BasePlatformAdapter(ABC):
 
     def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
                               chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
+                              thread_id: Optional[str] = None, command: Optional[str] = None) -> Optional[bool]:
         """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
+        legacy). ``is_bot``/``thread_id``/``command`` are forwarded only when set so legacy
         three-positional callbacks keep working. Only literal booleans propagate: a truthy
         non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
         if not user_id or self._authorization_check is None:
@@ -2225,6 +2240,8 @@ class BasePlatformAdapter(ABC):
             extra["is_bot"] = True
         if thread_id is not None:
             extra["thread_id"] = thread_id
+        if command is not None:
+            extra["command"] = command
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
         except Exception:
@@ -3426,6 +3443,27 @@ class BasePlatformAdapter(ABC):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
         return True
+
+    async def run_idle_activity(self, session_key: str, callback) -> bool:
+        """Run an internal consumer at an idle boundary without a human message.
+
+        Wisdom uses the same guard as regular turns. Real messages queue behind
+        it; stop/reset can cancel it using the ordinary session task registry.
+        """
+        if session_key in self._active_sessions:
+            return False
+        guard = asyncio.Event()
+        task = asyncio.current_task()
+        self._active_sessions[session_key] = guard
+        self._session_tasks[session_key] = task
+        try:
+            await callback()
+            return True
+        finally:
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+            if self._active_sessions.get(session_key) is guard:
+                await self._drain_pending_after_session_command(session_key, guard)
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:

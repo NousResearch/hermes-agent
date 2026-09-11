@@ -792,6 +792,21 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
+    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
+        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
+        generic ``invalid_value``, so the message decides."""
+        message = "Conflicting authenticated continuation identities."
+        e = MockAPIError(
+            f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
+            "'param': 'input', 'code': 'invalid_value'}}",
+            status_code=400,
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
+        )
+        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Reasoning-mandatory route rejecting a disable ──
 
     def test_reasoning_mandatory_400_is_retryable_not_format_error(self):
@@ -1697,3 +1712,83 @@ class TestServerInjectedParameterRejection:
         assert result.retryable is False
 
 
+
+
+# ── Test: Nous welcome tier (free tier) refusals ───────────────────────
+
+class TestNousWelcomeTier:
+    """The Nous gateway's welcome-tier contract: a structured 429 body carries ``reason`` /
+    ``retry_after`` / ``alternates`` / ``upgrade_url``; a 400/403 names the wrong host or a
+    dark tier in its message. The parsed refusal rides ``error_context``."""
+
+    @staticmethod
+    def _refusal(reason, retry_after=0, **extra):
+        body = {"status": 429, "message": "refused", "reason": reason, "retry_after": retry_after, **extra}
+        return MockAPIError(f"Error code: 429 - {body}", status_code=429, body=body,
+                            headers={"retry-after": str(retry_after)})
+
+    def test_model_not_free_is_a_non_retryable_gate_with_fallback(self):
+        err = self._refusal("model_not_free", alternates=["nous/welcome"], upgrade_url="https://portal.example/upgrade")
+        result = classify_api_error(err, provider="nous", model="gpt-5")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+        refusal = result.error_context["welcome_refusal"]
+        assert refusal["reason"] == "model_not_free"
+        assert refusal["alternates"] == ["nous/welcome"]
+        assert refusal["upgrade_url"] == "https://portal.example/upgrade"
+
+    def test_feature_not_free_is_the_same_gate(self):
+        result = classify_api_error(self._refusal("feature_not_free"), provider="nous")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
+    @pytest.mark.parametrize("reason", ["at_capacity", "admission_closed", "rate_limited"])
+    def test_capacity_refusals_are_rate_limits_that_honour_retry_after(self, reason):
+        result = classify_api_error(self._refusal(reason, retry_after=30), provider="nous", model="nous/welcome")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+        ctx = result.error_context
+        assert ctx["welcome_refusal"]["retry_after"] == 30
+        assert ctx["reset_at"] > 0
+
+    def test_retry_after_zero_carries_no_reset(self):
+        result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous")
+        assert "reset_at" not in result.error_context
+
+    def test_unknown_reason_is_not_the_welcome_shape(self):
+        err = MockAPIError("Error code: 429", status_code=429,
+                           body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
+        result = classify_api_error(err, provider="nous")
+        assert "welcome_refusal" not in result.error_context
+
+    def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
+        body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
+        err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
+        result = classify_api_error(err, provider="nous", model="nous/welcome")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False and result.should_fallback is True
+        assert result.error_context["welcome_route"] == "anon_on_paid_host"
+
+    def test_named_caller_on_the_welcome_host_is_deterministic(self):
+        body = {"status": 400, "message": "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."}
+        err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
+        result = classify_api_error(err, provider="nous")
+        assert result.error_context["welcome_route"] == "named_on_welcome_host"
+        assert result.retryable is False
+
+    def test_dark_tier_403_never_triggers_a_credential_refresh(self):
+        body = {"status": 403, "message": "Anonymous accounts are not accepted by this API right now."}
+        err = MockAPIError(f"Error code: 403 - {body}", status_code=403, body=body)
+        result = classify_api_error(err, provider="nous", model="nous/welcome")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False and result.should_fallback is True
+        assert result.should_rotate_credential is False
+        assert result.error_context["welcome_route"] == "tier_disabled"
+
+    def test_ordinary_403_is_untouched(self):
+        result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous")
+        assert result.reason == FailoverReason.auth
+        assert "welcome_route" not in result.error_context

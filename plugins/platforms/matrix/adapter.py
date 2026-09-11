@@ -499,7 +499,8 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     """Resolve a room/user list from config.extra[key], else the env var."""
     raw = config.extra.get(key)
     if raw is None:
-        raw = os.getenv(env_name, "")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
+        raw = _startup_env_secret(env_name)
     return _csv_set(raw)
 
 
@@ -832,13 +833,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
         self._split_threshold = max(100, self.max_message_length - 100)
-        self._homeserver: str = (config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
+        # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
+        # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
+        # secondary's credential sends that credential to the wrong homeserver (or reuses the
+        # default's E2EE device id).
+        self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
         self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
-        self._user_id: str = config.extra.get("user_id", "") or os.getenv("MATRIX_USER_ID", "")
+        self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
         self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
-        self._device_id: str = config.extra.get("device_id", "") or os.getenv("MATRIX_DEVICE_ID", "")
+        self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -895,10 +900,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._allowed_user_ids: Set[str] = _csv_set(os.getenv("MATRIX_ALLOWED_USERS", ""))
+        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
+        # allowlist, which must not decide who approves tool calls on a secondary bot.
+        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in os.getenv("MATRIX_IGNORE_USER_PATTERNS", "").split(",") if p.strip()):
+        for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -2423,7 +2430,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_authorized_user(self, user_id: str) -> bool:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
-        return _env_truthy("GATEWAY_ALLOW_ALL_USERS") or bool(
+        # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
+        return _startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
@@ -2929,8 +2937,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        # In-turn read inside an installed secret scope: honor get_secret, no env fallback.
+        # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
+        # homeserver too, so the scoped token is never sent to the default profile's server.
+        homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}

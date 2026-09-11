@@ -14,15 +14,15 @@ It runs on **macOS, Windows, and Linux**.
 Hermes has several front ends that all talk to the same agent:
 
 - **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
-- **CLI** (`hermes`) and **[TUI](/user-guide/tui)** (`hermes --tui`) — terminal interfaces.
-- **[Web Dashboard](/user-guide/features/web-dashboard)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
+- **CLI** (`hermes`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
+- **[Web Dashboard](./features/web-dashboard.md)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
 
 Pick whichever fits the moment. They share state, so you can start a session in one and resume it in another.
 :::
 
 ## Install
 
-Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](/getting-started/installation).
+Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
 
 If you already have Hermes installed, simply run
 
@@ -30,55 +30,7 @@ If you already have Hermes installed, simply run
 hermes desktop
 ```
 
-That uses the selected installation's configuration and data home.
-
-The bundled app uses the interpreter and dependency paths embedded in its
-build stamp. It does not use a fixed Python-version directory.
-Successful payload staging does not prove native installation, startup, or updates.
-
-### Package variants and CLI commands
-
-The bundled app includes a local agent, Python, supported dependencies, and
-prebuilt interfaces. It runs from app resources, not a first-launch source clone.
-A `Hermes-Setup` bootstrap installer instead provisions a source checkout.
-Light is a remote-only variant with no local Python runtime; it has no current
-release matrix leg.
-
-- **Windows MSIX:** the package requires Windows 11 22H2 or later. Open its
-  `.appinstaller` descriptor to register the sideload update source. Windows
-  execution aliases expose `hermes`, `hermes-agent`, and `hermes-acp`.
-- **macOS:** copy the app from its DMG into Applications before opening it.
-  Bundled startup attempts to link those CLI commands into `~/.local/bin`.
-  Add that directory to your shell's PATH. Startup repairs broken links that
-  name the same command in an old bundled payload. It preserves regular files,
-  live links, and links to unrelated commands.
-- **Linux:** source development and AppImage build support exist, but the
-  bundled desktop release legs are disabled. Do not assume a published Linux
-  package from the local build target alone.
-
-A bundled app does not switch to a separate checkout just because `hermes` is
-on PATH. To run modified code, use a source-built app and the
-[source-install guide](/user-guide/switching-to-source).
-
-### Updates, provenance, and removal
-
-Settings → About shows the app build, runtime, distribution, and install
-identity. Keep these facts separate: a shell version and backend version can
-differ on a source or remote connection.
-
-Sideload Windows updates use Windows App Installer. Store packages use the
-Microsoft Store. macOS bundled updates use `electron-updater` and Squirrel.Mac.
-Source-built apps retain the checkout update handoff. An unavailable update
-check is not proof that the app is current.
-
-The app's base runtime is immutable. PM additions and user data live outside
-it. Updating the app replaces its bundled code and dependencies together.
-It does not update the server behind a remote connection.
-
-Remove MSIX/Store packages through Windows Settings. On macOS, quit the app
-and move it to Trash. Data removal is separate and can affect another install
-that shares the same home. See
-[Updating & Uninstalling](/getting-started/updating).
+That uses your current config, keys, sessions, and skills.
 
 ## What's in the app
 
@@ -110,12 +62,12 @@ Async cron and delegation completions appear as collapsed timeline disclosures. 
 
 The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:
 
-- **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](/user-guide/security).
+- **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 - **Context-usage meter** — a live "% full" meter of the session's context window. Click it to open the **Context Usage** popover with a token breakdown by category (system prompt, tool definitions, skills, memory, rules, MCP, subagent definitions, and the conversation itself) so you can see exactly what's eating the window before compression kicks in.
 - **Cache hit rate and tokens per second** — off by default; turn them on from the right-click menu. Cache hit rate is the share of this session's prompt tokens served from the provider's prompt cache (cached tokens cost less, so higher is cheaper — you can watch a session get cheaper as it warms up). Tokens per second is output throughput averaged over the last 10 model calls. Both update live during a turn.
 - **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, cache hit rate, tokens per second, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
 
-Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](/user-guide/features/web-dashboard).
+Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
 #### Repository discovery
 
@@ -190,7 +142,7 @@ Quick Entry is a small always-available composer summoned by a **global hotkey f
 
 ### Voice
 
-Talk to Hermes and hear it back, the same [voice mode](/user-guide/features/voice-mode) available elsewhere. On macOS the OS will prompt once for microphone access.
+Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
 
 ### HUD mode
 
@@ -200,7 +152,7 @@ Talk to Hermes and hear it back, the same [voice mode](/user-guide/features/voic
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
-- **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
+- **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
 
 #### Linux / Wayland
 
@@ -239,7 +191,7 @@ First-run onboarding has been redesigned on a unified overlay design system, and
 
 #### Per-profile settings: the "Applies to" scope
 
-When you have two or more [profiles](/user-guide/profiles), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
+When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
 
 - The default selection **follows the active profile**, which behaves exactly as before — edit the profile you're using.
 - Pick another profile to view and edit *its* settings without switching the whole app; the selection persists as you move between settings pages.
@@ -252,17 +204,17 @@ When you have two or more [profiles](/user-guide/profiles), the config-backed se
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](/user-guide/features/skills). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
-- **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](/user-guide/features/memory).
-- **Cron** — view and manage [scheduled jobs](/reference/cli-commands).
-- **Profiles** — switch between [Hermes profiles](/user-guide/profiles) (isolated config/skills/sessions).
-- **Messaging** — set up gateway channels.
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
+- **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
+- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
+- **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
+- **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
 ### Bot Mode (built in)
 
 **Bot Mode** ships with the app and is on by default: a "one chat per agent"
-roster where every [Hermes profile](/user-guide/profiles) appears as a bot with its
+roster where every [Hermes profile](./profiles.md) appears as a bot with its
 own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
 pet), its own canonical **Bot Chat** conversation, and its own **Routines**
 (recurring tasks backed by Hermes cron). The roster lives in the left
@@ -308,12 +260,12 @@ and the eye shows a dot when a hidden bot has unread activity. Hidden
 state is stored in the bot's profile, so it follows the bot across
 machines.
 
-Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
+Don't want it? Flip its **Desktop** switch off in **Capabilities → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 
 Full guide — creating agents (including the multi-machine **Create on**
 picker), the roster across connections, bot-to-bot mentions, and how group
-chats decide who replies: [Bot Mode: A Roster of Agents](/user-guide/bot-mode).
+chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 ### Keyboard & navigation
 
@@ -326,8 +278,8 @@ chats decide who replies: [Bot Mode: A Roster of Agents](/user-guide/bot-mode).
 
 - **Session-list overhaul** — a reworked session list with archiving and general session hygiene to keep the list manageable as it grows.
 - **Search sessions by id** — find a specific session directly by its id.
-- **Concurrent multi-profile sessions** — run sessions across multiple [profiles](/user-guide/profiles) at the same time, and reference a session in another profile with cross-profile `@session` links.
-- **Export / import a profile** — share a whole setup as a single file. **⌘K → Export profile…** (or right-click a profile square in the rail) writes a `.tar.gz` with skills, memory, persona, crons, plugins, and settings; API keys are stripped. Exporting from the desktop also bundles your appearance and interface — skin, light/dark mode, custom themes, the profile's rail color, and your window layout — so an imported profile arrives looking the way the sender had it. Import via **⌘K → Import profile…** or the button beside the rail's **+**; it applies the overlay and drops you into the new profile. The same archive works with `/export` / `/import` in chat and `hermes profile export` / `import` from a shell. See [Export and import a profile file](/user-guide/profile-distributions).
+- **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
+- **Export / import a profile** — share a whole setup as a single file. **⌘K → Export profile…** (or right-click a profile square in the rail) writes a `.tar.gz` with skills, memory, persona, crons, plugins, and settings; API keys are stripped. Exporting from the desktop also bundles your appearance and interface — skin, light/dark mode, custom themes, the profile's rail color, and your window layout — so an imported profile arrives looking the way the sender had it. Import via **⌘K → Import profile…** or the button beside the rail's **+**; it applies the overlay and drops you into the new profile. The same archive works with `/export` / `/import` in chat and `hermes profile export` / `import` from a shell. See [Export and import a profile file](./profile-distributions.md#export-and-import-a-profile-file).
 
 ## Updating
 
@@ -387,7 +339,7 @@ A missing entry is still created; the flag only stops `hermes desktop` from rewr
 
 ## How it works
 
-The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — and reuses the agent runtime rather than embedding `hermes --tui`. The desktop app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the [web dashboard](/user-guide/features/web-dashboard). (Runtimes older than the `serve` command fall back to a headless `dashboard --no-open` automatically, so an app update never outruns its backend.) Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — and reuses the agent runtime rather than embedding `hermes --tui`. The desktop app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the [web dashboard](./features/web-dashboard.md). (Runtimes older than the `serve` command fall back to a headless `dashboard --no-open` automatically, so an app update never outruns its backend.) Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 
@@ -404,7 +356,7 @@ Gateway connections are **machine-level**: the Gateways page manages which gatew
 
 ### The multi-connection registry
 
-Further down the same **Settings → Gateways** page, **Registered gateways** manages a named list of every Hermes gateway the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Gateways**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](/user-guide/multi-connection-desktop).
+Further down the same **Settings → Gateways** page, **Registered gateways** manages a named list of every Hermes gateway the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Gateways**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
 
 - **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered gateways, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
 - **Switch gateways from the Sessions sidebar.** A named gateway selector appears when more than one gateway is registered and handles any registry size without making gateways look like profiles. The adjacent profile rail then shows only that gateway's agents and remembers the last profile used there; large profile sets condense independently.
@@ -429,7 +381,7 @@ The connection has two halves: on the backend you protect it with an **auth prov
 - **OAuth (Nous Portal) — preferred for anything reachable beyond your own machine.** Logins are verified against your Nous account, so this is the option suitable for a VPS, a public host, or any remote backend. Register the dashboard with `hermes dashboard register` (or the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page) to provision its OAuth client, then sign in from the app with **Sign in with Nous Research**. A self-hosted OIDC provider works the same way if you run your own identity provider.
 - **Username/password — local / trusted-network use only.** The simplest option when the backend is on the same trusted LAN or reachable only over a VPN (e.g. Tailscale). It protects a single shared credential with no external identity provider, so **do not use it for a dashboard exposed to the public internet** — reach for OAuth there instead.
 
-The rest of this section shows the username/password path because it's the quickest to stand up on a trusted network; for the OAuth path see [Web Dashboard → Default provider: Nous Research](/user-guide/features/web-dashboard).
+The rest of this section shows the username/password path because it's the quickest to stand up on a trusted network; for the OAuth path see [Web Dashboard → Default provider: Nous Research](./features/web-dashboard.md#default-provider-nous-research).
 
 ### On the backend (the remote machine)
 
@@ -454,9 +406,9 @@ hermes serve --host 0.0.0.0 --port 9119
 
 Keep that `hermes serve` process running for as long as you want the desktop app to be able to connect — if it stops, the app can no longer reach the backend. Run it under `systemd`, `tmux`, or your process manager of choice so it survives logout and reboots.
 
-Separately, make sure the **gateway is running** on the remote host if you rely on messaging channels — the `hermes serve` backend is what the desktop app talks to, but your Telegram/Discord/Slack gateway sessions are a different process that you start and keep running on their own. See [Messaging](/user-guide/messaging) for gateway setup.
+Separately, make sure the **gateway is running** on the remote host if you rely on messaging channels — the `hermes serve` backend is what the desktop app talks to, but your Telegram/Discord/Slack gateway sessions are a different process that you start and keep running on their own. See [Messaging](./messaging/index.md) for gateway setup.
 
-Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` to a scrypt hash instead — compute it with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`. Full configuration surface (config.yaml keys, every env var, the rate limiter): [Web Dashboard → Username/password provider](/user-guide/features/web-dashboard).
+Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` to a scrypt hash instead — compute it with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`. Full configuration surface (config.yaml keys, every env var, the rate limiter): [Web Dashboard → Username/password provider](./features/web-dashboard.md#usernamepassword-provider-no-oauth-idp).
 
 Running the backend as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the credentials are in the environment at boot.
 
@@ -475,7 +427,7 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateways settings panel.
 
 :::note Per-profile remote hosts
-The remote gateway host is configured per [profile](/user-guide/profiles), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
 :::
 
 ### Troubleshooting
@@ -485,7 +437,7 @@ The remote gateway host is configured per [profile](/user-guide/profiles), so ea
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 
-For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](/user-guide/features/web-dashboard); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](/reference/environment-variables).
+For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
 
 ## Extending the desktop app
 
@@ -493,20 +445,46 @@ The desktop app is contribution-driven — panes, pages, sidebar nav, status-bar
 items, palette commands, keybinds, and themes all register through one SDK, and
 you can add your own. A plugin is a single ESM file dropped in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js`; the app loads it within seconds and
-hot-reloads every save. Manage installed plugins live in **Settings → Plugins**.
+hot-reloads every save. Manage installed plugins live in **Capabilities → Plugins**.
 
-See [Desktop Plugin SDK](/developer-guide/desktop-plugin-sdk) for the full
-reference. (This is separate from the [web dashboard plugin system](/user-guide/features/extending-the-dashboard).)
+See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
+reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
-The **Agent plugins** section on the same Settings → Plugins page manages
-backend (agent-side) [plugins](/user-guide/features/plugins) you installed — user,
-git, project, pip, and portable installs. Repo-bundled built-ins (platform
-adapters, provider plugins, and similar) are not listed there: they ship
-enabled by default and are configured from their own surfaces, so the section
-stays focused on what you added yourself. With two or more profiles the
-section also has its own **Applies to** selector, so you can list and toggle
-another profile's agent plugins without switching the whole app (the backend
-`plugins.manage` RPC accepts an optional `profile` parameter for this).
+**Capabilities → Plugins** is the one place for everything that extends
+Hermes: **one row per plugin**, with two switch columns.
+
+- A plugin can extend **this app**, **the agent**, or **both** — the badge on
+  each row says which, inferred from what the package contains (`plugin.yaml`
+  → agent half, `plugin.js` → desktop half). A plugin with both halves is one
+  row, never two.
+- **Desktop column** — the half loaded into this app. It is app-level: the
+  same switch, the same value, whichever profile, gateway, or remote machine
+  the window is looking at. Desktop code loads from exactly one place,
+  `~/.hermes/desktop-plugins/`; the desktop half of a unified agent+desktop
+  package is copied there by the app when the package is installed (and
+  follows its updates and uninstall), so switching profiles never loads,
+  unloads, or re-scopes a pane. Toggles apply live.
+- **Agent column** — the half installed in the selected profile's backend
+  ([agent plugins](./features/plugins.md): user, git, project, pip and
+  portable installs), with an **Update** chip when a catalog pin moved. The
+  profile selector lives in this column's header because it governs only
+  this column; with a single profile there is no selector at all.
+  Repo-bundled built-ins (platform adapters, provider plugins) are not
+  listed: they ship enabled and are configured from their own surfaces.
+- A half the plugin does not ship shows a dash. A desktop half whose agent
+  half is **not** installed in the selected profile shows **Install here**,
+  which pre-fills the install dialog from the package's origin (catalog entry
+  or git remote) for that profile only. Optional extras such as the
+  [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+  install from their own repos via **Install from Git**.
+
+Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
+picker installs reviewed entries at their pinned commit into the selected
+profile, and **Install from Git** takes any other repository through the same
+review-then-install dialog; its optional **Pin to commit** field installs one
+exact 40-character commit SHA (private repos included), and pinned plugins
+carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
+redirect here.
 
 ## Troubleshooting
 
@@ -622,15 +600,12 @@ Build installers:
 
 ```bash
 npm run dist:mac     # DMG + zip
-npm run dist:win     # MSIX
+npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-These commands package the current desktop build, not a complete tagged runtime.
-The [bundle build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md)
-explains the complete builder, Azure Trusted Signing, Apple notarization,
-and R2 publication. A package build is not a stable-release acceptance result.
+macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
 ### macOS permissions and local rebuilds (TCC)
 
@@ -702,8 +677,8 @@ time. Grants are stable from then on. If a permission gets stuck, reset it with
 
 ## See also
 
-- [CLI Guide](/user-guide/cli) — the terminal interface
-- [TUI](/user-guide/tui) — the modern terminal UI used by `hermes --tui` and the dashboard chat tab
-- [Web Dashboard](/user-guide/features/web-dashboard) — browser admin panel with an embedded chat tab
-- [Configuration](/user-guide/configuration) — config that the desktop app reads and writes
-- [Windows (Native)](/user-guide/windows-native) — native Windows install path
+- [CLI Guide](./cli.md) — the terminal interface
+- [TUI](./tui.md) — the modern terminal UI used by `hermes --tui` and the dashboard chat tab
+- [Web Dashboard](./features/web-dashboard.md) — browser admin panel with an embedded chat tab
+- [Configuration](./configuration.md) — config that the desktop app reads and writes
+- [Windows (Native)](./windows-native.md) — native Windows install path

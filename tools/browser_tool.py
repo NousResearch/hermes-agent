@@ -55,13 +55,11 @@ try:
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
-        sensitive_query_param_name as _sensitive_query_param_name,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
-    _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
 # Browser-provider ABC + registry; per-vendor providers live under
 # ``plugins/browser/<vendor>/``. The dispatcher consults the registry. See #25214.
 from agent.browser_provider import BrowserProvider
@@ -603,18 +601,15 @@ def _secret_url_error(url: str) -> Optional[dict]:
 
 def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     """Backend-aware URL checks on an already-normalized URL; None if allowed. Ordered floors:
-    (1) credential-like query params refused for cloud backends (third-party readers);
-    (2) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
-    reaches the host IMDS); (3) private addresses refused unless local, sidecar-routed, or
-    ``browser.allow_private_urls``; (4) website policy allow/deny lists."""
+    (1) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
+    reaches the host IMDS); (2) private addresses refused unless local, sidecar-routed, or
+    ``browser.allow_private_urls``; (3) website policy allow/deny lists.
+
+    Credential-NAMED query params (``?token=``, ``?signature=``) are deliberately NOT a floor:
+    magic links, OAuth callbacks and signed CDN assets are how the agent signs in and browses, and
+    a cloud browser already sees every cookie and typed password of the session — refusing the
+    URL protects nothing. Hermes' own secrets leaking into a URL are caught by ``_secret_url_error``."""
     local = _cloud._is_local_backend()
-    sensitive_query_key = _sensitive_query_param_name(url)
-    if sensitive_query_key and not local and not auto_local:
-        return _err(
-            "Blocked: URL contains a credential-like query parameter "
-            f"({sensitive_query_key}). Cloud browser backends are third-party "
-            "readers; use a local browser/CDP session or remove the sensitive "
-            "query parameter before navigating.")
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied regardless of backend, hybrid
     # routing, or allow_private_urls. There's no legitimate agent use case for navigating to 169.254.169.254
     # / metadata.google.internal / ECS task metadata via a browser, and routing those to a local Chromium

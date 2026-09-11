@@ -124,3 +124,27 @@ class TestContextEngineModelThresholds:
         assert engine.threshold_percent == 0.25
         assert engine.threshold_tokens == int(1_000_000 * 0.25)
 
+
+
+class TestProviderScopedKeys:
+    def test_scoped_key_applies_only_on_its_provider(self):
+        overrides = {"openai-codex:astra": 0.85}
+        assert resolve_model_threshold("gpt-6-astra", overrides, 0.50, "openai-codex") == 0.85
+        # Same slug via another route keeps the global value; the bare-key path is unchanged.
+        assert resolve_model_threshold("openai/gpt-6-astra", overrides, 0.50, "openrouter") == 0.50
+        assert resolve_model_threshold("openai/gpt-6-astra", {"astra": 0.85}, 0.50, "openrouter") == 0.85
+        # Specificity is judged on the model substring: the bare 900k key beats the shorter scoped one;
+        # a scoped key beats the bare key with the identical substring.
+        both = {"openai-codex:astra": 0.85, "astra-900k": 0.50, "astra": 0.30}
+        assert resolve_model_threshold("gpt-6-astra-900k", both, 0.50, "openai-codex") == 0.50
+        assert resolve_model_threshold("gpt-6-astra", both, 0.50, "openai-codex") == 0.85
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=1_100_000)
+    def test_compressor_switch_between_routes_rescopes(self, _mock):
+        cc = ContextCompressor(
+            model="gpt-6-astra", threshold_percent=0.50, provider="openai-codex",
+            model_thresholds={"openai-codex:astra": 0.85}, quiet_mode=True,
+        )
+        assert cc.threshold_percent == 0.85
+        cc.update_model(model="openai/gpt-6-astra", context_length=1_100_000, provider="openrouter")
+        assert cc.threshold_percent == 0.50

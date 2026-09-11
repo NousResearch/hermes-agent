@@ -25,7 +25,7 @@ def load_legacy_gateway_json(home: Path) -> Any:
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f) or {}
         logger.info("Loaded legacy %s — consider moving settings to config.yaml", path)
         return data
@@ -335,20 +335,34 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 
 
-def load_yaml_layer(home: Path, gw_data: dict) -> None:
-    """Overlay ``config.yaml`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
+def read_yaml_layers(home: Path) -> dict:
+    """User ``config.yaml`` with the managed overlay applied — the YAML the gateway loader sees.
+
+    Raises on a malformed user file (the loader then falls back to env + gateway.json WITHOUT the
+    managed layer). An ABSENT user file is an empty layer, not a reason to skip the administrator's
+    values: a fleet host with no ``config.yaml`` must still honor them. Any pre-activation predicate
+    (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
+    ``load_gateway_config()`` on which files count.
+    """
     import yaml
 
     config_yaml_path = home / "config.yaml"
-    if not config_yaml_path.exists():
-        return
-    with open(config_yaml_path, encoding="utf-8-sig") as f:
-        yaml_cfg = yaml.safe_load(f) or {}
+    yaml_cfg: dict = {}
+    if config_yaml_path.exists():
+        with open(config_yaml_path, encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
     # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
-    yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+    return managed_scope.apply_managed_overlay(yaml_cfg)
+
+
+def load_yaml_layer(home: Path, gw_data: dict) -> None:
+    """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
+    yaml_cfg = read_yaml_layers(home)
+    if not yaml_cfg:
+        return
 
     gateway_section = yaml_cfg.get("gateway")
     bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)

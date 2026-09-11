@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
-    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, ub_logits_bytes)
-from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
+from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
 from hermes_cli.local_runtime.gguf import model_id_from_stem
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,12 @@ class CatalogEntry:
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
             n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0)
 
+    def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
+        # Optional external drafts may use spare memory after download, never reduce this grant.
+        return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp,
+                           fixed_overhead=RUNTIME_OVERHEAD_BYTES
+                           + (self.mmproj.size_bytes if self.mmproj else 0))
+
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
         extras = tuple(a for a in (self.mmproj, self.draft) if a is not None)
@@ -141,22 +147,14 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
     "best-large-window": zero-spill at TARGET_WINDOW; "best-fits": zero-spill at the 64K floor;
     "smallest-fits-spilled": weights spill to host RAM, priced honestly; None: physics refuses.
     """
-    overhead = (RUNTIME_OVERHEAD_BYTES
-                + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    native = entry.n_ctx_train or FLOOR
     variant = entry.variants[-1]
-    profile = entry.profile(variant)
-    need = variant.weights_bytes + overhead
-    vram = budget.usable_vram_bytes
-    if need + ctx_bytes(profile, min(TARGET_WINDOW, native)) <= vram:
-        return VariantChoice(variant, zero_spill=True, reason_key="best-large-window")
-    floor_kv = ctx_bytes(profile, min(FLOOR, native))
-    if need + floor_kv <= vram:
-        return VariantChoice(variant, zero_spill=True, reason_key="best-fits")
-    if need + floor_kv <= vram + budget.ram_available_bytes:
+    decision = entry.launch_plan(variant, budget).decision
+    if isinstance(decision, PhysicsRefusal):
+        return None
+    if decision.spilled:
         return VariantChoice(variant, zero_spill=False, reason_key="smallest-fits-spilled")
-    return None
+    reason = "best-large-window" if decision.window >= min(TARGET_WINDOW, entry.n_ctx_train or FLOOR) else "best-fits"
+    return VariantChoice(variant, zero_spill=True, reason_key=reason)
 
 
 # ── recommendation: best quality that fits and isn't miserably slow ──

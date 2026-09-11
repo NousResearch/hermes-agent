@@ -392,6 +392,17 @@ class TestObjectBuilding:
         names = [e["name"] for e in tree["entries"]]
         assert names == sorted(names)
 
+    def test_unicode_tree_matches_cross_writer_utf8_hash(self, tmp_path):
+        root = tmp_path / "unicode-tree"
+        root.mkdir()
+        for name in ("\U00010000.txt", "\ue000.txt"):
+            (root / name).write_bytes(b"fixture\n")
+        objects = ssc.ObjectSet()
+        address = ssc.build_tree(root, objects, max_object_bytes=10000)
+        assert address == "sha256:ac7acfcc7360485c38b318fccc37dc930073ccde42c523cffe51314d5940e912"
+        tree = json.loads(objects.objects[address][1])
+        assert [entry["name"] for entry in tree["entries"]] == ["\ue000.txt", "\U00010000.txt"]
+
     def test_build_tree_dedups_identical_blobs(self, tmp_path):
         d = tmp_path / "skill"
         (d / "a").mkdir(parents=True)

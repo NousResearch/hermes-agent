@@ -8,33 +8,14 @@ export type BackendProcessOwner<TProcess> = {
   process: TProcess
 }
 
-interface PendingBackendStop<TProcess> {
-  process: TProcess
-  completion: Promise<void>
-  failed: boolean
-}
-
 export function createBackendConnectionState<TProcess, TConnection>() {
   let generation = 0
   let process: TProcess | null = null
   let promise: Promise<TConnection> | null = null
-  let stopping: PendingBackendStop<TProcess> | null = null
-
-  function invalidate(): TProcess | null {
-    const currentProcess = process
-    generation += 1
-    process = null
-    promise = null
-
-    return currentProcess
-  }
+  let pendingPromise: Promise<TConnection> | null = null
 
   return {
     startAttempt(): BackendConnectionAttempt<TConnection> {
-      if (stopping) {
-        throw new Error('The previous backend has not stopped. Retry its shutdown before starting a replacement.')
-      }
-
       return { generation, promise: null }
     },
 
@@ -45,6 +26,20 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       attempt.promise = nextPromise
       promise = nextPromise
+      pendingPromise = nextPromise
+
+      void nextPromise.then(
+        () => {
+          if (attempt.generation === generation && promise === nextPromise) {
+            pendingPromise = null
+          }
+        },
+        () => {
+          if (attempt.generation === generation && promise === nextPromise) {
+            pendingPromise = null
+          }
+        }
+      )
 
       return true
     },
@@ -66,22 +61,6 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return { generation, process: nextProcess }
     },
 
-    async claimProcess(
-      attempt: BackendConnectionAttempt<TConnection>,
-      nextProcess: TProcess,
-      claim: (current: TProcess) => Promise<unknown>
-    ): Promise<BackendProcessOwner<TProcess> | null> {
-      const owner = this.attachProcess(attempt, nextProcess)
-
-      if (!owner) {
-        return null
-      }
-
-      await claim(nextProcess)
-
-      return owner.generation === generation && process === nextProcess ? owner : null
-    },
-
     clearForCurrentProcess(owner: BackendProcessOwner<TProcess>): boolean {
       if (owner.generation !== generation || owner.process !== process) {
         return false
@@ -89,6 +68,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       process = null
       promise = null
+      pendingPromise = null
 
       return true
     },
@@ -99,6 +79,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       }
 
       promise = null
+      pendingPromise = null
 
       return true
     },
@@ -111,27 +92,19 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return promise
     },
 
-    invalidate,
+    getPendingPromise(): Promise<TConnection> | null {
+      return pendingPromise
+    },
 
-    stopProcess(stop: (current: TProcess) => Promise<void>): Promise<void> {
-      if (stopping && !stopping.failed) {
-        return stopping.completion
-      }
+    invalidate(): TProcess | null {
+      const currentProcess = process
 
-      const current = stopping?.process ?? invalidate()
+      generation += 1
+      process = null
+      promise = null
+      pendingPromise = null
 
-      if (current === null) {
-        return Promise.resolve()
-      }
-
-      const completion = Promise.resolve().then(() => stop(current)).then(
-        () => { stopping = null },
-        error => { stopping!.failed = true; throw error }
-      )
-
-      stopping = { process: current, completion, failed: false }
-
-      return completion
+      return currentProcess
     }
   }
 }

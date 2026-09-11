@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
 
@@ -514,9 +515,44 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
+    """The Nous inference gateway's welcome-tier (free tier) refusals, read from the structured body.
+
+    A 429 carrying a fairshare ``reason`` is either a tier gate (``model_not_free`` /
+    ``feature_not_free``: the model or feature is never served on the free tier, so retrying is
+    pointless — abort this route and fall back) or capacity (``at_capacity`` / ``admission_closed``
+    / ``rate_limited``: honour ``retry_after``, never rotate the free tier's only credential). A
+    400/403 whose message names the wrong host or a dark tier is deterministic for the request.
+    The parsed refusal rides ``error_context`` so the terminal copy can say what happened.
+    """
+    from hermes_cli.anon_auth import (
+        WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
+    status = c.status_code
+    if status == 429:
+        refusal = parse_welcome_refusal(c.body)
+        if refusal is None:
+            return None
+        ctx = {"welcome_refusal": refusal}
+        if refusal["reason"] in WELCOME_TIER_GATE_REASONS:
+            return _v(_R.model_not_found, retryable=False, should_fallback=True, error_context=ctx)
+        if refusal["retry_after"] > 0:
+            ctx["reset_at"] = time.time() + refusal["retry_after"]
+        return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
+    kind = welcome_route_refusal(status, c.msg)
+    if kind is None:
+        return None
+    ctx = {"welcome_route": kind}
+    if status == 403:
+        return _v(_R.auth_permanent, retryable=False, should_fallback=True, error_context=ctx)
+    return _v(_R.format_error, retryable=False, should_fallback=True, error_context=ctx)
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    welcome = _nous_welcome_tier(c)
+    if welcome is not None:
+        return welcome
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
@@ -723,7 +759,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
-    ) or "could not decrypt the provided encrypted_content" in msg:
+    ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
+        "conflicting authenticated continuation identities" in msg
+    ):
         return _V_INVALID_ENCRYPTED
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops

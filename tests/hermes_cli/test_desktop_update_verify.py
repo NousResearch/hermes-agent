@@ -63,3 +63,45 @@ def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
     assert seen['desktop'] == verify.checkout_root() / 'apps' / 'desktop'
     assert (verify.checkout_root() / 'hermes_cli' / 'desktop_update_verify.py').is_file()
     assert verify.checkout_root() != tmp_path
+
+
+def _app_only_under(root):
+    """A packaged-app lookup that finds an app under *root* and nowhere else."""
+    from pathlib import Path
+
+    desktop = (root / 'apps' / 'desktop').resolve()
+
+    def lookup(candidate):
+        return desktop / 'release/fixture/Hermes.exe' if Path(candidate).resolve() == desktop else None
+
+    return lookup
+
+
+def test_caller_root_without_a_packaged_app_falls_back_to_the_checkout(bundle, tmp_path, monkeypatch):
+    # A hand-off script read before the pull still passes HERMES_HOME, which never
+    # holds a packaged app. The healthy checkout it just wrote must be verified instead.
+    checkout, _, _ = bundle
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', _app_only_under(checkout))
+    monkeypatch.setattr(verify, 'checkout_root', lambda: checkout)
+    verify.verify_windows_desktop_update(tmp_path / 'hermes_home')
+
+
+def test_no_packaged_app_under_either_root_still_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', lambda _: None)
+    monkeypatch.setattr(verify, 'checkout_root', lambda: tmp_path / 'checkout')
+    with pytest.raises(RuntimeError, match='executable is missing'):
+        verify.verify_windows_desktop_update(tmp_path / 'hermes_home')
+
+
+def test_caller_root_that_has_a_packaged_app_is_verified_as_given(bundle, tmp_path, monkeypatch):
+    # Fail-closed: the fallback is for a root with nothing to read, never a way to
+    # launder a damaged build past the receipt by switching to a healthy tree.
+    checkout, _, _ = bundle
+    supplied = tmp_path / 'supplied'
+    resources = supplied / 'apps/desktop/release/fixture/resources'
+    resources.mkdir(parents=True)
+    (resources / 'app.asar').write_bytes(b'not an asar')
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', _app_only_under(supplied))
+    monkeypatch.setattr(verify, 'checkout_root', lambda: checkout)
+    with pytest.raises(RuntimeError, match='archive or main entry is invalid'):
+        verify.verify_windows_desktop_update(supplied)

@@ -30,7 +30,8 @@ import type {
   SlashCatalog,
   SudoReq,
   ToolTrailPosition,
-  Usage
+  Usage,
+  VaultUnlockReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -298,6 +299,7 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
+  vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -503,6 +505,7 @@ export interface GatewayEventHandlerContext {
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -571,6 +574,7 @@ export interface AppLayoutActions {
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultUnlock: (password: string) => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -645,6 +649,7 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }
 

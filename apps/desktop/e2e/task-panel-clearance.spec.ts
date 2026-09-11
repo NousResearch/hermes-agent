@@ -7,7 +7,7 @@
 import { expect, test, type Page } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { TASK_PANEL_RESUME_TRIGGER } from './mock-server'
+import { TASK_PANEL_RESUME_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 const SURFACE = '[data-composer-target]:visible'
 const PROMPT = `${TASK_PANEL_RESUME_TRIGGER}: keep the task panel expanded while this session is reopened.`

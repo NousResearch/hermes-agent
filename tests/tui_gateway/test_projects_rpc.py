@@ -763,11 +763,13 @@ def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_pat
     assert coder_tree["projects"][0]["sessionCount"] == 1
     assert launch_tree["scoped_session_ids"] == ["launch-session"]
     assert coder_tree["scoped_session_ids"] == ["coder-session"]
+    assert [s["profile"] for s in coder_tree["projects"][0]["previewSessions"]] == ["coder"]
 
     assert coder_sessions["project"]["id"] == coder_project["id"]
     assert coder_sessions["project"]["sessionCount"] == 1
     lane = coder_sessions["project"]["repos"][0]["groups"][0]
     assert [s["id"] for s in lane["sessions"]] == ["coder-session"]
+    assert [s["profile"] for s in lane["sessions"]] == ["coder"]
 
 
 def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
@@ -856,7 +858,7 @@ def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, 
 
 
 def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
-    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    """Only omitted/blank profiles use launch data; unknown targets fail closed."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     repo = tmp_path / "repos" / "launch-only"
@@ -871,11 +873,14 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
 
         omitted = _call("projects.list")
         blank = _call("projects.list", {"profile": ""})
-        unknown = _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.create", {"profile": "not-a-profile", "name": "Wrong target"})
+        assert _call("projects.list") == omitted
 
     assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
     assert blank == omitted
-    assert unknown == omitted
     assert omitted["active_id"] == created["id"]
 
     assert _cached_repo_labels(launch_home) == ["only"]

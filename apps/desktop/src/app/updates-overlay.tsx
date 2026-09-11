@@ -138,7 +138,7 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void check()}
+            onRetryCheck={() => void check({ force: true })}
             status={status}
             target={target}
             updateAvailable={updateAvailable}

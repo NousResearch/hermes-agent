@@ -83,6 +83,8 @@ def register_all_web_providers():
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
     from plugins.web.parallel.provider import ParallelWebSearchProvider
     from plugins.web.keenable.provider import KeenableWebSearchProvider
+    from plugins.web.tavily.provider import TavilyWebSearchProvider
+    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
     from plugins.web.searxng.provider import SearXNGWebSearchProvider
     from plugins.web.xai.provider import XAIWebSearchProvider
 
@@ -94,6 +96,8 @@ def register_all_web_providers():
         FirecrawlWebSearchProvider,
         ParallelWebSearchProvider,
         KeenableWebSearchProvider,
+        TavilyWebSearchProvider,
+        PerplexityWebSearchProvider,
         SearXNGWebSearchProvider,
         XAIWebSearchProvider,
     ):

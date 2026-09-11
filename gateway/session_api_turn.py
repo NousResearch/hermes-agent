@@ -34,7 +34,9 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if set(data) != {'history', 'settings'} or (data['history'] is not None and not isinstance(data['history'], list)):
+        if (set(data) - {'history', 'settings', 'turn_author'}
+                or not {'history', 'settings'} <= set(data)
+                or (data['history'] is not None and not isinstance(data['history'], list))):
             raise RuntimeStoreError('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
@@ -97,6 +99,12 @@ def admit_api_turn(adapter, **kwargs):
         settings['route'] = {k: v for k, v in route.items() if k != 'api_key'}
     payload = json.loads(_json({'text': kwargs['user_message'], 'api_turn_v1': {
         'history': None if kwargs.get('history_from_session') else kwargs['conversation_history'], 'settings': settings}}))
+    if kwargs.get('turn_author') is not None:
+        from agent.turn_author import parse_turn_author
+        author = parse_turn_author(kwargs['turn_author'])
+        if author is None:
+            raise RuntimeStoreError('invalid_params')
+        payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
@@ -186,7 +194,7 @@ def prepare_api_execution(authority, ref, payload):
                          (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
         authority.db._execute_write(write)
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': payload['text']}
+            'content': payload['text'], 'turn_author': data.get('turn_author') if data else None}
 
 
 def publish_api_event(authority, session_id, event_type, payload):

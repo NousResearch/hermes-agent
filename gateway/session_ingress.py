@@ -7,6 +7,7 @@ from dataclasses import replace
 from gateway.platforms.event import MessageEvent
 from gateway.session_envelope import restore_native
 
+admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
 
 
@@ -59,6 +60,7 @@ async def execute_admission(authority, ref, row):
             event.text = '\n'.join(part['text'] for part in event.text if part.get('type') == 'text')
         event.allow_gateway_control = False
         event.internal = True  # trust comes from the private binding and preclaim, never client JSON
+    author_token = admission_author.set(event.metadata.get('turn_author'))
     api_token = api_execution.set(prepared)
     captured = {}
     result_token = execution_result.set(captured)
@@ -79,6 +81,7 @@ async def execute_admission(authority, ref, row):
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
+        admission_author.reset(author_token)
 
 
 async def deliver_response(adapter, event, session_key, response):

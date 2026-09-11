@@ -59,7 +59,7 @@ def snapshot_automation(authority, adapter, event, identity):
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
             or not isinstance(event.text, str) or not identity
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
-            or set(event.metadata) - {'gateway_session_key', 'gateway_session_id', 'automation_identities'}):
+            or set(event.metadata) - {'gateway_session_key', 'gateway_session_id', 'automation_identities', 'turn_author'}):
         raise RuntimeStoreError('invalid_params')
     entry = _owner(runner, event)
     if event.source.platform == Platform.LOCAL:
@@ -114,6 +114,11 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         raise RuntimeStoreError('permission_denied')
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}
+    if event.metadata.get('turn_author') is not None:
+        from agent.turn_author import parse_turn_author
+        descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
+        if descriptor['turn_author'] is None:
+            raise RuntimeStoreError('invalid_params')
     if event.metadata.get('automation_identities'):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
@@ -144,6 +149,8 @@ def restore_local_automation(authority, ref, row):
     event = MessageEvent(text=row['payload']['text'], source=live.source, internal=True,
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
             'gateway_session_id': entry.session_id})
+    if descriptor.get('turn_author') is not None:
+        event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):
         event._heartbeat_session_id = descriptor['heartbeat']
     return event

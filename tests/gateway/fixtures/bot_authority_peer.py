@@ -66,7 +66,8 @@ def probe(base):
                 for key, status, text in [('b' * 32, 'queued', 'LEGACY_QUEUED_ONCE'),
                                           ('c' * 32, 'claimed', 'LEGACY_CLAIMED_NEVER')]:
                     _write(mailbox / f'{key}.json', dict(delivery_id=key, id=key, owner=legacy_owner,
-                        **legacy_owner, message=text, status=status, created_at=1, sequence=1))
+                        **legacy_owner, message=text, status=status, created_at=1, sequence=1,
+                        author={'id': 'bot:legacy', 'name': 'Legacy', 'is_bot': True}))
             dm = home / 'local-dm.txt'
             dm.write_text('[Message from @local-sender] LOCAL_DM_ONCE')
             local = await asyncio.to_thread(_admit_live_dm, home, str(dm))
@@ -77,7 +78,8 @@ def probe(base):
                 migrated = _read(mailbox / ('b' * 32 + '.json'))
                 unknown = _read(mailbox / ('c' * 32 + '.json'))
             assert migrated.get('admission_id') and unknown['status'] == 'ambiguous', (migrated, unknown)
-            params = {'id': 'a' * 32, 'profile': 'default', 'message': '[Message from @sender] BOT_DM_ONCE'}
+            params = {'id': 'a' * 32, 'profile': 'default', 'message': '[Message from @sender] BOT_DM_ONCE',
+                      'author': {'id': 'bot:peer/sender', 'name': 'Sender', 'is_bot': True}}
             wrong = await rpc(ws, 'bot_relay.deliver', **{**params, 'profile': 'wrong-profile'})
             assert wrong['error']['message'] == 'profile_mismatch', wrong
             # Discard an actual response at the socket boundary before reconnecting.
@@ -92,6 +94,11 @@ def probe(base):
             assert conflict['error']['message'] == 'admission_conflict', conflict
             bot = [r for r in rows() if 'BOT_DM_ONCE' in r['payload_json']]
             assert len(bot) == 1 and bot[0]['target_session_id'] == sid and bot[0]['status'] == 'queued', bot
+            changed = await rpc(observer, 'bot_relay.deliver', **{**params, 'author': {'id': 'other'}})
+            assert changed['error']['message'] == 'admission_conflict', changed
+            assert json.loads(bot[0]['payload_json'])['local_automation_v1']['turn_author'] == params['author']
+            legacy = next(r for r in rows() if 'LEGACY_QUEUED_ONCE' in r['payload_json'])
+            assert json.loads(legacy['payload_json'])['local_automation_v1']['turn_author']['id'] == 'bot:legacy'
             model.release.set()
             await wait(lambda: all(r['status'] == 'terminal' for r in rows()))
             settled = await rpc(observer, 'bot_relay.deliver', **params)

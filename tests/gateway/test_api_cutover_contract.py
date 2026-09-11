@@ -60,3 +60,37 @@ async def test_structured_content_bypasses_text_parser_without_losing_parts(api,
         return 'ok'
     owner.runner._handle_message = handle
     assert await execute_admission(owner, ref, row) == 'ok'
+
+
+
+def test_api_author_is_admission_scoped_not_session_identity(api, owner):
+    from gateway.session_api_turn import prepare_api_execution
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+    from hermes_state_runtime import RuntimeStoreError
+    author = {'id': 'bot:peer', 'name': 'Peer', 'is_bot': True}
+    args = dict(session_id='author', request_id='one', user_message='hello', conversation_history=[], turn_author=author)
+    _, ref, row = admit_api_turn(api, **args)
+    assert row['payload']['api_turn_v1']['turn_author'] == author
+    author['name'] = 'changed'
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        admit_api_turn(api, **args)
+    owner.sessions.clear()
+    from gateway.session_api import restore_api_session
+    restore_api_session(owner, ref.session_id)
+    seen = []
+    def run(message, *, turn_author=None, **kwargs):
+        seen.append(turn_author)
+        return {'final_response': 'ok'}
+    agent = SimpleNamespace(run_conversation=run)
+    turn = TurnRunner(SimpleNamespace(session_authority=None, _consume_pending_native_image_paths=lambda key: []),
+                      TurnContext(message='hello', session_id=ref.session_id, session_key='api',
+                                  source=SimpleNamespace(user_id='authenticated', user_name='Owner', is_bot=False)))
+    for payload in (row['payload'], {'text': 'human'}):
+        prepared = prepare_api_execution(owner, ref, payload)
+        token = api_execution.set(prepared)
+        try:
+            turn._run_conversation_with_approval(agent, [], None, None, None)
+        finally:
+            api_execution.reset(token)
+    assert seen == [row['payload']['api_turn_v1']['turn_author'], None]

@@ -6,6 +6,8 @@ admission is the only consumer; unknown execution is never retried as inference.
 import asyncio
 from pathlib import Path
 
+from agent.turn_author import parse_turn_author
+
 from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -115,7 +117,7 @@ async def _migrate(authority, actor, home, root):
             _write(path, record)
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
-                     record['message'], ref, live, entry, legacy=record)
+                     record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record)
 
 
 async def recover_bot_deliveries(authority):
@@ -160,7 +162,7 @@ def _watch_reply(authority, home, key, admission_id):
 async def deliver(connection, params):
     authority, actor = connection.authority, connection.actor
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author'}:
         raise RuntimeStoreError('invalid_params')
     try:
         key = _delivery_id(params.get('id'))
@@ -169,19 +171,24 @@ async def deliver(connection, params):
     message = params.get('message')
     if not isinstance(message, str) or not message.strip() or len(message) > 16200:
         raise RuntimeStoreError('invalid_params')
+    author = parse_turn_author(params.get('author'))
+    if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
+        raise RuntimeStoreError('invalid_params')
     authority._require_admission_open()
     with _locked(home) as root:
         path = root / f'{key}.json'
         record = _read(path)
         if record is not None and record.get('admission_id'):
-            if record['message'] != message or record['principal_id'] != actor.subject:
+            if (record['message'] != message or record['principal_id'] != actor.subject
+                    or record.get('author') != author):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             return _result(authority, record)
         await _migrate(authority, actor, home, root)
         record = _read(path)
         if record is not None and record.get('admission_id'):
-            if record['message'] != message or record['principal_id'] != actor.subject:
+            if (record['message'] != message or record['principal_id'] != actor.subject
+                    or record.get('author') != author):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             return _result(authority, record)
@@ -190,18 +197,22 @@ async def deliver(connection, params):
         ref, live, entry = _target(authority, actor)
         if params.get('session_id', entry.session_id) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
-        return await _admit(authority, actor, home, root, key, message, ref, live, entry)
+        return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author)
 
 
-async def _admit(authority, actor, home, root, key, message, ref, live, entry, legacy=None):
+async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None):
     path = root / f'{key}.json'
     event = MessageEvent(text=message, source=live.source, internal=True,
         message_id='bot:' + key, metadata={'gateway_session_key': live.route,
                                          'gateway_session_id': entry.session_id})
+    if author is not None:
+        event.metadata['turn_author'] = dict(author)
     # Pin the physical target before committing. A process death in this
     # two-store window leaves an explicit unknown record, never a new target.
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
+    if author is not None:
+        record['author'] = dict(author)
     _write(path, record)
     receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
     record.update(status='canonical', admission_id=receipt.admission_id)

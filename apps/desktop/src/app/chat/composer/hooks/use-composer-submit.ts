@@ -109,8 +109,30 @@ export function useComposerSubmit({
   // button) route through the same send path. Match both the composer target
   // and the exact visible surface captured at click time — every tile stays
   // mounted, and a session can be rendered in more than one pane.
+  //
+  // Busy: a request from a card the user just clicked must not be dropped
+  // because the agent is mid-sentence — that gap is exactly when they click.
+  // Steer the live turn (the same stop-and-correct a typed message gets), and
+  // if the turn has already ended, queue it so it runs next.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
+  const steerOrQueueRef = useRef((_text: string) => {})
+
+  steerOrQueueRef.current = (text: string) => {
+    const queue = () => enqueueQueuedPrompt(activeQueueSessionKeyRef.current, { text, attachments: [] })
+
+    if (!onSteer) {
+      queue()
+
+      return
+    }
+
+    void Promise.resolve(onSteer(text)).then(accepted => {
+      if (!accepted) {
+        queue()
+      }
+    })
+  }
 
   useLayoutEffect(
     () =>
@@ -122,10 +144,14 @@ export function useComposerSubmit({
           paneVisible &&
           !inputDisabled
         ) {
-          dispatchSubmitRef.current(text, undefined, displayKind)
+          if (busy && displayKind === 'hidden') {
+            steerOrQueueRef.current(text)
+          } else {
+            dispatchSubmitRef.current(text, undefined, displayKind)
+          }
         }
       }),
-    [inputDisabled, paneVisible, scope.target, surfaceId]
+    [busy, inputDisabled, paneVisible, scope.target, surfaceId]
   )
 
   const submitDraft = () => {

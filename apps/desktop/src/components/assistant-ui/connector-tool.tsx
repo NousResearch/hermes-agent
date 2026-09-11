@@ -1,6 +1,6 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -12,6 +12,7 @@ import { Loader } from '@/components/ui/loader'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
 import { connectionRows, connectorCalls, connectorTitle, connectorToolName, recordOf } from '@/lib/connector-tools'
+import { cn } from '@/lib/utils'
 import { createConnectorFlow } from '@/store/connector-flow'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -22,19 +23,67 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
-  const busy = useStore(view.$busy)
   const messages = useStore(view.$messages)
 
-  const latest = messages
+  // One live card per offer. Every manage_connections call renders through
+  // here, but only ONE is the card the user acts on; the rest are settled
+  // tool rows. Which one: consecutive calls naming the same apps are one
+  // exchange — connect, the wait the agent parks in while the user signs in,
+  // the status it runs when the connection lands — and the FIRST of the last
+  // exchange is the card. The newest would demote the card mid-authorization
+  // into a row and mint a fresh one below it. A catalog listing (status with
+  // nothing named) after a targeted ask never starts an exchange: it is a
+  // read, not an offer.
+  const offers = messages
     .flatMap(message => message.parts)
     .filter(
       part =>
         part.type === 'tool-call' &&
         (part.toolName === 'manage_connections' || connectorCalls(part.toolName, part.args).length > 0)
     )
-    .at(-1)
 
-  const historical = latest?.type === 'tool-call' && latest.toolCallId !== props.toolCallId
+  const keyOf = (part: (typeof offers)[number]) =>
+    part.type === 'tool-call'
+      ? connectionRows(part.args, part.result)
+          .map(row => row.connector)
+          .sort()
+          .join('|')
+      : ''
+
+  const targeted = (part: (typeof offers)[number]) => {
+    if (part.type !== 'tool-call') {
+      return false
+    }
+
+    const asked = recordOf(part.args).connectors
+
+    return Array.isArray(asked) && asked.length > 0
+  }
+
+  let liveId: string | undefined
+  let liveKey: string | null = null
+  let sawTargeted = false
+
+  for (const part of offers) {
+    if (part.type !== 'tool-call') {
+      continue
+    }
+
+    const key = keyOf(part)
+
+    if (sawTargeted && !targeted(part)) {
+      continue
+    }
+
+    sawTargeted ||= targeted(part)
+
+    if (key !== liveKey) {
+      liveKey = key
+      liveId = part.toolCallId
+    }
+  }
+
+  const historical = liveId !== props.toolCallId
 
   const [owner, setOwner] = useState<{
     storedId: string
@@ -75,6 +124,20 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }, [storedId, runtimeId, historical])
   const rows = connectionRows(props.args, props.result)
   const signature = rows.map(row => row.connector).join('|')
+  const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
+
+  // The TUI shape, stolen: the agent parks inside manage_connections
+  // action="wait", which blocks the turn and polls the gateway, instead of
+  // deciding what "not connected" means and building around the app. Each
+  // card action sends one hidden line so the agent takes the right next call.
+  // Read through a ref so the flow (memoised on identity) always nudges the
+  // live composer target, never the one it was built with. Busy is the
+  // composer's problem: a hidden request mid-turn steers or queues there.
+  const nudgeRef = useRef((_text: string) => {})
+
+  nudgeRef.current = (text: string) => {
+    requestComposerSubmit(`[connectors] ${text}`, { displayKind: 'hidden', target })
+  }
 
   const flow = useMemo(() => {
     if (historical || !runtimeId || !owner || owner.storedId !== storedId || owner.runtimeId !== runtimeId) {
@@ -91,7 +154,11 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
         }
 
         await window.hermesDesktop.openExternal(url)
-      }
+      },
+      onWaiting: slug =>
+        nudgeRef.current(
+          `The user clicked Connect for ${connectorTitle(slug)} and the sign-in is open in their browser. Call manage_connections action="wait" connectors=["${slug}"] now and hold there until it reports connected. Do NOT call connect again — a second link cancels the one they are signing in with. Say nothing until wait returns.`
+        )
     })
   }, [runtimeId, owner, storedId, signature, historical])
 
@@ -121,40 +188,29 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
   return (
     <ConnectorOffer
-      busy={busy}
       flow={flow}
       key={`${runtimeId}:${signature}`}
-      onContinue={async text => {
-        if (!owner || !runtimeId) {
-          throw new Error('Session unavailable')
-        }
-
-        const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-
-        if (!requestComposerSubmit(text, { target })) {
-          throw new Error('Composer unavailable')
-        }
-      }}
+      onSkipped={slug =>
+        nudgeRef.current(
+          `The user chose Not now for ${connectorTitle(slug)}. Do not connect it, do not route around it with another client, credential or CLI for the same app. Continue the task without it, or ask what they want to do.`
+        )
+      }
     />
   )
 }
 
 interface ConnectorOfferProps {
   flow: ReturnType<typeof createConnectorFlow>
-  busy: boolean
-  onContinue: (text: string) => Promise<void>
+  /** The user waved the app off. */
+  onSkipped: (slug: string) => void
 }
 
-export function ConnectorOffer({ flow, busy, onContinue }: ConnectorOfferProps) {
+export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
   const state = useStore(flow.state)
   const { t } = useI18n()
   const copy = t.connectors
   const [query, setQuery] = useState('')
-  const [continuing, setContinuing] = useState(false)
-  const [continued, setContinued] = useState(false)
-  const [continueError, setContinueError] = useState(false)
   const active = state.rows.some(row => row.phase === 'opening' || row.phase === 'waiting')
-  const decided = state.rows.some(row => row.phase === 'connected' || row.phase === 'skipped')
 
   const cardCopy: ConnectorCardCopy = {
     connectAction: copy.connect,
@@ -179,41 +235,64 @@ export function ConnectorOffer({ flow, busy, onContinue }: ConnectorOfferProps) 
   }
 
   const rows = state.rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(query.toLowerCase()))
+  // A targeted ask ("connect Gmail") is one or two cards, each already a
+  // complete question. A heading, a disclaimer and a refresh control over
+  // them is a settings panel dropped into the chat. Only a real catalog — the
+  // model asked for status with nothing named — earns the chrome.
+  const catalog = state.rows.length > 4
 
   return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-3" data-connector-offer>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{copy.title}</span>
-        <Button onClick={() => void flow.refresh()} size="xs" variant="text">
-          {copy.refresh}
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">{copy.disclaimer}</p>
+    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
+      {catalog ? (
+        <div className="grid gap-0.5 px-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-medium">{copy.title}</span>
+            <Button onClick={() => void flow.refresh()} size="xs" variant="text">
+              {copy.refresh}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">{copy.disclaimer}</p>
+        </div>
+      ) : null}
       {state.error ? (
-        <p className="text-xs text-destructive" role="alert">
+        <p className="flex flex-wrap items-center gap-2 px-1 text-xs text-destructive" role="alert">
           {copy.statusError}
+          <Button onClick={() => void flow.refresh()} size="xs" variant="text">
+            {copy.retry}
+          </Button>
         </p>
       ) : null}
-      {!state.available && !state.error ? <p className="text-xs text-muted-foreground">{copy.unavailable}</p> : null}
-      {state.rows.length > 6 ? <SearchField onChange={setQuery} placeholder={copy.search} value={query} /> : null}
-      <div className="grid max-h-96 min-w-0 gap-3 overflow-y-auto">
+      {!state.available && !state.error ? <p className="px-1 text-xs text-muted-foreground">{copy.unavailable}</p> : null}
+      {catalog ? <SearchField onChange={setQuery} placeholder={copy.search} value={query} /> : null}
+      <div className={cn('grid min-w-0', catalog && 'max-h-96 overflow-y-auto')}>
         {rows.map(row => (
-          <div className="grid gap-1" key={row.connector}>
+          <div className="grid" key={row.connector}>
             <ConnectorCard
               actionDisabled={!state.available || row.enabled === false || !!state.error}
+              collapseWhenSettled={false}
               connector={{
                 name: row.connector,
                 title: row.name || connectorTitle(row.connector),
-                description: row.description
+                description: row.description || copy.describe(row.name || connectorTitle(row.connector))
               }}
               copy={{
                 ...cardCopy,
+                connectTitle: copy.connectTitle,
                 decline: row.phase === 'opening' || row.phase === 'waiting' ? copy.cancel : copy.skip,
                 connectAction: ['expired', 'revoked'].includes(row.connectionStatus ?? '') ? copy.grant : copy.connect
               }}
               dismissed={row.phase === 'skipped'}
               onConnect={() => void flow.connect(row.connector)}
-              onDismiss={() => flow.skip(row.connector)}
+              onDismiss={() => {
+                const wasPending = ['opening', 'waiting'].includes(row.phase)
+                flow.skip(row.connector)
+
+                // A cancel mid-authorization is not a skip: the agent may be
+                // parked in wait and will hear the timeout itself.
+                if (!wasPending) {
+                  onSkipped(row.connector)
+                }
+              }}
               otherBusy={active && !['opening', 'waiting'].includes(row.phase)}
               outcome={
                 row.phase === 'connected'
@@ -238,9 +317,10 @@ export function ConnectorOffer({ flow, busy, onContinue }: ConnectorOfferProps) 
                     ? 'needs_auth'
                     : 'not_configured'
               }
+              variant="avatar"
             />
             {row.phase === 'timeout' ? (
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-2 px-3.5 text-xs text-muted-foreground">
                 <span>{copy.timeout}</span>
                 <Button onClick={() => void flow.keepWaiting(row.connector)} size="xs" variant="textStrong">
                   {copy.keepWaiting}
@@ -249,42 +329,8 @@ export function ConnectorOffer({ flow, busy, onContinue }: ConnectorOfferProps) 
             ) : null}
           </div>
         ))}
-        {!rows.length && state.available ? <p className="text-xs text-muted-foreground">{copy.empty}</p> : null}
+        {!rows.length && state.available ? <p className="px-1 text-xs text-muted-foreground">{copy.empty}</p> : null}
       </div>
-      {decided && !continued ? (
-        <div>
-          <Button
-            disabled={busy || active || continuing}
-            onClick={() => {
-              setContinuing(true)
-              setContinueError(false)
-
-              const connected = state.rows
-                .filter(row => row.phase === 'connected')
-                .map(row => connectorTitle(row.connector))
-
-              const skipped = state.rows
-                .filter(row => row.phase === 'skipped')
-                .map(row => connectorTitle(row.connector))
-
-              void onContinue(
-                `Continue the task. Connected apps: ${connected.join(', ') || 'none'}. Continue without: ${skipped.join(', ') || 'none'}. Use current connector status before accessing anything.`
-              )
-                .then(() => setContinued(true))
-                .catch(() => setContinueError(true))
-                .finally(() => setContinuing(false))
-            }}
-            size="sm"
-          >
-            {busy ? copy.continueBusy : copy.continue}
-          </Button>
-          {continueError ? (
-            <p className="text-xs text-destructive" role="alert">
-              {copy.continueFailed}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   )
 }

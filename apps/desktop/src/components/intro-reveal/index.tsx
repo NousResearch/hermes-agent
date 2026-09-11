@@ -54,7 +54,7 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
     }
   }, [enabled, intro.phase, onboarding.firstRunSkipped])
 
-  // The native surface owns rAF: the hidden main renderer's clock is throttled.
+  // The native surface runs the frame loop: the hidden main renderer's animation frames are throttled.
   useEffect(() => {
     if (intro.phase === 'hidden') {
       return

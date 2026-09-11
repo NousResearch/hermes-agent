@@ -68,6 +68,50 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(config.platforms[Platform.FEISHU].extra["connection_mode"], "websocket")
 
 
+class TestApplyYamlConfigProfileScope(unittest.TestCase):
+    """_apply_yaml_config's FEISHU_ALLOW_BOTS bridge write must not leak across profiles under
+    multiplex. ``os.environ`` is process-global; a secondary profile's own reads are already
+    scoped (``gateway/authz_mixin.py``'s gate, ``FeishuAdapter._load_settings`` via
+    ``get_scoped_secret``) and never consult it -- but the unscoped DEFAULT profile falls back to
+    ``os.getenv``, so an unguarded write here would silently flip the default profile's
+    allow_bots gate to whatever a secondary profile's config.yaml asked for."""
+
+    def setUp(self):
+        super().setUp()
+        self._scope_tokens = []
+
+    def tearDown(self):
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active
+        for token in reversed(self._scope_tokens):
+            reset_secret_scope(token)
+        set_multiplex_active(False)
+        super().tearDown()
+
+    def _install_scope(self, mapping=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+        set_multiplex_active(True)
+        self._scope_tokens.append(set_secret_scope(mapping or {}))
+
+    def test_scoped_secondary_profile_skips_the_env_write(self):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        self._install_scope()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FEISHU_ALLOW_BOTS", None)
+            result = _apply_yaml_config({}, {"allow_bots": True})
+            self.assertIsNone(result)
+            self.assertNotIn("FEISHU_ALLOW_BOTS", os.environ)
+
+    def test_unscoped_single_profile_still_bridges_the_env_write(self):
+        """Single-profile deployments (no scope installed) keep the legacy behavior."""
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FEISHU_ALLOW_BOTS", None)
+            _apply_yaml_config({}, {"allow_bots": True})
+            self.assertEqual(os.environ.get("FEISHU_ALLOW_BOTS"), "true")
+
+
 class TestFeishuMessageNormalization(unittest.TestCase):
 
 

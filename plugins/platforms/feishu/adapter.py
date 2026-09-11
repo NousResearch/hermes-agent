@@ -92,7 +92,8 @@ from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load)
 
 
 logger = logging.getLogger(__name__)
@@ -4299,8 +4300,13 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy feishu_cfg block from
     gateway/config.py::load_gateway_config() (allow_bots). Env vars take precedence over YAML.
+
+    Under a multiplexed secondary profile the write is skipped: ``os.environ`` is process-global, so
+    it would leak this profile's ``allow_bots`` into the unscoped default profile's reads (both
+    ``_load_settings`` above and ``gateway/authz_mixin.py``'s gate read this env var directly, by
+    design, so a scoped write here couldn't reach them anyway — see #86905/#72348).
     """
-    if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
+    if "allow_bots" in feishu_cfg and not _profile_scoped_config_load() and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
     return None
 

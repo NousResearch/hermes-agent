@@ -838,6 +838,10 @@ class TurnRunner:
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
+        if getattr(ctx.source, "_work_router_owned_final", False) is True:
+            # The durable outbox owns the sole final post. Keep native approval
+            # and progress wiring, but never publish a speculative final stream.
+            return None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.

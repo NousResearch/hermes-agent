@@ -11,6 +11,35 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class SlackAdmissionStatus(Enum):
+    ALLOW = "allow"
+    CONSUMED = "consumed"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class SlackAdmissionResult:
+    status: SlackAdmissionStatus
+    error: str | None = None
+
+
+@dataclass
+class _SocketAckReceipt:
+    event_id: str
+    completed: asyncio.Event = field(default_factory=asyncio.Event)
+    success: bool = False
+    journal: "Any" = None
+    native_called: bool = False
+    native_selected: bool = False
+
+
+_socket_ack_receipt: contextvars.ContextVar[_SocketAckReceipt | None] = contextvars.ContextVar(
+    "slack_socket_ack_receipt", default=None
+)
+
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
 import aiohttp
@@ -1085,11 +1114,154 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         self._trim_oldest_dict_entries(self._channel_team, self._CHANNEL_TEAM_MAX)
         self._trim_oldest_dict_entries(self._channel_teams, self._CHANNEL_TEAM_MAX)
 
+    def attach_work_router(self, router) -> None:
+        current = getattr(self, "_work_router", None)
+        if current is not None and current is not router:
+            raise RuntimeError("Work Router already attached")
+        if getattr(self, "_work_router_stopping", False):
+            raise RuntimeError("Work Router receiver is fenced")
+        self._work_router = router
+        self._work_router_stopping = False
+        if not hasattr(self, "_work_router_ingress_tasks"):
+            self._work_router_ingress_tasks = set()
+            self._work_router_pending_listeners = set()
+
+    async def recover_work_router_ingress(self) -> None:
+        """Startup hook: confirmed+admitted only; uncertainty stays quarantined."""
+        if self._work_router_stopping:
+            return
+        router = self._work_router
+        task = asyncio.current_task()
+        already_tracked = task in self._work_router_ingress_tasks
+        self._work_router_ingress_tasks.add(task)
+        try:
+            for event_id in router.store.ack_journal.ready():
+                await router.store.ack_journal.promote(
+                    router, event_id, fenced=lambda: self._work_router_stopping)
+        finally:
+            if not already_tracked:
+                self._work_router_ingress_tasks.discard(task)
+
+    async def drain_work_router_ingress(self, timeout=5.0) -> bool:
+        """After detach, before store.close; False retains the fenced open store.
+
+        No cancellation is required: an in-flight wire send may be ambiguous.
+        Runtime must also stop Socket Mode before discarding this adapter.
+        """
+        await asyncio.sleep(0)  # Let Bolt's already-scheduled listener register.
+        current = asyncio.current_task()
+        tasks = self._work_router_ingress_tasks - {current}
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            if pending:
+                return False
+        return not (self._work_router_ingress_tasks - {current}) and not self._work_router_pending_listeners
+
+    def detach_work_router(self, router) -> None:
+        if getattr(self, "_work_router", None) is not router:
+            raise RuntimeError("Work Router owner mismatch")
+        # Keep a closed admission fence until this receiver is disconnected.
+        self._work_router_stopping = True
+
+    def _make_socket_mode_handler(self):
+        if getattr(self, "_work_router", None) is None:
+            return AsyncSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
+        adapter = self
+
+        class ObservedSocketModeHandler(AsyncSocketModeHandler):
+            async def handle(handler, client, req):
+                await adapter._observe_socket_ack(client, req, super().handle)
+
+        return ObservedSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
+
+    async def _observe_socket_ack(self, client, req, handle) -> None:
+        """Commit canonical receipt BEFORE Bolt or its actual wire send."""
+        router = getattr(self, "_work_router", None)
+        payload = req.payload or {}
+        event = payload.get("event") or {}
+        if router is None or not router.config.owns_channel(
+            event.get("channel", ""), event.get("channel_type", "channel")
+        ) or event.get("type") not in {"message", "app_mention"}:
+            await handle(client, req)
+            return
+        if self._work_router_stopping:
+            raise RuntimeError("Work Router receiver is fenced")
+        canonical = router.canonicalize_slack_event(event, payload)
+        if canonical is None or not req.envelope_id:
+            raise RuntimeError("missing canonical ACK identity")
+        journal = router.store.ack_journal
+        journal.prepare(canonical, req.envelope_id)
+        receipt = _SocketAckReceipt(canonical.event_id, journal=journal)
+        adapter = self
+
+        class AckClient:
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+            async def send_socket_mode_response(self, response):
+                envelope_id = (response.get("envelope_id") if isinstance(response, dict)
+                               else response.envelope_id)
+                if envelope_id != req.envelope_id:
+                    raise RuntimeError("Socket ACK envelope mismatch")
+                async with journal.lock('wire', envelope_id):
+                    if adapter._work_router_stopping:
+                        raise RuntimeError("Work Router receiver is fenced")
+                    if journal.begin_wire(canonical.event_id, envelope_id):
+                        await client.send_socket_mode_response(response)
+                        # Shutdown can fence while the transport is in flight.
+                        # Keep its durable send intent uncertain, not false failure.
+                        if adapter._work_router_stopping:
+                            return
+                        journal.confirm_wire(canonical.event_id, envelope_id)
+                    receipt.success = True
+                    receipt.completed.set()
+                await journal.promote(router, canonical.event_id,
+                                      fenced=lambda: adapter._work_router_stopping)
+
+        token = _socket_ack_receipt.set(receipt)
+        task = asyncio.current_task()
+        self._work_router_ingress_tasks.add(task)
+        try:
+            await handle(AckClient(), req)
+            # Listener middleware records selection BEFORE Bolt schedules its
+            # background task. No timing guess or wait on the listener's ACK.
+            if not receipt.native_selected and not self._work_router_stopping:
+                journal.native(canonical.event_id, False)
+        finally:
+            receipt.completed.set()
+            _socket_ack_receipt.reset(token)
+            self._work_router_ingress_tasks.discard(task)
+
+    async def _apply_work_router_admission(self, event, payload, msg_event) -> SlackAdmissionResult:
+        router = getattr(self, "_work_router", None)
+        if router is None or not router.config.owns_channel(
+            event.get("channel", ""), event.get("channel_type", "channel")
+        ):
+            return SlackAdmissionResult(SlackAdmissionStatus.ALLOW)
+        if getattr(self, "_work_router_stopping", False):
+            return SlackAdmissionResult(SlackAdmissionStatus.FAILED, "router_stopping")
+        canonical = router.canonicalize_slack_event(event, payload)
+        receipt = _socket_ack_receipt.get()
+        if (canonical is None or receipt is None or receipt.journal is None
+                or receipt.event_id != canonical.event_id):
+            return SlackAdmissionResult(SlackAdmissionStatus.FAILED, "missing_ack_identity")
+        try:
+            # Durable admission is safe before ACK but NOT runnable. Never wait
+            # for ACK inside a Bolt listener (process_before_response deadlock).
+            receipt.native_called = True
+            receipt.journal.native(canonical.event_id, True)
+            await receipt.journal.promote(
+                router, canonical.event_id, fenced=lambda: self._work_router_stopping)
+        except Exception:
+            logger.error("Work Router durable admission failed")
+            return SlackAdmissionResult(SlackAdmissionStatus.FAILED, "durable_enqueue_failed")
+        return SlackAdmissionResult(SlackAdmissionStatus.CONSUMED)
+
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
         if not self._app or not self._app_token:
             raise RuntimeError("Socket Mode requires an initialized app and app token")
-        self._handler = AsyncSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
+        self._handler = self._make_socket_mode_handler()
         _apply_slack_proxy(self._handler.client, self._proxy_url)
         task = asyncio.create_task(self._handler.start_async())
         self._socket_mode_task = task
@@ -1476,6 +1648,13 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
 
             return _listener
 
+        async def _select_router_listener(next):
+            receipt = _socket_ack_receipt.get()
+            if receipt is not None and receipt.journal is not None:
+                receipt.native_selected = True
+                self._work_router_pending_listeners.add(id(receipt))
+            await next()
+
         for event_type, handler in (
             ("message", self._handle_slack_message), ("app_mention", self._handle_slack_message),
             ("app_home_opened", self._handle_app_home_opened),
@@ -1485,7 +1664,14 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
             ("reaction_removed", _reaction(True)),
             ("assistant_thread_started", self._handle_assistant_thread_lifecycle_event),
             ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event)):
-            self._app.event(event_type)(_listener_for(handler))
+            listener = self._app.event(
+                event_type,
+                middleware=[_select_router_listener],
+            ) if (
+                event_type in {"message", "app_mention"}
+                and getattr(self, "_work_router", None) is not None
+            ) else self._app.event(event_type)
+            listener(_listener_for(handler))
         # Catch-all ack: unacked envelopes count as failures and past 95%/60-min Slack disables
         # Event Subscriptions (ALL inbound). Registered AFTER all named handlers (first match wins).
         # Catch-all no-op ack for any other subscribed event type that Hermes has no listener for (e.g.
@@ -4097,6 +4283,34 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         self._evict_oldest_by_ts(self._reacting_message_ids, self._REACTING_MESSAGE_IDS_MAX)
 
     async def _handle_slack_message(self, event: dict, payload: Optional[dict] = None) -> None:
+        receipt = _socket_ack_receipt.get()
+        if receipt is None or receipt.journal is None:
+            return await self._handle_slack_message_claimed(event, payload)
+        if self._work_router_stopping:
+            self._work_router_pending_listeners.discard(id(receipt))
+            return
+        task = asyncio.current_task()
+        already_tracked = task in self._work_router_ingress_tasks
+        self._work_router_ingress_tasks.add(task)
+        try:
+            async with receipt.journal.lock('native', receipt.event_id):
+                if self._work_router_stopping:
+                    return
+                row = receipt.journal.get(receipt.event_id)
+                if row['native_state'] != 'pending':
+                    await receipt.journal.promote(
+                        self._work_router, receipt.event_id,
+                        fenced=lambda: self._work_router_stopping)
+                    return
+                await self._handle_slack_message_claimed(event, payload)
+                if not receipt.native_called and not self._work_router_stopping:
+                    receipt.journal.native(receipt.event_id, False)
+        finally:
+            self._work_router_pending_listeners.discard(id(receipt))
+            if not already_tracked:
+                self._work_router_ingress_tasks.discard(task)
+
+    async def _handle_slack_message_claimed(self, event: dict, payload: Optional[dict] = None) -> None:
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
@@ -4336,6 +4550,17 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
                 f"{msg_event.text}")
         if ts:
             self._remember_processed_message_ts(ts)
+        admission = await self._apply_work_router_admission(event, payload, msg_event)
+        if admission.status is not SlackAdmissionStatus.ALLOW:
+            if admission.status is SlackAdmissionStatus.FAILED:
+                # The native claim was made before the admission await. Release
+                # it on failure so a Slack retry can reach durable admission.
+                if ts:
+                    self._processed_message_ts.pop(ts, None)
+                event_ts = event.get("_slack_changed_event_ts") or ts
+                self._dedup.discard(self._workspace_event_id(dedup_team_id, event_ts))
+                logger.error("Work Router admission rejected: reason=%s", admission.error)
+            return
         await self.handle_message(msg_event)
 
     async def _build_message_event(

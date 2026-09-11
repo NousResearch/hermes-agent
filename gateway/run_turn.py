@@ -2697,7 +2697,8 @@ class GatewayTurnMixin:
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if (source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled")
+                and getattr(source, "_work_router_owned_final", False) is not True):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
@@ -2910,6 +2911,8 @@ class GatewayTurnMixin:
 
         Created on the gateway loop thread (not run_sync's executor); an inactive consumer leaves
         the holder None so the whole-file fallback path runs."""
+        if getattr(source, "_work_router_owned_final", False) is True:
+            return
         # Skip when streaming TTS already delivered audio for this turn (#60671).
         # This avoids a cross-scope NameError: the outer interrupt / finalisation paths reference the
         # consumer via ``streaming_tts_consumer_holder[0]``. Gates: voice input, auto-TTS enabled for this

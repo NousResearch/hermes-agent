@@ -1316,6 +1316,17 @@ class GatewayStartupMixin:
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
     async def start(self) -> bool:
+        from gateway.work_router.integration import stop_runtimes
+        started = False
+        try:
+            started = await self._start_with_work_router()
+            return started
+        finally:
+            # _running may already be True when startup raises or returns False.
+            if not started:
+                await stop_runtimes(self)
+
+    async def _start_with_work_router(self) -> bool:
         """Start the gateway and all configured platform adapters."""
         logger.info("Starting Hermes Gateway...")
         self._start_install_faulthandler()
@@ -1339,6 +1350,8 @@ class GatewayStartupMixin:
         # Fresh boot: the gate opens while the turn machinery is still cold (skeleton prompts). Warm NOW
         # to overlap the connects; _finish_startup_restore awaits it (bounded).
         self._start_startup_warmup()
+        from gateway.work_router.integration import ensure_runtime
+        ensure_runtime(self)
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         (

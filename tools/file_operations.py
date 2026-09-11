@@ -345,7 +345,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         form via the env-layer ``_bash_safe_path`` (bash eats backslashes; MSYS
         mangles drive paths), so shell file ops and the terminal ``cd`` agree."""
         from tools.environments.local import _bash_safe_path
-        return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
+        return self._escape_shell_literal(_bash_safe_path(arg))
+
+    def _escape_shell_literal(self, arg: str) -> str:
+        """Single-quote opaque shell data without treating it as a filesystem path."""
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't

@@ -303,6 +303,53 @@ class TestShellFileOpsHelpers:
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
+    @pytest.mark.windows_only
+    def test_windows_patterns_are_literals_while_paths_stay_native(self, file_ops, monkeypatch):
+        pattern = r"\btoken\.(json|yaml)\b"
+        file_glob = r"src\*.py"
+        assert file_ops._escape_shell_literal(pattern) == f"'{pattern}'"
+        assert file_ops._escape_native_tool_arg(r"C:\workspace\repo") == "'C:/workspace/repo'"
+        captured = []
+        monkeypatch.setattr(file_ops, "_run_search_pipeline", lambda parts, *a, **kw: captured.append(parts) or SearchResult())
+        file_ops._search_with_rg(pattern, r"C:\workspace\repo", file_glob, 10, 0, "content", 0, rg_executable="rg")
+        assert f"'{pattern}'" in captured[0]
+        assert f"'{file_glob}'" in captured[0]
+        assert "'C:/workspace/repo'" in captured[0]
+
+    @pytest.mark.windows_only
+    def test_native_rg_search_preserves_backslash_regex_and_glob(self, tmp_path):
+        """Git Bash must relay literal regex/glob data to native Windows ``rg``.
+
+        This is deliberately a real subprocess regression: the production local
+        environment launches ``bash -c``, while ``rg.exe`` needs the root in
+        native ``C:/`` form.  The no-match call reaches the zero-match probe.
+        """
+        root = tmp_path / "search-root"
+        source = root / "src"
+        source.mkdir(parents=True)
+        (source / "match.py").write_text("token.json\ntoken.yaml\n", encoding="utf-8")
+        (source / "skip.txt").write_text("token.json\n", encoding="utf-8")
+        # Track the generic fixtures so external ignore rules cannot change
+        # ripgrep's normal visible-files behavior in this temporary repository.
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "add", "-f", "src/match.py", "src/skip.txt"], cwd=root,
+                       check=True, capture_output=True)
+
+        ops = ShellFileOperations(LocalEnvironment(str(root)))
+        pattern = r"\btoken\.(json|yaml)\b"
+        file_glob = r"**\*.py"
+        found = ops.search(pattern, path=str(root), file_glob=file_glob, limit=20)
+        assert found.error is None
+        assert found.total_count == 2
+        assert {(Path(match.path).name, match.line_number) for match in found.matches} == {
+            ("match.py", 1), ("match.py", 2)
+        }
+
+        missing = ops.search(r"\babsent\.(json|yaml)\b", path=str(root),
+                             file_glob=file_glob, limit=20)
+        assert missing.error is None
+        assert missing.total_count == 0
+
 
     @pytest.mark.windows_only
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
@@ -366,11 +413,12 @@ class TestShellFileOpsHelpers:
         assert ops.cwd == "/"
 
     def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
+        fence = "__HERMES_" "FENCE_a9f7b3__"
         leaked = (
-            "'\x07__HERMES_FENCE_a9f7b3__\x1b]0;cat "
+            f"'\x07{fence}\x1b]0;cat "
             "'/tmp/test/a.py' 2> /dev/null\x07\n"
             "print('ok')\n"
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            f"{fence}\x07'\n"
         )
 
         def side_effect(command, **kwargs):
@@ -396,10 +444,11 @@ class TestShellFileOpsHelpers:
         assert "1|print('ok')" in result.content
 
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
+        fence = "__HERMES_" "FENCE_a9f7b3__"
         leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            f"{fence}\x07'\n"
             "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
+            f"\x1b]0;cat '/tmp/test/a.txt'\x07{fence}\n"
         )
 
         def side_effect(command, **kwargs):
@@ -606,6 +655,7 @@ class _DeletedTestGitBaselineCheck:
 # Atomic write: umask-default permissions for new files
 # =========================================================================
 
+@pytest.mark.linux_only
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""
 
@@ -649,6 +699,7 @@ class TestAtomicWriteNewFilePermissions:
         assert dest.stat().st_mode & 0o777 == 0o755
 
 
+@pytest.mark.linux_only
 class TestAtomicWriteThroughSymlink:
     """_atomic_write must edit a symlink's target, not replace the link.
 

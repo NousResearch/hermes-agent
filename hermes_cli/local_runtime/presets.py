@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, WindowDecision, initial_window, launch_args, ub_logits_bytes)
+    FLOOR, RUNTIME_OVERHEAD_BYTES, WindowDecision, initial_window, launch_args, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -44,6 +44,83 @@ def _args_to_keys(args: list[str]) -> dict[str, str]:
         keys[key] = args[i + 1]
         i += 2
     return keys
+
+
+def _override_int(overrides: dict, key: str, model_id: str) -> int | None:
+    value = overrides.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        logger.warning("ignoring invalid local_runtime.launch_overrides.%s.%s=%r",
+                       model_id, key, value)
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed <= 0:
+        logger.warning("ignoring invalid local_runtime.launch_overrides.%s.%s=%r",
+                       model_id, key, value)
+        return None
+    return parsed
+
+
+def effective_ctx_cap(launch_overrides: object, model_id: str,
+                      native_window: int) -> int | None:
+    """Validated per-model context cap, normalized to Hermes' floor and model native limit."""
+    if not isinstance(launch_overrides, dict):
+        if launch_overrides is not None:
+            logger.warning("ignoring invalid local_runtime.launch_overrides=%r", launch_overrides)
+        return None
+    model_overrides = launch_overrides.get(model_id) or {}
+    if not isinstance(model_overrides, dict):
+        logger.warning("ignoring invalid local_runtime.launch_overrides.%s=%r",
+                       model_id, model_overrides)
+        return None
+    configured = _override_int(model_overrides, "ctx-size", model_id)
+    if configured is None:
+        return None
+    minimum = min(FLOOR, native_window)
+    if configured < minimum:
+        logger.warning(
+            "local_runtime.launch_overrides.%s.ctx-size=%s raised to minimum %s",
+            model_id, configured, minimum)
+    return max(minimum, min(configured, native_window))
+
+
+def _cap_window(profile: ModelProfile, budget: HardwareBudget, decision: WindowDecision,
+                configured: int | None) -> WindowDecision:
+    """Apply a configured upper bound without weakening the 64K/native safety floor."""
+    if configured is None:
+        return decision
+    capped = min(configured, decision.window)
+    if capped == decision.window:
+        return decision
+    kv = ctx_bytes(profile, capped)
+    return WindowDecision(
+        window=capped,
+        spill_bytes=max(0, profile.weights_bytes + kv - budget.usable_vram_bytes),
+        kv_on_gpu=kv <= budget.usable_vram_bytes,
+        reasons=[*decision.reasons, f"configured ctx-size cap ({capped // 1024}K)"],
+    )
+
+
+def _apply_batch_caps(keys: dict[str, str], overrides: dict, model_id: str, *,
+                      mtp_capable: bool, mtp_prefill: bool) -> None:
+    """Cap policy/default batch values; keep ubatch no larger than batch."""
+    default_batch = 4096 if mtp_capable and mtp_prefill else 2048
+    default_ubatch = 2048 if (not mtp_capable or mtp_prefill) else 512
+    batch = int(keys.get("batch-size", default_batch))
+    ubatch = int(keys.get("ubatch-size", default_ubatch))
+    batch_cap = _override_int(overrides, "batch-size", model_id)
+    ubatch_cap = _override_int(overrides, "ubatch-size", model_id)
+    effective_batch = min(batch, batch_cap) if batch_cap is not None else batch
+    effective_ubatch = min(ubatch, ubatch_cap) if ubatch_cap is not None else ubatch
+    effective_ubatch = min(effective_ubatch, effective_batch)
+    if effective_batch != batch:
+        keys["batch-size"] = str(effective_batch)
+    if effective_ubatch != ubatch:
+        keys["ubatch-size"] = str(effective_ubatch)
 
 
 def _asset_path(asset) -> "Path | None":
@@ -99,8 +176,8 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
     return decision
 
 
-def _preset_for(gguf: Path, budget: HardwareBudget,
-                mtp_capable: set[str]) -> PresetEntry | None:
+def _preset_for(gguf: Path, budget: HardwareBudget, mtp_capable: set[str],
+                launch_overrides: dict[str, dict] | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
 
@@ -112,6 +189,11 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
     entry = entry_for_model(model_id)
+    model_overrides = launch_overrides.get(model_id) or {} if isinstance(launch_overrides, dict) else {}
+    if not isinstance(model_overrides, dict):
+        logger.warning("ignoring invalid local_runtime.launch_overrides.%s=%r",
+                       model_id, model_overrides)
+        model_overrides = {}
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
     if is_mtp and profile.kv_scale == 1.0:
         # Header-derived profiles don't know about MTP's draft context; apply the calibrated KV
@@ -132,11 +214,18 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
     decision = _restore_grown_window(model_id, profile, budget, decision, overhead)
+    decision = _cap_window(
+        profile, budget, decision,
+        effective_ctx_cap(launch_overrides, model_id, profile.n_ctx_train or decision.window),
+    )
 
-    # The launch flags MUST match the pricing above (same entry/is_mtp/posture).
+    # The policy launch flags match the pricing above (same entry/is_mtp/posture). User caps may
+    # lower batch allocation afterward, which only makes the fit estimate more conservative.
     keys = _args_to_keys(launch_args(
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+    _apply_batch_caps(keys, model_overrides, model_id,
+                      mtp_capable=is_mtp, mtp_prefill=mtp_prefill)
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -165,15 +254,20 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
+                     mtp_capable: set[str] | None = None,
+                     launch_overrides: dict[str, dict] | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
     from hermes_cli.local_runtime.bootstrap import staged_in
 
+    if launch_overrides is not None and not isinstance(launch_overrides, dict):
+        logger.warning("ignoring invalid local_runtime.launch_overrides=%r", launch_overrides)
+        launch_overrides = None
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir, require_complete=False):
-        entry = _preset_for(gguf, budget, mtp_capable or set())
+        entry = _preset_for(
+            gguf, budget, mtp_capable or set(), launch_overrides=launch_overrides)
         if entry is None:
             continue
         entries.append(entry)

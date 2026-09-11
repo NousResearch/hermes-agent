@@ -124,3 +124,42 @@ def test_refresh_no_server_anywhere_is_a_noop(hermes_home, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
     assert boot.refresh_local_runtime() is False
+
+
+def test_bootstrap_forwards_launch_overrides_to_preset_generation(tmp_path, monkeypatch):
+    import hermes_cli.local_runtime.bootstrap as boot
+
+    captured = {}
+    monkeypatch.setattr(boot, "_SUPERVISOR", None)
+    monkeypatch.setattr(boot, "staged_models", lambda: [tmp_path / "model.gguf"])
+    monkeypatch.setattr(boot, "models_dir", lambda: tmp_path / "models")
+    monkeypatch.setattr(boot, "runtimes_root", lambda: tmp_path / "runtimes")
+    monkeypatch.setattr(boot, "_generate_presets",
+                        lambda *args, **kwargs: captured.update(kwargs) or tmp_path / "presets.ini")
+    monkeypatch.setattr(boot, "_start_idle_sweeper", lambda sup: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10679"])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+                        lambda *args: tmp_path / "runtime")
+
+    class _Supervisor:
+        base_url = "http://127.0.0.1:1234/v1"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    overrides = {"model-a": {"ctx-size": 65536, "ubatch-size": 512}}
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _Supervisor)
+    result = boot.ensure_local_runtime({
+        "local_runtime": {
+            "enabled": True, "tag": "b10679", "backend": "cpu",
+            "launch_overrides": overrides,
+        },
+    })
+
+    assert result is not None
+    assert captured["launch_overrides"] is overrides

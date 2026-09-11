@@ -57,6 +57,97 @@ def test_growth_declines_foreign_endpoints(hermes_home):
     assert grown is None
 
 
+def _patch_managed_growth(monkeypatch, tmp_path, *, cap, next_window, budget=None):
+    import hermes_cli.local_runtime.bootstrap as boot
+    import hermes_cli.local_runtime.context_policy as policy
+    import hermes_cli.local_runtime.growth as growth
+    import hermes_cli.local_runtime.hardware as hardware
+
+    class _Supervisor:
+        def is_idle(self, model_id):
+            return True
+
+    gguf = tmp_path / "model-a.gguf"
+    gguf.write_bytes(b"GGUF")
+    profile = _tiny_profile("model-a")
+    monkeypatch.setattr(boot, "get_supervisor", lambda: _Supervisor())
+    monkeypatch.setattr(boot, "staged_models", lambda: [gguf])
+    monkeypatch.setattr(boot, "refresh_local_runtime", lambda: True)
+    monkeypatch.setattr(growth, "is_managed_endpoint", lambda base_url: True)
+    monkeypatch.setattr("hermes_cli.local_runtime.gguf.read_gguf_header", lambda path: object())
+    monkeypatch.setattr("hermes_cli.local_runtime.estimator.profile_from_gguf", lambda header: profile)
+    monkeypatch.setattr(hardware, "probe_budget", lambda planning: budget or object())
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+        "local_runtime": {"launch_overrides": {"model-a": {"ctx-size": cap}}},
+    })
+    if next_window is not None:
+        monkeypatch.setattr(policy, "growth_decision", lambda *args, **kwargs: type("Decision", (), {
+            "action": "grow", "next_window": next_window, "reason": "test growth",
+        })())
+    return growth
+
+
+def test_growth_stops_at_configured_context_cap(hermes_home, tmp_path, monkeypatch):
+    growth = _patch_managed_growth(monkeypatch, tmp_path, cap=65536, next_window=98304)
+    writes = []
+    refreshes = []
+    monkeypatch.setattr(growth, "save_window_override", lambda *args: writes.append(args))
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+                        lambda: refreshes.append(True) or True)
+
+    result = growth.maybe_grow_window(
+        "model-a", base_url="http://127.0.0.1:8080/v1",
+        session_tokens=60_000, current_window=65536)
+
+    assert result is None
+    assert writes == []
+    assert refreshes == []
+
+
+def test_growth_clamps_next_rung_to_configured_context_cap(hermes_home, tmp_path, monkeypatch):
+    growth = _patch_managed_growth(monkeypatch, tmp_path, cap=81920, next_window=98304)
+    writes = []
+    monkeypatch.setattr(growth, "save_window_override", lambda *args: writes.append(args))
+
+    result = growth.maybe_grow_window(
+        "model-a", base_url="http://127.0.0.1:8080/v1",
+        session_tokens=60_000, current_window=65536)
+
+    assert result == 81920
+    assert writes == [("model-a", 81920)]
+
+
+def test_growth_prices_configured_cap_instead_of_larger_native_rung(
+        hermes_home, tmp_path, monkeypatch):
+    from hermes_cli.local_runtime.estimator import HardwareBudget, ctx_bytes
+
+    cap = 81920
+    profile = _tiny_profile("model-a")
+    capped_bytes = profile.weights_bytes + ctx_bytes(profile, cap)
+    native_rung_bytes = profile.weights_bytes + ctx_bytes(profile, 98304)
+    assert capped_bytes < native_rung_bytes
+    budget = HardwareBudget(
+        usable_vram_bytes=capped_bytes,
+        total_device_bytes=capped_bytes,
+        ram_available_bytes=0,
+    )
+    growth = _patch_managed_growth(
+        monkeypatch, tmp_path, cap=cap, next_window=None, budget=budget)
+    writes = []
+    refreshes = []
+    monkeypatch.setattr(growth, "save_window_override", lambda *args: writes.append(args))
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+                        lambda: refreshes.append(True) or True)
+
+    result = growth.maybe_grow_window(
+        "model-a", base_url="http://127.0.0.1:8080/v1",
+        session_tokens=60_000, current_window=65536)
+
+    assert result == cap
+    assert writes == [("model-a", cap)]
+    assert refreshes == [True]
+
+
 def test_occupancy_confirmed_skips_gate_one():
     """The agent's compression gate IS the occupancy signal: when it fired,
     growth must not re-derive its own edge and hold. Decision-table check
@@ -196,6 +287,53 @@ def test_preset_ignores_override_below_launch_window(hermes_home, tmp_path, monk
                             ram_available_bytes=64 * gib)
     entry = presets_mod.generate_presets(mdir, budget, tmp_path / "p.ini")[0]
     assert entry.window == 131072
+
+
+def test_launch_overrides_survive_preset_regeneration(hermes_home, tmp_path, monkeypatch):
+    """User launch limits are reapplied after every generated-policy rewrite."""
+    import configparser
+
+    import hermes_cli.local_runtime.presets as presets_mod
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, "tiny-dense")
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
+    monkeypatch.setattr(presets_mod, "profile_from_gguf",
+                        lambda h: _tiny_profile("tiny-dense"))
+    gib = 1 << 30
+    budget = HardwareBudget(usable_vram_bytes=24 * gib,
+                            total_device_bytes=24 * gib,
+                            ram_available_bytes=64 * gib)
+    overrides = {
+        "tiny-dense": {"ctx-size": 65536, "batch-size": 512, "ubatch-size": 512},
+    }
+    preset = tmp_path / "presets.ini"
+
+    for _ in range(2):
+        entry = presets_mod.generate_presets(
+            mdir, budget, preset, launch_overrides=overrides)[0]
+        ini = configparser.ConfigParser()
+        ini.read(preset)
+        assert entry.window == 65536
+        assert ini["tiny-dense"]["ctx-size"] == "65536"
+        assert ini["tiny-dense"]["batch-size"] == "512"
+        assert ini["tiny-dense"]["ubatch-size"] == "512"
+
+
+def test_context_cap_below_floor_warns_and_uses_floor(caplog):
+    from hermes_cli.local_runtime.context_policy import FLOOR
+    from hermes_cli.local_runtime.presets import effective_ctx_cap
+
+    configured = FLOOR // 2
+    cap = effective_ctx_cap(
+        {"model-a": {"ctx-size": configured}}, "model-a", native_window=FLOOR * 2)
+
+    assert cap == FLOOR
+    assert (
+        f"local_runtime.launch_overrides.model-a.ctx-size={configured} "
+        f"raised to minimum {FLOOR}"
+    ) in caplog.text
 
 
 def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypatch):

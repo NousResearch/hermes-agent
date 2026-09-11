@@ -52,8 +52,9 @@ what a hardware upgrade would unlock.
 
 ## How memory management works
 
-Local models live or die by memory placement, so Hermes manages it
-end-to-end and exposes no knobs:
+Local models live or die by memory placement, so Hermes manages the
+hardware policy end-to-end without global tuning knobs. Optional per-model
+upper bounds are available for memory-constrained systems:
 
 - **Models start at a context window that fully fits your GPU** and grow
   toward their native maximum as your conversation needs more room. You
@@ -114,7 +115,17 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  launch_overrides:  # optional per-model upper bounds, reapplied on boot
+    qwen3.6-35b-a3b:
+      ctx-size: 131072
+      batch-size: 512
+      ubatch-size: 512
 ```
+
+Use the model ID shown by the Local Models pane as the mapping key. Overrides
+only lower the context policy's chosen values; they cannot raise a launch past
+the policy's hardware fit or lower context below Hermes' 64K minimum. Restart
+the managed runtime after changing them.
 
 Models and runtime builds live under the Hermes home directory
 (`models/` and `runtimes/llamacpp/`). Selecting a local model as your

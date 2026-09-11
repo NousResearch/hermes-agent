@@ -113,7 +113,7 @@ from agent.model_metadata import (
 )
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
@@ -5314,7 +5314,9 @@ def _client_cache_key(
     # share an entry, and the second builder's _store_cached_client would close the first's client.
     model_key = model or runtime.get("model", "")
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
-    return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
+    # Profile home leads the key: callers that omit api_key (pool / Nous auth.json paths) would
+    # otherwise share one client across multiplex profiles holding different credentials.
+    return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
 
 
 def _current_event_loop() -> Any:

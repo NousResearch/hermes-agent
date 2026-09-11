@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import threading
 from contextlib import nullcontext
+from contextvars import copy_context
 from typing import Optional
-
-from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
 
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
@@ -95,15 +94,13 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         if not _has_configured_mcp_servers():
             return
 
-        # Re-install the caller's context-local HERMES_HOME override (multi-profile dashboard/desktop
-        # backends) inside the thread: ContextVars don't propagate into bare threads, so a session
-        # switched to profile X would otherwise discover the LAUNCH profile's mcp_servers.
-        # The config gate above already runs on the caller's thread, so it sees the same override. See
-        # #67605.
-        home_override = get_hermes_home_override()
-
+        # Bare threads start from an empty context: run discovery under a copy of the caller's, so
+        # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)
+        # AND the profile's secret scope reach it. Without the scope a session switched to profile
+        # X would discover the LAUNCH profile's mcp_servers, and ``${TOKEN}`` interpolation / the
+        # stdio child env would fail closed (multiplex) or resolve the launch profile's value.
+        # The config gate above already runs on the caller's thread, so it sees the same context.
         def _discover() -> None:
-            token = set_hermes_home_override(home_override)
             try:
                 _discover_mcp_tools_without_interactive_oauth()
                 try:
@@ -114,12 +111,11 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
             finally:
-                reset_hermes_home_override(token)
                 with _mcp_discovery_lock:
                     global _mcp_discovery_thread
                     _mcp_discovery_thread = None
 
-        thread = threading.Thread(target=_discover, name=thread_name, daemon=True)
+        thread = threading.Thread(target=copy_context().run, args=(_discover,), name=thread_name, daemon=True)
         _mcp_discovery_thread = thread
         thread.start()
 

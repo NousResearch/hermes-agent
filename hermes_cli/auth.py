@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from hermes_cli.config import (
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
-from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -1222,7 +1222,13 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             cleared = True
         if cleared:
             _save_auth_store(auth_store)
-        return cleared
+    if target == "nous":
+        from hermes_wisdom.account_session import sign_out
+
+        # Also retire queued work if credentials were already removed. Do this
+        # outside the auth lock: Wisdom workers can resolve auth during DB work.
+        cleared = sign_out() or cleared
+    return cleared
 
 
 def deactivate_provider() -> None:
@@ -1598,8 +1604,11 @@ _NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
 # Per-process memo for resolve_nous_access_token: startup runs one check_fn per managed tool and
 # each would trigger its own ~15s blocking refresh of an expired token; a short-TTL memo collapses
 # the burst into one round-trip. Callers needing freshness use force_fresh/refresh_nous_oauth_pure.
+# Keyed by hermes_home_key(): the resolution itself is profile-scoped (_auth_file_path reads the
+# per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
+# Portal bearer to profile B for up to the TTL.
 _RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "tuple[float, str] | None" = None
+_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 
@@ -1628,20 +1637,19 @@ def resolve_nous_access_token(
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
     """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
-    global _RESOLVE_TOKEN_CACHE
     # Only a default-TLS resolution is memoised; error paths never populate the memo.
     memoable = not insecure and ca_bundle is None
+    cache_key = hermes_home_key()
     if memoable:
         with _RESOLVE_TOKEN_CACHE_LOCK:
-            cached = _RESOLVE_TOKEN_CACHE
+            cached = _RESOLVE_TOKEN_CACHE.get(cache_key)
         if cached is not None and (time.monotonic() - cached[0]) < _RESOLVE_TOKEN_CACHE_TTL_S:
             return cached[1]
 
     def _memo(token: str) -> str:
-        global _RESOLVE_TOKEN_CACHE
         if memoable:
             with _RESOLVE_TOKEN_CACHE_LOCK:
-                _RESOLVE_TOKEN_CACHE = (time.monotonic(), token)
+                _RESOLVE_TOKEN_CACHE[cache_key] = (time.monotonic(), token)
         return token
 
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):

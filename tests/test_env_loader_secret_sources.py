@@ -600,3 +600,78 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
     # Coerced to the 300s default rather than raising ValueError.
     assert captured["cache_ttl_seconds"] == 300
+
+
+@pytest.fixture
+def _fresh_registry():
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    yield
+    reg_module._reset_registry_for_tests()
+
+
+def _register_fake_bulk_source(value_for_home):
+    """One bulk source supplying GLM_API_KEY, resolved per home."""
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult, SecretSource
+
+    class _Fake(SecretSource):
+        name = "fakebulk"
+        label = "Fake"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            result = FetchResult()
+            result.secrets = {"GLM_API_KEY": value_for_home(Path(home_path))}
+            return result
+
+    reg_module.register_source(_Fake(), replace=True)
+
+
+def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_registry):
+    """#102041: a re-apply whose every key is ``skipped_existing`` (the previous apply's own write-back,
+    or a systemd ``EnvironmentFile=`` value) must still snapshot the home's effective values. Latching
+    an empty snapshot made ``build_profile_secret_scope`` drop every vault credential for the process
+    lifetime under multiplex."""
+    from agent.secret_scope import build_profile_secret_scope
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    _register_fake_bulk_source(lambda _home: "vault-value")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.get_secret_source_values(home) == {"GLM_API_KEY": "vault-value"}
+
+    # cron per-fire / plugin-discovery re-pull: reset + reload with the key now shadowing itself.
+    env_loader.reset_secret_source_cache()
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert str(home.resolve()) in env_loader._APPLIED_HOMES
+    assert env_loader.hydrate_profile_secret_sources(home) == {"GLM_API_KEY": "vault-value"}
+    assert build_profile_secret_scope(home)["GLM_API_KEY"] == "vault-value"
+
+
+def test_home_scoped_reset_preserves_sibling_snapshot(tmp_path, monkeypatch, _fresh_registry):
+    """A cron fire / discovery refresh for one profile resets only THAT home: a multiplex sibling's
+    hydrated snapshot stays intact instead of running empty until it re-hydrates."""
+    home = tmp_path / ".hermes"
+    sibling = home / "profiles" / "b"
+    sibling.mkdir(parents=True)
+    for h in (home, sibling):
+        (h / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    _register_fake_bulk_source(lambda h: f"vault-{h.name}")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.hydrate_profile_secret_sources(sibling) == {"GLM_API_KEY": "vault-b"}
+
+    env_loader.reset_secret_source_cache(home)
+
+    assert env_loader.get_secret_source_values(home) == {}
+    assert env_loader.get_secret_source_values(sibling) == {"GLM_API_KEY": "vault-b"}
+    assert str(sibling.resolve()) in env_loader._APPLIED_HOMES

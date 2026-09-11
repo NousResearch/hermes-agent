@@ -116,7 +116,10 @@ def ensure_dingtalk_deps() -> bool:
 def _credentials(extra: Optional[dict]) -> tuple:
     """(client_id, client_secret) from PlatformConfig.extra first, then env / scoped secret."""
     extra = extra or {}
-    return (extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", ""), extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
+    # client_id goes through the same scoped reader as the secret: os.environ holds the DEFAULT
+    # profile's app id under multiplex, and pairing it with a secondary's secret authenticates as the wrong app.
+    return (extra.get("client_id") or _get_scoped_secret("DINGTALK_CLIENT_ID", ""),
+            extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -248,9 +251,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     def _extra_get(self, key: str, env_name: str = "", env_default: str = ""):
-        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var."""
+        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var.
+
+        Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist/policy."""
         value = self.config.extra.get(key) if self.config.extra else None
-        return os.getenv(env_name, env_default) if value is None and env_name else value
+        return _get_scoped_secret(env_name, env_default) if value is None and env_name else value
 
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""
@@ -627,7 +632,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         import httpx
     except ImportError:
         return {"error": "httpx not installed"}
-    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+    # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
+    # environ read would post a secondary profile's cron output to the default profile's robot.
+    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     if not webhook_url:
         return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
     try:

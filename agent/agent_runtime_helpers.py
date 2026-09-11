@@ -924,6 +924,9 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         # factory so the restored facade keeps the reference_callback relay wired at init — a bare
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
+    elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:
@@ -958,16 +961,7 @@ def try_recover_primary_transport(
                 agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
         rt = agent._primary_runtime
         _apply_primary_runtime_fields(agent, rt)
-        if agent.api_mode == "anthropic_messages":
-            _build_anthropic_client_from_runtime(agent, rt)
-        elif (agent.provider or "").strip().lower() == "moa":
-            # MoA is a virtual provider with empty client_kwargs — rebuilding via _create_openai_client
-            # would raise "api_key client option must be set". Recreate the facade through the shared
-            # factory so the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
-            agent.client = build_moa_facade(agent, agent.model)
-        else:
-            agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason="primary_recovery", shared=True)
+        _rebuild_primary_client(agent, rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
@@ -1902,6 +1896,12 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent.base_url = "moa://local"
         agent._client_kwargs = {}
         agent.client = build_moa_facade(agent, agent.model)
+        return
+    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
+        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
+        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client

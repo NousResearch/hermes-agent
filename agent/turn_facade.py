@@ -15,6 +15,59 @@ from agent.lazy_forward import forward as _forward
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
 
+# Remote backends whose cwd must not be read as a local workspace path.
+_REMOTE_CWD_ORIGINS = frozenset({"ssh", "docker", "container", "modal", "daytona", "vercel"})
+_REMOTE_CWD_ORIGIN_ALIASES = {"vercel_sandbox": "vercel"}
+
+
+def _relay_atof_cwd_origin(agent: Any) -> str | None:
+    """Known remote terminal backend, or None. Never claims ``local``."""
+    try:
+        for attr in ("terminal_backend", "env_type"):
+            raw = getattr(agent, attr, None)
+            if isinstance(raw, str):
+                origin = _REMOTE_CWD_ORIGIN_ALIASES.get(raw.strip().lower(), raw.strip().lower())
+                if origin in _REMOTE_CWD_ORIGINS:
+                    return origin
+        try:
+            from tools.terminal_scope import terminal_env
+            raw = terminal_env("TERMINAL_ENV", "") or ""
+        except Exception:
+            raw = ""
+        origin = _REMOTE_CWD_ORIGIN_ALIASES.get(raw.strip().lower(), raw.strip().lower())
+        if origin in _REMOTE_CWD_ORIGINS:
+            return origin
+    except Exception:
+        return None
+    return None
+
+
+def _relay_atof_cwd(agent: Any, task_id: str) -> tuple[str | None, str | None]:
+    """Authoritative workspace cwd for Relay ATOF. Never invents process cwd."""
+    cwd: str | None = None
+    try:
+        from tools.terminal_tool import get_session_cwd
+        recorded = get_session_cwd(task_id)
+        if isinstance(recorded, str) and recorded.strip():
+            cwd = recorded.strip()
+    except Exception:
+        pass
+    if cwd is None:
+        session_cwd = getattr(agent, "session_cwd", None)
+        if isinstance(session_cwd, str) and session_cwd.strip():
+            cwd = session_cwd.strip()
+    if cwd is None:
+        try:
+            from agent.runtime_cwd import resolve_context_cwd
+            resolved = resolve_context_cwd()
+            if resolved is not None:
+                cwd = str(resolved)
+        except Exception:
+            pass
+    if not cwd:
+        return None, None
+    return cwd, _relay_atof_cwd_origin(agent)
+
 
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
@@ -88,14 +141,22 @@ class TurnFacadeMixin:
             lease = admission.lease
             conversation_history = admission.conversation_history
 
+            try:
+                relay_cwd, relay_cwd_origin = _relay_atof_cwd(self, effective_task_id)
+            except Exception:
+                relay_cwd = relay_cwd_origin = None
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"], platform=task_context["platform"],
                 parent_session_id=relay_parent_session_id,
                 model=str(getattr(self, "model", None) or ""),
+                cwd=relay_cwd or "",
+                cwd_origin=relay_cwd_origin or "",
             )
             relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-                relay_lease, turn_id=relay_turn_id, task_id=effective_task_id
+                relay_lease, turn_id=relay_turn_id, task_id=effective_task_id,
+                cwd=relay_cwd or "",
+                cwd_origin=relay_cwd_origin or "",
             )
             # Minimal relay-runtime shims may lack the opt-out flag: default enabled.
             if getattr(relay_turn, "relay_enabled", True):

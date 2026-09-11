@@ -94,6 +94,14 @@ Both defaults preserve one session scope for the full session. Rotated spans
 retain the same `session_id` and add `hermes.session.segment` plus
 `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
+When ATOF export is enabled, `hermes.session` and `hermes.turn` start events
+include `data.cwd` when Hermes knows the authoritative workspace directory
+(session, task, or worktree). The field is omitted when cwd is unknown —
+Hermes does not invent a process launch directory. Remote backends (`ssh`,
+`docker`, `container`, `modal`, `daytona`, `vercel`) may also set
+`data.cwd_origin` so consumers do not treat a remote path as a local
+workspace. Session-scope rotation re-emits the same stored cwd.
+
 ## Process-Wide Plugin Policy and Profile Isolation
 
 Relay plugin configuration is a process-level deployment choice, not a Hermes

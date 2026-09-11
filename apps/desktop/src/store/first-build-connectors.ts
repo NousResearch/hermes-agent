@@ -188,8 +188,15 @@ export function watchFirstBuildRows(
   }
 
   let cancelled = false
+  let failures = 0
+  const deadline = Date.now() + 150000
   let timer: ReturnType<typeof setTimeout> | undefined
-  const current = () => !cancelled && $firstBuildConnections.get()[storedId]?.toolCallId === part.toolCallId
+  const current = () => {
+    const state = $firstBuildConnections.get()[storedId]
+
+    return !cancelled && failures < 3 && Date.now() < deadline && isFirstBuildSession(storedId) &&
+      !state?.started && state?.toolCallId === part.toolCallId
+  }
 
   const poll = async () => {
     if (!current()) {
@@ -218,6 +225,7 @@ export function watchFirstBuildRows(
       })
 
       $firstBuildConnections.setKey(storedId, { ...state, rows })
+      failures = 0
     } catch {
       if (!current()) {
         return
@@ -228,6 +236,7 @@ export function watchFirstBuildRows(
         ...state,
         rows: state.rows.map(row => (row.phase === 'connected' ? row : { ...row, phase: 'error', error: 'status' }))
       })
+      failures += 1
     }
 
     if (current()) {

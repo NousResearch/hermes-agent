@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { isFirstBuildSession, markFirstBuildSession } from '@/app/contrib/handoff-receipt'
+import { endFirstBuildConnect, isFirstBuildSession, markFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { deferred } from '@/test/deferred'
 
 import { $firstBuildConnections, type FirstBuildConnectorPart, openFirstBuildLinks, watchFirstBuildRows } from './first-build-connectors'
@@ -15,6 +15,66 @@ afterEach(() => {
   vi.useRealTimers()
   window.localStorage.clear()
   $firstBuildConnections.set({})
+})
+
+it.each(['started', 'ended', 'deadline'])('stops a pending wait poll at %s and ignores an in-flight answer', async reason => {
+  vi.useFakeTimers()
+  markFirstBuildSession('build')
+  const answer = deferred<unknown>()
+  const request = vi.fn().mockResolvedValue({ available: true, connectors: [] })
+  const stop = watchFirstBuildRows('build', 'runtime', { ...part, result: { status: 'pending' } }, request)
+  await vi.advanceTimersByTimeAsync(148000)
+  const calls = request.mock.calls.length
+  expect(calls).toBeGreaterThan(1)
+
+  if (reason === 'started') {
+    const state = $firstBuildConnections.get().build
+    $firstBuildConnections.setKey('build', { ...state, started: true })
+  } else if (reason === 'ended') {
+    endFirstBuildConnect('build')
+  }
+
+  await vi.advanceTimersByTimeAsync(6000)
+  expect(request).toHaveBeenCalledTimes(calls)
+  stop?.()
+
+  window.localStorage.clear()
+  $firstBuildConnections.set({})
+  markFirstBuildSession('build')
+  request.mockReturnValue(answer.promise)
+  const stopInflight = watchFirstBuildRows('build', 'runtime', part, request)
+  const state = $firstBuildConnections.get().build
+
+  if (reason === 'started') {
+    $firstBuildConnections.setKey('build', { ...state, started: true })
+  } else if (reason === 'ended') {
+    endFirstBuildConnect('build')
+  } else {
+    await vi.advanceTimersByTimeAsync(150000)
+  }
+
+  const stoppedState = $firstBuildConnections.get().build
+  answer.resolve({ available: true, connectors: [{ connector: 'gmail', connected: true }] })
+  await vi.advanceTimersByTimeAsync(6000)
+  expect($firstBuildConnections.get().build).toBe(stoppedState)
+  expect(request).toHaveBeenCalledTimes(calls + 1)
+  stopInflight?.()
+})
+
+it('stops after three consecutive failures and resets the count after a successful poll', async () => {
+  vi.useFakeTimers()
+  markFirstBuildSession('build')
+  const failure = new Error('Gateway offline')
+  const request = vi.fn()
+    .mockRejectedValueOnce(failure)
+    .mockRejectedValueOnce(failure)
+    .mockResolvedValueOnce({ available: true, connectors: [{ connector: 'gmail', connected: false }] })
+    .mockRejectedValue(failure)
+  const stop = watchFirstBuildRows('build', 'runtime', part, request)
+  await vi.advanceTimersByTimeAsync(20000)
+  expect(request).toHaveBeenCalledTimes(6)
+  expect($firstBuildConnections.get().build.rows[0]).toMatchObject({ phase: 'error', error: 'status' })
+  stop?.()
 })
 
 it('reconciles an initiated connect before a wait exists and retires its poll for a newer part', async () => {

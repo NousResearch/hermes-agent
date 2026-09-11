@@ -158,30 +158,44 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, raw_output_path=None) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
-    re-running. The collector wrote it raw; redact it with the same pass so no
-    secret persists unmasked on disk. On failure drop the handle (and file)."""
-    if not path:
+    re-running. Stream-sanitize with the same pass as the visible output so no
+    secret persists unmasked on disk — and never load the whole spill into RAM
+    to do it. Two shapes reach here: the collector's own raw spill (``path``,
+    sanitized in place) and an ELEVATED staged raw file (``raw_output_path``, a
+    throwaway temp file) which is sanitized into a NEW durable path — the
+    durable spill dir never sees raw content; the raw file is then deleted.
+    The authoritative character count is recomputed by the streaming redaction,
+    so a forwarded count is never trusted verbatim. On failure drop the handle
+    (and file)."""
+    if not path and not raw_output_path:
         return []
+    # Late lookup on the origin module keeps the streaming redactor and its
+    # budget constants patchable as ``tools.terminal_tool.<name>``.
+    import tools.terminal_tool as tt
     try:
-        from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8", errors="replace")
-        # lstat-checked unlink + exclusive create: the redacted copy can't
-        # be diverted through a symlink planted since the collector's write.
-        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
-                             private=True, overwrite=True, errors="replace")
+        if raw_output_path:
+            final_path = tt._new_elevated_spill_path()
+            final_path, total_chars = tt._stream_redact_spill(
+                raw_output_path, final_path, command
+            )
+        else:
+            final_path, total_chars = tt._stream_redact_spill(path, path, command)
     except Exception:
         logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
-        with _quiet("spill unlink"):
-            Path(path).unlink()
+        if path:
+            with _quiet("spill unlink"):
+                Path(path).unlink()
         return []
+    finally:
+        if raw_output_path:
+            tt._cleanup_raw_output(raw_output_path)
     note = ("Output exceeded the capture window (head+tail shown). "
-            f"Full output ({total_chars:,} chars) saved to {path} — search it with "
+            f"Full output ({total_chars:,} chars) saved to {final_path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
-    return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
+    return [("output_total_chars", total_chars), ("full_output_path", final_path),
+            ("truncation_note", note)]
 
 
 def _verification_evidence(command, cwd, session_id, returncode, output) -> Optional[dict]:
@@ -246,12 +260,16 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    # Elevated executor errors (UAC cancel, ShellExecuteExW failure, timeout,
+    # ...) surface here; normal env.execute results have no "error" key and
+    # keep the historical None.
+    result_dict = {"output": output, "exit_code": returncode, "error": result.get("error")}
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command,
+                            result.get("raw_output_path")),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),

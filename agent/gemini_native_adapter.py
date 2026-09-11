@@ -429,9 +429,15 @@ def _new_call_id(fc: Dict[str, Any]) -> str:
 
 def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
     try:
-        return json.dumps(fc.get("args") or {}, ensure_ascii=False, **kwargs)
+        raw = json.dumps(fc.get("args") or {}, ensure_ascii=False, **kwargs)
     except (TypeError, ValueError):
-        return "{}"
+        raw = "{}"
+    # Gemini can emit lone surrogates inside tool-call arguments; one bad
+    # code point makes every later request in the session fail with
+    # UnicodeEncodeError. Replace them here so the arguments string stays
+    # JSON-serializable for replay across the whole conversation.
+    from agent.message_sanitization import _sanitize_surrogates
+    return _sanitize_surrogates(raw)
 
 
 def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:

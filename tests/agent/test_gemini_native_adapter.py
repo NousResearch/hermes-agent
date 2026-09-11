@@ -273,6 +273,40 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+def test_translate_native_response_sanitizes_lone_surrogate_in_tool_args():
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "id": "call_1",
+                                "name": "cronjob",
+                                "args": {"action": "remove", "job_id": "unicode-boundary: \ud800"},
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    tc = response.choices[0].message.tool_calls[0].function
+    assert tc.name == "cronjob"
+    args = json.loads(tc.arguments)
+    assert args["job_id"] == "unicode-boundary: \ufffd"
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

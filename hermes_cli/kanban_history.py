@@ -401,17 +401,45 @@ def bind_task(conn, task_id, *, repo_id, project_id):
         return dict(zip(('task_id', 'version', 'repo_id', 'project_id'), values))
 
 
-def mint_claim_capability():
-    """An unpredictable bearer value for a claim.
+def mint_claim_capability(host=None):
+    """An unpredictable bearer value that KEEPS the hostname-prefix contract.
 
     N1. The previous default was `_claimer_id()`, i.e. host:pid: public,
     derivable from the task row, and therefore useless as the secret the owner
-    binding's token hash assumes. This mints a real capability instead. It is
-    returned to the claimer on the Task and is never written into a public owner
-    identifier, an event payload or a log line.
+    binding's token hash assumes.
+
+    C2, from the Mac review of 1cbddef5. The first correction minted a bare
+    `cap_...` with no host segment, and every host-locality gate in kanban_db
+    classifies with `lock.startswith(host_prefix)`. A live local worker whose TTL
+    lapsed therefore failed the "is this mine" test and was reclaimed out from
+    under itself, on enrolled boards only. The shape below keeps the prefix those
+    gates parse while the part after the colon stays unpredictable.
+
+    The value is a BEARER. It is returned to the claimant on the Task and must
+    never be written to an event payload, CLI output, dashboard JSON or any other
+    published record; use public_claim_label() for those.
     """
     import secrets
-    return 'cap_' + secrets.token_urlsafe(32)
+    if host is None:
+        import socket
+        try:
+            host = socket.gethostname() or 'unknown'
+        except Exception:
+            host = 'unknown'
+    return f"{host}:{secrets.token_urlsafe(24)}"
+
+
+def public_claim_label(lock):
+    """A non-secret stand-in for a claim lock, safe to publish.
+
+    C1. Returns only the host segment, which is already public in the task row
+    and cannot be replayed as a capability. Never the bearer and never its hash:
+    a hash is still a verifier for anyone who can guess the input, and the whole
+    point is that published records carry no credential material at all.
+    """
+    if not lock:
+        return None
+    return str(lock).split(':', 1)[0]
 
 
 def bind_owner(conn, task_id, *, claimer, consumer_id, runtime_id, owner_ref):

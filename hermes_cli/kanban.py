@@ -1848,7 +1848,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 return 1
             print(
                 f"cannot claim {args.task_id}: status={existing.status} "
-                f"lock={existing.claim_lock or '(none)'}",
+                f"owner={kb.public_run_fields({'claim_lock': existing.claim_lock})['owner'] or '(none)'}",
                 file=sys.stderr,
             )
             return 1

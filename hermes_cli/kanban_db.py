@@ -2413,6 +2413,57 @@ def _new_task_id() -> str:
     return "t_" + secrets.token_hex(4)
 
 
+def _secure_claim_identity(conn, task_id, claimer, default_lock):
+    """Mint a capability and bind a truthful owner for an ENROLLED task.
+
+    Returns the lock the caller should use. For a non-bound task, or when the
+    caller supplied an explicit claimer, the existing default is returned
+    unchanged. For a bound task it mints an unpredictable, host-prefixed
+    capability and records the owner binding in the CALLER'S transaction, before
+    any protected mutation, so a failed binding rolls the claim back with it.
+
+    Shared by every bound production claim entry point. C3 existed because the
+    logic lived inline in claim_task only.
+    """
+    if claimer is not None:
+        return default_lock
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='authority_task_bindings'").fetchone():
+        return default_lock
+    if not conn.execute('SELECT 1 FROM authority_task_bindings WHERE task_id=?',
+                        (task_id,)).fetchone():
+        return default_lock
+    from hermes_cli import kanban_history as _kh
+    lock = _kh.mint_claim_capability(_socket_host())
+    _kh.bind_owner_locked(
+        conn, task_id, claimer=lock,
+        consumer_id=_socket_host(), runtime_id=str(os.getpid()),
+        owner_ref='kanban-dispatcher',
+    )
+    return lock
+
+
+def _public_label(lock):
+    """Non-secret stand-in for a claim lock, for anything published. See C1."""
+    from hermes_cli.kanban_history import public_claim_label
+    return public_claim_label(lock)
+
+
+def public_run_fields(run):
+    """The run fields safe to publish (dashboard JSON, CLI, diagnostics).
+
+    C1. The dashboard previously returned task_runs.claim_lock verbatim, which
+    is the bearer. This projection replaces it with a non-secret owner label so
+    there is ONE place that decides what leaves the process, instead of each
+    call site remembering to redact.
+    """
+    fields = dict(run) if not isinstance(run, dict) else dict(run)
+    if "claim_lock" in fields:
+        fields["owner"] = _public_label(fields.pop("claim_lock"))
+    return fields
+
+
 def _socket_host() -> str:
     """Host name alone: a truthful PUBLIC identifier, never the bearer value."""
     import socket
@@ -3635,27 +3686,11 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
-        # --- N1: truthful owner identity for an enrolled task -----------------
-        # The default token is _claimer_id(), i.e. host:pid: public, derivable
-        # from the task row, so hashing it proves nothing. For a BOUND task, mint
-        # an unpredictable capability and record a truthful owner binding in THIS
-        # transaction, before the CAS below, so a failed binding rolls the claim
-        # back with it. The bearer value never reaches a public identifier, an
-        # event payload or a log line: only its hash is stored, and the value goes
-        # back to the caller on the returned Task, which is the capability needed
-        # for heartbeat and reclaim. An explicit claimer= is left alone.
-        if claimer is None and conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='authority_task_bindings'").fetchone() and conn.execute(
-                'SELECT 1 FROM authority_task_bindings WHERE task_id=?',
-                (task_id,)).fetchone():
-            from hermes_cli import kanban_history as _kh
-            lock = _kh.mint_claim_capability()
-            _kh.bind_owner_locked(
-                conn, task_id, claimer=lock,
-                consumer_id=_socket_host(), runtime_id=str(os.getpid()),
-                owner_ref='kanban-dispatcher',
-            )
+        # C3: one shared secure mint-and-bind path. claim_task and
+        # claim_review_task previously diverged -- only this one had it -- so an
+        # enrolled review task could not be claimed at all. Factored rather than
+        # copied, so a third claim entry point cannot drift the same way.
+        lock = _secure_claim_identity(conn, task_id, claimer, lock)
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3703,7 +3738,7 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"owner": _public_label(lock), "expires": expires, "run_id": run_id},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -3740,6 +3775,10 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # C3: the same shared secure path claim_task uses. Without it an
+        # enrolled bound review task could not be claimed at all, because
+        # capture() requires an owner binding that nothing had established.
+        lock = _secure_claim_identity(conn, task_id, claimer, lock)
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3785,7 +3824,7 @@ def claim_review_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
+            {"owner": _public_label(lock), "expires": expires, "run_id": run_id,
              "source_status": "review"},
             run_id=run_id,
         )
@@ -3943,7 +3982,7 @@ def release_stale_claims(
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",
-                error=f"stale_lock={row['claim_lock']}",
+                error=f"stale_lock_owner={_public_label(row['claim_lock'])}",
                 metadata=termination,
             )
             payload = {
@@ -6957,7 +6996,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 event_kind = "protocol_violation"
                 event_payload = {
                     "pid": pid,
-                    "claimer": row["claim_lock"],
+                    "claimer": _public_label(row["claim_lock"]),
                     "exit_code": code,
                     # Durable marker for _protocol_violation_streak: _end_run
                     # copies this payload into the run metadata, which is how
@@ -6981,7 +7020,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 event_kind = "rate_limited"
                 event_payload = {
                     "pid": pid,
-                    "claimer": row["claim_lock"],
+                    "claimer": _public_label(row["claim_lock"]),
                     "exit_code": code,
                 }
             else:
@@ -6993,7 +7032,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 else:
                     error_text = f"pid {pid} not alive"
                 event_kind = "crashed"
-                event_payload = {"pid": pid, "claimer": row["claim_lock"]}
+                event_payload = {"pid": pid, "claimer": _public_label(row["claim_lock"])}
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code

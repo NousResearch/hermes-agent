@@ -152,6 +152,13 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(
         shutdown_watchdog_module.asyncio,
         "start_unix_server",
         side_effect=_forbid_start_unix_server,
+        # ``asyncio.start_unix_server`` only exists where an AF_UNIX event loop
+        # does. On native Windows the attribute is absent, so without create=True
+        # patch.object itself raises AttributeError — the test could only ever
+        # pass on POSIX, the platform it pretends not to be. create=True arms
+        # the forbidden-call tripwire everywhere and mock deletes the created
+        # attribute on exit.
+        create=True,
     ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
         payload = await _run_heartbeat_until_payload(tmp_path)
 

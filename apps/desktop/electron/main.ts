@@ -30,7 +30,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, downloadAgentFor, httpStatusError, jsonAgentFor, withRetry } from './api-transport'
+import { destroyKeepaliveAgents, downloadAgentFor, httpStatusError, jsonAgentFor, readStatusCode, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
@@ -2228,27 +2228,12 @@ function abandonFirstRunSetupChoiceForRemoteApply() {
   return resumedGatedConnection
 }
 
-// The latched reauth failure whose hold has already been logged, so a burst of
-// dropped updates from one in-flight sibling attempt logs once, not per event.
-let bootProgressHeldFor = null
-
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
-  // A latched CONFIRMED reauth rejection owns the boot surface until a
-  // recovery path clears it. Updates that are not a re-emit of that failure —
-  // a running:true phase or cleared error from an attempt already in flight
-  // when the latch closed, or an unrelated sibling failure that would flip
-  // retryable back on — must not reach the renderer, or the overlay's Sign in
-  // button flickers away again (#95701).
+  // A latched reauth rejection owns the boot surface until a recovery path
+  // clears it; see shouldHoldBootProgressForReauth (#95701).
   if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
-    if (bootProgressHeldFor !== remoteReauthFailure) {
-      bootProgressHeldFor = remoteReauthFailure
-      rememberLog('[boot] remote reauth latched: holding the recovery overlay against a stale boot-progress update')
-    }
-
     return
   }
-
-  bootProgressHeldFor = null
 
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
@@ -13343,11 +13328,7 @@ async function startHermes() {
     // only consumes the structured result (#85335).
     const isCloudBackendDown = Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
 
-    const statusCode = Number(
-      error && typeof error === 'object' && Number.isInteger((error as any).statusCode)
-        ? (error as any).statusCode
-        : NaN
-    )
+    const statusCode = readStatusCode(error)
 
     // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
     // timeout / host briefly unreachable across sleep) is transient and has no
@@ -13372,6 +13353,7 @@ async function startHermes() {
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth })) {
       remoteReauthFailure = error instanceof Error ? error : new Error(message)
+      rememberLog('[boot] remote reauth latched: holding boot-progress until a recovery path clears it')
     }
 
     // Every latch above is set BEFORE this first yield back to the event loop.

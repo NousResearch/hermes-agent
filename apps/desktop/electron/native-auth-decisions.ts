@@ -46,6 +46,8 @@
  * would be double-encoded downstream; this function exists to document and
  * pin that contract at the one seam that got it wrong.
  */
+import { readStatusCode } from './api-transport'
+
 export function resolveJsonBody<T>(body: T): T {
   return body
 }
@@ -250,7 +252,5 @@ export function oauthGuardMayHardFail(providers: unknown): boolean {
  * the credential and must keep its transient classification.
  */
 export function shouldRotateNativeTokenAfterRejection(error: unknown): boolean {
-  const statusCode = Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
-
-  return statusCode === 401
+  return readStatusCode(error) === 401
 }

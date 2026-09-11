@@ -189,6 +189,11 @@ function httpStatusError(statusCode, text, statusMessage?) {
   return error
 }
 
+/** Read side of httpStatusError: the HTTP status an error carries, NaN when it carries none. */
+function readStatusCode(error: unknown): number {
+  return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
+}
+
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
@@ -196,6 +201,7 @@ export {
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
+  readStatusCode,
   shouldRetryRequest,
   withRetry
 }

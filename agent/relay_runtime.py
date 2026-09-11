@@ -73,6 +73,11 @@ def runtime_metadata(runtime_id: str, **extra: Any) -> dict[str, Any]:
     return {RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION, RUNTIME_INSTANCE_KEY: runtime_id, **extra}
 
 
+def _scope_input(cwd: Any = None) -> dict[str, str]:
+    """Return Relay scope input for a known logical working directory."""
+    return {"cwd": cwd.strip()} if isinstance(cwd, str) and cwd.strip() else {}
+
+
 def _run_on_daemon_thread(
     fn: Callable[[], Any], *, name: str, timeout: float | None = None, timeout_message: str = ""
 ) -> Any:
@@ -154,6 +159,7 @@ class RelaySession:
     segment_turns: int = 0  # turns completed within the current segment
     rotate_pending: bool = False  # consumed at next begin_turn
     close_pending: bool = False  # rotating compaction hit a live turn; end_turn consumes it
+    cwd: str = ""  # latest logical working directory; reused when a session segment rotates
 
 
 def _load_segments_config() -> dict[str, Any]:
@@ -387,7 +393,7 @@ class RelayRuntime:
             scope_metadata["nemo_relay_scope_role"] = "subagent"
         context = contextvars.Context()
         args = (self.relay.scope.push, SESSION_SCOPE, self.relay.ScopeType.Agent)
-        push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input={})
+        push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input=_scope_input(session.cwd))
         try:
             future = _scope_op_executor().submit(context.run, *args, **push_kwargs)
             session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
@@ -398,7 +404,12 @@ class RelayRuntime:
         session.context = context
 
     def ensure_session(
-        self, event: dict[str, Any], *, data: Any = None, metadata: dict[str, Any] | None = None
+        self,
+        event: dict[str, Any],
+        *,
+        data: Any = None,
+        metadata: dict[str, Any] | None = None,
+        cwd: str | None = None,
     ) -> RelaySession | None:
         """Return the existing session scope or create it once."""
         session_id = _session_id(event)
@@ -415,6 +426,8 @@ class RelayRuntime:
         with session.lock:
             if session.closing:
                 return None
+            if isinstance(cwd, str) and cwd.strip():
+                session.cwd = cwd.strip()
             if session.handle is None:
                 self._open_session_scope(
                     session, {**(metadata or {}), **runtime_metadata(self.runtime_id)},
@@ -455,7 +468,8 @@ class RelayRuntime:
                 )
 
     def register_subagent(
-        self, event: dict[str, Any], *, metadata: dict[str, Any] | None = None
+        self, event: dict[str, Any], *, metadata: dict[str, Any] | None = None,
+        cwd: str | None = None,
     ) -> RelaySession | None:
         """Open a child Agent scope under its spawning turn when available."""
         parent_session_id = str(event.get("parent_session_id") or "")
@@ -473,7 +487,7 @@ class RelayRuntime:
             self._subagent_parents[child_session_id] = parent_session_id
             if parent_handle is not None:
                 self._subagent_parent_handles[child_session_id] = parent_handle
-        return self.ensure_session({"session_id": child_session_id}, metadata=metadata)
+        return self.ensure_session({"session_id": child_session_id}, metadata=metadata, cwd=cwd)
 
     def unregister_subagent(self, event: dict[str, Any]) -> None:
         """Close a delegated session and forget its parent relationship."""
@@ -800,6 +814,8 @@ class ConversationLease:
     session: RelaySession | None
     parent_session_id: str = ""
     released: bool = False
+    # Keep new fields after the pre-existing positional constructor fields.
+    turn_cwd: str = ""
 
     def live_runtime(self) -> RelayRuntime | None:
         """Return the real Relay host when this lease owns an open session."""
@@ -898,29 +914,44 @@ class RelaySessionCoordinator:
                 logger.warning("Hermes Relay session initializer failed: %s", name, exc_info=True)
 
     def acquire_conversation(
-        self, *, profile_key: str, session_id: str, platform: str, parent_session_id: str = "", model: str = "",
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+        platform: str,
+        parent_session_id: str = "",
+        model: str = "",
+        session_cwd: str | None = None,
+        turn_cwd: str | None = None,
     ) -> ConversationLease:
         host = self.registry.for_profile(profile_key) or NoopRelayRuntime(profile_key, "Relay host creation was disabled")
         session = None
         if isinstance(host, RelayRuntime):
             context = {
                 "profile_key": profile_key, "session_id": session_id, "platform": platform,
-                "parent_session_id": parent_session_id, "model": model,
+                "parent_session_id": parent_session_id, "model": model, "cwd": session_cwd,
             }
             session = _warn_on_error("conversation initialization", self._open_conversation_session, host, context)
+        effective_turn_cwd = (
+            _scope_input(turn_cwd).get("cwd") or _scope_input(session_cwd).get("cwd") or ""
+        )
+        if not effective_turn_cwd and session is not None:
+            with session.lock:
+                effective_turn_cwd = session.cwd
         return ConversationLease(
             profile_key=profile_key, session_id=session_id, platform=platform, host=host,
-            session=session, parent_session_id=parent_session_id,
+            session=session, parent_session_id=parent_session_id, turn_cwd=effective_turn_cwd,
         )
 
     def _open_conversation_session(self, host: RelayRuntime, context: dict[str, Any]) -> RelaySession | None:
         self._prepare_session(host, context)
         session_id, parent_session_id = context["session_id"], context["parent_session_id"]
         metadata = {"hermes.execution_surface": context["platform"] or "unknown"}
+        cwd = context.get("cwd")
         if parent_session_id and parent_session_id != session_id:
             event = {"parent_session_id": parent_session_id, "child_session_id": session_id}
-            return host.register_subagent(event, metadata=metadata)
-        return host.ensure_session({"session_id": session_id}, metadata=metadata)
+            return host.register_subagent(event, metadata=metadata, cwd=cwd)
+        return host.ensure_session({"session_id": session_id}, metadata=metadata, cwd=cwd)
 
     def begin_turn(self, lease: ConversationLease, *, turn_id: str, task_id: str) -> RelayTurnContext:
         if lease.released:
@@ -944,7 +975,8 @@ class RelaySessionCoordinator:
             _warn_on_error("segment rotation", self._maybe_rotate_segment, host, lease.session)
             turn.handle = _warn_on_error(
                 "turn initialization", host.run_in_session, lease.session, host.relay.scope.push,
-                TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle, input={},
+                TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle,
+                input=_scope_input(lease.turn_cwd),
                 metadata=runtime_metadata(host.runtime_id, **{"hermes.execution_surface": lease.platform or "unknown"}),
                 timeout=_SCOPE_OP_TIMEOUT,
             )

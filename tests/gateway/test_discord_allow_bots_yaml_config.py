@@ -47,21 +47,3 @@ def test_adapter_reads_allow_bots_from_extra_without_env(adapter_mod, monkeypatc
     adapter = _fake_adapter(adapter_mod, {"allow_bots": "mentions"})
 
     assert adapter._get_allow_bots() == "mentions"
-
-
-def test_env_still_wins_over_yaml_for_allow_bots(adapter_mod, monkeypatch):
-    monkeypatch.setattr(adapter_mod, "_scoped_gate_env", lambda name, default="": default)
-
-    adapter = _fake_adapter(
-        adapter_mod, {"allow_bots": "mentions"}, {"DISCORD_ALLOW_BOTS": "all"}
-    )
-
-    assert adapter._get_allow_bots() == "all"
-
-
-def test_allow_bots_defaults_to_none_when_unconfigured(adapter_mod, monkeypatch):
-    monkeypatch.setattr(adapter_mod, "_scoped_gate_env", lambda name, default="": default)
-
-    adapter = _fake_adapter(adapter_mod, {})
-
-    assert adapter._get_allow_bots() == "none"

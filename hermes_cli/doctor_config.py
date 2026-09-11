@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
@@ -362,6 +363,50 @@ def _drift_max_iterations_ghost(f: Finding, should_fix: bool, config_path) -> No
         f.manual_issues.append(f"Manually delete the HERMES_MAX_ITERATIONS line from {_DHH}/.env — config.yaml agent.max_turns is authoritative.")
 
 
+# Only the literal legacy tokens count: YAML 1.1 also folds unquoted ``off``/``on``/``yes``/``no``
+# into bools, and ``off`` is a documented mode string that must never be reported as legacy.
+_PRE_UPDATE_BACKUP_BOOL_RE = re.compile(r"^\s*pre_update_backup\s*:\s*(true|false)\s*(?:#.*)?$", re.MULTILINE)
+
+
+def _drift_pre_update_backup_legacy_bool(f: Finding, should_fix: bool, config_path) -> None:
+    """``updates.pre_update_backup`` written as a legacy boolean instead of a mode string.
+
+    The installer/setup wizard used to seed ``false`` (meaning "off"), which switches the
+    pre-update state snapshot off — the #48200 wipe safety net — with nothing on the receipt to
+    distinguish "you opted out" from "the backup broke". ``true`` means "full": a zip of the whole
+    home on every update. Both are rewritten to the equivalent mode string, so the behaviour does
+    not change but the value becomes auditable and the docs' surface.
+    """
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+    if config_path is None:
+        return
+    raw_config = read_user_config_raw(config_path)
+    updates_cfg = raw_config.get("updates")
+    if not isinstance(updates_cfg, dict) or not isinstance(updates_cfg.get("pre_update_backup"), bool):
+        return
+    # YAML folds an unquoted ``off``/``on`` into a bool as well, so the parsed value alone cannot
+    # tell the legacy boolean from the documented ``off`` string — accept only the literal token,
+    # or doctor would "fix" a deliberate `off` into a quoted 'off' on every run.
+    if not _PRE_UPDATE_BACKUP_BOOL_RE.search(config_path.read_text(encoding="utf-8")):
+        return
+    value = updates_cfg["pre_update_backup"]
+    mode = "full" if value else "off"
+    check_warn(f"updates.pre_update_backup is the legacy boolean {str(value).lower()} (equivalent to '{mode}')",
+               "(supported values: quick (default), off, full)")
+    if mode == "off":
+        check_info("As 'off', `hermes update` takes no pre-update snapshot: state lost to a failed "
+                   "update cannot be recovered")
+    if not should_fix:
+        f.issues.append(f"Legacy boolean updates.pre_update_backup ({str(value).lower()}) — "
+                        "run 'hermes doctor --fix' to write the mode string")
+        return
+    updates_cfg["pre_update_backup"] = mode
+    atomic_config_write(config_path, raw_config)
+    check_ok(f"Rewrote updates.pre_update_backup: {str(value).lower()} -> '{mode}'")
+    f.fixed += 1
+
+
 def _drift_deprecations(f: Finding, should_fix: bool, config_path) -> None:
     """Warn-only deprecation sweep over the raw file + on-disk .env (process env would false-positive)."""
     from hermes_cli.config import load_env, read_user_config_raw
@@ -387,13 +432,14 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
 
 
 _CONFIG_DRIFT_STEPS = (
-    _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
+    _drift_config_version, _drift_stale_root_keys, _drift_pre_update_backup_legacy_bool,
+    _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
 )
 
 
 @doctor_check()
 def _check_config_drift(should_fix: bool, f: Finding) -> None:
-    """Config version, stale root keys, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
+    """Config version, stale root keys, legacy pre-update backup boolean, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """

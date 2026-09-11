@@ -1236,6 +1236,25 @@ def _consume_ephemeral_max_output(agent):
     return ephemeral_out
 
 
+_MEDIA_CONTENT_TYPES = frozenset({"image_url", "input_image", "video_url", "input_video"})
+
+
+def _disable_cache_prompt_for_media(request_overrides: dict, api_messages: list) -> dict:
+    """Disable backend prompt reuse for a request carrying native media."""
+    extra_body = request_overrides.get("extra_body")
+    if not isinstance(extra_body, dict) or extra_body.get("cache_prompt") is not True:
+        return request_overrides
+    has_media = any(
+        isinstance(part, dict) and part.get("type") in _MEDIA_CONTENT_TYPES
+        for message in api_messages or ()
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+    if not has_media:
+        return request_overrides
+    return {**request_overrides, "extra_body": {**extra_body, "cache_prompt": False}}
+
+
 def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides):
     ctx_len = getattr(agent, "context_compressor", None)
     ephemeral_out = _consume_ephemeral_max_output(agent)
@@ -1391,6 +1410,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
         return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
+    request_overrides = _disable_cache_prompt_for_media(request_overrides, api_messages)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)

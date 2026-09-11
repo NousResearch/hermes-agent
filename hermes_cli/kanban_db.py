@@ -1366,6 +1366,27 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # ``initial_status="blocked"`` parks the task for human ops
+                # (R3 gate). The blocked status alone is NOT durable:
+                # ``recompute_ready`` treats a blocked row with no
+                # ``blocked``/``unblocked`` event as auto-recoverable (the
+                # "direct DB manipulation" path preserved by #28712), so the
+                # next dispatcher tick promotes AND spawns it — bypassing the
+                # human gate this initial status exists to enforce. Emit the
+                # same ``blocked`` event a ``kanban_block`` would write so the
+                # sticky guard in ``recompute_ready`` keeps the card parked
+                # until an explicit ``unblock_task``.
+                if task_status == "blocked":
+                    _append_event(
+                        conn, task_id, "blocked",
+                        {"reason": "created with initial_status=blocked",
+                         "kind": "needs_input", "recurrences": 1,
+                         "source_status": "created"},
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = 'needs_input', "
+                        "block_recurrences = 1 WHERE id = ?", (task_id,),
+                    )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)

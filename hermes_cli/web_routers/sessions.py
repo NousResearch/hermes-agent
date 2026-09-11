@@ -610,9 +610,23 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
 
 
 # PATCH /api/sessions/{id} flag -> SessionDB setter, applied in this order.
+# The ``hidden`` setter consults plugins.hermes_bots.hide_bot_chats: with the
+# pref false (Bot Chats visible), a hide write is suppressed (a 0-row no-op)
+# while an explicit un-hide passes through. This is the seam the Desktop Bot
+# Mode sweep writes through (#102625).
+def _set_session_hidden_flag(db, sid: str, value: bool) -> None:
+    """Apply a PATCH ``hidden`` flag, honoring the hide_bot_chats pref."""
+    from tui_gateway.bot_hide_pref import effective_hidden_flag
+
+    if effective_hidden_flag(value):
+        db.set_session_hidden(sid, True)
+    elif value is False:
+        db.set_session_hidden(sid, False)
+
+
 _RENAME_FLAG_SETTERS = (
     ("archived", lambda db, sid, v: db.set_session_archived(sid, v)),
-    ("hidden", lambda db, sid, v: db.set_session_hidden(sid, v)),
+    ("hidden", _set_session_hidden_flag),
     ("pinned", lambda db, sid, v: db.set_session_pinned(sid, v)),
     ("unread", lambda db, sid, v: db.set_session_read(sid, read=not v)),
 )

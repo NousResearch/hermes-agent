@@ -1575,6 +1575,14 @@ DEFAULT_CONFIG = {
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
+        "hermes_bots": {
+            # Bot Mode sessions (Bot Chat / Agent Inbox / Group: rooms) are hidden
+            # from the global Sessions sidebar by default. Set false to keep them
+            # visible: generic hide requests from Bot Mode plumbing (session.create
+            # hidden:true, session.set_hidden, PATCH /api/sessions/{id} hidden=true)
+            # are then suppressed, while explicit un-hides always pass (#102625).
+            "hide_bot_chats": True,
+        },
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;

@@ -14,6 +14,13 @@ _profile_scoped = _registry.profile_scoped
 
 
 # ── shared handler plumbing ──────────────────────────────────────────
+def _bot_hide_allowed() -> bool:
+    """True when a generic Bot Mode hide may stick: the hide_bot_chats pref."""
+    from .bot_hide_pref import effective_hidden_flag
+
+    return effective_hidden_flag(True)
+
+
 def _session_arg(resolve):
     """Resolve ``params.session_id`` via ``resolve`` (a lambda — decoration precedes bind_module) → 3rd arg."""
     def deco(fn):
@@ -352,7 +359,10 @@ def _(rid, params: dict) -> dict:
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
-            "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
+            # hide_bot_chats=false (user pref): Bot Mode's hidden:true must not
+            # hide a normal user chat; an explicit un-hide always passes (#102625).
+            "pending_hidden": _bot_hide_allowed() and _flag(params, "hidden"),
+            "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
@@ -1017,7 +1027,11 @@ def _(rid, params: dict, session: dict, db) -> dict:
 def _(rid, params: dict) -> dict:
     """Set/clear ``hidden`` (leaves the default list, stays resumable by its owner) on a session + lineage:
     LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
-    hidden = is_truthy_value(params.get("hidden", True))
+    # Default to False (visible): a caller omitting ``hidden`` must never
+    # silently hide a session (#102625). An explicit ``hidden: true`` sticks
+    # only when plugins.hermes_bots.hide_bot_chats allows hiding; an un-hide
+    # always passes.
+    hidden = _bot_hide_allowed() and is_truthy_value(params.get("hidden", False))
     session, err = _sess_nowait(params, rid)
     with (_profile_db(params) if session is None else _session_db(session)) as db:
         if db is None:

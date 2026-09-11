@@ -343,24 +343,22 @@ def _build_anthropic_client_with_bearer_hook(
 
 
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
-    """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
-    ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
-    sends dual auth — X-Api-Key *and* Authorization: Bearer *** on every Portal/MiniMax/OAuth/Entra
-    request; clear it whenever we intentionally authenticated via auth_token. Api-key-only
-    construction has the mirror problem: the SDK fills ``auth_token`` from ANTHROPIC_AUTH_TOKEN in
-    the environment and ships that Bearer credential to third-party Anthropic-compatible endpoints
-    alongside x-api-key — suppress it whenever we intentionally authenticated via api_key."""
-    if headers:
-        kwargs["default_headers"] = headers
+    """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+
+    The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
+    ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
+    auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
+    / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
+    SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
+    ``with_options()``, which re-runs the constructor and re-reads the environment."""
+    merged = dict(headers or {})
     if "api_key" in kwargs and "auth_token" not in kwargs:
-        # A `client.auth_token = None` clear does not survive with_options(): the copy re-runs
-        # the constructor and re-reads ANTHROPIC_AUTH_TOKEN. An Omit() default header rides
-        # along on every copy, so the ambient Bearer never reaches the wire.
-        kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), "Authorization": sdk.Omit()}
-    client = sdk.Anthropic(**kwargs)
-    if "auth_token" in kwargs and "api_key" not in kwargs:
-        client.api_key = None
-    return client
+        merged["Authorization"] = sdk.Omit()
+    elif "auth_token" in kwargs and "api_key" not in kwargs:
+        merged["X-Api-Key"] = sdk.Omit()
+    if merged:
+        kwargs["default_headers"] = merged
+    return sdk.Anthropic(**kwargs)
 
 
 def _auth_style(api_key, base_url, normalized_base_url) -> str:

@@ -30,11 +30,14 @@ def test_api_key_client_and_its_copies_never_carry_the_env_bearer(monkeypatch):
         assert headers.get("x-api-key") == "provider-key"
         assert "authorization" not in headers
 
-    # The mirror case is untouched: bearer-style construction still clears the env api key.
+    # Mirror case: bearer-style construction must not ship an env ANTHROPIC_API_KEY, on copies either.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-env-key-DO-NOT-SEND")
     bearer = _new_sdk_client(anthropic_sdk, {"auth_token": "bearer-secret", "base_url": "http://127.0.0.1:1"}, {})
-    assert bearer.api_key is None
-    assert bearer.auth_headers == {"Authorization": "Bearer bearer-secret"}
+    for wire_client in (bearer, bearer.with_options(timeout=30)):
+        headers = dict(wire_client._build_headers(
+            FinalRequestOptions(method="post", url="/v1/messages", json_data={})))
+        assert headers.get("authorization") == "Bearer bearer-secret"
+        assert "x-api-key" not in headers
 
 
 def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):
@@ -75,4 +78,4 @@ def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):
         server.shutdown()
 
     assert captured["headers"].get("x-api-key") == "third-party-provider-key"
-    assert SENTINEL not in captured["headers"].get("authorization", "")
+    assert "authorization" not in captured["headers"]

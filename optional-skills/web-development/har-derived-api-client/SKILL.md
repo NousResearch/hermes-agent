@@ -65,8 +65,9 @@ Rule of thumb: **if Hermes *launched* the browser, use `har_capture.py`; if it
 *connected to* one over CDP, use `har_capture_cdp.py`.** `har_capture.py` uses
 Playwright's `record_har_path`, which only works on a locally-owned context.
 `har_capture_cdp.py` attaches with `connect_over_cdp()` and assembles the HAR
-from `page.on("request"/"response")` events, because `record_har_path` is
-unavailable on a connected browser.
+from context-level request/response events, because `record_har_path` is
+unavailable on a connected browser. `--goto` opens a **new tab** so it does
+not navigate a page Hermes is already using.
 
 Then, for either path:
 
@@ -101,6 +102,7 @@ har_capture.py <url> <out.har> [--wait S] [--headed] [--action SPEC ...]
 
 har_capture_cdp.py <cdp_url> <out.har> [--goto URL] [--wait S] [--action SPEC ...]
   same action SPEC; attaches to an existing CDP browser and does NOT close it
+  --goto opens a new tab (does not reuse Hermes's current page)
   use for cloud backends (Browserbase/Browser-Use/Firecrawl) & /browser connect
 
 har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
@@ -138,7 +140,7 @@ for p in r.json()["pages"]:
 ## Pitfalls
 
 - **Default library User-Agent gets 403.** Many sites (Wikipedia, Cloudflare-fronted APIs) reject `python-requests/x.y`. Always send the browser UA from the replay hints. This is the #1 reason a derived client fails when the browser succeeded.
-- **A failed `--action` aborts before the HAR flushes** — you get no file. If capture errors on a selector, the run produced nothing; fix the selector (use `--headed` to watch) and rerun. Don't debug a missing HAR.
+- **A failed `--action` writes a partial HAR.** Malformed specs (`fill` without text, `click` without a selector) fail with a clear error, and everything captured before the failure is still flushed to the file. Fix the selector (use `--headed` to watch) and rerun if the file is missing the request you wanted.
 - **Server-rendered pages have no XHR** to derive — `har_to_client.py` prints "No API-looking entries". The data came in the HTML; scrape it or find the interaction that does fetch JSON.
 - **Debounced/typeahead XHRs need a real pause.** Add `--action "sleep:3"` after `fill`; typing alone won't have fired the request when the HAR closes.
 - **Auth/session endpoints** need the captured `Cookie`/`Authorization` header, and those expire. The derived client is only as durable as the credential; re-capture when it 401s. HARs contain live secrets — treat `out.har` as sensitive and delete it after deriving.
@@ -146,7 +148,7 @@ for p in r.json()["pages"]:
 - **Endpoints shift.** Sites change private APIs without notice. Re-run the capture→derive loop when a client breaks rather than patching URLs by hand.
 - **Wrong capturer = empty/no HAR.** `har_capture.py` on a cloud/CDP backend records nothing (it launches its own local browser instead of the one you meant). `har_capture_cdp.py` needs the endpoint; on Hermes get it from `/browser connect` or `BROWSER_CDP_URL`. Match the capturer to the pathway (How to Run table).
 - **Headless-Chrome UA is a weak tell.** Local/agent-browser capture yields a `HeadlessChrome/...` User-Agent; some sites sniff the "Headless" token. Cloud backends (Browserbase/Browser-Use) send a real desktop-Chrome UA, so a client derived from a cloud capture replays more reliably. If a headless-derived client 403s where the browser didn't, swap the "Headless" UA for a normal Chrome UA string before assuming the endpoint changed.
-- **CDP capture doesn't close the browser.** `har_capture_cdp.py` attaches to a browser it doesn't own and leaves it running — correct for cloud/remote sessions Hermes manages. Don't add a close; let the owning backend tear it down.
+- **CDP capture doesn't close the browser.** `har_capture_cdp.py` attaches to a browser it doesn't own and leaves it running, which is correct for cloud/remote sessions Hermes manages. Don't add a close. Let the owning backend tear it down. `--goto` opens a new tab on purpose so it cannot wipe the tab Hermes is driving.
 
 ## Verification
 

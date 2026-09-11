@@ -56,6 +56,11 @@ def _match_user_deny_rule(command: str) -> str | None:
 
 _REVIEW_MODES = ("human", "smart")
 _warned_review_values: set[tuple[str, str]] = set()
+# pattern -> review policy last seen by this process. A review-policy transition revokes the
+# grants the pattern earned under the previous policy; keying the detection on the parse (every
+# guarded command, matching or not) rather than on a match closes the interval in which a stale
+# grant could otherwise sit unrevoked.
+_observed_review: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -116,7 +121,21 @@ def _approval_required_rules() -> list[_RequiredRule]:
                                pattern, review_raw)
             review = "human"
         rules.append(_RequiredRule(pattern, str(description).strip() or pattern, review))
+    _observe_review_policies(rules)
     return rules
+
+
+def _observe_review_policies(rules: list[_RequiredRule]) -> None:
+    """Revoke the superseded grants of every rule whose review policy differs from the one this
+    process last saw for its pattern. The first sighting revokes too: a grant keyed on the other
+    policy can only be a leftover from before this process started."""
+    from tools.approval import _revoke_superseded_grants
+
+    for rule in rules:
+        if _observed_review.get(rule.pattern) == rule.review:
+            continue
+        _observed_review[rule.pattern] = rule.review
+        _revoke_superseded_grants(rule)
 
 
 def _match_approval_required_rule(command: str) -> _RequiredRule | None:

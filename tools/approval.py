@@ -31,8 +31,8 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_approval_required_rule,
-    _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
+    _approval_required_rules, _command_matches_permanent_allowlist, _hardline_block_result,
+    _match_approval_required_rule, _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -309,9 +309,10 @@ def is_session_approved(session_key: str, pattern_key: str) -> bool:
 def _revoke_superseded_grants(required) -> None:
     """A review-policy transition is a revocation. The config is live-reloaded and the grant key
     carries the review policy, so a grant taken under the previous policy is merely *hidden* while
-    the other policy is active — and would revive once the operator switches back. Seeing the rule
-    under the current policy drops the superseded key from every session and from the persisted
-    allowlist, so the round trip cannot resurrect it (not even across a restart)."""
+    the other policy is active — and would revive once the operator switches back. Called by the
+    rule parser the moment it sees a pattern under a different review than before (whether or not
+    any command matches), and from :func:`load_permanent_allowlist` so a restart sweeps the persisted
+    allowlist too: drops the superseded key from every session and from the persisted allowlist."""
     key = required.superseded_key
     with _lock:
         for approved in _session_approved.values():
@@ -375,6 +376,10 @@ def load_permanent_allowlist() -> set:
         patterns = set(raw)
         if patterns:
             load_permanent(patterns)
+            # A review-policy change made while this process was down must not leave the other
+            # policy's Always grant in the persisted allowlist: parsing the rules revokes it.
+            _approval_required_rules()
+            patterns &= _permanent_approved
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -951,7 +956,6 @@ def check_dangerous_command(command: str, env_type: str,
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
     if required is not None:
-        _revoke_superseded_grants(required)
         is_dangerous, pattern_key, description = True, required.key, required.prompt_description
     else:
         is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -962,6 +966,8 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        # A review: smart rule is a built-in dangerous pattern on this gate too: guardian first.
+        smart=required is not None and required.review == "smart" and approval_context._get_approval_mode() == "smart",
         permanent_capable=required is None or required.review != "human",
     )
 
@@ -1057,8 +1063,6 @@ def check_all_command_guards(command: str, env_type: str,
     required = _match_approval_required_rule(command)
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
-    if required is not None:
-        _revoke_superseded_grants(required)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each

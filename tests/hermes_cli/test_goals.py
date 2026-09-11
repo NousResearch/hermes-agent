@@ -137,6 +137,40 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    def test_continuation_prompt_carries_judge_reason(self, hermes_home):
+        """Judge feedback loop: after a `continue` verdict the judge's reason
+        must reach the agent. Without it the prompt is byte-identical every
+        turn and the loop guess-and-repeats instead of converging."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="cont-judge-sid")
+        mgr.set("ship the widget")
+        assert mgr._state is not None
+        mgr._state.last_verdict = "continue"
+        mgr._state.last_reason = "criterion 2 expects 24 connectors but only 21 exist"
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "judge returned `continue`" in prompt
+        assert "only 21 exist" in prompt
+        # Base body must still be present (goal + instructions intact).
+        assert "ship the widget" in prompt
+        assert "Take the next concrete step" in prompt
+
+    def test_continuation_prompt_no_judge_feedback_when_done(self, hermes_home):
+        """A stale last_reason must not leak into the prompt once the verdict
+        moved on (e.g. done/blocked) — only `continue` feeds back."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="cont-done-sid")
+        mgr.set("ship the widget")
+        assert mgr._state is not None
+        mgr._state.last_verdict = "done"
+        mgr._state.last_reason = "criterion 2 expects 24 connectors but only 21 exist"
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "judge returned" not in prompt
+        assert "only 21 exist" not in prompt
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired

@@ -52,3 +52,17 @@ class TestToolCallStripping:
             assert out.rstrip().endswith("Done.")
             assert "<tool_call>" not in out
 
+    def test_bracketed_prose_mention_keeps_line_and_tail(self):
+        """#102303: a prose line mentioning <arg_key> in brackets is not a
+        stream cut — its line and everything after it must survive, in both
+        strippers (they must stay in sync)."""
+        text = (
+            "First line stays.\n"
+            "The <arg_key> holds the parameter name.\n"
+            "Third line must survive."
+        )
+        for out in (_strip_reasoning_tags(text),
+                    strip_think_blocks(None, text)):
+            assert "The <arg_key> holds the parameter name." in out
+            assert out.rstrip().endswith("Third line must survive.")
+

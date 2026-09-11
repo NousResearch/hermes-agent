@@ -23,8 +23,10 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli import main as cli_main
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_windows
 
 
 class _FakeNoSuchProcess(Exception):
@@ -314,3 +316,30 @@ def test_guard_refuses_when_reap_does_not_clear_holders():
     )
     assert result == "exit_2"
     assert killed == [[200]]
+
+
+def test_guard_keeps_clean_refusal_when_gateway_resume_fails():
+    token = {"resume_needed": True}
+    resume = MagicMock(side_effect=RuntimeError("gateway liveness timed out"))
+
+    with patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=_holders()
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_reapable_backend_pids", return_value=[]
+    ), patch.object(
+        cli_main, "_orphaned_desktop_backend_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_manual_serve_holders", return_value=[]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update", resume
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            update_cmd_windows._clear_windows_venv_holders_or_exit(
+                _update_args(), gateway_mode=False, _windows_gateway_resume=token
+            )
+
+    assert excinfo.value.code == 2
+    resume.assert_called_once_with(token)
+    assert token["resume_needed"] is True

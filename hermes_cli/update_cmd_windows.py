@@ -1209,7 +1209,9 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
     from hermes_cli.update_cmd import _m, _record_update_step, _refuse_gateway_ancestor_tree_kill
 
     def _resume_and_exit():
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        with _best_effort("Windows gateway service restart incomplete: %s"):
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        # Keep a failed token pending for the registered atexit retry.
         sys.exit(2)
 
     holders = _m()._detect_venv_python_processes()

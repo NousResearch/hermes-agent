@@ -530,7 +530,13 @@ class SessionSearchMixin:
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
+                    # messages_fts_cjk* is an independent v23+ index, not part of the
+                    # demoted legacy layout: fts5's xRename renames the entire shadow
+                    # family in one step, so sweeping the cjk vtable here aborts the
+                    # loop on the next cjk shadow entry and drags _config — needed by
+                    # the vtable constructor — into the trash family (#103647).
+                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before
@@ -1210,7 +1216,8 @@ class SessionSearchMixin:
 
         Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
         rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely. See #50502.
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
         A full structural rebuild must never run concurrently in two processes sharing one state.db — that
         interleaving has structurally corrupted the database in production (PR #93200) — so this admits
         through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
@@ -1219,6 +1226,8 @@ class SessionSearchMixin:
         path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
         and at next startup.
         """
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:

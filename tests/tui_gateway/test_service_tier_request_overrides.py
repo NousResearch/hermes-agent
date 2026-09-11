@@ -108,9 +108,25 @@ def test_anthropic_flex_sends_nothing():
 def test_aggregator_route_gates_the_tier():
     """First-party tier params never ride aggregator routes: OpenRouter strips
     ``service_tier`` (charging nothing) or 400s on it, so the route gate drops
-    the override instead of pinning it (parity with the gateway/CLI builders)."""
-    kwargs = _build("flex", model="openrouter/openai/gpt-4.1",
+    the override instead of pinning it (parity with the gateway/CLI builders).
+    A tier-eligible model id, so it is specifically the ROUTE gate dropping here."""
+    kwargs = _build("flex", model="gpt-4.1",
                     provider="openrouter", base_url="https://openrouter.ai/api/v1")
+
+    assert not kwargs.get("request_overrides")
+
+
+def test_anthropic_priority_sends_speed_not_service_tier():
+    """Anthropic Fast Mode uses ``speed``; the resolver must pick per provider."""
+    kwargs = _build("priority", model="claude-opus-4-8",
+                    provider="anthropic", base_url="https://api.anthropic.com")
+
+    assert kwargs["request_overrides"] == {"speed": "fast"}
+
+
+def test_ineligible_model_sends_no_overrides():
+    """A tier set for a model with no tier support must not invent one."""
+    kwargs = _build("priority", model="gpt-5.3-codex")
 
     assert not kwargs.get("request_overrides")
 
@@ -164,3 +180,17 @@ def test_typed_fast_on_sends_priority():
 
     assert agent.service_tier == "priority"
     assert agent.request_overrides == {"service_tier": "priority"}
+
+
+def test_typed_fast_on_uses_provider_appropriate_key():
+    """Anthropic uses ``speed``, not ``service_tier`` — and must not carry both:
+    popping both keys before re-resolving makes a mismatched pair unrepresentable."""
+    agent = SimpleNamespace(
+        model="claude-opus-4-8",
+        service_tier=None,
+        request_overrides={"service_tier": "priority"},
+    )
+
+    _mirror(agent, "on")
+
+    assert agent.request_overrides == {"speed": "fast"}

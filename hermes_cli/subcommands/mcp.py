@@ -55,6 +55,14 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
+    mcp_enable_p = mcp_sub.add_parser(
+        "enable", help="Enable a configured MCP server (takes effect next session)")
+    mcp_enable_p.add_argument("name", help="Server name to enable")
+
+    mcp_disable_p = mcp_sub.add_parser(
+        "disable", help="Disable a configured MCP server without removing its config")
+    mcp_disable_p.add_argument("name", help="Server name to disable")
+
     mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
     mcp_cfg_p.add_argument("name", help="Server name to configure")
 

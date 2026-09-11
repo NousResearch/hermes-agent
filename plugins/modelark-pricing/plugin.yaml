@@ -1,15 +1,15 @@
 name: modelark-pricing
-version: 1.0.1
+version: 2.0.0
 kind: backend
 author: WeRoll fleet (Cowork, on Richie's instruction 2026-09-11)
 description: >-
-  Notional pricing for the BytePlus ModelArk Coding Plan (a flat subscription). Every DeepSeek
-  v4-flash / v4-pro slot in the fleet is served by ModelArk from 2026-09-11. A subscription endpoint
-  returns no per-call cost, and Hermes has no price for the Ark model ids, so every call would record
-  $0 / unknown and the flat $1.00 card cap (enforce_max_cost sums estimated_cost_usd) would go blind
-  exactly as it did on 2026-09-08. This plugin prices the Ark ids at DeepSeek's own list rate (the
-  bundled "deepseek" snapshot) with cost_source "modelark-proxy", so the cap and the overwatch escalator
-  keep firing. The figure is NOTIONAL — nothing is invoiced per call; fleet reports label these rows
-  "modelark subscription". Bundled + kind:backend so it auto-loads in every profile, worker, cron job
-  and desktop backend (user plugins only load under the HERMES_HOME that holds them). New directory,
-  so it is zero merge-conflict surface for upstream catch-ups. Remove it if the fleet leaves ModelArk.
+  The BytePlus ModelArk Coding Plan is a flat subscription: its calls report NO cost. Richie
+  (2026-09-11): record them as what they are and adjust reporting and calculation for it. So this
+  plugin (1) routes every call to the Coding Plan endpoint through Hermes' native
+  "subscription_included" billing mode — $0, cost_status "included", cost_source/label
+  "modelark subscription" — so every native surface (per-turn cost, insights, dashboard) shows it as
+  subscription, never as money; and (2) adjusts the one CALCULATION that $0 would break: the flat
+  $1.00 card cap. kanban_db's per-card cost sum gets a cap-equivalent for Coding Plan usage (tokens x
+  DeepSeek's list rate) so a runaway worker on ModelArk still trips the cap. The cap-equivalent is
+  never stored as cost. Bundled + kind:backend: auto-loads in every profile, worker, cron job and
+  desktop backend. New directory = zero merge-conflict surface. Remove if the fleet leaves ModelArk.

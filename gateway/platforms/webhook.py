@@ -664,8 +664,22 @@ class WebhookAdapter(BasePlatformAdapter):
                 return False
             return _hmac_str_equal(v2_sig, _hex_hmac(secret, v2_timestamp.encode() + b"." + body))
         # Generic V1 (legacy, deprecated): body-only HMAC → replays indefinitely.
+        # V1 is rejected by default (security fail-closed). A route may explicitly
+        # opt in with ``allow_legacy_v1: true`` to preserve backward compatibility
+        # during migration to V2; the warning is still emitted once per route so
+        # the operator is reminded to migrate.
         generic_sig = headers.get("X-Webhook-Signature", "")
         if generic_sig:
+            route_config = self._routes.get(route_name, {})
+            # Identity check only: YAML "false", 1, and non-empty objects
+            # are all truthy and must not re-enable replayable V1 HMAC.
+            if route_config.get("allow_legacy_v1") is not True:
+                logger.warning(
+                    "[webhook] Route '%s' sent legacy V1 signature (X-Webhook-Signature) which is replayable "
+                    "(no timestamp binding). V1 is rejected by default; set 'allow_legacy_v1: true' on the "
+                    "route to accept during migration, or switch to X-Webhook-Signature-V2 with "
+                    "X-Webhook-Timestamp.", route_name)
+                return False
             if route_name not in self._v1_signature_warned:
                 self._v1_signature_warned.add(route_name)
                 logger.warning("[webhook] Route '%s' uses legacy body-only HMAC (no timestamp), which is vulnerable "

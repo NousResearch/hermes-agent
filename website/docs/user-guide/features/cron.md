@@ -26,7 +26,7 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 
 - **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
+- **Global default** — only when neither of the above is set does a job follow `hermes model`. Hermes **snapshots** the provider and model at creation, and that snapshot is the job's effective pin: if you later switch the global default (`hermes model`, `/model`, `hermes config set model.default …`), the job **keeps running on the model and provider it was created under** and logs one INFO line per run noting the difference. A global model change never stops a scheduled job, and an unattended job never silently inherits a switch to a paid provider/model (#44585). To move a job to the new default, pin it (`hermes cron edit <job_id> --provider <provider> --model <model>`) or set `cron.model` to move the whole fleet at once. Jobs created before snapshots existed keep following the live global default.
 
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
@@ -100,32 +100,19 @@ cron:
 
 Or: `hermes config set cron.preflight false`
 
-## Letting unpinned jobs track global defaults
+## Moving unpinned jobs to a new global default
 
-The model/provider drift guard is enabled by default. If your unpinned cron
-jobs should deliberately follow every global model or provider change, disable
-it in `config.yaml`:
-
-```yaml
-cron:
-  model_drift_guard: false
-```
-
-Or use the config command:
+An unpinned job stays on the provider/model it was created under, so changing your chat model
+never changes (or stops) your cron fleet. When you *do* want scheduled jobs to move:
 
 ```bash
-hermes config set cron.model_drift_guard false
+hermes cron edit <job_id> --provider <provider> --model <model>   # one job
+hermes config set cron.model <model>                               # every unpinned job
 ```
 
-This disables both the runtime block and the warning shown when global
-inference settings change. Existing snapshots remain stored, so setting the
-option back to `true` re-enables protection without recreating jobs.
-
-:::warning
-With the guard disabled, unattended unpinned jobs immediately inherit changed
-global defaults. A switch to a paid provider or model can therefore spend money
-on every scheduled run.
-:::
+`hermes config set model.default …` and the Desktop model picker list the unpinned jobs that will
+keep their original model so you can decide deliberately. Stored snapshots are refreshed whenever
+you edit a job's provider, model, or base URL.
 
 ## Skill-backed cron jobs
 
@@ -496,6 +483,9 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
+- Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
 
@@ -599,8 +589,8 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
   delivery's follow-up discussion isolated.
 - **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
-  is mirrored into the origin DM session instead — the DM itself is the
-  continuation surface.
+  is mirrored into the target DM session instead (the origin DM, or the home DM
+  for fallback and bare-platform jobs) — the DM itself is the continuation surface.
 
 Only the job's **own conversation** is ever touched:
 
@@ -613,9 +603,14 @@ Only the job's **own conversation** is ever touched:
   target a conversation. The global `mirror_delivery` flag alone never makes an
   explicitly-addressed chat continuable.
 
-Broadcast / fan-out targets (`all`, bare-platform home channels) are never made
-continuable. The mirror is
-written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+Broadcast expansions (`all`) are never made continuable. A user-written bare
+platform name (`deliver: slack`) addresses that platform's home channel
+deliberately and follows the same rules as the home-channel fallback above.
+After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
+can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
+on a job to opt out of this thread-per-run behaviour.
+
+The mirror is written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
 #### Flat, in-channel continuation (Slack)

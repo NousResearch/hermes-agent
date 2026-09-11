@@ -50,7 +50,8 @@ param(
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
-    [switch]$SelfTestMarker
+    [switch]$SelfTestMarker,
+    [switch]$SelfTestWorkingDirectory
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -1178,6 +1179,12 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+function Set-InstallRootCurrentDirectory([string]$Root) {
+    $resolved = [System.IO.Path]::GetFullPath($Root)
+    [Environment]::CurrentDirectory = $resolved
+    return $resolved
+}
+
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
@@ -1444,6 +1451,37 @@ try {
         exit 0
     }
 
+    # StartAssigned passes a null CreateProcess currentDirectory, so children
+    # inherit the hand-off process directory rather than PowerShell's $PWD.
+    # Desktop launches us from HERMES_HOME; pin the process directory to the
+    # checkout before any update child can resolve files against the wrong tree.
+    try {
+        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
+        Write-HandoffLog "process cwd set to install root: $resolvedInstallRoot"
+    } catch {
+        $finalCode = 3
+        $finalMsg = "Update aborted: cannot enter the install root ($InstallRoot). Nothing was changed."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
+    # Exercise the production cwd setup and native launcher without updating.
+    if ($SelfTestWorkingDirectory) {
+        $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+        $probeExe = Join-Path $PSHOME "powershell.exe"
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
+        $observed = $probe.Output.Trim()
+        if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        $finalCode = 0
+        $finalMsg = "WORKING-DIRECTORY SELF-TEST: PASS $observed"
+        Write-Host $finalMsg
+        exit 0
+    }
+
     # Check only the interpreter here: dependency recovery belongs to update.
     $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
@@ -1606,7 +1644,7 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
+        $verifyCode = "import hermes_cli.main; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update()"
         $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8

@@ -48,7 +48,8 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
@@ -115,7 +116,10 @@ def ensure_dingtalk_deps() -> bool:
 def _credentials(extra: Optional[dict]) -> tuple:
     """(client_id, client_secret) from PlatformConfig.extra first, then env / scoped secret."""
     extra = extra or {}
-    return (extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", ""), extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
+    # client_id goes through the same scoped reader as the secret: os.environ holds the DEFAULT
+    # profile's app id under multiplex, and pairing it with a secondary's secret authenticates as the wrong app.
+    return (extra.get("client_id") or _get_scoped_secret("DINGTALK_CLIENT_ID", ""),
+            extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -626,7 +630,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         import httpx
     except ImportError:
         return {"error": "httpx not installed"}
-    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+    # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
+    # environ read would post a secondary profile's cron output to the default profile's robot.
+    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     if not webhook_url:
         return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
     try:
@@ -764,7 +770,7 @@ EXT_MAP = {
 
 _PLUGIN_COMPAT_LAZY = {
     'DINGTALK_TYPE_MAPPING': ('plugins.platforms.dingtalk.inbound', 'DINGTALK_TYPE_MAPPING'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
 }
 
 

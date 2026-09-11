@@ -19,7 +19,6 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
-  Notification,
   powerMonitor,
   powerSaveBlocker,
   protocol,
@@ -170,7 +169,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
-import { createEventDeduper } from './event-dedupe'
+import { createAmbientClaimArbiter } from './event-dedupe'
 import {
   buildTerminalScript,
   resolveTerminalLaunch,
@@ -202,7 +201,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import { clearStaleGitLocks } from './gitlock'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -222,6 +221,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -270,6 +270,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -346,6 +347,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -382,13 +384,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import {
-  compareApiUrl,
-  parseCompareBehindCount,
-  resolveBehindCount,
-  resolveCommitLogSelection,
-  shouldCountCommits
-} from './update-count'
+import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -853,6 +849,7 @@ const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'conne
 const DESKTOP_CONNECTIONS_REGISTRY_PATH = path.join(app.getPath('userData'), 'connections.json')
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_UPDATE_CHECK_CACHE_PATH = path.join(app.getPath('userData'), 'update-check-cache.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
@@ -901,6 +898,9 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+// Nous free tier gate, decided ONCE here and stamped onto every backend spawn
+// (desktopBackendSpawnEnv) and the renderer (hermes:launch-flags).
+const GUEST_ONBOARDING = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -3087,7 +3087,10 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
       options.onLine?.('stderr', text)
     })
     child.once('error', reject)
-    child.once('exit', code => resolve({ code, stdout, stderr }))
+    // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
+    // resolved-early `remote get-url` came back as "" often enough to route
+    // passive checks down the wrong remote path.
+    child.once('close', code => resolve({ code, stdout, stderr }))
   })
 }
 
@@ -3137,7 +3140,15 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
-async function checkUpdates() {
+// Passive checks never touch git's network side. Every client used to `git
+// fetch` twice per half hour; across the install base that was tens of
+// millions of pack negotiations a day against one repo (GitHub flagged it).
+// The REST API answers the same question in one 40-byte response, so the
+// check is API-first with a 24h on-disk cache keyed on local HEAD (applying an
+// update changes HEAD, which busts the cache immediately). `git fetch` runs only
+// inside applyUpdates. `force` (menu item, Settings "Check now") skips the
+// cache; the renderer's background poller never passes it.
+async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -3152,214 +3163,175 @@ async function checkUpdates() {
     }
   }
 
-  branch = await resolveHealedBranch(updateRoot, branch)
-  const originUrl = await getOriginUrl(updateRoot)
-
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-
-    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
-    // fabricate a "1 commit behind". Recover the exact count via the GitHub
-    // compare API when possible; otherwise behind stays null ("update
-    // available, count unknown") and updateAvailable carries the signal.
-    // ahead_by === 0 with differing tips means the remote tip is reachable
-    // from our HEAD — a local carried commit sitting AHEAD, not behind:
-    // flagging that as an update nudges the user into wiping their work.
-    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
-
-    const sshBehind = tipsEqual
-      ? 0
-      : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
-
-    const upToDate = tipsEqual || sshBehind === 0
-
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: upToDate ? 0 : sshBehind,
-      updateAvailable: !upToDate,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
-
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-
-  if (fetched.code !== 0) {
-    return {
-      supported: true,
-      branch,
-      error: 'fetch-failed',
-      message: firstLine(fetched.stderr) || 'git fetch failed.',
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
+  const [currentSha, dirtyStr, currentBranch, originUrl] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
+    getOriginUrl(updateRoot)
   ])
 
-  const isShallow = shallowStr === 'true'
+  const cached = readUpdateCheckCache()
+  const now = Date.now()
 
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
-
-  // A positive directional ancestry result remains trustworthy in a shallow
-  // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  let behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    targetIsAncestorOfHead
-  })
-
-  // Recover the exact count a shallow clone can't compute: the GitHub compare
-  // API knows the full graph regardless of local clone depth. Best-effort —
-  // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
-  if (behind === null) {
-    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+  if (!force && cacheIsFresh(cached, { branch, currentSha, now })) {
+    return { ...cached.status, dirty: dirtyStr.length > 0, currentBranch }
   }
 
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone): still list what origin offers — resolveCommitLogSelection keeps
-  // the shallow log to the fetched tip so the range walk can't enumerate the
-  // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
+  branch = await resolveHealedBranch(updateRoot, branch)
+  const slug = githubRepoSlug(originUrl)
 
-  return {
+  const status = slug
+    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
+
+  const result = {
     supported: true,
     branch,
     currentBranch,
-    behind,
-    updateAvailable: behind === null || behind > 0,
     currentSha,
-    targetSha,
-    commits,
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
-    fetchedAt: Date.now()
+    fetchedAt: now,
+    ...status
   }
+
+  writeUpdateCheckCache({ fetchedAt: now, currentSha, branch, status: result })
+
+  return result
 }
 
-// Best-effort exact behind-count for graphs the local clone can't measure.
-// Delegates URL building + response parsing to update-count.ts (pure, unit
-// tested); this wrapper only does the bounded network call. Any failure —
-// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
-// the honest "update available, count unknown" state.
-async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
-  const url = compareApiUrl({ currentSha, originUrl, targetSha })
-
-  if (!url) {
-    return null
-  }
-
+function readUpdateCheckCache() {
   try {
-    const payload = await new Promise((resolve, reject) => {
-      const req = https.get(
-        url,
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            // GitHub requires a UA on api.github.com; requests without one 403.
-            'User-Agent': 'hermes-desktop-update-check'
-          },
-          timeout: 10_000
-        },
-        res => {
-          const chunks = []
-          res.on('error', reject)
-          res.on('data', chunk => chunks.push(chunk))
-          res.on('end', () => {
-            if ((res.statusCode || 500) >= 400) {
-              reject(new Error(`compare API ${res.statusCode}`))
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CHECK_CACHE_PATH, 'utf8'))
 
-              return
-            }
-
-            try {
-              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-            } catch (error) {
-              reject(error)
-            }
-          })
-        }
-      )
-
-      req.on('timeout', () => req.destroy(new Error('compare API timeout')))
-      req.on('error', reject)
-    })
-
-    return parseCompareBehindCount(payload)
+    return parsed && typeof parsed === 'object' && parsed.status ? parsed : null
   } catch {
     return null
   }
 }
 
-async function readCommitLog(cwd, branch, isShallow) {
-  const SEP = '\x1f'
-  const REC = '\x1e'
-  const { limit, revision } = resolveCommitLogSelection({ branch, isShallow })
+function writeUpdateCheckCache(entry) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CHECK_CACHE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_UPDATE_CHECK_CACHE_PATH, JSON.stringify(entry))
+  } catch (error) {
+    rememberLog(`[updates] could not persist check cache: ${error?.message || error}`)
+  }
+}
 
-  const { stdout } = await runGit(
-    ['log', revision, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', String(limit)],
-    { cwd }
-  )
+// GitHub origins (official repo AND forks): tip SHA via the commits endpoint,
+// then the compare endpoint only when the tips differ — it yields the exact
+// behind count plus the commit list the overlay renders, replacing both
+// `rev-list --count` and `git log HEAD..origin/<branch>`.
+async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+  let targetSha
 
-  return stdout
-    .split(REC)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const [sha, summary, author, at] = line.split(SEP)
+  try {
+    targetSha = String(await fetchGitHubApi(branchTipApiUrl(slug, branch), 'application/vnd.github.sha')).trim()
+  } catch (error) {
+    return { error: 'fetch-failed', message: `GitHub API: ${error?.message || error}` }
+  }
 
-      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
-    })
+  if (!/^[0-9a-f]{40}$/i.test(targetSha)) {
+    return { error: 'fetch-failed', message: 'GitHub API returned no tip SHA.' }
+  }
+
+  if (targetSha === currentSha) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
+  // "update available, count unknown" — never a fabricated number.
+  const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
+    .then(parseCompare)
+    .catch(() => null)
+
+  // ahead_by === 0 with differing tips: the remote tip is reachable from our
+  // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
+  // nudges the user into wiping their work.
+  if (compared?.behind === 0) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  return {
+    behind: compared ? compared.behind : null,
+    updateAvailable: true,
+    targetSha,
+    commits: compared?.commits ?? []
+  }
+}
+
+// Non-GitHub origins: one ls-remote for the tip SHA (still no pack transfer),
+// counting via the local graph only when the tip is already known locally.
+async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
+  const target = await runGit(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: updateRoot })
+  const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+
+  if (target.code !== 0 || !targetSha) {
+    return { error: 'fetch-failed', message: firstLine(target.stderr) || 'git ls-remote failed.' }
+  }
+
+  if (targetSha === currentSha) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
+
+  const isAncestor =
+    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
+
+  if (isAncestor) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  return { behind: null, updateAvailable: true, targetSha, commits: [] }
+}
+
+function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      {
+        headers: {
+          Accept: accept,
+          // GitHub requires a UA on api.github.com; requests without one 403.
+          'User-Agent': 'hermes-desktop-update-check'
+        },
+        timeout: 10_000
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8')
+
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`HTTP ${res.statusCode}`))
+
+            return
+          }
+
+          if (accept === 'application/vnd.github.sha') {
+            resolve(body)
+
+            return
+          }
+
+          try {
+            resolve(JSON.parse(body))
+          } catch (error) {
+            reject(error)
+          }
+        })
+      }
+    )
+
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+  })
 }
 
 let updateInFlight = false
@@ -7084,6 +7056,17 @@ function installPreviewShortcut(window) {
     // — no `previewShortcutActive` gate, so it works for every closeable tab.
     if (isCloseTabShortcut) {
       event.preventDefault()
+
+      // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
+      // window". Routing it to the main renderer closed the app's tab out
+      // from under the user while the HUD stayed put; routing it through the
+      // HUD's own close path hands the session back like the exit button.
+      if (hudWindow && !hudWindow.isDestroyed() && window === hudWindow) {
+        closeHudWindow()
+
+        return
+      }
+
       sendClosePreviewRequested()
 
       return
@@ -9304,6 +9287,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       token?: object
       headers?: object
       org?: string
+      name?: string
       savedSsh?: object
     } = {
       mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
@@ -9338,6 +9322,12 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
     // reopen into the same org for a per-profile cloud connection.
     if (cleaned.mode === 'cloud') {
+      const cloudName = String(entry.name || '').trim()
+
+      if (cloudName) {
+        cleaned.name = cloudName
+      }
+
       const org = String(entry.org || '').trim()
 
       if (org) {
@@ -9865,12 +9855,12 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object) {
+function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object, name?: string) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; headers?: object; org?: string } = {
+  const block: { url: string; authMode: string; token: object; headers?: object; org?: string; name?: string } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
     token
@@ -9880,6 +9870,12 @@ function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: ob
 
   if (Object.keys(remoteHeaders).length > 0) {
     block.headers = remoteHeaders
+  }
+
+  const nameValue = typeof name === 'string' ? name.trim() : ''
+
+  if (nameValue) {
+    block.name = nameValue
   }
 
   const orgValue = typeof org === 'string' ? org.trim() : ''
@@ -9919,6 +9915,19 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // inherit the saved org. A plain 'remote' connection never carries an org
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
+
+  // A saved name belongs to this exact gateway, not another instance in the same org.
+  const cloudName =
+    mode === 'cloud'
+      ? String(
+          input.cloudName ??
+            (existingBlock.url && normalizeRemoteBaseUrl(remoteUrl) === normalizeRemoteBaseUrl(existingBlock.url)
+              ? existingBlock.name
+              : '') ??
+            ''
+        ).trim()
+      : ''
+
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
   const remoteHeaders =
@@ -9962,7 +9971,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -9982,7 +9991,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -10686,6 +10695,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
+      platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
@@ -10697,6 +10707,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      // Same launch-time free-tier decision the local spawns get; the POSIX
+      // spawn command adds HERMES_GUEST_ONBOARDING=1 only when this is on.
+      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12626,25 +12639,28 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        ...backend.env,
-        // Pin the gateway's tool/terminal cwd to the same directory we chose for
-        // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-        // can still point at the install dir even when spawn cwd is home.
-        TERMINAL_CWD: hermesCwd,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        // Exact parent identity lets the backend self-exit after an unclean
-        // Desktop death without mistaking a reused PID for its owner. If the
-        // optional marker probe fails, retain legacy PID-only tracking.
-        ...parentIdentityEnv,
-        HERMES_WEB_DIST: webDist,
-        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      env: desktopBackendSpawnEnv(
+        {
+          ...process.env,
+          HERMES_HOME,
+          ...backend.env,
+          // Pin the gateway's tool/terminal cwd to the same directory we chose for
+          // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
+          // can still point at the install dir even when spawn cwd is home.
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        },
+        GUEST_ONBOARDING
+      ),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -13043,30 +13059,33 @@ async function startHermes() {
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: {
-          ...process.env,
-          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-          // resolves to the SAME location our resolveHermesHome() picked. Without
-          // this pin, Python falls back to ~/.hermes on every platform — fine on
-          // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-          // Mismatch would split config / sessions / .env / logs across two
-          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-          // can't reliably do that, so we set it inline for every spawn.
-          HERMES_HOME,
-          ...backend.env,
-          TERMINAL_CWD: hermesCwd,
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner. If the
-          // optional marker probe fails, retain legacy PID-only tracking.
-          ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
+        env: desktopBackendSpawnEnv(
+          {
+            ...process.env,
+            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+            // resolves to the SAME location our resolveHermesHome() picked. Without
+            // this pin, Python falls back to ~/.hermes on every platform — fine on
+            // mac/linux (where our default matches), but on Windows our default is
+            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+            // Mismatch would split config / sessions / .env / logs across two
+            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+            // can't reliably do that, so we set it inline for every spawn.
+            HERMES_HOME,
+            ...backend.env,
+            TERMINAL_CWD: hermesCwd,
+            HERMES_DASHBOARD_SESSION_TOKEN: token,
+            // Marks this dashboard backend as desktop-spawned so it runs the cron
+            // scheduler tick loop (the gateway isn't running under the app).
+            HERMES_DESKTOP: '1',
+            // Exact parent identity lets the backend self-exit after an unclean
+            // Desktop death without mistaking a reused PID for its owner. If the
+            // optional marker probe fails, retain legacy PID-only tracking.
+            ...parentIdentityEnv,
+            HERMES_WEB_DIST: webDist,
+            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          },
+          GUEST_ONBOARDING
+        ),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -13851,11 +13870,13 @@ function closePetOverlay() {
 // app's composer (slash commands, attachments, queue, voice) instead of a
 // lookalike that drifts. Entering HUD mode hides the main window; leaving
 // restores it.
-let hudWindow = null
+let hudWindow: BrowserWindow | null = null
 
-// Whether the main window was visible when HUD mode was entered, so exiting
-// puts the desktop back as it was rather than raising a window the user had
-// already minimized.
+// Whether closing the HUD should bring the main window back. Armed whenever a
+// live main window exists at HUD-open time, visible or not: the HUD hides the
+// app window itself, so a main window minimized or behind another app when
+// the HUD opened still needs a surface back — arming only on `isVisible()`
+// left the user with NO Hermes window after the second toggle (#88513).
 let hudRestoreMainWindow = false
 
 // The session the HUD is currently on, reported by its renderer whenever the
@@ -14184,13 +14205,12 @@ function spawnHudWindow(sessionId, profile) {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
-    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
-    // window never becomes the app's cmd-tab anchor.
+    // Keep the interactive macOS HUD as an ordinary NSWindow. NSPanel defaults
+    // hidesOnDeactivate to true, which removes the HUD while the user works in
+    // another app; the floating/all-spaces setup below supplies overlay behavior.
     skipTaskbar: !IS_MAC,
     hasShadow: false,
     alwaysOnTop: true,
-    type: IS_MAC ? 'panel' : undefined,
     // Clips the vibrancy layer to the HUD's silhouette rather than a hard
     // rectangle — the frost stops where the window's corners do.
     roundedCorners: true,
@@ -14247,16 +14267,17 @@ function spawnHudWindow(sessionId, profile) {
   win.on('closed', () => {
     if (hudWindow === win) {
       hudWindow = null
+    } else if (hudWindow && !hudWindow.isDestroyed()) {
+      // Superseded by a profile respawn: the replacement owns the shortcut,
+      // the main-window restore and the toggles. Nothing to hand back.
+      return
     }
 
-    // Closed from its own side (⌘W) — closeHudWindow()'s dispose() never ran,
-    // so the global snap shortcut would otherwise stay registered (and stuck
-    // taken) with no HUD left to apply it to. dispose() is idempotent, so
-    // this is safe even if closeHudWindow() already released it.
+    // Whether the close came from closeHudWindow() or from the window's own
+    // side (a crashed renderer, a native close), this is the one teardown:
+    // release the global snap shortcut, put the app back so the user is never
+    // left with no surface, and correct every window's toggle.
     hudSnapShortcut.dispose()
-
-    // Put the app back so the user is never left with no surface, and
-    // correct every window's toggle.
     restoreMainWindowFromHud()
     broadcastHudState(false)
   })
@@ -14270,17 +14291,31 @@ function spawnHudWindow(sessionId, profile) {
   return win
 }
 
-// Put the app window back the way HUD mode found it.
+// Put the app window back, and give it the keyboard. `focusWindow`, not a bare
+// `show()`: show() alone leaves a minimized window minimized, and on macOS a
+// shown-but-not-key window means the user is looking at the app with the
+// caret still belonging to whatever the HUD was floating over.
 function restoreMainWindowFromHud() {
   if (!hudRestoreMainWindow) {
     return
   }
 
   hudRestoreMainWindow = false
+  focusWindow(mainWindow)
+}
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
+// Take the HUD window down. The 'closed' handler stays attached so ONE path
+// owns the teardown (snap shortcut, main-window restore, close broadcast)
+// whether the window went via the exit button, ⌘W, a profile respawn, or the
+// grace deadline — detaching it before close() was how a renderer that never
+// answered the close left an always-on-top HUD nobody could dismiss and no
+// broadcast to correct the toggles.
+function destroyHudWindow(win: BrowserWindow) {
+  if (hudWindow === win) {
+    hudWindow = null
   }
+
+  requestHudClose(win)
 }
 
 function openHudWindow(sessionId, profile) {
@@ -14290,16 +14325,16 @@ function openHudWindow(sessionId, profile) {
     // Pointed at another PROFILE: the live renderer is bound to the old
     // profile's backend, and a renderer adopts its backend exactly once at
     // boot — an in-place goto would resolve the id against the wrong backend
-    // (the #82285 fallback). Respawn against the right one.
+    // (the #82285 fallback). Respawn against the right one. The old window's
+    // 'closed' handler sees `hudWindow` already pointing at the replacement,
+    // so it neither restores main nor broadcasts a false "closed".
     if (profileKey && hudProfile !== profileKey) {
-      const win = hudWindow
-      hudWindow = null
-      win.removeAllListeners('closed')
-      win.destroy()
+      const previous = hudWindow
 
       hudSessionId = sessionId || null
       hudProfile = profileKey
       hudWindow = spawnHudWindow(sessionId, profileKey)
+      previous.destroy()
       broadcastHudState(true)
       registerHudSnapShortcut()
 
@@ -14322,7 +14357,7 @@ function openHudWindow(sessionId, profile) {
     return hudWindow
   }
 
-  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed())
   hudSessionId = sessionId || null
   hudProfile = profileKey
   hudWindow = spawnHudWindow(sessionId, profileKey)
@@ -14333,23 +14368,20 @@ function openHudWindow(sessionId, profile) {
 }
 
 function closeHudWindow() {
-  hudSnapShortcut.dispose()
-
   const win = hudWindow
-  hudWindow = null
 
   if (win && !win.isDestroyed()) {
-    // Null'd first so the 'closed' handler doesn't broadcast a second time.
-    win.removeAllListeners('closed')
-    win.close()
+    destroyHudWindow(win)
+
+    return
   }
 
+  // No live HUD (a renderer that died, a toggle racing the close): still
+  // release what an open HUD holds, so the toggles read right.
+  hudWindow = null
+  hudSnapShortcut.dispose()
   restoreMainWindowFromHud()
   broadcastHudState(false)
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    focusWindow(mainWindow)
-  }
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -15700,11 +15732,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             )
           )
 
-          const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+          const { body, installId } = await fetchRosterSourceData(
+            () => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+            () => probeConnectionInstallId(connection.id, descriptor)
+          )
 
-          // Cached with a TTL, so the 5s roster poll usually pays zero extra
-          // requests for the backend-identity probe.
-          const installId = await probeConnectionInstallId(connection.id, descriptor)
+          // The install-id probe is TTL-cached, so the 5s roster poll usually
+          // pays zero extra requests; on a miss it runs beside /api/profiles.
 
           const profiles = Array.isArray(body?.profiles)
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
@@ -16744,92 +16778,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return handleHermesApiRequest(request).finally(releaseProfileDeletion)
 })
 
-// One deduper per cross-window cue — the choke point every window shares. Main
-// handles IPC serially, so the first window to claim a key wins with no race.
-const isDuplicateNotification = createEventDeduper()
-const claimedAmbientCue = createEventDeduper()
+// Main serializes cross-window ambient claims (see event-dedupe.ts for why a
+// spoken reply holds its claim far longer than a beep).
+const ownsAmbientCue = createAmbientClaimArbiter()
+ipcMain.handle('hermes:ambient:claim', (_event, key) => ownsAmbientCue(String(key ?? '')))
 
-// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
-// The first caller within the window gets true; peers get false and stay quiet.
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
-
-ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) {
-    return false
-  }
-
-  // Multiple full windows each run their own renderer throttle, so the same
-  // kind+session can arrive here twice. Collapse it at this single choke point.
-  // Return true (not false): a notification for the event IS being shown by the
-  // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
-    return true
-  }
-
-  // Action buttons render only on signed macOS builds; elsewhere they're dropped
-  // and the body click still works.
-  const actions = Array.isArray(payload?.actions) ? payload.actions : []
-  const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
-
-  const notification = new Notification({
-    title: payload?.title || 'Hermes',
-    body: payload?.body || '',
-    silent: Boolean(payload?.silent),
-    ...(icon ? { icon } : {}),
-    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
-  })
-
-  notification.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    focusWindow(mainWindow)
-
-    if (payload?.sessionId) {
-      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
-    }
-
-    // Plugin / session-less activation — serializable path (+ optional notifyId
-    // for renderer callbacks). Same vocabulary as hermes://index-network/….
-    if (payload?.activate || payload?.notifyId) {
-      mainWindow.webContents.send('hermes:notification-activate', {
-        activate: payload?.activate,
-        notifyId: payload?.notifyId,
-        tag: payload?.tag
-      })
-    }
-  })
-  notification.on('action', (_actionEvent, index) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    const action = actions[index]
-
-    if (!action?.id) {
-      return
-    }
-
-    // Approvals keep the existing session-scoped channel.
-    if (payload?.sessionId && !payload?.notifyId && !payload?.activate) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload.sessionId, actionId: action.id })
-
-      return
-    }
-
-    focusWindow(mainWindow)
-    mainWindow.webContents.send('hermes:notification-activate', {
-      actionId: action.id,
-      activate: action.activate || payload?.activate,
-      notifyId: payload?.notifyId,
-      tag: payload?.tag
-    })
-  })
-  notification.show()
-
-  return true
-})
+registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
@@ -17227,7 +17181,8 @@ ipcMain.on('hermes:translucency:support', event => {
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
   event.returnValue = {
-    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin'
+    localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin',
+    guestOnboarding: GUEST_ONBOARDING
   }
 })
 
@@ -17568,8 +17523,8 @@ const terminalIpc = registerTerminalIpc({
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
-ipcMain.handle('hermes:updates:check', async () =>
-  checkUpdates().catch(error => ({
+ipcMain.handle('hermes:updates:check', async (_event, opts) =>
+  checkUpdates({ force: Boolean(opts?.force) }).catch(error => ({
     supported: true,
     branch: readDesktopUpdateConfig().branch,
     error: 'check-failed',

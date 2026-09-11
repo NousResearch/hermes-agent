@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -280,14 +280,15 @@ class GatewayGoalCommandsMixin:
         mgr = LoopManager(session_id=sid)
 
         # New loops capture the event's routing so the idle loop-wakeup watcher can inject ticks
-        # here after a restart; best-effort, empty fields dropped.
+        # here after a restart; best-effort, empty fields dropped. ``profile`` pins the wakeup to this
+        # session's own bot under multiplex (the watcher must never fire it through the default bot).
         route: dict = {}
         try:
             src = event.source
             if src is not None:
                 platform = getattr(src, "platform", "")
                 route = {"platform": platform.value if hasattr(platform, "value") else str(platform or "")}
-                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name"):
+                for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
                     route[key] = str(getattr(src, key, "") or "")
                 route = {k: v for k, v in route.items() if v}
         except Exception:

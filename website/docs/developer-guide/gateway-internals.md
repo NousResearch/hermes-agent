@@ -183,6 +183,16 @@ Adapters implement a common interface:
 - `send()` — outbound message delivery
 - inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
+Internal push wakes use `gateway.wake.admit_internal_event`: the public
+`handle_message()` still returns `None`, but the event's process-local
+`_gateway_accepted` receipt is set only after scheduling or queue insertion.
+A missing handler, mismatched explicit session key, or queue-cap drop is not
+acceptance. Custom adapters overriding ingress should delegate internal events to
+`BasePlatformAdapter.handle_message()` (or explicitly record actual admission),
+not equate a consumed/dropped callback with acceptance. This receipt is separate
+from heartbeat execution accounting and does not bypass authorization, emergency
+stop, or later turn-preparation gates.
+
 ### Token Locks
 
 Adapters that connect with unique credentials call `acquire_scoped_lock()` in `connect()` and `release_scoped_lock()` in `disconnect()`. This prevents two profiles from using the same bot token simultaneously.

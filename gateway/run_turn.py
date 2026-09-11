@@ -21,7 +21,8 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -40,6 +41,29 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+_CONTEXT_OVERFLOW_ERROR_PHRASES = (
+    "context length", "context size", "context window",
+    "maximum context", "token limit", "too many tokens",
+    "reduce the length", "exceeds the limit",
+    "request entity too large", "prompt is too long",
+    "payload too large", "input is too long",
+)
+
+
+def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
+    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
+    (#1630 skip) and the user-facing reply so the two can never disagree.
+
+    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
+    "invalid authentication token"; a bare 400 only counts on a long session."""
+    if not agent_result.get("failed"):
+        return False
+    if agent_result.get("compression_exhausted"):
+        return True
+    err = str(agent_result.get("error") or "").lower()
+    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
 class GatewayTurnMixin:
@@ -305,6 +329,9 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        if not await resolve_heartbeat_owner(self, event, session_entry):
+            return
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
@@ -1494,14 +1521,6 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _CONTEXT_OVERFLOW_ERROR_PHRASES = (
-        "context length", "context size", "context window",
-        "maximum context", "token limit", "too many tokens",
-        "reduce the length", "exceeds the limit",
-        "request entity too large", "prompt is too long",
-        "payload too large", "input is too long",
-    )
-
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
         ``(agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure)``.
@@ -1520,13 +1539,7 @@ class GatewayTurnMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        _err = str(agent_result.get("error", "")).lower()
-        # Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded".
-        is_context_overflow_failure = agent_failed_early and (
-            bool(agent_result.get("compression_exhausted"))
-            or any(p in _err for p in self._CONTEXT_OVERFLOW_ERROR_PHRASES)
-            or ("400" in _err and len(history) > 50)
-        )
+        is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
                 "Skipping transcript persistence for context-overflow "
@@ -1606,6 +1619,8 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        if prepared.persistence_owner:
+            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -1752,22 +1767,13 @@ class GatewayTurnMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
-        # Failures before run_conversation() (provider/httpx init) can't persist the inbound turn:
-        # append the user message here once, unless the latest user row already matches it.
+        # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
-                try:
-                    _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                except Exception:
-                    _recent_transcript = []
-                _expected_user_content = (
-                    prepared.persist_user_message if prepared.persist_user_message is not None
-                    else prepared.message_text
+                _owned = await self.async_session_store.has_input_owner(
+                    prepared.persistence_session_id, prepared.persistence_owner,
                 )
-                _last_user = next(
-                    (_msg for _msg in reversed(_recent_transcript[-10:]) if _msg.get("role") == "user"), None,
-                )
-                if _last_user is None or _last_user.get("content") != _expected_user_content:
+                if not _owned:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
@@ -1823,6 +1829,8 @@ class GatewayTurnMixin:
         persist_user_message: Any
         persist_user_timestamp: Any
         persist_user_display_kind: Optional[str]
+        persistence_session_id: Optional[str] = None
+        persistence_owner: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -1866,6 +1874,9 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history = await self._hmwa_run_session_hygiene(
+                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             return (
@@ -1873,10 +1884,6 @@ class GatewayTurnMixin:
                 "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
                 "Use /reset only if you intentionally want to start a new conversation."
             ), _session_env_tokens
-
-        history = await self._hmwa_run_session_hygiene(
-            event, source, session_entry, session_key, history, _quick_key, run_generation,
-        )
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
 
@@ -1905,9 +1912,16 @@ class GatewayTurnMixin:
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
         self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
+        # Delivery IDs are only unique in their transport namespace. Keyless turns
+        # need their own identity, even when another process writes to this session.
+        import uuid
+        namespace = [source.platform.value, source.profile, source.scope_id,
+                     source.chat_id, source.thread_id, str(event.message_id)]
+        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                 if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind,
+            persist_user_display_kind, session_entry.session_id, owner,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -1947,8 +1961,14 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(self, event, session_key):
+                return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            # Admission/typing is not execution. All routing, authorization and
+            # turn preparation gates have passed when the agent runner is entered.
+            event._heartbeat_execution_started = True
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -1958,9 +1978,19 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+
+            # A queued (/queue) chain answered the LAST message of the chain, so the outer final
+            # send (bracketed by the adapter against this event) must be ledgered under that
+            # message's id or it collides with an earlier turn's row carrying the same text. Reply
+            # routing is untouched: the anchor still comes from this event.
+            if isinstance(agent_result, dict):
+                _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
+                if _terminal_inbound:
+                    event.ledger_message_id = str(_terminal_inbound)
 
             await self._hmwa_stop_typing_for_turn(event, source)
 
@@ -2259,7 +2289,7 @@ class GatewayTurnMixin:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_scope_keys
+            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.registry import registry
 
@@ -2269,7 +2299,7 @@ class GatewayTurnMixin:
                 with _lock:
                     return {
                         name for name in _servers
-                        if reload_scope is None or _server_scope_keys.get(name) == reload_scope
+                        if _server_visible_in_scope(name, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
@@ -3245,7 +3275,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
@@ -3371,6 +3401,9 @@ class GatewayTurnMixin:
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
                     deliver_media=not _delivery_result.get("failed"), stream_consumer=_sc,
+                    # The text send records a delivery-ledger obligation under this key, keyed on
+                    # the raw inbound id (the anchor above is only the reply target).
+                    session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3424,6 +3457,10 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
+        # distinct from the reply anchor above (None in forum topics). Carry it or two chained
+        # topic turns with the same text would collide on one obligation id (queued-final-ledger).
+        next_inbound_id = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3448,6 +3485,7 @@ class GatewayTurnMixin:
             if next_message is None:
                 return result
             next_message_id = self._reply_anchor_for_event(pending_event)
+            next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
 
@@ -3483,10 +3521,19 @@ class GatewayTurnMixin:
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
+            event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+            channel_prompt=next_channel_prompt, message_type=next_message_type,
         )
-        return _preserve_queued_followup_history_offset(result, followup_result)
+        merged = _preserve_queued_followup_history_offset(result, followup_result)
+        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
+        # the adapter brackets against the event that OPENED the chain. Without this the terminal
+        # reply is recorded under the first message's id, so a first reply that was refused (flood
+        # control) has its outstanding row replaced and marked delivered by an identical-text
+        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
+        # so only fill the key while it is still absent: the innermost turn wins.
+        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+        return merged
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",
@@ -3772,6 +3819,7 @@ class GatewayTurnMixin:
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3795,6 +3843,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

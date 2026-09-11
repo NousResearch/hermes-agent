@@ -74,11 +74,13 @@ _PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR
 _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
-_PREVIEW_ELIGIBLE_SQL = (f"((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
+# A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
+_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
+    f" AND ((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
     f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL} AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
     f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
-    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))")
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0)))")
 
 # ``_preview_raw`` SELECT for every listing query (scaffolded rows: head + tail around SKILL_EXCERPT_JOINT).
 _PREVIEW_RAW_SELECT = (
@@ -120,6 +122,10 @@ _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = 
 # ended that way.  Must stay identical to the recovery fence in find_latest_gateway_session_for_peer.
 _RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired")
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
+# Deliberate conversation boundaries: the reset set plus CLI /new, which ends the predecessor as
+# 'new_session' (hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must
+# never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
+_BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
 # Accidental end reasons recovery treats as resumable (docs/session-lifecycle.md); single source of truth for
 # recovery SQL and SessionDB.RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
@@ -363,7 +369,9 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    display_identity BLOB,
+    display_order INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -513,6 +521,74 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_display_page
+    ON messages(session_id, display_order, active DESC, id DESC)
+    WHERE active = 1 OR compacted = 1;
+CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
+    ON messages(session_id) WHERE (display_order IS NULL OR display_identity IS NULL)
+    AND (active = 1 OR compacted = 1);
+CREATE INDEX IF NOT EXISTS idx_messages_display_identity
+    ON messages(session_id, display_identity, display_order)
+    WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_display_order_insert;
+CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
+AFTER INSERT ON messages WHEN new.display_order IS NULL
+BEGIN
+    UPDATE messages SET display_order = COALESCE((
+        SELECT display_order FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
+    ), new.id) WHERE id = new.id;
+END;
+DROP TRIGGER IF EXISTS messages_display_visibility_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_visibility_update
+AFTER UPDATE OF active, compacted ON messages
+WHEN (new.active = 1 OR new.compacted = 1) <> (old.active = 1 OR old.compacted = 1)
+BEGIN
+    UPDATE messages SET display_order = MIN(new.id, COALESCE((
+        SELECT display_order FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
+    ), new.id)) WHERE id = new.id
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (SELECT display_order FROM messages WHERE id = new.id)
+    WHERE session_id = new.session_id AND id <> new.id AND (active = 1 OR compacted = 1)
+      AND display_identity = new.display_identity
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity
+      AND NOT (new.active = 1 OR new.compacted = 1);
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
+AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
+                display_kind, display_metadata ON messages
+BEGIN
+    UPDATE messages SET display_identity = NULL, display_order = NULL
+    WHERE id = new.id OR (
+        session_id = old.session_id AND display_identity = old.display_identity
+        AND (active = 1 OR compacted = 1)
+    );
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_delete;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_delete
+AFTER DELETE ON messages WHEN old.active = 1 OR old.compacted = 1
+BEGIN
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key

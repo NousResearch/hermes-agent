@@ -14,7 +14,7 @@ from typing import Any
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
 
 # Log-record parity with gateway/run.py and the origin module.
@@ -247,6 +247,17 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
         elif model_name:
             lines.append(t("gateway.status.model", model=model_name))
+        try:
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.anon_auth import guest_carries_inference
+
+            free_tier_active = await self._run_in_executor_with_context(
+                lambda: resolve_provider("auto") == "nous" and guest_carries_inference()
+            )
+            if free_tier_active:
+                lines.append(t("gateway.status.free_tier"))
+        except Exception:
+            pass
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:

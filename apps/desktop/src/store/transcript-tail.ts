@@ -178,6 +178,13 @@ export function transcriptTailState(
   return matches.length === 1 ? matches[0][1] : undefined
 }
 
+/** Forget every tail: the backend behind the window changed and a recycled
+ *  stored id must not carry the previous backend's paging state. */
+export function clearAllTranscriptTails(): void {
+  transcriptTailOrder = []
+  $transcriptTailBySessionId.set({})
+}
+
 export function clearTranscriptTail(storedSessionId: string, profile?: TranscriptProfileScope): void {
   const current = $transcriptTailBySessionId.get()
 

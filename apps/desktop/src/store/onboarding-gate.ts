@@ -8,7 +8,7 @@ import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
-export type OnboardingPhase = 'idle' | 'cinematic' | 'guided' | 'handoff' | 'done'
+export type OnboardingPhase = 'idle' | 'cinematic' | 'guided' | 'skipped' | 'handoff' | 'done'
 
 export interface OnboardingGateState {
   phase: OnboardingPhase
@@ -21,7 +21,8 @@ function loadGate(): OnboardingGateState {
   const saved = readKey(PHASE_KEY)
 
   const phase =
-    isOnboardingEnabled() && (saved === 'cinematic' || saved === 'guided' || saved === 'handoff' || saved === 'done')
+    isOnboardingEnabled() &&
+    (saved === 'cinematic' || saved === 'guided' || saved === 'skipped' || saved === 'handoff' || saved === 'done')
       ? saved
       : 'idle'
 
@@ -96,7 +97,9 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
 }
 
 export function beginOnboardingHandoff(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'guided') {
+  const { phase } = $onboardingGate.get()
+
+  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'skipped')) {
     setPhase('handoff')
   }
 }
@@ -112,7 +115,7 @@ export function skipGuide(): void {
   const { phase } = $onboardingGate.get()
 
   if (isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided')) {
-    setPhase('done')
+    setPhase('skipped')
   }
 }
 

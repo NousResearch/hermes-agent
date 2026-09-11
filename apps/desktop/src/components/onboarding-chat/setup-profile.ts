@@ -24,10 +24,10 @@
 
 import { atom } from 'nanostores'
 
+import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
-import { $onboardingGate } from '@/store/onboarding-gate'
 import { PLAIN_SPEECH } from '@/store/onboarding-script'
 
 /** Profile name of the onboarding guide. Prefixed so it can't collide with a
@@ -90,9 +90,12 @@ export interface SetupSession {
 
 export const $setupSession = atom<null | SetupSession>(null)
 
-/** The request atom suppresses remounts; the phase record suppresses relaunches. */
+/** The request atom suppresses remounts; only an accepted receipt suppresses relaunches. */
 export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {
-  if ($setupHandoff.get() !== null || $onboardingGate.get().phase === 'done') {
+  if (
+    $setupHandoff.get() !== null ||
+    (guide.storedId && readHandoffReceipt(handoffReceiptKey(guide.connectionId, guide.storedId))?.status === 'accepted')
+  ) {
     return false
   }
 

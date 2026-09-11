@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from utils import atomic_replace
@@ -37,9 +37,15 @@ SUPPORTED_SCHEMA_VERSION = 1
 
 _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 
-# In-process cache, invalidated against the disk file's mtime and TTL.
-_catalog_cache: dict[str, Any] | None = None
-_catalog_cache_source_mtime: float = 0.0
+
+class _CatalogCache(NamedTuple):
+    path: Path
+    mtime: float
+    data: dict[str, Any]
+
+
+# Publish identity and data together: one process can serve several profile homes.
+_catalog_cache: _CatalogCache | None = None
 
 
 def _load_catalog_config() -> dict[str, Any]:
@@ -193,8 +199,8 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
 
 
 def _remember(data: dict[str, Any], mtime: float) -> dict[str, Any]:
-    global _catalog_cache, _catalog_cache_source_mtime
-    _catalog_cache, _catalog_cache_source_mtime = data, mtime
+    global _catalog_cache
+    _catalog_cache = _CatalogCache(_cache_path(), mtime, data)
     return data
 
 
@@ -210,8 +216,9 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
     disk_fresh = disk_data is not None and (now - disk_mtime) < ttl_seconds
 
     if not force_refresh and disk_data is not None:
-        if disk_fresh and _catalog_cache is not None and disk_mtime == _catalog_cache_source_mtime:
-            return _catalog_cache
+        cached = _catalog_cache
+        if disk_fresh and cached is not None and cached.path == _cache_path() and cached.mtime == disk_mtime:
+            return cached.data
         if not disk_fresh:
             # Stale-while-revalidate: serve the expired disk copy now and refresh off-thread so the
             # /model picker (which calls this on every open) never blocks on the manifest fetch.
@@ -303,7 +310,9 @@ def _default_model_from_block(block: dict[str, Any] | None) -> str | None:
 def get_default_model_from_cache(provider: str) -> str | None:
     """The manifest's labeled default for ``provider`` (the model Hermes silently lands on when the
     user never picked one) — in-process then disk cache only, never a fetch."""
-    found = _default_model_from_block(_block_of(_catalog_cache, provider)) if _catalog_cache is not None else None
+    cached = _catalog_cache
+    found = (_default_model_from_block(_block_of(cached.data, provider))
+             if cached is not None and cached.path == _cache_path() else None)
     if found:
         return found
     disk_data, _mtime = _read_disk_cache()
@@ -331,6 +340,5 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
 
 def reset_cache() -> None:
     """Clear the in-process cache. Used by tests and ``hermes model --refresh``."""
-    global _catalog_cache, _catalog_cache_source_mtime
+    global _catalog_cache
     _catalog_cache = None
-    _catalog_cache_source_mtime = 0.0

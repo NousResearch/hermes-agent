@@ -13,18 +13,80 @@
  */
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { gzipSync } from 'node:zlib'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
 import {
+  decodeJsonResponseBody,
   destroyKeepaliveAgents,
   downloadAgentFor,
   isIdempotentMethod,
   isTransientTransportError,
+  JSON_ACCEPT_ENCODING,
   jsonAgentFor,
   shouldRetryRequest,
   withRetry
 } from './api-transport'
+
+async function* bodyChunks(...chunks: Buffer[]) {
+  yield* chunks
+}
+
+describe('bounded JSON response decoding', () => {
+  it('advertises only the supported gzip encoding', () => {
+    expect(JSON_ACCEPT_ENCODING).toBe('gzip')
+  })
+
+  it('reads identity responses without changing their bytes', async () => {
+    const result = await decodeJsonResponseBody(bodyChunks(Buffer.from('{"ok":'), Buffer.from('true}')), undefined)
+
+    expect(result.toString('utf8')).toBe('{"ok":true}')
+  })
+
+  it('decodes a gzip response', async () => {
+    const compressed = gzipSync(Buffer.from('{"sessions":[1,2,3]}'))
+    const result = await decodeJsonResponseBody(bodyChunks(compressed), 'GZip')
+
+    expect(result.toString('utf8')).toBe('{"sessions":[1,2,3]}')
+  })
+
+  it('rejects unsupported response encodings instead of parsing compressed bytes', async () => {
+    await expect(decodeJsonResponseBody(bodyChunks(Buffer.from('data')), 'br')).rejects.toThrow(
+      'Unsupported JSON response content-encoding: br'
+    )
+  })
+
+  it('rejects malformed gzip data', async () => {
+    await expect(decodeJsonResponseBody(bodyChunks(Buffer.from('not gzip')), 'gzip')).rejects.toThrow()
+  })
+
+  it('bounds compressed bytes before buffering the full response', async () => {
+    await expect(
+      decodeJsonResponseBody(bodyChunks(Buffer.alloc(5), Buffer.alloc(5)), 'identity', {
+        maxWireBytes: 8,
+        maxDecodedBytes: 64
+      })
+    ).rejects.toThrow('JSON response exceeds the 8-byte wire limit')
+  })
+
+  it('bounds decompressed output to resist gzip bombs', async () => {
+    const compressed = gzipSync(Buffer.alloc(1024, 65))
+
+    await expect(
+      decodeJsonResponseBody(bodyChunks(compressed), 'gzip', {
+        maxWireBytes: 1024,
+        maxDecodedBytes: 128
+      })
+    ).rejects.toThrow()
+  })
+
+  it('rejects trailing garbage after a valid gzip member', async () => {
+    const compressed = Buffer.concat([gzipSync(Buffer.from('{"ok":true}')), Buffer.from('garbage')])
+
+    await expect(decodeJsonResponseBody(bodyChunks(compressed), 'gzip')).rejects.toThrow()
+  })
+})
 
 function errWithCode(code: string, message = code): NodeJS.ErrnoException {
   const e: NodeJS.ErrnoException = new Error(message)
@@ -257,6 +319,42 @@ function listen(server: http.Server): Promise<string> {
     })
   })
 }
+
+describe('live: gzip JSON negotiation', () => {
+  it('requests gzip and decodes the compressed response', async () => {
+    const server = http.createServer((req, res) => {
+      expect(req.headers['accept-encoding']).toBe(JSON_ACCEPT_ENCODING)
+      res.setHeader('content-type', 'application/json')
+      res.setHeader('content-encoding', 'gzip')
+      res.end(gzipSync(Buffer.from('{"sessions":[{"id":"one"}]}')))
+    })
+    const base = await listen(server)
+
+    try {
+      const result = await new Promise<any>((resolve, reject) => {
+        const req = http.request(
+          new URL(`${base}/api/sessions`),
+          {
+            agent: jsonAgentFor('http:'),
+            headers: { 'accept-encoding': JSON_ACCEPT_ENCODING }
+          },
+          res => {
+            void decodeJsonResponseBody(res, res.headers['content-encoding'])
+              .then(body => resolve(JSON.parse(body.toString('utf8'))))
+              .catch(reject)
+          }
+        )
+
+        req.on('error', reject)
+        req.end()
+      })
+
+      expect(result).toEqual({ sessions: [{ id: 'one' }] })
+    } finally {
+      server.close()
+    }
+  })
+})
 
 describe('live: GET burst against a server that resets keep-alive sockets', () => {
   it('bare attempts fail with ECONNRESET/hang-up; retried GETs all succeed', async () => {

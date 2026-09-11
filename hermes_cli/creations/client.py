@@ -46,7 +46,7 @@ class AnvilClient:
             import httpx
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=httpx.Timeout(15.0, connect=2.0), follow_redirects=False, limits=httpx.Limits(max_connections=8))
         response = await self._client.request(method, path, json=json)
-        if response.is_redirect or response.is_permanent_redirect:
+        if response.status_code in (301, 302, 303, 307, 308):
             raise RuntimeError("Anvil redirect rejected")
         if response.status_code >= 400:
             try: detail = response.json()
@@ -71,7 +71,7 @@ class AnvilClient:
             import httpx
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=httpx.Timeout(15.0, connect=2.0), follow_redirects=False)
         response = await self._client.post("/api/upload-asset", content=data, headers={"content-type": content_type})
-        if response.is_redirect or response.is_permanent_redirect:
+        if response.status_code in (301, 302, 303, 307, 308):
             raise RuntimeError("Anvil redirect rejected")
         if response.status_code >= 400:
             raise RuntimeError(f"anvil_http_{response.status_code}: upload failed")

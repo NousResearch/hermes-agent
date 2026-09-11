@@ -1085,6 +1085,55 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('recovering session…')
   })
 
+  // #94935: after a transport drop (WS close / silent-drop heartbeat), the
+  // gateway fires `gateway.ready` again on reconnect while THIS client still
+  // holds its live session record. Reattach to that session — never forge an
+  // empty sibling via newSession(), which orphans a turn the gateway completed
+  // and persisted while the client was away (the reporter's lost reply).
+  it('on gateway.ready after a transport drop with a live session, reattaches instead of forging', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    // The client was mid-conversation when the socket dropped: live sid and
+    // durable persisted id are both still in ui state.
+    patchUiState({ durableSessionId: '20260825_105702_a1b2c3', sid: 'f3a1b2c4' })
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalled())
+    // The DURABLE id wins: the ephemeral sid may already be dead to
+    // ws_orphan_reap, while the persisted row is always reopenable.
+    expect(resumeById).toHaveBeenCalledWith('20260825_105702_a1b2c3')
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready after a drop before first prompt, reattaches by the live sid', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    // A never-messaged chat has no persisted row yet — only the live sid.
+    patchUiState({ durableSessionId: '', sid: 'f3a1b2c4' })
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('f3a1b2c4'))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

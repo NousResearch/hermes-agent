@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { GATEWAY_RECOVERY_LIMIT, GATEWAY_RECOVERY_WINDOW_MS, planGatewayRecovery } from '../app/gatewayRecovery.js'
+import {
+  GATEWAY_RECOVERY_LIMIT,
+  GATEWAY_RECOVERY_WINDOW_MS,
+  pickRecoverySessionId,
+  planGatewayRecovery
+} from '../app/gatewayRecovery.js'
 
 describe('planGatewayRecovery', () => {
   it('recovers the live session and records the attempt', () => {
@@ -43,5 +48,22 @@ describe('planGatewayRecovery', () => {
 
     expect(plan.attempts).toEqual([GATEWAY_RECOVERY_WINDOW_MS + 100])
     expect(plan.recover).toBe(true)
+  })
+})
+
+// #94935: the recovery target must survive a server-side ws_orphan_reap. The
+// ephemeral 8-hex live sid is minted per gateway process; the durable
+// state.db row key is what session.resume can still reopen after the reap.
+describe('pickRecoverySessionId', () => {
+  it('prefers the durable persisted id over the ephemeral live sid', () => {
+    expect(pickRecoverySessionId('20260825_105702_a1b2c3', 'f3a1b2c4')).toBe('20260825_105702_a1b2c3')
+  })
+
+  it('falls back to the live sid when nothing was persisted yet (fresh chat)', () => {
+    expect(pickRecoverySessionId('', 'f3a1b2c4')).toBe('f3a1b2c4')
+  })
+
+  it('returns null when there is neither a durable id nor a live session', () => {
+    expect(pickRecoverySessionId('', null)).toBeNull()
   })
 })

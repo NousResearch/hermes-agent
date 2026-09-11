@@ -50,7 +50,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
-import { planGatewayRecovery } from './gatewayRecovery.js'
+import { pickRecoverySessionId, planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
@@ -932,7 +932,15 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
-        recoverSidRef.current = plan.sid
+        // Prefer the DURABLE persisted id when we have one (#94935): the live
+        // 8-hex sid is minted per gateway process and dies with its in-memory
+        // record — a ws_orphan_reap during this very outage makes
+        // `session.resume` by live sid fail with 4007 ("session not found"),
+        // stranding a turn the gateway had already persisted and delivered.
+        // The durable state.db key reopens that same row instead of forging a
+        // sibling session; pickRecoverySessionId falls back to the live sid
+        // when nothing was persisted yet.
+        recoverSidRef.current = pickRecoverySessionId(getUiState().durableSessionId, plan.sid)
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
         sys('gateway exited — recovering your session (any in-flight reply was lost)')
         gw.start()

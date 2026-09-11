@@ -346,6 +346,10 @@ export interface UiState {
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
+  // Durable persisted session id (state.db row key) for the live `sid`, kept
+  // fresh on create/resume so a transport drop followed by a server-side
+  // ws_orphan_reap can still reattach the conversation by a valid id (#94935).
+  durableSessionId: string
   status: string
   statusBar: StatusBarMode
   // display.status_bar.fields — visibility filter for status-rule segments,

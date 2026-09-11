@@ -184,6 +184,9 @@ export interface SystemBatteryResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  // Durable state.db row key (timestamped) — survives the ephemeral live sid,
+  // which a ws_orphan_reap can invalidate while the client is disconnected.
+  stored_session_id?: string
 }
 
 export interface SessionResumeResponse {
@@ -193,6 +196,9 @@ export interface SessionResumeResponse {
   messages: GatewayTranscriptMessage[]
   resumed?: string
   running?: boolean
+  // Durable persisted id the live record carries (same value as `resumed` on
+  // cold resumes; present on live-reuse resumes too).
+  session_key?: string
   session_id: string
   started_at?: number
   status?: LiveSessionStatus

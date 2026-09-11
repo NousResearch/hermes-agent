@@ -715,6 +715,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    // Transport-drop reattach (#94935): unlike a process death, a dropped WS /
+    // silent socket keeps THIS client's session record alive in ui state while
+    // `gateway.ready` fires again on reconnect. Falling through to newSession()
+    // here forges an empty sibling conversation and orphans whatever the
+    // gateway was doing for the real one — including a turn that completed and
+    // persisted while the client was away (the reporter's lost reply; its
+    // session row then died to ws_orphan_reap before any reattach). Rebind to
+    // the session the UI still owns instead — by its durable persisted id when
+    // we have one (survives an orphan reap), else the live sid (fast-path
+    // reuse cancels a pending reap). resumeById carries its own setup gate.
+    const liveSid = getUiState().sid
+
+    if (liveSid && !STARTUP_RESUME_ID) {
+      resumeById(getUiState().durableSessionId || liveSid)
+
+      return
+    }
+
     if (STARTUP_RESUME_ID) {
       patchUiState({ status: 'resuming…' })
       resumeById(STARTUP_RESUME_ID)

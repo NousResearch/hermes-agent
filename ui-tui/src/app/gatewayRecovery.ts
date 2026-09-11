@@ -33,3 +33,14 @@ export function planGatewayRecovery(
 
   return { attempts: recover ? [...recent, now] : recent, recover, sid }
 }
+
+// Pick the id to carry into the next gateway.ready recovery (#94935). The
+// durable persisted id (state.db row key) wins whenever we have one: the live
+// 8-hex sid is minted per gateway process and dies with its in-memory record,
+// so a ws_orphan_reap during the very outage being recovered from makes a
+// resume-by-live-sid fail with 4007 ("session not found") and strands whatever
+// the gateway persisted for that conversation. Falls back to the live sid for
+// sessions with nothing persisted yet (fresh/lazy chats).
+export function pickRecoverySessionId(durableId: string, liveSid: null | string): null | string {
+  return durableId || liveSid || null
+}

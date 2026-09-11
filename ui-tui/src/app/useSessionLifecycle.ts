@@ -148,7 +148,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
+    patchUiState({ bgTasks: new Set(), durableSessionId: '', info: null, sid: null, usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -215,7 +215,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setSessionStartedAt(Date.now())
 
       writeActiveSessionFile(r.session_id)
+      // Remember the DURABLE persisted id (`stored_session_id`, the state.db row
+      // key) alongside the ephemeral live sid. The live sid dies with its
+      // gateway session record — a ws_orphan_reap during a transport drop makes
+      // any later resume-by-live-sid fail with 4007 and strands the completed
+      // turn in the persisted transcript (#94935). The durable key keeps the
+      // conversation reattachable from any future gateway.ready.
       patchUiState({
+        durableSessionId: r.stored_session_id || '',
         info,
         sid: r.session_id,
         status: info?.version ? 'ready' : 'starting agent…',
@@ -361,8 +368,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
             writeActiveSessionFile(r.resumed ?? r.session_id)
+            // `resumed`/`session_key` is the durable persisted id this live
+            // record now carries — keep it fresh so a later drop can reattach
+            // by it even if this resume was reached through a title or a
+            // stale live sid (#94935).
             patchUiState({
               busy: running,
+              durableSessionId: r.resumed || r.session_key || '',
               info,
               sid: r.session_id,
               status: statusFromLiveSession(r.status, running),

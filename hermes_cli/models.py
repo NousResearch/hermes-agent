@@ -1230,6 +1230,23 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
 
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    if normalized == "copilot-acp":
+        try:
+            from agent.copilot_acp_client import CopilotACPClient
+            from hermes_cli.auth import resolve_external_process_provider_credentials
+
+            credentials = resolve_external_process_provider_credentials("copilot-acp")
+            if str(credentials.get("base_url") or "").startswith("acp://"):
+                live = CopilotACPClient(
+                    api_key=credentials.get("api_key"),
+                    base_url=credentials.get("base_url"),
+                    command=credentials.get("command"),
+                    args=credentials.get("args"),
+                ).list_models()
+                if live:
+                    return live
+        except Exception:
+            pass
     try:
         live = _fetch_github_models(_resolve_copilot_catalog_api_key())
         if live:

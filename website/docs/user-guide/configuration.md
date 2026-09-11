@@ -201,11 +201,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, an Nsjail namespace sandbox, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | nsjail | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -238,6 +238,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | Backend | Where commands run | Isolation | Best for |
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
+| **nsjail** | Local Linux namespace sandbox | User/mount/net namespaces, rlimits | Fast local sandboxing of short-lived untrusted code |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
@@ -305,6 +306,31 @@ real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 :::warning
 The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing.
 :::
+
+### Nsjail Backend
+
+Runs commands inside a fresh [nsjail](https://github.com/google/nsjail) Linux user/mount/network-namespace sandbox. It needs no daemon or container image and is intended for fast local isolation of short-lived untrusted commands.
+
+```yaml
+terminal:
+  backend: nsjail
+  nsjail_config: ""        # Optional protobuf-text nsjail.cfg
+  nsjail_allow_net: false  # Deny outbound network by default
+  nsjail_forward_env: []    # Explicit additional environment names
+  container_memory: 5120   # Address-space limit
+  container_disk: 51200    # File-size limit
+```
+
+The default policy bind-mounts the host root read-only, bind-mounts the initial working directory read-write, uses a private session directory at `/tmp`, denies network access, and applies the configured resource/time limits. Only the initial cwd is writable; changing to another directory during the session does not widen the write surface. Set `HERMES_NSJAIL_BINARY` when `nsjail` is not on `PATH`.
+
+When `terminal.backend` remains `local`, an independent code sandbox can be selected with:
+
+```yaml
+code_execution:
+  backend: nsjail
+```
+
+An empty `code_execution.backend` inherits `terminal.backend`; when set, only `execute_code` uses the selected backend. For custom seccomp, mounts, or cgroup policy, point `nsjail_config` at your own configuration file. Use Docker when a stronger, image-based boundary or broader process isolation is required.
 
 ### Docker Backend
 

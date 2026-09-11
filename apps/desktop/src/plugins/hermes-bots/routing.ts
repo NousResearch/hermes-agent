@@ -9,7 +9,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import type { BotMeta, ProfileRoute, RosterRow } from './types'
+import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
 export function botRouteKey(route: ProfileRoute): string {
   return `${route.connectionId}::${route.profile}`
@@ -421,4 +421,50 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
   }
 
   return own
+}
+
+/** Group Chat transcript speaker meta lookup (#96432).
+ *
+ *  The old `allMeta[entry.from.name]` lookup was wrong: bot meta is keyed by
+ *  connection-scoped ids (e.g. `spark::default`), not bare profile names, so a
+ *  bare-name lookup always missed for remote speakers — and for same-named
+ *  local + remote bots, it silently returned the *local* bot's meta for the
+ *  remote speaker's lines.
+ *
+ *  This helper matches the speaker to its roster member (same logic the
+ *  display-name code already uses) and resolves meta through the existing
+ *  `botRosterMeta` so the avatar/display-name pipeline gets the same identity
+ *  the roster shows. Returns null for user lines and for members with no
+ *  stored meta. */
+export function groupTranscriptSpeakerMeta(
+  entry: { from?: GroupMessageAuthor },
+  members: RosterRow[],
+  allMeta: Record<string, BotMeta>
+): BotMeta | null {
+  if (entry.from?.kind === 'user') {
+    return null
+  }
+
+  const name = entry.from?.name
+  if (!name) {
+    return null
+  }
+
+  const member = members.find(b => {
+    if (b.name !== name) {
+      return false
+    }
+
+    if (entry.from?.source) {
+      return (b.connectionLabel || b.connectionId) === entry.from.source
+    }
+
+    return !b.remoteSource
+  })
+
+  if (!member) {
+    return null
+  }
+
+  return botRosterMeta(member, allMeta) ?? null
 }

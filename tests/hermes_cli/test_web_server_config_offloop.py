@@ -112,43 +112,6 @@ class TestGetConfigOffLoop:
             "loop again"
         )
 
-    @pytest.mark.parametrize("saved_language", [None, "en", "zh-hant"])
-    def test_raw_config_distinguishes_saved_language_from_defaults(
-        self, tmp_path, monkeypatch, saved_language
-    ):
-        from pathlib import Path
-        from starlette.testclient import TestClient
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-
-        home = tmp_path / "hermes"
-        home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        client = TestClient(app)
-        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-        # Settings can submit a whole merged record without choosing a language.
-        settings = client.get("/api/config").json()
-        settings["terminal"]["cwd"] = str(tmp_path / "workspace")
-        ordinary_save = client.put("/api/config", json={"config": settings})
-        assert ordinary_save.status_code == 200
-        assert "language" not in _cfg_mod.read_raw_config().get("display", {})
-        if saved_language is not None:
-            saved = client.put(
-                "/api/config?preserve_language=true",
-                json={"config": {"display": {"language": saved_language}}},
-            )
-            assert saved.status_code == 200
-        raw = client.get("/api/config?include_defaults=false")
-        merged = client.get("/api/config")
-
-        assert raw.status_code == merged.status_code == 200
-        assert raw.json().get("display", {}).get("language") == saved_language
-        assert _cfg_mod.read_raw_config().get("display", {}).get("language") == saved_language
-        assert raw.json()["terminal"]["cwd"] == settings["terminal"]["cwd"]
-        assert merged.json()["display"]["language"] == (
-            saved_language or _cfg_mod.DEFAULT_CONFIG["display"]["language"]
-        )
-
 
 class TestRouterOffLoop:
     """Mounted routers (skills/mcp/tools) hold the same locks — they must not

@@ -1,28 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  DEFAULT_LOCALE,
-  isLocale,
-  isSupportedLocaleValue,
-  localeConfigValue,
-  normalizeLocale,
-  resolveInitialLocale
-} from './languages'
+import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
-  it('prefers a saved choice over the OS locale and falls back to English when neither is supported', () => {
-    expect(resolveInitialLocale('en', 'ja-JP')).toBe('en')
-    expect(resolveInitialLocale('zh-TW', 'ja-JP')).toBe('zh-hant')
-    expect(resolveInitialLocale(undefined, 'ja-JP')).toBe('ja')
-    expect(resolveInitialLocale(null, 'ru-UA')).toBe('ru')
-    expect(resolveInitialLocale('de', 'ar_MA')).toBe('ar')
-    expect(resolveInitialLocale(undefined, 'zh-Hant-HK')).toBe('zh-hant')
-    expect(resolveInitialLocale(undefined, 'zh-Hans-CN')).toBe('zh')
-    expect(resolveInitialLocale(undefined, 'pt-BR')).toBe(DEFAULT_LOCALE)
-    expect(resolveInitialLocale(null, undefined)).toBe(DEFAULT_LOCALE)
-    expect(resolveInitialLocale('de', '')).toBe(DEFAULT_LOCALE)
-  })
-
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')

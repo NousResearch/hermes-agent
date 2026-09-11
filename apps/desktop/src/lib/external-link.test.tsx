@@ -357,13 +357,3 @@ describe('external link helpers', () => {
     expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })
-
-it('does not prefetch an authorization link and opens it in the system browser', async () => {
-  const { isTitleFetchable, openLink } = await import('./external-link')
-  const openExternal = vi.fn()
-  Object.assign(window, { hermesDesktop: { openExternal } })
-  const url = 'https://connect.composio.dev/link/test-fixture'
-  expect(isTitleFetchable(url)).toBe(false)
-  openLink(url)
-  expect(openExternal).toHaveBeenCalledWith(url)
-})

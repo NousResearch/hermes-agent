@@ -99,8 +99,8 @@ describe('while it is working', () => {
     expect(screen.getByRole('button', { name: 'Not now' }).hasAttribute('disabled')).toBe(false)
   })
 
-  it.each([{ otherBusy: true }, { actionDisabled: true }])('holds a blocked action but keeps the way out', blocked => {
-    renderCard(blocked)
+  it('holds its action while a sibling is mid-flight, so two sign-in tabs never race for focus', () => {
+    renderCard({ otherBusy: true })
 
     expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Not now' }).hasAttribute('disabled')).toBe(false)

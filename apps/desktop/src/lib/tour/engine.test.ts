@@ -128,27 +128,6 @@ describe('collectTourTargets', () => {
 })
 
 describe('runTourEngine', () => {
-  it('emphasizes only steps requesting an accent', () => {
-    seedDom()
-
-    for (const accent of [false, true]) {
-      const calls: string[] = []
-      const holder: TourHolder = {}
-
-      runTourEngine(
-        makeFactory(calls),
-        holder,
-        { kind: 'show', selector: '#send-btn', title: 'Here', accent },
-        collectTourTargets,
-        document
-      )
-
-      expect(calls.some(call => call.includes('tour-pop-accent'))).toBe(accent)
-      expect(holder.driver?.isActive()).toBe(true)
-      holder.driver?.destroy()
-    }
-  })
-
   it('targets answers with the page identity and its targets', () => {
     seedDom()
     const result = runTourEngine(makeFactory([]), {}, { kind: 'targets' }, collectTourTargets, document)

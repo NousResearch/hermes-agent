@@ -123,6 +123,7 @@ class MyMemoryProvider(MemoryProvider):
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
+| `prefetch_items(query, *, session_id="")` | Instead of `prefetch`, when implemented | Return provenance-bearing recall items |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
@@ -130,12 +131,40 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
 
+### Structured recall provenance
+
+Providers can return `list[RecallItem]` from `prefetch_items()` to retain
+per-item provenance until prompt rendering. Import `RecallItem` from
+`agent.memory_provider`; `text` and `provider` are required. Optional fields
+include `source`, `writer`, `sensitivity`, `verified`, `record_id`, `occurred_at`,
+and diagnostic `metadata`.
+
+The default hook returns `None`, meaning "use legacy `prefetch()`". An empty
+list means "no recall this turn" and does **not** trigger a second fetch.
+Legacy strings become a single item. The manager overwrites each item's
+`provider` with the registered provider name and `trust` with `UNTRUSTED`;
+provider-authored metadata does not grant authority or verification.
+
+Rendering adds a provider/trust prefix, sanitizes each item's text, and quotes
+`source` as JSON with framing delimiters escaped. The other optional fields
+remain structured metadata, not instructions. All recalled content is fenced
+as untrusted reference material that cannot authorize tool calls by itself.
+This is a framing boundary, not a guarantee against all prompt injection.
+
+`prefetch_all()` still returns a string, although its text now includes these
+prefixes for both structured and legacy providers. Per-turn caches, stored
+`api_content`, and database schemas retain their existing string contract.
+Providers supporting both hooks should consume a warmed result only once,
+regardless of which hook is called first, and discard it on session switches.
+
 ### Oversized prefetch results
 
-External `prefetch()` results above the configured spill threshold are written
+The complete rendered batch from an external provider, including provenance
+prefixes, is checked against the spill threshold. Oversized batches are written
 to a private spill file and replaced with the configured head/tail preview.
 The preview includes the path so the agent can read the full result when it is
-actually needed. Results at or below the threshold are returned unchanged.
+actually needed. Rendered batches at or below the threshold are returned
+unchanged. Built-in memory retains its own configured limits and is not spilled.
 
 This uses the shared `hooks.output_spill` settings (`10,000` characters by
 default); see [Plugins — oversized-context spill](/developer-guide/plugins/#oversized-context-spill).

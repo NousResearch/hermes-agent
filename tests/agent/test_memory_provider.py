@@ -211,7 +211,11 @@ class TestMemoryManager:
         assert "external memory prefetch output truncated" in result
         spill_files = list((tmp_path / "session-1").glob("*.txt"))
         assert len(spill_files) == 1
-        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+        from agent.memory_manager import render_recall_items
+        from agent.memory_provider import RecallItem
+
+        expected = render_recall_items([RecallItem(text=provider._prefetch_result, provider=provider.name)])
+        assert spill_files[0].read_text() == expected + "\n"
 
     def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
@@ -220,7 +224,9 @@ class TestMemoryManager:
         provider._prefetch_result = "built-in memory has its own configured limit"
         mgr.add_provider(provider)
 
-        assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
+        result = mgr.prefetch_all("what do you remember?", session_id="s")
+        assert provider._prefetch_result in result
+        assert "output truncated" not in result
         assert not list(tmp_path.rglob("*.txt"))
 
     def test_prefetch_merges_results(self):
@@ -344,11 +350,18 @@ class TestMemoryManager:
         mgr.add_provider(builtin)
         mgr.add_provider(external)
 
+        # The stuck external provider is skipped; only the builtin item renders.
+        # Each provider's legacy string is now host-framed as one untrusted
+        # RecallItem (tier B, #84251), so assert on provenance-framed content.
+        builtin_frame = "[recall — provider=builtin; trust=untrusted]\nbuiltin memory"
+        external_frame = "[recall — provider=hy-memory; trust=untrusted]\nlate external memory"
+
         started = time.monotonic()
         result = mgr.prefetch_all("query")
         elapsed = time.monotonic() - started
 
-        assert result == "builtin memory"
+        assert result == builtin_frame
+        assert "late external memory" not in result
         assert elapsed < 0.5
         assert external.started.wait(timeout=1.0)
         assert external.prefetch_queries == ["query"]
@@ -357,7 +370,7 @@ class TestMemoryManager:
         result = mgr.prefetch_all("query 2")
         elapsed = time.monotonic() - started
 
-        assert result == "builtin memory"
+        assert result == builtin_frame
         assert elapsed < 0.2
         assert external.prefetch_queries == ["query"]
 
@@ -373,7 +386,7 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query 3")
 
-        assert result == "builtin memory\n\nlate external memory"
+        assert result == f"{builtin_frame}\n\n{external_frame}"
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 

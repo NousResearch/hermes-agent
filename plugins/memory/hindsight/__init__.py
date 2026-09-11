@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus
+from agent.memory_provider import MemoryProvider, RecallItem, RecallStatus, RecallTrust
 from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
@@ -338,8 +338,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_ops_bank_id = ""
         self._apply_retain_policy({})
 
-        # Recall: pending prefetch block + count, and the indicator state (recall_status()).
+        # Recall: one warmed result is consumable once through either API shape.
         self._prefetch_result, self._prefetch_count = "", 0
+        self._prefetch_items_cache: List[RecallItem] | None = None
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
@@ -856,23 +857,55 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return resp.text
 
-    def _do_recall(self, query: str) -> tuple[str, int]:
-        """One recall/reflect for *query* (background prefetch and ``recall_sync`` paths)
-        -> (text, memory count); the count is 0 for reflect (synthesis) and on error."""
+    def _do_recall(self, query: str) -> tuple[str, int, tuple[RecallItem, ...]]:
+        """One recall/reflect for *query* shared by both prefetch APIs."""
         if self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
         try:
             if self._prefetch_method == "reflect":
                 logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                return self._reflect(query) or "", 0
+                text = self._reflect(query) or ""
+                items = (
+                    (RecallItem(text=text, provider="hindsight", trust=RecallTrust.UNTRUSTED),)
+                    if text else ()
+                )
+                return text, 0, items
             logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
                          self._bank_id, len(query), self._budget)
             results = self._recall(query)
             logger.debug("Recall: returned %d results", len(results))
-            return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
+            text = "\n".join(f"- {r.text}" for r in results if r.text)
+            items = tuple(self._recall_result_to_item(r) for r in results if getattr(r, "text", ""))
+            return text, len(results), items
         except Exception as e:
             logger.debug("Hindsight recall failed: %s", e, exc_info=True)
-            return "", 0
+            return "", 0, ()
+
+    @staticmethod
+    def _recall_result_to_item(result: Any) -> RecallItem:
+        """Preserve Hindsight's non-authoritative recall provenance."""
+        raw_metadata = getattr(result, "metadata", None)
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        diagnostic = {}
+        for key in ("type", "document_id", "chunk_id", "tags"):
+            value = getattr(result, key, None)
+            if value is None:
+                value = metadata.get(key)
+            if value is not None:
+                diagnostic[key] = str(value)
+        occurred_at = getattr(result, "occurred_start", None) or getattr(result, "mentioned_at", None)
+        source = metadata.get("source")
+        record_id = getattr(result, "id", None)
+        return RecallItem(
+            text=getattr(result, "text", "") or "",
+            provider="hindsight",
+            trust=RecallTrust.UNTRUSTED,
+            source=str(source) if source else None,
+            verified=False,
+            record_id=str(record_id) if record_id else None,
+            occurred_at=str(occurred_at) if occurred_at else None,
+            metadata=diagnostic,
+        )
 
     def _finish_prefetch(self, result: str, count: int) -> str:
         """Record indicator state (cleared on empty turns, never a stale count); format the block."""
@@ -897,16 +930,37 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Opt-in: recall synchronously against the *current* message so the
-        # injected memories match this turn's query, not the previous turn's.
+        # injected memories match this turn's query, not the previous turn.
         # See NousResearch/hermes-agent#5820.
         if self._recall_sync:
-            return self._finish_prefetch(*(("", 0) if self._recall_disabled() else self._do_recall(query)))
+            if self._recall_disabled():
+                return self._finish_prefetch("", 0)
+            text, count, _items = self._do_recall(query)
+            return self._finish_prefetch(text, count)
         # Default: the background worker's result for the previous turn (capped join).
         self._join_prefetch(3.0, log=True)
         with self._prefetch_lock:
             result, count = self._prefetch_result, self._prefetch_count
             self._prefetch_result, self._prefetch_count = "", 0
+            self._prefetch_items_cache = None
         return self._finish_prefetch(result, count)
+
+    def prefetch_items(self, query: str, *, session_id: str = "") -> List[RecallItem]:
+        """Consume the warmed recall as provenance-bearing items exactly once."""
+        if self._recall_sync:
+            if self._recall_disabled():
+                self._last_recall_returned, self._last_recall_count = False, 0
+                return []
+            _text, count, items = self._do_recall(query)
+        else:
+            self._join_prefetch(3.0, log=True)
+            with self._prefetch_lock:
+                items, count = self._prefetch_items_cache, self._prefetch_count
+                self._prefetch_items_cache = None
+                self._prefetch_result, self._prefetch_count = "", 0
+        self._last_recall_returned = bool(items)
+        self._last_recall_count = count if items else 0
+        return list(items or [])
 
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""
@@ -924,10 +978,11 @@ class HindsightMemoryProvider(MemoryProvider):
             # retain to be recall-visible so the warmed context includes it.
             if self._prefetch_waits_for_retain:
                 self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
-            text, count = self._do_recall(query)
-            if text:
+            text, count, items = self._do_recall(query)
+            if text or items:
                 with self._prefetch_lock:
                     self._prefetch_result, self._prefetch_count = text, count
+                    self._prefetch_items_cache = list(items)
 
         self._prefetch_thread = _context_thread(_run, "hindsight-prefetch")
         self._prefetch_thread.start()
@@ -1144,7 +1199,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
         with self._prefetch_lock:
-            self._prefetch_result = ""
+            self._prefetch_result, self._prefetch_count = "", 0
+            self._prefetch_items_cache = None
 
         # 3. Rotate to the new session.
         if parent_session_id:

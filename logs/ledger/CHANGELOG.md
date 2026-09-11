@@ -8,6 +8,140 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.10.2] — 2026-09-10 — hermes@0e9fc2cc15 (0 behind upstream/main)
+
+**`RUN-2026-09-10-006` — sanity-checked the end-of-task logging pipeline
+after the owner noticed `logs.zip` uploaded identically three times running
+while dated `HANDOFF_*.zip` files each differed.** **PATCH** — ledger/test
+hardening; no functional behaviour change. **Part 1 (no fix needed):**
+`collect-logs.{ps1,sh}` → `D:\logs.zip` and the drive-root
+`HANDOFF_<date>_<time>.zip` are two separate things, not one step — the
+former is the one script-generated artifact (verified: 7 distinct sha256
+values across 7 real invocations tonight, so it is not stuck); the latter is
+currently a fully manual copy-and-seal step this agent performs by hand each
+session, backed by no script in the repo. `logs.zip` is not obsolete — it
+feeds the dated file and the completeness self-check depends on it — but it
+was never meant to be the thing a person repeatedly re-uploads; recommended,
+not built: document that plainly, and consider scripting the dated-copy step
+so it stops depending on an agent remembering it correctly every time.
+**Part 2 (confirmed already correct, hardened anyway):** re-ran
+`report_completeness.py` against the two reports named in the task
+(`PERSONA-CHECK-AND-BACKUP-CLEANUP_2026-09-10.md`,
+`VERIFY-LAUNCH-GIT-PULL_2026-09-10.md`) as they exist on disk — both **PASS**.
+The unfilled "HANDOFF_PENDING.zip (sha256: PENDING)" / "sha256: computed
+after the zip is sealed…" text the task cited exists only inside the two
+already-sealed `HANDOFF_*.zip` bundles as an intentionally-frozen pre-hash
+snapshot (documented in both reports' own closing lines) — `report_
+completeness.py` only ever reads the standalone `D:\logs\` copies, so nothing
+slipped through the gate. Directly tested `check_handoff_line()` against
+both exact phrasings regardless: **both already FAIL**, correctly, because
+`HEX64_RE` rejects any non-hex sha256 regardless of the word introducing it
+— not because of a `"PLACEHOLDER"` word-match. `CHG-2026-09-10-005` below
+removes that now-visibly-redundant word clause and hardens the regression
+suite for both real phrasings plus one new, honestly-disclosed limitation
+(a syntactically well-formed but fabricated hash still passes — no drive-root
+path is threaded through to cross-check against).
+
+Also found and fixed in passing (ledger self-correction, not part of either
+task question): `NF-v0.10.1`'s block was appended *after* `NF-v0.10.0` in
+this file — the reverse of the documented "newest first" order (`RUN-
+2026-09-10-003` inserted it below the block whose closing line it matched,
+rather than above it). Moved the whole block above `NF-v0.10.0`; a pure
+reorder (66 insertions / 66 deletions in the diff), no content change.
+
+Verification: `tests/test_report_completeness_handoff_line.py` **12 passed**
+(was 9; +3); `ruff check` clean on both changed files;
+`report_completeness.py` against the live ledger + `D:\logs\` still exits 0.
+
+### Fixed
+
+- **CHG-2026-09-10-005** — **`scripts/lib/report_completeness.py`:
+  `check_handoff_line()` — removed a dead, redundant word-based clause
+  (`"PLACEHOLDER" in zipname`, already fully subsumed by the existing
+  `HANDOFF_ZIPNAME_RE` structural match — a string containing that word can
+  never match the fully-anchored pattern, so the clause never fired on its
+  own) and rewrote the module comment to state plainly that enforcement is a
+  positive structural match (a real `HANDOFF_<date>_<time>.zip` name + a real
+  64-hex sha256), not a forbidden-word list, plus documented the honest
+  residual limitation (format-only; no cross-check that the hash is the
+  genuine hash of a file that actually exists).** No behavior change — both
+  cited real-world unfilled phrasings ("HANDOFF_PENDING.zip (sha256:
+  PENDING)", "sha256: computed after the zip is sealed…") already failed
+  before this change; confirmed by running the pre-change code against both
+  strings directly. `+tests/test_report_completeness_handoff_line.py`: 3
+  new tests (`test_pending_zip_and_hash_fail`,
+  `test_computed_after_the_zip_is_sealed_fails`,
+  `test_well_formed_but_fabricated_hash_is_a_known_limitation`), 12 total.
+  Paths: `scripts/lib/report_completeness.py`,
+  `tests/test_report_completeness_handoff_line.py`,
+  `logs/ledger/CHANGELOG.md` (reorder). Run: RUN-2026-09-10-006.
+
+## [NF-v0.10.1] — 2026-09-10 — hermes@0e9fc2cc15 (0 behind upstream/main)
+
+**`RUN-2026-09-10-003` — two independent fixes: (1) restored the
+`_desktop_ssh_backend` helper a bad merge dropped from `hermes_cli/main.py`, so
+`import hermes_cli.main` no longer raises `NameError` on an unprovisioned or
+Full-tier drive (closes `ERR-2026-09-10-001`, HIGH); (2) the RUN-to-report
+completeness check now FAILs a session report whose mandatory closing
+`Handoff bundle:` line is still an unfilled `PLACEHOLDER` template.** **PATCH** —
+a correctness fix + a ledger-tooling fix; no schema, engine, or access-tier
+behaviour change. Both fixes verified, then this block plus the four
+previously-held commits (`CHG-2026-09-10-001`..`-002` and their ledger commits)
+were pushed to `origin/main` as an owner-authorised batch.
+
+Verification (Windows-native, `.venv` pytest): `import hermes_cli.main` succeeds
+(was `NameError` at `main.py:645`); `tests/test_nf_admin.py` **17 passed**;
+`tests/test_nf_tier_enforcement.py` **30 passed** (was 29p/1f — the failure was
+`ERR-2026-09-10-001`, now gone); `tests/hermes_cli/test_apply_profile_override.py`
+**8 passed, 3 pre-existing Windows-only failures** (`test_sudo_*`, two
+profile-fixture `SystemExit` cases — identical on the untouched tree; the two
+`_desktop_ssh_backend` / `invocation_id` cases that failed on the untouched tree
+now pass); `tests/test_report_completeness_handoff_line.py` **7 passed** (new);
+`report_completeness.py` against the live `D:\logs\` + ledger still exits 0
+(COMPLETE).
+
+### Fixed
+
+- **CHG-2026-09-10-003** — **`hermes_cli/main.py`: restored `def
+  _desktop_ssh_backend(argv)`.** Commit `677e8ed8a4` ("fix(desktop): SSH remote
+  backend stops following the host's sticky active_profile", 2026-09-09) added
+  both the helper (`return "--ssh-session-token-file" in argv`) and its call in
+  `_apply_profile_override()`; a later `Merge branch 'main' into main` kept the
+  call and dropped the `def`. Because `_apply_profile_override()` runs at module
+  scope, `import hermes_cli.main` raised
+  `NameError: name '_desktop_ssh_backend' is not defined` whenever the branch was
+  reached — an unprovisioned drive, or a Full-tier drive whose `HERMES_HOME` is
+  not a `profiles/<name>` dir and with no `-p`. Restored **verbatim** from
+  `677e8ed8a4` (docstring included), placed immediately before
+  `_apply_profile_override` as in that commit. The covering test
+  (`tests/hermes_cli/test_apply_profile_override.py::…::test_desktop_ssh_serve_child_skips_active_profile`)
+  survived the merge and now passes. Closes `ERR-2026-09-10-001` (HIGH). Path:
+  `hermes_cli/main.py`. Run: RUN-2026-09-10-003.
+
+- **CHG-2026-09-10-004** — **`scripts/lib/report_completeness.py`: the mandatory
+  closing `Handoff bundle:` line must carry real values before a report counts as
+  complete.** `RUN-2026-09-10-001` and `-002` were handed over with
+  `Handoff bundle: HANDOFF_2026-09-10_PLACEHOLDER.zip (sha256: PLACEHOLDER) -
+  created.` — the chicken-and-egg workaround (the zip contains the report) left
+  the template token in the copy that shipped. New `check_handoff_line()`, called
+  per covered run: a report (dated `2026-09-10` or later) with **no**
+  `Handoff bundle:` line, or one whose zip name still contains `PLACEHOLDER` /
+  isn't `HANDOFF_<YYYY-MM-DD_HHMM>.zip`, or whose `sha256` isn't 64 hex, is now a
+  **FAIL** — so `collect-logs.{ps1,sh}` (which both delegate here) will not report
+  `COMPLETE`. `- NOT created (reason)` is accepted; the check reads the **last**
+  `Handoff bundle:` line in the body with fenced ``` blocks stripped first (a
+  report that quotes the line format is not tripped by it), and inspects only the
+  zip-name and sha capture groups, so a parenthetical that uses the word
+  "placeholder" in prose does not trip it either. Reports dated `2026-09-09` and
+  earlier (written before the owner's standing rule) are not retroactively failed
+  for a missing line. `SESSION-REPORT-TEMPLATE.md` gains the line as a filled-in
+  skeleton with a "never leave PLACEHOLDER" note; `logs/ledger/README.md`
+  "End-of-task handoff" documents the requirement and the hash-back-fill
+  resolution to the chicken-and-egg. `+tests/test_report_completeness_handoff_line.py`
+  (7). Paths: `scripts/lib/report_completeness.py`,
+  `logs/ledger/templates/SESSION-REPORT-TEMPLATE.md`, `logs/ledger/README.md`,
+  `tests/test_report_completeness_handoff_line.py`. Run: RUN-2026-09-10-003.
+
 ## [NF-v0.10.0] — 2026-09-10 — hermes@0e9fc2cc15 (0 behind upstream/main)
 
 **`RUN-2026-09-10-001` — completed and landed the North Forge Full-tier
@@ -122,72 +256,6 @@ the new/changed files.
   `docs/preview.html`. Ref: `BRANDING.md` §1 (README lead = North-Forge-owned);
   consistent with `DECISION-2026-09-06-001` / `DECISION-2026-09-07-002`.
   Run: RUN-2026-09-10-002.
-
-## [NF-v0.10.1] — 2026-09-10 — hermes@0e9fc2cc15 (0 behind upstream/main)
-
-**`RUN-2026-09-10-003` — two independent fixes: (1) restored the
-`_desktop_ssh_backend` helper a bad merge dropped from `hermes_cli/main.py`, so
-`import hermes_cli.main` no longer raises `NameError` on an unprovisioned or
-Full-tier drive (closes `ERR-2026-09-10-001`, HIGH); (2) the RUN-to-report
-completeness check now FAILs a session report whose mandatory closing
-`Handoff bundle:` line is still an unfilled `PLACEHOLDER` template.** **PATCH** —
-a correctness fix + a ledger-tooling fix; no schema, engine, or access-tier
-behaviour change. Both fixes verified, then this block plus the four
-previously-held commits (`CHG-2026-09-10-001`..`-002` and their ledger commits)
-were pushed to `origin/main` as an owner-authorised batch.
-
-Verification (Windows-native, `.venv` pytest): `import hermes_cli.main` succeeds
-(was `NameError` at `main.py:645`); `tests/test_nf_admin.py` **17 passed**;
-`tests/test_nf_tier_enforcement.py` **30 passed** (was 29p/1f — the failure was
-`ERR-2026-09-10-001`, now gone); `tests/hermes_cli/test_apply_profile_override.py`
-**8 passed, 3 pre-existing Windows-only failures** (`test_sudo_*`, two
-profile-fixture `SystemExit` cases — identical on the untouched tree; the two
-`_desktop_ssh_backend` / `invocation_id` cases that failed on the untouched tree
-now pass); `tests/test_report_completeness_handoff_line.py` **7 passed** (new);
-`report_completeness.py` against the live `D:\logs\` + ledger still exits 0
-(COMPLETE).
-
-### Fixed
-
-- **CHG-2026-09-10-003** — **`hermes_cli/main.py`: restored `def
-  _desktop_ssh_backend(argv)`.** Commit `677e8ed8a4` ("fix(desktop): SSH remote
-  backend stops following the host's sticky active_profile", 2026-09-09) added
-  both the helper (`return "--ssh-session-token-file" in argv`) and its call in
-  `_apply_profile_override()`; a later `Merge branch 'main' into main` kept the
-  call and dropped the `def`. Because `_apply_profile_override()` runs at module
-  scope, `import hermes_cli.main` raised
-  `NameError: name '_desktop_ssh_backend' is not defined` whenever the branch was
-  reached — an unprovisioned drive, or a Full-tier drive whose `HERMES_HOME` is
-  not a `profiles/<name>` dir and with no `-p`. Restored **verbatim** from
-  `677e8ed8a4` (docstring included), placed immediately before
-  `_apply_profile_override` as in that commit. The covering test
-  (`tests/hermes_cli/test_apply_profile_override.py::…::test_desktop_ssh_serve_child_skips_active_profile`)
-  survived the merge and now passes. Closes `ERR-2026-09-10-001` (HIGH). Path:
-  `hermes_cli/main.py`. Run: RUN-2026-09-10-003.
-
-- **CHG-2026-09-10-004** — **`scripts/lib/report_completeness.py`: the mandatory
-  closing `Handoff bundle:` line must carry real values before a report counts as
-  complete.** `RUN-2026-09-10-001` and `-002` were handed over with
-  `Handoff bundle: HANDOFF_2026-09-10_PLACEHOLDER.zip (sha256: PLACEHOLDER) -
-  created.` — the chicken-and-egg workaround (the zip contains the report) left
-  the template token in the copy that shipped. New `check_handoff_line()`, called
-  per covered run: a report (dated `2026-09-10` or later) with **no**
-  `Handoff bundle:` line, or one whose zip name still contains `PLACEHOLDER` /
-  isn't `HANDOFF_<YYYY-MM-DD_HHMM>.zip`, or whose `sha256` isn't 64 hex, is now a
-  **FAIL** — so `collect-logs.{ps1,sh}` (which both delegate here) will not report
-  `COMPLETE`. `- NOT created (reason)` is accepted; the check reads the **last**
-  `Handoff bundle:` line in the body with fenced ``` blocks stripped first (a
-  report that quotes the line format is not tripped by it), and inspects only the
-  zip-name and sha capture groups, so a parenthetical that uses the word
-  "placeholder" in prose does not trip it either. Reports dated `2026-09-09` and
-  earlier (written before the owner's standing rule) are not retroactively failed
-  for a missing line. `SESSION-REPORT-TEMPLATE.md` gains the line as a filled-in
-  skeleton with a "never leave PLACEHOLDER" note; `logs/ledger/README.md`
-  "End-of-task handoff" documents the requirement and the hash-back-fill
-  resolution to the chicken-and-egg. `+tests/test_report_completeness_handoff_line.py`
-  (7). Paths: `scripts/lib/report_completeness.py`,
-  `logs/ledger/templates/SESSION-REPORT-TEMPLATE.md`, `logs/ledger/README.md`,
-  `tests/test_report_completeness_handoff_line.py`. Run: RUN-2026-09-10-003.
 
 ## [NF-v0.9.0] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main)
 

@@ -57,12 +57,21 @@ LEDGER_ONLY_TOKENS = {"ledger-only", "ledgeronly", "—", "-", "n/a", "none"}
 # The owner's standing rule: every session report ends with a literal closing line
 #   Handoff bundle: HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) - created.
 # or, when no bundle was made, "... - NOT created (reason)". That line has to carry
-# the REAL zip name and hash before the report counts as complete — a report handed
-# over still reading "HANDOFF_..._PLACEHOLDER.zip (sha256: PLACEHOLDER)" is an
-# unfilled template, not a finished report. The *last* such line in the body is the
-# closing line — an earlier one quoting the format (in a fenced block, which is
-# stripped first) is not it. Only the zip-name and sha capture groups are inspected,
-# so a parenthetical that uses the word "placeholder" in prose does not trip it.
+# the REAL zip name and hash before the report counts as complete. The check is a
+# POSITIVE structural match (a real HANDOFF_<date>_<time>.zip name + a real 64-hex
+# sha256), not a blacklist of specific forbidden words — "PLACEHOLDER", "PENDING",
+# "computed after the zip is sealed", or anything else that isn't the real shape
+# all fail the same way (RUN-2026-09-10-006 hardened this after two real reports
+# briefly carried "PENDING" / "computed after..." pre-hash text — both already
+# failed correctly, but no regression test pinned it down). The *last* such line
+# in the body is the closing line — an earlier one quoting the format (in a fenced
+# block, which is stripped first) is not it. Only the zip-name and sha capture
+# groups are inspected, so a parenthetical that uses the word "placeholder" in
+# prose does not trip it. Known residual limitation: this validates FORMAT, not
+# that the sha is the genuine hash of a file that actually exists — a
+# syntactically perfect but fabricated line still passes (no drive-root path is
+# threaded through to cross-check against; see
+# test_well_formed_but_fabricated_hash_is_a_known_limitation).
 HANDOFF_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 HANDOFF_LINE_RE = re.compile(r"^[ \t]*Handoff bundle:.*$", re.MULTILINE)
 HANDOFF_PARSE_RE = re.compile(
@@ -110,8 +119,14 @@ def check_handoff_line(run: str, report_name: str, rtext: str, f: "Findings") ->
         f.ok(f"{run}: closing handoff line present (bundle NOT created)", routine=True)
         return
 
+    # Reject by structural pattern, not a list of forbidden words: anything that
+    # isn't a real HANDOFF_<YYYY-MM-DD_HHMM>.zip name / a real 64-hex sha256 is
+    # unfilled, whatever word it uses to say so ("PLACEHOLDER", "PENDING",
+    # "computed after the zip is sealed", ...). A string containing "PLACEHOLDER"
+    # can never match HANDOFF_ZIPNAME_RE's full anchors anyway, so there is no
+    # separate word-based branch to maintain.
     bad = []
-    if "PLACEHOLDER" in zipname or not HANDOFF_ZIPNAME_RE.match(zipname):
+    if not HANDOFF_ZIPNAME_RE.match(zipname):
         bad.append(f"zip name '{zipname}'")
     if not HEX64_RE.match(sha):
         bad.append(f"sha256 '{sha[:24]}'")

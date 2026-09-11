@@ -119,6 +119,35 @@ def test_format_quoted_in_a_fenced_block_is_ignored(tmp_path):
     assert "OK" in levels
 
 
+def test_pending_zip_and_hash_fail(tmp_path):
+    """Real-world regression (RUN-2026-09-10-005, before it was finalised): a
+    pending placeholder that never uses the literal word PLACEHOLDER must still
+    FAIL — the check rejects by structural pattern (a real HANDOFF_<date>_<time>.zip
+    name + a real 64-hex sha256), not a list of forbidden words."""
+    body = (
+        "RUN-2026-09-11-001 body\n\n"
+        "Handoff bundle: HANDOFF_PENDING.zip (sha256: PENDING) - created.\n"
+    )
+    levels, rows = _run(tmp_path, body)
+    assert "FAIL" in levels
+    assert "unfilled template" in rows[0][1]
+
+
+def test_computed_after_the_zip_is_sealed_fails(tmp_path):
+    """Real-world regression (RUN-2026-09-10-004, before it was finalised): the
+    zip *name* here is well-formed (HANDOFF_<date>_<time>.zip) — only the sha256
+    is prose instead of hex — and that alone must still FAIL."""
+    body = (
+        "RUN-2026-09-11-001 body\n\n"
+        "Handoff bundle: HANDOFF_2026-09-11_0037.zip (sha256: computed after the "
+        "zip is sealed — see the sidecar and this line's final edit below) "
+        "- created.\n"
+    )
+    levels, rows = _run(tmp_path, body)
+    assert "FAIL" in levels
+    assert "unfilled template" in rows[0][1]
+
+
 def test_last_line_is_the_one_checked(tmp_path):
     """An earlier prose mention that is fine does not save a broken closing line."""
     body = (
@@ -128,6 +157,23 @@ def test_last_line_is_the_one_checked(tmp_path):
     levels, rows = _run(tmp_path, body)
     assert "FAIL" in levels
     assert "unfilled template" in rows[0][1]
+
+
+def test_well_formed_but_fabricated_hash_is_a_known_limitation(tmp_path):
+    """Documents a real, accepted limitation rather than leaving it silent: the
+    check validates FORMAT (a HANDOFF_<date>_<time>.zip name + 64 hex chars), not
+    that the sha is the genuine hash of a file that actually exists on disk — it
+    has no drive-root path to cross-check against. A syntactically perfect but
+    fabricated line still passes. Flagged, not fixed, here — closing it needs a
+    drive-root arg threaded through both collectors, out of scope for the
+    pattern-matching fix this test file otherwise covers."""
+    body = (
+        "RUN-2026-09-11-001 body\n\n"
+        "Handoff bundle: HANDOFF_2026-09-11_0000.zip (sha256: " + "0" * 64 + ") "
+        "- created. (this file/hash pair does not exist anywhere)\n"
+    )
+    levels, _ = _run(tmp_path, body)
+    assert "FAIL" not in levels  # known gap, not asserting this is desirable
 
 
 def test_end_to_end_real_ledger_stays_complete(tmp_path):

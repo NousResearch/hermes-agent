@@ -14,5 +14,5 @@ export const TRANSLATIONS: Record<Locale, Translations> = {
   ja,
   ar,
   cs,
-  ru,
+  ru
 }

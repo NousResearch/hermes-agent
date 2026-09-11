@@ -1,7 +1,5 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import type { Translations } from './types'
-
 import { defineLocale } from './define-locale'
 
 export const cs = defineLocale({

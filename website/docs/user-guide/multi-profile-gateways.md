@@ -212,9 +212,14 @@ still aborts gateway startup rather than silently dropping the unsafe profile.
 Polling/connection platforms (Telegram, Discord, Slack, Matrix, Signal, …) work
 fine multiplexed, but each profile that enables one must supply its **own** bot
 token — the same token cannot be polled by two profiles at once. If two profiles
-configure the same `(platform, token)`, startup fails fast naming both profiles
-(see [Token-conflict safety](#token-conflict-safety) — the rule is unchanged,
-it's just enforced inside the one process now).
+configure the same `(platform, token)`, the gateway logs an error naming both
+profiles and parks the **duplicate** adapter (it shows as `fatal /
+duplicate_credential` in runtime status) while the first claimant and every
+other profile keep running — the gateway itself does not exit. The default
+profile's adapters connect first and claim their credentials, so the parked
+adapter is always the secondary's (see
+[Token-conflict safety](#token-conflict-safety) — the rule is unchanged, it's
+just enforced inside the one process now).
 
 #### 4. Session keys are namespaced by profile
 
@@ -319,6 +324,27 @@ only for that profile's events. Shell hooks run with the routed profile's
 `HERMES_HOME`, without the default profile's secrets in their environment, and
 their stdin payload carries a `profile` field naming the profile that fired them.
 
+#### What is isolated per profile
+
+A quick reference for what a multiplexed turn resolves from **its own**
+profile and never shares with the default or any sibling:
+
+| Concern | Resolved from | Behaviour when the profile lacks it |
+|---|---|---|
+| Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
+| Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
+| HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
+| `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
+| stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |
+| Outbound egress (`send_message`, shutdown/restart/`/update` notices, `/loop` wakeups, `profile:`-bound webhook delivery, `github_comment` tokens) | The profile's own connected adapter and `.env` | Clear failure; never posts through the default profile's bot |
+| Session namespace | `agent:<profile>:…` (default keeps `agent:main:…`) | Two profiles on the same chat never share history |
+| Logs | `agent.log` / `errors.log` / `gateway.log` under the profile's own home | — |
+| Terminal sandbox settings (`terminal.*`, SSH targets) | The profile's `config.yaml` | Documented default; unparsable config → execution refused |
+
+What is **shared** by design: the process, its PID/lock and `gateway_state.json`
+(default home), the one HTTP listener, and the `profile_routes` table (declared
+on the default profile).
+
 ### Serving selected profiles
 
 By default, `gateway.multiplex_profiles: true` serves every valid named profile
@@ -346,6 +372,11 @@ stands down for any profile a running multiplexer already serves). A multiplexer
 started as `hermes -p <name> gateway run` always ticks its own profile's cron store
 as well. A named profile outside the allowlist may still run its own standalone
 gateway.
+
+One caveat: the served set is a **start-time snapshot**. A profile created or
+added to the allowlist while the multiplexer is running is not picked up until
+`hermes gateway restart` (profiles deleted at runtime are dropped from cron
+ticking automatically).
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
@@ -657,7 +688,10 @@ and reboots.
 
 Each profile must use unique bot tokens for each platform. If two profiles
 share a Telegram, Discord, Slack, WhatsApp, or Signal token, the second
-gateway refuses to start with an error naming the conflicting profile.
+gateway refuses to start with an error naming the conflicting profile. Under
+[multiplexing](#alternative-one-gateway-for-all-profiles-multiplexing) the same
+rule parks only the duplicate profile's adapter and the shared gateway keeps
+running.
 
 To audit:
 

@@ -1665,11 +1665,15 @@ export function openSecondaryCount(): number {
 
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
+// "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
+// backoff has no consumer on that backend, and pinging it anyway kept a
+// tile-pinned backend keepalive-fresh forever, so LRU eviction and the idle
+// reaper never freed its pool slot (#103375).
 export function touchSecondaryGateways(): void {
   const desktop = window.hermesDesktop
 
   for (const entry of g.secondaries.values()) {
-    if (entry.wantOpen) {
+    if (entry.wantOpen && isOpen(entry.gateway)) {
       void desktop?.touchBackend?.(entry.scope).catch(() => undefined)
     }
   }

@@ -53,6 +53,7 @@ vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
+  touchSecondaryGateways,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -530,5 +531,36 @@ describe('reconnect fail-stop on a removed connection', () => {
 
     expect(result).not.toBeNull()
     expect((result as unknown as { connectionState: string }).connectionState).toBe('open')
+  })
+})
+
+describe('touchSecondaryGateways', () => {
+  it('pings only secondaries whose socket is open, so a backend nobody reaches can idle-reap (#103375)', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+    const touchBackend = vi.fn(async () => ({ ok: true }))
+
+    installDesktop({ getConnectionFor, touchBackend })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    await ensureGatewayForAgent('office', 'default')
+    // openSecondary pings once per successful dial; only the keepalive sweep
+    // is under test here.
+    touchBackend.mockClear()
+
+    touchSecondaryGateways()
+    expect(touchBackend).toHaveBeenCalledTimes(2)
+
+    // The office socket drops and sits in reconnect backoff: still wantOpen,
+    // but nothing on this window uses that backend until it reopens.
+    const office = gatewayMocks.instances[1] as unknown as { connectionState: string }
+    office.connectionState = 'closed'
+    touchBackend.mockClear()
+
+    touchSecondaryGateways()
+
+    expect(touchBackend).toHaveBeenCalledTimes(1)
+    expect(touchBackend).not.toHaveBeenCalledWith(expect.stringContaining('office'))
   })
 })

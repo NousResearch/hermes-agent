@@ -204,11 +204,13 @@ def _strip_reasoning_tags(text: str) -> str:
         r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*', '', cleaned,
         flags=re.IGNORECASE,
     )
-    # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
-    # mid tool-call serialization (#101899); strip to end of text.
+    # Unclosed calls are unrecoverable (#101899), but stray argument markup
+    # only identifies fragment lines (#102303). Keep inline prose and later
+    # lines while still removing a line-ending fragment like wait</arg_value>.
     cleaned = re.sub(
         r'(?:^|\n)[ \t]*<(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
-        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+        r'|(?:^|\n)[ \t]*</?arg_(?:key|value)\b[^\n]*'
+        r'|(?:^|\n)[^\n<]*</arg_(?:key|value)>[ \t\r]*(?=\n|$)',
         '',
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,

@@ -17,6 +17,31 @@ afterEach(() => {
   $firstBuildConnections.set({})
 })
 
+it.each([
+  { available: false, connectors: [] },
+  { available: true, connectors: [] },
+  { available: true, connectors: [{ connector: 'gmail', enabled: false }] }
+])('retains confirmed connections when the catalog is unavailable (%j)', async unavailable => {
+  vi.useFakeTimers()
+  markFirstBuildSession('build')
+  const request = vi.fn().mockResolvedValue({
+    available: true, connectors: [{ connector: 'gmail', enabled: true, connected: true }]
+  })
+  const stop = watchFirstBuildRows('build', 'runtime', part, request)
+  await vi.advanceTimersByTimeAsync(0)
+  const connected = $firstBuildConnections.get().build.rows[0]
+  expect(connected.phase).toBe('connected')
+
+  request.mockResolvedValue(unavailable)
+  await vi.advanceTimersByTimeAsync(2000)
+  const rows = $firstBuildConnections.get().build.rows
+  expect(rows[0]).toBe(connected)
+  expect(rows.slice(1).map(row => [row.phase, row.error])).toEqual([
+    ['error', 'unavailable'], ['error', 'unavailable']
+  ])
+  stop?.()
+})
+
 it.each(['started', 'ended', 'deadline'])('stops a pending wait poll at %s and ignores an in-flight answer', async reason => {
   vi.useFakeTimers()
   markFirstBuildSession('build')

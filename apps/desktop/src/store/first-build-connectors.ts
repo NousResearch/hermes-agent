@@ -218,7 +218,7 @@ export function watchFirstBuildRows(
         const live = result.connectors.find(item => item.connector === row.connector)
 
         if (!result.available || !live || live.enabled === false) {
-          return { ...row, enabled: false, phase: 'error', error: 'unavailable' }
+          return row.phase === 'connected' ? row : { ...row, enabled: false, phase: 'error', error: 'unavailable' }
         }
 
         return { ...row, ...live, phase: live.connected ? 'connected' : 'waiting', error: undefined }

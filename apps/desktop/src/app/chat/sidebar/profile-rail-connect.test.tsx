@@ -73,8 +73,13 @@ vi.mock('@/store/profile-share', () => ({
   runImportProfileFlow: vi.fn()
 }))
 
+const prewarmStarted = vi.fn()
+
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: (profile?: null | string) => ({
+    cancelPrewarm: vi.fn(),
+    startPrewarm: () => prewarmStarted(profile)
+  })
 }))
 
 vi.mock('@/hermes', () => ({
@@ -94,6 +99,7 @@ const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean
 
 afterEach(() => {
   cleanup()
+  prewarmStarted.mockClear()
   hasMultipleConnections.set(false)
   profiles.set([{ is_default: true, name: 'default' }])
 })
@@ -115,6 +121,19 @@ describe('ProfileRail multi-gateway entry point', () => {
     // gated behind multiProfile the way the default↔all toggle is.
     expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+
+  it('prewarms the canonical profile name, not the display label (#100330)', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { display_name: 'Forge · Eng Lead', is_default: false, name: 'forge' }
+    ] as never)
+    render(<ProfileRail />)
+
+    fireEvent.pointerEnter(screen.getByRole('button', { name: 'Forge · Eng Lead' }))
+
+    expect(prewarmStarted).toHaveBeenCalledWith('forge')
+    expect(prewarmStarted).not.toHaveBeenCalledWith('Forge · Eng Lead')
   })
 
   it('keeps the active profile explicit when gateway identity moves to the statusbar', () => {

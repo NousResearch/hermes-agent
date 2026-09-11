@@ -149,18 +149,45 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     result = []
     seen_names: set = set()
     for t in tools or []:
-        fn = t.get("function", {})
-        name = fn.get("name", "")
-        # Defensive dedup: Anthropic rejects requests with duplicate tool names. Upstream injection paths
-        # already dedup, but this guard converts a hard API failure into a warning. See: #18478
-        if name and name in seen_names:
-            logger.warning("convert_tools_to_anthropic: duplicate tool name '%s' — dropping second occurrence", name)
+        if not isinstance(t, dict):
+            logger.warning(
+                "convert_tools_to_anthropic: skipping non-object tool definition"
+            )
             continue
-        if name:
-            seen_names.add(name)
+        fn = t.get("function")
+        if not isinstance(fn, dict):
+            fn = {}
+        # MCP and plugin integrations may provide the bare schema instead of
+        # an OpenAI ``function`` wrapper.  Resolve both shapes, but only allow
+        # a non-empty string through to Anthropic's strict tool-name validator.
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            name = t.get("name")
+        if not isinstance(name, str) or not name:
+            logger.warning(
+                "convert_tools_to_anthropic: skipping tool with no valid name"
+            )
+            continue
+        # Defensive dedup: Anthropic rejects requests with duplicate tool
+        # names.  Upstream injection paths already dedup, but this guard
+        # converts a hard API failure into a warning.  See: #18478
+        if name in seen_names:
+            logger.warning(
+                "convert_tools_to_anthropic: duplicate tool name '%s' "
+                "— dropping second occurrence",
+                name,
+            )
+            continue
+        seen_names.add(name)
         anthropic_tool: Dict[str, Any] = {
-            "name": name, "description": fn.get("description", ""),
-            "input_schema": _normalize_tool_input_schema(fn.get("parameters") or {}),
+            "name": name,
+            "description": fn.get("description") or t.get("description", ""),
+            "input_schema": _normalize_tool_input_schema(
+                fn.get("parameters")
+                or t.get("parameters")
+                or t.get("input_schema")
+                or {"type": "object", "properties": {}}
+            ),
         }
         result.append(_carry_cache_control(anthropic_tool, t, copy=True))
     return result

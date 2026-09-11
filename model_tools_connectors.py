@@ -3,6 +3,12 @@
 import json
 from dataclasses import asdict
 
+from agent.historical_tool_arguments import (
+    NON_REPLAYABLE_HISTORY_MESSAGE,
+    TOOL_ARGUMENTS_TOO_COMPLEX_MESSAGE,
+    ToolArgumentTraversalLimit,
+    contains_non_replayable_history_args,
+)
 from tools.registry import tool_error
 from tools.tool_gateway.config import MAX_CALLS_PER_DISPATCH
 from tools.tool_gateway.merge import assemble_results, fill_remote_failure, partition_calls
@@ -44,6 +50,22 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 partition.remote[offset:], "Stopped by the user before this call was made.",
                 code="INTERRUPTED"))
             break
+        try:
+            marker_found = contains_non_replayable_history_args(plan.arguments)
+        except ToolArgumentTraversalLimit:
+            entries.append({
+                "index": plan.position,
+                "name": plan.name,
+                "error": {"code": "tool_arguments_too_complex", "message": TOOL_ARGUMENTS_TOO_COMPLEX_MESSAGE},
+            })
+            continue
+        if marker_found:
+            entries.append({
+                "index": plan.position,
+                "name": plan.name,
+                "error": {"code": "non_replayable_history_arguments", "message": NON_REPLAYABLE_HISTORY_MESSAGE},
+            })
+            continue
         # Wrapper-level skip flags describe only the wrapper, never its entries.
         payload = handle_function_call(
             plan.name, plan.arguments, **asdict(ids), user_task=user_task,

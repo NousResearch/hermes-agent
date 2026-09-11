@@ -171,7 +171,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if isinstance(raw_args, str):
             try:
                 raw_args = json.loads(raw_args)
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, RecursionError) as e:
                 return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"

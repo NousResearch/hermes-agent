@@ -114,6 +114,24 @@ _root = Path(__file__).resolve().parent
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
+    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+
+    try:
+        _launch_python = prepare_launch(_root, sys.argv[1:])
+        if _launch_python is not None:
+            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            _command = relaunch_command(
+                _launch_python, _root, sys.argv, sys.orig_argv,
+                getattr(_main_spec, "name", None),
+            )
+            if os.name == "nt":
+                import subprocess
+
+                raise SystemExit(subprocess.call(_command))
+            os.execv(str(_launch_python), _command)
+    except Exception as exc:
+        print(f"hermes: source-update completion failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     recover_if_needed(_root)
     try:
         activate_dependencies(_root)

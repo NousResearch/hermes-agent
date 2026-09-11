@@ -34,6 +34,22 @@ from utils import atomic_replace, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
+
+def is_uv_tool_install() -> bool:
+    # Shim to stop the old updater doing work until relaunch, not select uv tool.
+    return False
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    # Shim to stop the old updater doing work until relaunch. no legacy detection.
+    return False
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    # Shim to stop the old updater doing work until relaunch. no obsolete advice.
+    return ""
+
+
 # (config_path, mtime_ns, size) tuples already warned about, so concurrent CLI/gateway
 # loads of a broken config.yaml don't spam stderr. A changed file (new mtime) warns again.
 _CONFIG_PARSE_WARNED: set = set()

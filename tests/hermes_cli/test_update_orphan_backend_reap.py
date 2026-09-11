@@ -265,8 +265,8 @@ def _run_guard(detect_side_effect, orphan_return):
         cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(
         cli_main, "_resume_windows_gateways_after_update"
-    ), patch.object(
-        cli_main, "_detect_venv_python_processes", side_effect=detect_side_effect
+    ), patch(
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes", side_effect=detect_side_effect
     ), patch.object(
         cli_main, "_leftover_pausable_gateway_pids", return_value=None
     ), patch.object(

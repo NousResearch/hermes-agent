@@ -1081,8 +1081,8 @@ def test_update_impl_refuses_before_terminating_gateway_ancestor(
         cli_main, "_run_pre_update_backup", return_value=None
     ), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None
-    ), patch.object(
-        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch(
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes", return_value=[holder]
     ), patch.object(
         cli_main, "_leftover_pausable_gateway_pids", return_value=[300]
     ), patch.object(

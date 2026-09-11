@@ -16,9 +16,11 @@ import sys
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_cli._old_updater import stop_for_relaunch
 from hermes_constants import venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -111,6 +113,35 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
 logger = logging.getLogger(__name__)
+
+
+def _ensure_uv_for_termux(pip_cmd: list[str]) -> NoReturn:
+    # Shim to stop the old updater doing work until relaunch, not bootstrap uv.
+    stop_for_relaunch()
+
+
+def _ensure_venv_pip(pip_cmd: list, python_exe: str) -> NoReturn:
+    # Shim to stop the old updater doing work until relaunch, not bootstrap pip.
+    stop_for_relaunch()
+
+
+def _pip_install_prefix(uv_bin) -> NoReturn:
+    # Shim to stop the old updater doing work until relaunch, not form an install.
+    stop_for_relaunch()
+
+
+def _refuse_update_for_contended_shims(exc: BaseException) -> NoReturn:
+    # Shim to stop the old updater doing work until relaunch. Write no markers.
+    stop_for_relaunch()
+
+
+def _shim_quarantine_error_type() -> type[Exception]:
+    # Shim to stop the old updater doing work until relaunch. Its old except
+    # clause needs an exception type, but must not catch real failures.
+    class _NeverRaised(Exception):
+        pass
+
+    return _NeverRaised
 
 
 def _m():

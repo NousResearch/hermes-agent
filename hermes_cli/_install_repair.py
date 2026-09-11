@@ -7,6 +7,12 @@ import os
 import sys
 from pathlib import Path
 
+
+def _sync_windows_cli_launchers(root: Path) -> list[Path]:
+    # Shim to stop the old updater doing work until relaunch. Copy no launchers.
+    return []
+
+
 def _is_windows() -> bool:
     return sys.platform == "win32"
 

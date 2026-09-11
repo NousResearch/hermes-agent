@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import main as cli_main
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_windows
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
         sys.modules, {"psutil": fake_psutil}
     ):
-        assert cli_main._detect_venv_python_processes() == []
+        assert update_cmd_windows._detect_venv_python_processes() == []
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -109,7 +109,7 @@ def test_detect_venv_python_prefetches_only_cheap_process_fields(_winp, tmp_path
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
         sys.modules, {"psutil": fake_psutil}
     ):
-        matches = cli_main._detect_venv_python_processes()
+        matches = update_cmd_windows._detect_venv_python_processes()
 
     assert attrs_seen == [["pid", "exe", "name"]]
     assert [match[0] for match in matches] == [101]
@@ -137,7 +137,7 @@ def test_detect_venv_python_keeps_external_interpreter_fallback(_winp, tmp_path)
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
         sys.modules, {"psutil": fake_psutil}
     ):
-        matches = cli_main._detect_venv_python_processes()
+        matches = update_cmd_windows._detect_venv_python_processes()
 
     assert [match[0] for match in matches] == [103]
     external.cmdline.assert_called_once_with()
@@ -187,9 +187,8 @@ def _run_update_until_guard(args):
         cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(
         cli_main, "_resume_windows_gateways_after_update"
-    ), patch.object(
-        cli_main,
-        "_detect_venv_python_processes",
+    ), patch(
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes",
         return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
     ), patch.object(
         # Pin the orphan classifier: this test exercises --force/--force-venv

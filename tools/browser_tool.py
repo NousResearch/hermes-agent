@@ -35,6 +35,11 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 )
 
 
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    # Shim to stop the old updater doing work until relaunch. Nothing was warmed.
+    return False
+
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
     harnesses stub the ``tools`` package)."""

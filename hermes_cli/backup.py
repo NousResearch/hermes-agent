@@ -40,6 +40,13 @@ from hermes_cli.backup_restore import (
 
 logger = logging.getLogger(__name__)
 
+
+def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+    # Shim to stop the old updater doing work until relaunch. None means unknown,
+    # not permission to restore over a database whose holders we did not scan.
+    return None
+
+
 # --- Exclusion rules ---
 
 # Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net write state

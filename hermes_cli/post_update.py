@@ -165,7 +165,7 @@ def step_state_db_guard() -> dict:
     return {"ok": False, "error": message}
 
 
-def step_adopt_blessed_checkout() -> dict:
+def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     """One-time adoption of shipped stampless installs (birth certificate).
 
     Main-era curl|sh / Setup installs created a ``.git`` checkout at a
@@ -192,7 +192,7 @@ def step_adopt_blessed_checkout() -> dict:
 
     from hermes_constants import get_hermes_home
 
-    root = _install_root()
+    root = _install_root() if project_root is None else Path(project_root)
 
     # The blessed roots: the canonical locations installers create.
     blessed = (

@@ -603,13 +603,12 @@ def _desktop_owns_gateway_lifecycle() -> bool:
 
     See #76129, #92091.
     """
-    from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
         if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
-    for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
+    for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
         if not _looks_like_desktop_control_plane(cmdline):
             continue
         if psutil is None:
@@ -1176,7 +1175,7 @@ def _reap_and_rescan(message: str, pids, stop=None) -> list[tuple[int, str, str]
     print(message)
     (stop or _m()._stop_process_trees)(pids)
     _time.sleep(1.0)
-    return _m()._detect_venv_python_processes()
+    return _detect_venv_python_processes()
 
 
 def _terminate_leftover_gateways(pids) -> None:
@@ -1214,7 +1213,7 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         sys.exit(2)
 
-    holders = _m()._detect_venv_python_processes()
+    holders = _detect_venv_python_processes()
     # Gateways the pause machinery owns (respawned in the pause->guard window or unmapped
     # spawn path): stop and re-check; post-update resume brings them back.
     if holders and (gateway_holders := _m()._leftover_pausable_gateway_pids(holders)) is not None:

@@ -2021,6 +2021,12 @@ def select_provider_and_model(args=None):
         _clear_stale_openai_base_url()
 
 
+def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str, str]]:
+    # Shim to stop the old updater doing work until relaunch. Do not scan or kill.
+    # Current Windows checks use the real detector in update_cmd_windows instead.
+    return []
+
+
 # Frozen updater surface (PEP 562 ``__getattr__`` below): the frozen
 # ``hermes_cli/update_cmd*.py`` files resolve these names via ``_m().<name>``
 # on hermes_cli.main; importing update_cmd eagerly would cost every ``hermes``
@@ -2030,7 +2036,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_assess_parked_branch_switch",
         "_capture_active_lazy_features",
-        "_cold_start_windows_gateway_after_update", "_detect_venv_python_processes", "_discard_stashed_changes",
+        "_cold_start_windows_gateway_after_update", "_discard_stashed_changes",
         "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
         "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
         "_ledger_reapable_backend_pids", "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",

@@ -75,7 +75,7 @@ def isolated_update_processes():
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
+         patch("hermes_cli.update_cmd_windows._detect_venv_python_processes", return_value=[]), \
          patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
          patch("os.kill"), \
          patch("pm.sync_venv"), \

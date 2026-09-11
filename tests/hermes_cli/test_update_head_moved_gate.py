@@ -26,7 +26,7 @@ def _isolate_venv_holders(monkeypatch):
     """The update flow's venv-holder guard sees the live gateway processes on
     a dev machine and aborts with SystemExit 2 before reaching the HEAD-move
     gate under test.  Isolate it so the test exercises the intended path."""
-    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):

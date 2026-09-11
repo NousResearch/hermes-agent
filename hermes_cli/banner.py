@@ -24,6 +24,16 @@ _DIM = "\033[2m"
 _RST = "\033[0m"
 
 
+def _check_via_pypi() -> Optional[int]:
+    # Shim to stop the old updater doing work until relaunch. no registry query.
+    return None
+
+
+def check_via_pypi() -> Optional[int]:
+    # Shim to stop the old updater doing work until relaunch. status is unknown.
+    return None
+
+
 def _quiet(fn, default=None):
     """``fn()``, or ``default`` on any exception — for best-effort display inputs."""
     try:

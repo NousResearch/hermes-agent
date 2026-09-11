@@ -26,6 +26,18 @@ Each file has a separate role:
 A lockfile entry does not prove that a package is installed. `hermes pm doctor`
 compares the installed state with the lock and checks the realized bytes.
 Startup uses a cheaper check. It does not query upstream versions on every launch.
+For self-managed source installs, the pre-import launcher compares PM's recorded
+successful dependency stamp with the current inputs. Missing or stale completion
+state triggers a sync, then the same command restarts on the managed Python before
+loading application dependencies. Failed syncs keep the previous selection and
+retry on the next launch; no pending-update marker is required. Developer checkouts
+and packaged installations retain their existing owner.
+
+Historical updaters can still be executing old Python code after swapping in this
+source tree. Their retired helper names are inert compatibility shims; dependency
+entry shims stop the old updater cleanly and ask for a relaunch instead of invoking
+PM or falling back to pip. Completion belongs to the new launcher, not that mixed
+old-code/new-files process.
 
 ## Source installs and packaged builds
 

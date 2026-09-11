@@ -461,6 +461,73 @@ class TestNormalizeConverseStreamEvents:
             "data": "c3RyZWFtLXNlY3JldA==",
         }]
 
+    def test_text_deltas_without_block_start_merge_into_one_block(self):
+        from agent.bedrock_adapter import normalize_converse_stream_events
+
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Let me che"}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "ck that."}}},
+            {"contentBlockStart": {"contentBlockIndex": 1, "start": {
+                "toolUse": {"toolUseId": "call_1", "name": "read_file"},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {
+                "toolUse": {"input": '{"path":'},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {
+                "toolUse": {"input": '"/tmp/f"}'},
+            }}},
+            {"contentBlockStop": {"contentBlockIndex": 1}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}},
+        ]}
+
+        result = normalize_converse_stream_events(events)
+        message = result.choices[0].message
+        assert message.bedrock_content_blocks == [
+            {"text": "Let me check that."},
+            {"toolUse": {"toolUseId": "call_1", "name": "read_file", "input": {"path": "/tmp/f"}}},
+        ]
+        assert message.content == "Let me check that."
+        assert json.loads(message.tool_calls[0].function.arguments) == {"path": "/tmp/f"}
+
+    def test_text_after_tool_use_stays_in_its_own_block_on_replay(self):
+        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_stream_events
+
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Working on it."}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"contentBlockStart": {"contentBlockIndex": 1, "start": {
+                "toolUse": {"toolUseId": "call_1", "name": "read_file"},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {
+                "toolUse": {"input": '{"path": "/tmp/f"}'},
+            }}},
+            {"contentBlockStop": {"contentBlockIndex": 1}},
+            {"contentBlockDelta": {"contentBlockIndex": 2, "delta": {"text": "Done."}}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}},
+        ]}
+
+        result = normalize_converse_stream_events(events)
+        message = result.choices[0].message
+        assert [list(block) for block in message.bedrock_content_blocks] == [["text"], ["toolUse"], ["text"]]
+        assert message.bedrock_content_blocks[1]["toolUse"]["input"] == {"path": "/tmp/f"}
+
+        history = {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path": "/tmp/f"}'},
+            }],
+            "bedrock_content_blocks": message.bedrock_content_blocks,
+        }
+        _system, converse = convert_messages_to_converse([{"role": "user", "content": "go"}, history])
+        assert [next(iter(block)) for block in converse[1]["content"]] == ["text", "toolUse", "text"]
+
     def test_tool_use_stream(self):
         from agent.bedrock_adapter import normalize_converse_stream_events
         events = {"stream": [

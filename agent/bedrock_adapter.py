@@ -781,8 +781,7 @@ def stream_converse_with_callbacks(
     stop_reason = "end_turn"
     usage_data: Dict[str, int] = {}
 
-    def current_block(default: Dict[str, Any]) -> Dict[str, Any]:
-        idx = current_block_index if current_block_index is not None else len(stream_blocks)
+    def block_at(idx: int, default: Dict[str, Any]) -> Dict[str, Any]:
         return stream_blocks.setdefault(idx, default)
 
     def flush_text() -> None:
@@ -808,10 +807,12 @@ def stream_converse_with_callbacks(
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
-            delta = event["contentBlockDelta"].get("delta", {})
+            delta_event = event["contentBlockDelta"]
+            delta = delta_event.get("delta", {})
+            idx = delta_event.get("contentBlockIndex", len(stream_blocks))
             if "text" in delta:
                 text = delta["text"]
-                block = current_block({"text": ""})
+                block = block_at(idx, {"text": ""})
                 block["text"] = block.get("text", "") + text
                 current_text_buffer.append(text)
                 if on_text_delta and not has_tool_use:
@@ -821,7 +822,9 @@ def stream_converse_with_callbacks(
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
-                    block = current_block({"reasoningContent": {}}).setdefault("reasoningContent", {})
+                    block = block_at(idx, {"reasoningContent": {}}).setdefault(
+                        "reasoningContent", {}
+                    )
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
             if current_tool is not None:

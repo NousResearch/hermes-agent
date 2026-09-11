@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SHOW_SCHEMA, KANBAN_SPECIFY_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -966,10 +966,47 @@ def _handle_link(args: dict, **kw) -> str:
         return _ok(parent_id=parent_id, child_id=child_id)
 
 
+@_kanban_handler("kanban_specify")
+def _handle_specify(args: dict, **kw) -> str:
+    """Fill out a triage task (title/body/assignee, omitted = unchanged) and
+    promote it triage → todo. LLM-free: the caller writes the spec; the DB
+    layer (``specify_triage_task``) keeps the write atomic and triage-only."""
+    _reject_delegated_child_mutation("kanban_specify")
+    _require_orchestrator_tool("kanban_specify")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    _enforce_worker_task_ownership(tid)
+    title, body, assignee = args.get("title"), args.get("body"), args.get("assignee")
+    reason = args.get("reason")
+    _check(any(v is not None for v in (title, body, assignee)),
+           "pass at least one of title, body, or assignee to specify the task")
+    # Author comes from the worker's runtime identity, never caller args: the
+    # audit comment is injected into future workers' system prompts, so an
+    # args override could forge a directive from an authoritative-looking name
+    # (same anti-forgery rule as kanban_comment, #19713).
+    author = os.environ.get("HERMES_PROFILE") or None
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        promoted = kb.specify_triage_task(
+            conn, tid,
+            title=None if title is None else str(title),
+            body=None if body is None else str(body),
+            assignee=None if assignee is None else str(assignee),
+            author=author,
+            reason=None if reason is None else str(reason))
+        # Fail closed: someone moved the task out of triage between the
+        # existence check and the write (stale race) — report, don't guess.
+        _check(promoted, f"task {tid} is not in triage — nothing was changed")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, **_fields(task, ("status", "title", "assignee")))
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_list / kanban_unblock / kanban_specify route the board and are hidden
+# from task workers.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_specify"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -984,7 +1021,8 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "📝"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

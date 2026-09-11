@@ -614,6 +614,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 return entry, TrajectoryMetrics()  # keep the original on error
 
     async def _process_directory_async(self, input_dir: Path, output_dir: Path):
+        """Stream JSONL files in bounded batches and write incrementally."""
         console = Console()
         self.aggregate_metrics.processing_start_time = datetime.now().isoformat()
         start_time = time.time()
@@ -622,13 +623,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             self.logger.warning("No JSONL files found in %s", input_dir)
             return
 
-        console.print("\n[dim]Loading all entries...[/dim]")
-        all_entries = []  # List of (file_path, entry_idx, entry)
+        batch_size = max(1, int(self.config.max_concurrent_requests))
+        total_entries = 0
         for file_path in jsonl_files:
-            def _warn(line_num, e, file_path=file_path):
-                self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, e)
-            all_entries.extend((file_path, idx, entry) for idx, entry in _load_jsonl(file_path, _warn))
-        total_entries = len(all_entries)
+            with open(file_path, "r", encoding="utf-8") as handle:
+                total_entries += sum(1 for line in handle if line.strip())
 
         console.print(f"\n{'='*60}")
         console.print(f"📂 Input: {input_dir}")
@@ -637,39 +636,72 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print(f"📊 Total trajectories: {total_entries:,}")
         console.print(f"🎯 Target max tokens: {self.config.target_max_tokens:,}")
         console.print(f"📝 Summary target tokens: {self.config.summary_target_tokens}")
-        console.print(f"⚡ Max concurrent API calls: {self.config.max_concurrent_requests}")
+        console.print(f"⚡ Max concurrent API calls: {batch_size}")
         console.print(f"{'='*60}\n")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(),
             TextColumn("•"), TimeElapsedColumn(), TextColumn("•"), TimeRemainingColumn(),
-            console=console, refresh_per_second=10,  # Higher refresh for async
+            console=console, refresh_per_second=10,
         ) as progress:
             run = _RunProgress(
                 progress, progress.add_task(f"[cyan]Compressing {total_entries:,} trajectories", total=total_entries),
                 progress.add_task("[dim]Starting...[/dim]", total=None),
-                asyncio.Lock(), asyncio.Semaphore(self.config.max_concurrent_requests),
+                asyncio.Lock(), asyncio.Semaphore(batch_size),
             )
-            outcomes = await asyncio.gather(*(self._process_one(run, *item) for item in all_entries))
-            progress.remove_task(run.status_task)
 
-        # Write results preserving original order; timed-out entries are dropped.
-        console.print("\n[dim]Writing output files...[/dim]")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        results = {f: [] for f in jsonl_files}
-        for (file_path, _, _), outcome in zip(all_entries, outcomes):
-            if outcome is not None:
-                results[file_path].append(outcome[0])
-        for file_path in jsonl_files:
-            _write_jsonl(output_dir / file_path.name, results[file_path])
+            for file_path in jsonl_files:
+                output_path = output_dir / file_path.name
+                tmp_path = output_path.with_name(output_path.name + ".tmp")
+                batch: List[tuple[int, Dict]] = []
+                try:
+                    with open(tmp_path, "w", encoding="utf-8") as out:
+
+                        async def flush_batch() -> None:
+                            if not batch:
+                                return
+                            outcomes = await asyncio.gather(
+                                *(self._process_one(run, file_path, idx, entry) for idx, entry in batch)
+                            )
+                            for outcome in outcomes:
+                                if outcome is not None:
+                                    out.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
+                            batch.clear()
+
+                        with open(file_path, "r", encoding="utf-8") as handle:
+                            for line_num, line in enumerate(handle):
+                                stripped = line.strip()
+                                if not stripped:
+                                    continue
+                                try:
+                                    entry = json.loads(stripped)
+                                except json.JSONDecodeError as exc:
+                                    self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, exc)
+                                    progress.advance(run.main_task)
+                                    continue
+                                batch.append((line_num, entry))
+                                if len(batch) >= batch_size:
+                                    await flush_batch()
+                        await flush_batch()
+                        out.flush()
+                        os.fsync(out.fileno())
+                    os.replace(tmp_path, output_path)
+                except Exception:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    raise
+
+            progress.remove_task(run.status_task)
 
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
         self.aggregate_metrics.processing_duration_seconds = time.time() - start_time
         self._print_summary()
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w', encoding="utf-8") as f:
-                json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
+            with open(metrics_path, "w", encoding="utf-8") as handle:
+                json.dump(self.aggregate_metrics.to_dict(), handle, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
 
     def _print_summary(self):

@@ -3474,6 +3474,42 @@ class TestCodexAuxiliaryAdapterTimeout:
 
         assert time.monotonic() - started < 0.14
 
+    def test_no_progress_timeout_kwarg_overrides_default_window(self):
+        """#108104: an explicit ``no_progress_timeout`` kwarg (the task-scoped
+        ``auxiliary.<task>.no_progress_timeout`` config value) must set the
+        substantive-progress window itself, not just clamp against the overall
+        request ``timeout`` (the built-in default is 60s; here it's narrowed to
+        0.05s so a stalled-but-alive stream is cut off far sooner than the
+        5s overall timeout would otherwise force)."""
+        class _StallingStream:
+            def __iter__(self):
+                for _ in range(50):
+                    time.sleep(0.02)
+                    yield SimpleNamespace(type="response.in_progress")
+
+            def close(self): pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return _StallingStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=5.0,
+                no_progress_timeout=0.05,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, (
+            f"no_progress_timeout=0.05 override should cut the stall off in well "
+            f"under 1s, took {elapsed:.2f}s (falling back to the 5s overall timeout "
+            f"instead of honoring the override)"
+        )
+
 
 class TestCodexAuxiliaryAdapterCacheScope:
     """Regression for issue #78941: auxiliary Codex calls (compression,
@@ -4628,6 +4664,61 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+class TestNoProgressTimeoutTaskConfigGating:
+    """#108104: ``auxiliary.<task>.no_progress_timeout`` must only reach the request kwargs
+    when the resolved client is a Codex Responses-shim client — forwarding it to a real
+    OpenAI-SDK-shaped client's ``chat.completions.create()`` would raise ``TypeError:
+    unexpected keyword argument 'no_progress_timeout'``."""
+
+    def test_codex_client_receives_configured_no_progress_timeout(self, monkeypatch):
+        completed = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        real_client = SimpleNamespace(
+            api_key="test-key", base_url="https://chatgpt.com/backend-api/codex/",
+            close=lambda: None,
+        )
+        client = CodexAuxiliaryClient(real_client, "gpt-5.6-sol")
+        direct_create = MagicMock(return_value=completed)
+        monkeypatch.setattr(client.chat.completions, "create", direct_create)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (client, "gpt-5.6-sol"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_task_no_progress_timeout",
+            lambda task: 300.0 if task == "compression" else None,
+        )
+
+        call_llm(
+            task="compression", provider="openai-codex", model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert direct_create.call_args.kwargs.get("no_progress_timeout") == 300.0
+
+    def test_non_codex_client_never_receives_the_kwarg(self, monkeypatch):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-4.1", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4.1")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._get_task_no_progress_timeout", return_value=300.0),
+        ):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert "no_progress_timeout" not in client.chat.completions.create.call_args.kwargs
 
 
 class TestMoaAggregatorStreamingBypass:

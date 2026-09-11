@@ -699,8 +699,11 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models.
-        "compression": _aux(120),
+        # are ignored. Compression: raise timeout for local models. no_progress_timeout
+        # (Codex/Responses streams only): seconds without a substantive event before the stream
+        # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
+        # budget) — raising "timeout" alone does not widen this window. See #108104.
+        "compression": _aux(120, no_progress_timeout=None),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

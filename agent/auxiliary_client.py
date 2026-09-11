@@ -1110,11 +1110,19 @@ class _CodexStreamGuard:
     from ``_aux_stream_total_ceiling`` still terminates a pathological drip.
     """
 
-    def __init__(self, client: Any, total_timeout: Optional[float]):
+    def __init__(
+        self, client: Any, total_timeout: Optional[float],
+        no_progress_timeout: Optional[float] = None,
+    ):
         self._client = client
         self.total_timeout = total_timeout
         self._start = time.monotonic()
-        self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+        # Task-scoped override (auxiliary.<task>.no_progress_timeout, #108104); falls back to the
+        # built-in default when unset or not a positive number.
+        if isinstance(no_progress_timeout, (int, float)) and no_progress_timeout > 0:
+            self.no_progress_timeout = float(no_progress_timeout)
+        else:
+            self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
         # Progress-aware stream deadlines (supersedes the old single absolute kill at ``total_timeout``).
         # Three regimes: 1. First token: the stream must produce its first substantive payload within
         # ``no_progress_timeout`` (60s default) or we fail fast and let the caller's normal retry/fallback
@@ -1463,7 +1471,7 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
-        guard = _CodexStreamGuard(self._client, total_timeout)
+        guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
             guard.start()
             from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
@@ -5794,6 +5802,22 @@ def _compression_fast_lane_controls(
     return max_tokens, body
 
 
+def _get_task_no_progress_timeout(task: str) -> Optional[float]:
+    """``auxiliary.<task>.no_progress_timeout`` from config, or None when unset/invalid
+    (the Codex stream guard then keeps its built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
+    default). Lets an operator widen the substantive-progress window independently of the
+    overall request timeout — see #108104."""
+    if not task:
+        return None
+    raw = _get_auxiliary_task_config(task).get("no_progress_timeout")
+    if raw is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            value = float(raw)
+            if value > 0:
+                return value
+    return None
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """``auxiliary.<task>.timeout`` from config, else *default*."""
     if not task:
@@ -6102,9 +6126,15 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
+    no_progress_timeout: Optional[float] = None,
 ) -> dict:
-    """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    """Build kwargs for .chat.completions.create() with model/provider adjustments.
+    ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
+    ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
+    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
+    if no_progress_timeout is not None:
+        kwargs["no_progress_timeout"] = no_progress_timeout
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
@@ -6758,6 +6788,12 @@ def _prepare_aux_request(
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
+    # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
+    # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
+    no_progress_timeout = (
+        _get_task_no_progress_timeout(task)
+        if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
+    )
     request_provider = effective_provider or resolved_provider
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
@@ -6782,7 +6818,8 @@ def _prepare_aux_request(
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
+        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
+        no_progress_timeout=no_progress_timeout)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)

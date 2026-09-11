@@ -164,7 +164,9 @@ describe('round lifecycle', () => {
         turn: async () => {
           await gate
 
-          if (outcome === 'failure') {throw new Error('member failed')}
+          if (outcome === 'failure') {
+            throw new Error('member failed')
+          }
 
           return '(pass)'
         }

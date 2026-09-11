@@ -250,20 +250,33 @@ def _own_descriptor_for_identity(identity) -> "Optional[int]":
 
 
 def _copy_range(read: Callable[[int, int], Optional[bytes]], dest: Path, *, size: int) -> Dict[str, Any]:
-    """Stream ``size`` bytes via ``read(offset, length)`` into ``dest`` (temp file, fsync, rename)."""
+    """Stream ``size`` bytes via ``read(offset, length)`` into ``dest`` (temp file, fsync, rename).
+
+    A short read raises ``RetiredGenerationCaptureError``: a truncated copy with a valid-looking
+    manifest would let the caller settle the handle while the unlinked inode still dies at exit."""
     digest = hashlib.sha256()
     part = dest.with_name(dest.name + ".part")
     offset = 0
-    with open(part, "wb") as out:
-        while offset < size:
-            chunk = read(offset, min(_CAPTURE_CHUNK_BYTES, size - offset))
-            if not chunk:
-                break
-            out.write(chunk)
-            digest.update(chunk)
-            offset += len(chunk)
-        out.flush()
-        os.fsync(out.fileno())
+    try:
+        with open(part, "wb") as out:
+            while offset < size:
+                chunk = read(offset, min(_CAPTURE_CHUNK_BYTES, size - offset))
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                offset += len(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+    except Exception:
+        part.unlink(missing_ok=True)
+        raise
+    if offset != size:
+        part.unlink(missing_ok=True)
+        raise RetiredGenerationCaptureError(
+            f"short read copying {dest.name}: {offset} of {size} bytes — the retired generation "
+            "is NOT fully captured; the handle stays open for a retry"
+        )
     os.replace(part, dest)
     return {"file": dest.name, "bytes": offset, "sha256": digest.hexdigest()}
 

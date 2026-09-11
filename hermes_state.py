@@ -1190,8 +1190,10 @@ class SessionDB(
     def _quarantine_reason(self) -> Optional[str]:
         """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has
         torn B-trees; a replaced file or a deleted/replaced WAL generation would checkpoint under
-        wrong page numbers into the main DB -- the shutdown-time cause of #105670. Same precedence
-        as the halt path (replaced is checked before generation loss)."""
+        wrong page numbers into the main DB -- the shutdown-time cause of #105670. Precedence note:
+        close() evaluates generation loss BEFORE calling this (and skips it entirely when lost —
+        a lost generation settles through the capture path, not the quarantine advisory), while
+        the halt path checks replaced first."""
         if self._db_corrupt:
             return f"structural corruption ({self._db_corrupt_reason})"
         if self._db_replaced:

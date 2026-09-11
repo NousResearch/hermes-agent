@@ -113,6 +113,8 @@ def _latest_context_output(output_files, source_job_id: str) -> str:
             continue
 
         saved_output = output_file.read_text(encoding="utf-8")
+        if not saved_output.strip():
+            continue
         # Main's silent/no_change audit docs are not chaining payloads; skip them
         # without falling back to the ambiguous legacy heading parser.
         header = saved_output.strip().split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]

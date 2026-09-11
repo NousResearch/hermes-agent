@@ -727,4 +727,50 @@ describe('scroll', () => {
     expect(pageScroll).not.toHaveBeenCalled()
     expect(result.acted).toContain('Results')
   })
-})
+
+  // Regression: drive_preview type must work on React controlled inputs,
+  // contenteditable rich-text editors, and submit-with-Enter forms (#98048).
+  describe('type (regression #98048)', () => {
+    it('contenteditable uses execCommand insertText', () => {
+      const execSpy = vi.spyOn(document, 'execCommand').mockImplementation(() => true)
+      const holder = page('<div id="ced" contenteditable="true"></div>')
+      const ref = firstRef(holder)
+      const result = actInPage(document, holder, { kind: 'type', ref, text: 'hello' })
+      expect(execSpy).toHaveBeenCalledWith('insertText', false, 'hello')
+      expect(result.success).toBe(true)
+    })
+
+    it('input elements dispatch InputEvent with data property', () => {
+      const $el = document.createElement('input')
+      $el.setAttribute('type', 'text')
+      document.body.appendChild($el)
+      const holder: PreviewActHolder = {
+        handles: [{ ref: 'inp-1', label: 'Name', node: $el, selector: null }],
+        lastInventoryAt: null,
+      }
+      const dispatched: Event[] = []
+      $el.dispatchEvent = vi.fn((ev: Event) => { dispatched.push(ev) })
+      const result = actInPage(document, holder, { kind: 'type', ref: 'inp-1', text: 'test' })
+      const inputEv = dispatched.find(e => e.type === 'input') as InputEvent | undefined
+      expect(inputEv).toBeDefined()
+      expect(inputEv?.data).toBe('test')
+      expect(inputEv?.inputType).toBe('insertText')
+      expect(result.success).toBe(true)
+    })
+
+    it('submit KeyboardEvent includes keyCode 13', () => {
+      const $el = document.createElement('input')
+      $el.setAttribute('type', 'text')
+      document.body.appendChild($el)
+      const holder: PreviewActHolder = {
+        handles: [{ ref: 'inp-1', label: 'Name', node: $el, selector: null }],
+        lastInventoryAt: null,
+      }
+      const dispatched: KeyboardEvent[] = []
+      $el.dispatchEvent = vi.fn((ev: Event) => { if (ev instanceof KeyboardEvent) dispatched.push(ev) })
+      actInPage(document, holder, { kind: 'type', ref: 'inp-1', text: 'test', submit: true })
+      expect(dispatched.length).toBeGreaterThanOrEqual(2)
+      expect(dispatched[0].keyCode).toBe(13)
+      expect(dispatched[0].which).toBe(13)
+    })
+  })

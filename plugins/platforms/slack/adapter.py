@@ -918,6 +918,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
+        # Workspace-scoped companion used when filtering recovered thread deltas.
+        self._processed_message_markers: set[Tuple[str, str]] = set()
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -3273,12 +3275,17 @@ class SlackAdapter(BasePlatformAdapter):
             "context_channel_id": context_channel_id or cached.get("context_channel_id", ""),
             "team_id": team_id, "user_id": user_id}
 
-    def _remember_processed_message_ts(self, ts: str) -> None:
+    def _remember_processed_message_ts(self, ts: str, *, team_id: str = "") -> None:
         """Claim a message ts for the ``message_changed`` guard: on entry (suppresses mid-flight
         unfurls) and after construction (refreshes LRU recency). Bounded."""
         if not ts:
             return
         self._processed_message_ts[ts] = time.time()
+        if team_id:
+            self._processed_message_markers.add(self._workspace_message_marker(team_id, ts))
+            self._evict_oldest_by_ts(
+                self._processed_message_markers, self._PROCESSED_MESSAGE_TS_MAX
+            )
         if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
@@ -4033,7 +4040,8 @@ class SlackAdapter(BasePlatformAdapter):
 
         watermark_args = dict(
             channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id)
-        advance_watermark = True
+        watermark_to_set = ts
+        recovery_complete = True
         if not has_active_thread_session:
             await _fetch()
             (
@@ -4055,19 +4063,23 @@ class SlackAdapter(BasePlatformAdapter):
                     > self._slack_timestamp_sort_key(watermark_ts)
                 )
             )
-            if needs_delta and watermark_ts:
-                channel_context, advance_watermark = await self._fetch_thread_delta(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    current_ts=ts,
-                    team_id=team_id,
-                    after_ts=watermark_ts,
-                )
-            if advance_watermark:
+            if needs_delta:
+                if watermark_ts:
+                    channel_context, watermark_to_set = await self._fetch_thread_delta(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        current_ts=ts,
+                        team_id=team_id,
+                        after_ts=watermark_ts,
+                    )
+                    recovery_complete = watermark_to_set == ts
+                else:
+                    await _fetch(force_refresh=True)
+            if recovery_complete:
                 self._mark_thread_rehydration_checked(
                     channel_id, event_thread_ts, user_id, team_id)
-        if advance_watermark:
-            self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        if watermark_to_set:
+            self._set_thread_watermark(watermark_ts=watermark_to_set, **watermark_args)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
     @staticmethod
@@ -4206,7 +4218,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not sender_is_bot_user:
             return False
         allow_bots = self._slack_allow_bots()
-        return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
+        should_drop = allow_bots == "none" or (
+            allow_bots == "mentions" and not is_mentioned
+        )
+        if should_drop:
+            self._remember_pending_thread_update(event, team_id=team_id)
+        return should_drop
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
@@ -4312,7 +4329,7 @@ class SlackAdapter(BasePlatformAdapter):
         # original block a later "@bot" edit from summoning the bot.
         _claim_ts = str(event.get("ts") or "")
         if _claim_ts:
-            self._remember_processed_message_ts(_claim_ts)
+            self._remember_processed_message_ts(_claim_ts, team_id=team_id)
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
@@ -4344,7 +4361,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}")
         if ts:
-            self._remember_processed_message_ts(ts)
+            self._remember_processed_message_ts(ts, team_id=team_id)
         await self.handle_message(msg_event)
 
     async def _build_message_event(
@@ -5474,10 +5491,35 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _fetch_thread_delta(
         self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str, after_ts: str,
-    ) -> Tuple[str, bool]:
-        """Return the complete bounded delta and whether it is safe to advance the watermark."""
+    ) -> Tuple[str, str]:
+        """Return a bounded delta and the latest timestamp that was safely recovered."""
         messages: List[dict] = []
         cursor = ""
+
+        async def _format_recovered() -> str:
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            unseen = [
+                msg
+                for msg in messages
+                if not (
+                    msg.get("user") == bot_uid
+                    or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
+                    in self._bot_message_ts
+                    or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
+                    in self._processed_message_markers
+                )
+            ]
+            return (
+                await self._format_thread_context(
+                    unseen,
+                    thread_ts=thread_ts,
+                    current_ts=current_ts,
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    after_ts=after_ts,
+                )
+            )[0]
+
         for _page in range(10):
             try:
                 result = await self._conversations_replies_with_backoff(
@@ -5492,38 +5534,24 @@ class SlackAdapter(BasePlatformAdapter):
                 )
             except Exception as exc:
                 logger.warning("[Slack] Failed to fetch thread delta: %s", exc)
-                return "", False
+                return "", ""
             if result is None:
-                return "", False
+                return "", ""
             messages.extend(result.get("messages", []))
             metadata = result.get("response_metadata") or {}
             cursor = str(metadata.get("next_cursor") or "")
             if not cursor:
-                bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-                unseen = [
-                    msg
-                    for msg in messages
-                    if not (
-                        msg.get("user") == bot_uid
-                        or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
-                        in self._bot_message_ts
-                        or str(msg.get("ts") or "") in self._processed_message_ts
-                    )
-                ]
-                return (
-                    await self._format_thread_context(
-                        unseen,
-                        thread_ts=thread_ts,
-                        current_ts=current_ts,
-                        team_id=team_id,
-                        channel_id=channel_id,
-                        after_ts=after_ts,
-                    )
-                )[0], True
-        logger.warning(
-            "[Slack] Thread delta exceeded 10 pages; watermark retained for a later retry"
+                return await _format_recovered(), current_ts
+        recovered_ts = max(
+            (str(msg.get("ts") or "") for msg in messages if msg.get("ts")),
+            key=self._slack_timestamp_sort_key,
+            default="",
         )
-        return "", False
+        logger.warning(
+            "[Slack] Thread delta exceeded 10 pages; advancing through %s for a later retry",
+            recovered_ts,
+        )
+        return await _format_recovered(), recovered_ts
 
     async def _conversations_replies_with_backoff(
         self, channel_id: str, thread_ts: str, limit: int, team_id: str, **query: Any) -> Any:

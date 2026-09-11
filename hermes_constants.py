@@ -42,13 +42,39 @@ def get_hermes_home_override() -> str | None:
     return str(override) if override is not _UNSET and override else None
 
 
+def _get_user_home() -> Path:
+    """Resolve current user's home directory safely.
+
+    If HOME is unset or resolves to /root when running under a non-root UID on Unix,
+    queries pwd.getpwuid(os.getuid()) or falls back to /tmp.
+    """
+    try:
+        home = Path.home()
+    except Exception:
+        home = None
+
+    if sys.platform != "win32" and hasattr(os, "getuid"):
+        uid = os.getuid()
+        if uid != 0:
+            if home is None or home == Path("/root") or str(home).startswith("/root/"):
+                try:
+                    import pwd
+                    pw_dir = pwd.getpwuid(uid).pw_dir
+                    if pw_dir and pw_dir != "/root" and os.access(pw_dir, os.W_OK):
+                        return Path(pw_dir)
+                except Exception:
+                    pass
+                return Path("/tmp")
+    return home if home is not None else (Path("/tmp") if sys.platform != "win32" else Path("C:/"))
+
+
 def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        base = Path(local_appdata) if local_appdata else _get_user_home() / "AppData" / "Local"
         return base / "hermes"
-    return Path.home() / ".hermes"
+    return _get_user_home() / ".hermes"
 
 
 def _warn_profile_fallback_once() -> None:

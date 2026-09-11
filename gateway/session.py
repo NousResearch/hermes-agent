@@ -679,6 +679,15 @@ def build_session_key(
     user_part = [str(participant_id)] if isolate_user and participant_id else []
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
+    # A receiving adapter may attach a private lane marker for a distinct
+    # conversational surface that still replies through the same platform
+    # channel (for example, the Discord voice fast lane). Keep it out of
+    # SessionSource serialization and delivery metadata: it affects only
+    # durable conversation identity, so a short spoken exchange cannot pull
+    # a long text-task transcript into its prompt.
+    lane = str(getattr(source, "_session_key_lane", "") or "").strip()
+    if lane:
+        parts.extend(("lane", lane))
     return ":".join(str(part) for part in parts)
 
 

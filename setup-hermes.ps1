@@ -70,6 +70,13 @@ if (Test-Path $uv) {
 }
 
 # ---------------------------------------------------------------------------
+# ARM64 source wheels need the native compiler and OpenSSL development libraries.
+# Activation runs setup in a child, so these build variables do not leak into its caller.
+if ($arch -eq 'arm64') {
+    . (Join-Path $repo 'scripts\windows-build-deps.ps1')
+    Initialize-HermesArm64BuildTools -StateRoot (Split-Path $store -Parent)
+}
+
 # Delegate to pm: python + venv + tool store + hash-verified venv sync
 # ---------------------------------------------------------------------------
 Write-Host 'Installing python + tools + dependencies via pm (hash-verified via uv.lock)...' -ForegroundColor Cyan

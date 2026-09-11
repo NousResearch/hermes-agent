@@ -214,8 +214,6 @@ def test_displaced_turn_lease_release_by_owning_generation() -> None:
     assert token1 is not None
 
     state.turn.lease_tokens[1] = token1
-    state.turn.lease_token = token1
-    state.turn.lease_generation = 1
 
     # Unwind of generation 2 has no token
     assert gateway._release_turn_lease(KEY, run_generation=2) is False

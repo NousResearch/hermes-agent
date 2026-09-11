@@ -16,17 +16,16 @@ SERVICE_TIER_UNSET = _UNSET_TIER  # public alias
 
 @dataclass
 class TurnState:
-    """State scoped to one running gateway turn.  ``lease_token`` / ``lease_generation``
-    are NOT touched by ``clear()``: ``_release_turn_lease`` owns them (release exactly once)."""
+    """State scoped to one running gateway turn.  ``lease_tokens`` is NOT touched by
+    ``clear()``: ``_release_turn_lease`` owns it (release exactly once)."""
 
     agent: Any = None  # running AIAgent (or _AGENT_PENDING_SENTINEL); None = idle
     started_ts: float = 0.0  # 0.0 = not running
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
-    # Held turn-lease token + acquiring generation: release/rebind match only when the
-    # generation is current, so a stale unwind can never free a newer turn's lease.
-    lease_token: Any = None
-    lease_generation: Optional[int] = None
+    # Held turn-lease tokens keyed by acquiring run generation: release/rebind resolve the
+    # token for their own generation, so a displaced turn's unwind frees only its own lease and
+    # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: Dict[int, Any] = field(default_factory=dict)
 
     def clear(self) -> None:
@@ -190,26 +189,23 @@ class TurnLeaseTokenView(_RunnerView):
         if not isinstance(key, tuple) or len(key) != 2:
             raise KeyError(key)
         state = self._sessions().get(key[0])
-        if state is None or state.turn.lease_token is None or state.turn.lease_generation != key[1]:
+        if state is None or key[1] not in state.turn.lease_tokens:
             raise KeyError(key)
         return state.turn
 
     def __getitem__(self, key: Any) -> Any:
-        return self._held(key).lease_token
+        return self._held(key).lease_tokens[key[1]]
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if not isinstance(key, tuple) or len(key) != 2:
             raise KeyError(key)
-        turn = self._runner._session_state(key[0]).turn
-        turn.lease_token, turn.lease_generation = value, key[1]
+        self._runner._session_state(key[0]).turn.lease_tokens[key[1]] = value
 
     def __delitem__(self, key: Any) -> None:
-        turn = self._held(key)
-        turn.lease_token = turn.lease_generation = None
+        del self._held(key).lease_tokens[key[1]]
 
     def __iter__(self) -> Iterator[Tuple[str, Any]]:
-        return ((k, s.turn.lease_generation) for k, s in list(self._sessions().items())
-                if s.turn.lease_token is not None)
+        return ((k, gen) for k, s in list(self._sessions().items()) for gen in list(s.turn.lease_tokens))
 
     def clear(self) -> None:  # avoid MutableMapping's popitem loop
         for key in list(self):

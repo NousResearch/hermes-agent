@@ -495,10 +495,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             raise
         if _lease_token is not None:
-            _lease_state = self._session_state(_quick_key).turn
-            _lease_state.lease_token = _lease_token
-            _lease_state.lease_generation = run_generation
-            _lease_state.lease_tokens[run_generation] = _lease_token
+            self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
 
     @dataclasses.dataclass
     class _HygienePlan:

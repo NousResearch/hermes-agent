@@ -259,11 +259,7 @@ class GatewayAgentCacheMixin:
         """Return ``(registry, token)`` when ``session_key`` holds a lease token for ``run_generation``, else None."""
         registry = getattr(self, "_turn_leases", None)
         state = self._peek_session_state(session_key) if session_key and registry is not None else None
-        if state is None:
-            return None
-        token = state.turn.lease_tokens.get(run_generation)
-        if token is None and state.turn.lease_generation == run_generation:
-            token = state.turn.lease_token
+        token = state.turn.lease_tokens.get(run_generation) if state is not None else None
         if token is None:
             return None
         return registry, token
@@ -276,12 +272,7 @@ class GatewayAgentCacheMixin:
         if held is None:
             return False
         registry, token = held
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.turn.lease_tokens.pop(run_generation, None)
-            if state.turn.lease_generation == run_generation:
-                state.turn.lease_token = None
-                state.turn.lease_generation = None
+        self._peek_session_state(session_key).turn.lease_tokens.pop(run_generation, None)
         try:
             return registry.release(token)
         except Exception:

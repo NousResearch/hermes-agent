@@ -20,6 +20,10 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.computer_use_provider import ComputerUseProvider
+from agent.computer_use_registry import HOST_PROVIDER_NAME, UnknownComputerUseProvider, resolve_provider_registration
+from hermes_constants import hermes_home_key, set_hermes_home_override, reset_hermes_home_override
+from tools.computer_use import host_provider, remote_provider  # noqa: F401 — registers the built-ins
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)
@@ -74,20 +78,25 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
+# Keys are structural (hermes_home_key, session_id) pairs so a multiplexed gateway cannot
+# hand profile B the live desktop authority of profile A's backend (#104080 review finding 1).
 _backend_lock = threading.Lock()
-_backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
-_backends: Dict[str, ComputerUseBackend] = {}
-_backend_call_locks: Dict[str, threading.RLock] = {}
-_backend_permission_modes: Dict[str, str] = {}
+_backend: Dict[str, ComputerUseBackend] = {}  # home-keyed empty-session injection hook (private test callers)
+_backends: Dict[Tuple[str, str], ComputerUseBackend] = {}
+_backend_call_locks: Dict[Tuple[str, str], threading.RLock] = {}
+_backend_permission_modes: Dict[Tuple[str, str], str] = {}
+_backend_provider_revisions: Dict[Tuple[str, str], object] = {}
+# Per-owner single-flight locks: ensure only one thread does the expensive backend.start()
+# (which may be a network handshake to a remote host) — other threads for the same owner
+# wait, and unrelated owners proceed concurrently without holding _backend_lock (#104080 finding 3).
+# The lock object also identifies the ownership generation: release invalidates starters and waiters.
+_backend_start_locks: Dict[Tuple[str, str], threading.Lock] = {}
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
-# Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
-# "always approve" into another; callers without a session_id share "".
-# Falls back to a shared "" bucket for callers that don't pass a session_id (e.g. the classic single-run
-# CLI). Values: _session_auto_approve[sid] -> bool   ("always_approve everything") _always_allow[sid]
-# -> set of (action, delivery_mode) scope keys See NousResearch/hermes-agent#67052 gap 4.
+# Approval authority uses the same profile-qualified owner as the backend cache.
+# Callers without a session_id share only their profile's empty-session bucket.
 _approval_lock = threading.Lock()
-_session_auto_approve: Dict[str, bool] = {}   # sid -> "always_approve everything"
-_always_allow: Dict[str, set] = {}            # sid -> set of (action, delivery_mode) scope keys
+_session_auto_approve: Dict[Tuple[str, str], bool] = {}   # owner -> "always_approve everything"
+_always_allow: Dict[Tuple[str, str], set] = {}            # owner -> set of (action, delivery_mode) scope keys
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -118,33 +127,71 @@ def _cua_permission_mode(session_id: str) -> str:
             return "unrestricted"
     return configured
 
-def _new_backend(permission_mode: str) -> ComputerUseBackend:
-    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-    if backend_name in {"cua", "cua-driver", ""}:
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
-    if backend_name != "noop":
-        raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-    return _NoopBackend()  # pragma: no cover
+def _backend_owner_key(session_id: str) -> Tuple[str, str]:
+    """Profile-qualified cache key: ``(hermes_home_key, session_id)``.
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+    Under ``gateway.multiplex_profiles`` multiple profiles share one process;
+    without qualification, profile B reaching the same ``session_id`` as
+    profile A would reuse A's live backend — physical mutation authority over
+    A's remote desktop. Qualifying with ``hermes_home_key()`` ensures each
+    profile's backend cache is independent (#104080 finding 1).
+    """
+    return hermes_home_key(), str(session_id or "")
+
+
+_provider_lock = threading.Lock()
+# Keyed by profile home, not one slot: under gateway.multiplex_profiles a single process serves several
+# profiles, and computer_use.provider is read from each one's own config.yaml.
+_provider_cache: Dict[str, str] = {}  # names only: plugin registrations are revocable
+_resolved_providers: Dict[Tuple[str, int], ComputerUseProvider] = {}  # captured home + displaced lease owner
+
+def _configured_provider_name() -> str:
+    from tools.computer_use.provider_selection import configured_provider_name
+    return configured_provider_name()
+
+def _active_provider_registration() -> tuple:
+    key = hermes_home_key()
+    with _provider_lock:
+        if key not in _provider_cache:
+            _provider_cache[key] = _configured_provider_name()
+        registration = resolve_provider_registration(_provider_cache[key])
+        _resolved_providers[(key, id(registration[0]))] = registration[0]
+        return registration
+
+
+def active_computer_use_provider() -> ComputerUseProvider:
+    """Keep profile configuration fixed, but resolve current plugin ownership on every use."""
+    return _active_provider_registration()[0]
+
+
+def _check_provider_revision(revision: object) -> None:
+    if _active_provider_registration()[1] != revision:
+        raise RuntimeError("computer_use provider replaced or unloaded; desktop authority revoked")
+
+
+def _new_backend(sid: str, permission_mode: str, provider: ComputerUseProvider) -> ComputerUseBackend:
+    return provider.create_backend(sid, permission_mode)
+
+def _install_backend(owner: Tuple[str, str], backend: ComputerUseBackend, permission_mode: str,
+                     provider_revision: object = None) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
-    global _backend
-    _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
-    _backend_call_locks[sid] = threading.RLock()
-    _backend = backend if sid == "" else _backend
+    _backends[owner], _backend_permission_modes[owner] = backend, permission_mode
+    _backend_provider_revisions[owner] = provider_revision
+    _backend_call_locks[owner] = threading.RLock()
+    if owner[1] == "":
+        _backend[owner[0]] = backend
     return backend
 
-def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
+def _detach_locked(owner: Tuple[str, str]) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
-    global _backend
-    _backend_permission_modes.pop(sid, None)
-    backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
-    if sid == "":
-        backend = _backend if backend is None else backend
-        _backend = None if _backend is backend else _backend
+    _backend_permission_modes.pop(owner, None)
+    _backend_provider_revisions.pop(owner, None)
+    backend, call_lock = _backends.pop(owner, None), _backend_call_locks.pop(owner, None)
+    if owner[1] == "":
+        injected = _backend.pop(owner[0], None)
+        backend = injected if backend is None else backend
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
@@ -158,36 +205,83 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     sid = str(session_id or "")
-    while True:
-        with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(sid)
-            if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
-            if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
-                return cached
-            # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
-            _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
-        _stop_backend(cached, stale_lock, lambda e: None)
+    owner = _backend_owner_key(sid)
+    with _backend_lock:
+        start_lock = _backend_start_locks.setdefault(owner, threading.Lock())
+    with start_lock:
+        try:
+            provider, revision = _active_provider_registration()
+            with _backend_lock:
+                if _backend_start_locks.get(owner) is not start_lock:
+                    raise RuntimeError("computer_use session released during backend startup")
+                # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
+                permission_mode = _cua_permission_mode(sid)
+                if sid == "" and owner[0] in _backend and owner not in _backends:
+                    _install_backend(owner, _backend[owner[0]], permission_mode, revision)
+                cached = _backends.get(owner)
+                if cached is not None and _backend_provider_revisions.get(owner, revision) != revision:
+                    raise RuntimeError("computer_use provider replaced or unloaded; desktop authority revoked")
+                if cached is not None and _backend_permission_modes.get(owner, "standard") == permission_mode:
+                    return cached
+                # Mode replacement keeps this owner generation; only release revokes its authority.
+                _, stale_lock = _detach_locked(owner)
+            if cached is not None:
+                _stop_backend(cached, stale_lock, lambda e: None)
+                with _backend_lock:
+                    if _backend_start_locks.get(owner) is not start_lock:
+                        raise RuntimeError("computer_use session released during backend startup")
+                    permission_mode = _cua_permission_mode(sid)
+            backend = _new_backend(sid, permission_mode, provider)
+            try:
+                _check_provider_revision(revision)
+                backend.start()  # outside _backend_lock: unrelated owners proceed concurrently
+                with _backend_lock:
+                    if _backend_start_locks.get(owner) is start_lock:
+                        _check_provider_revision(revision)
+                        return _install_backend(owner, backend, permission_mode, revision)
+                raise RuntimeError("computer_use session released during backend startup")
+            except BaseException:
+                _stop_backend(backend, None,
+                              lambda e: logger.debug("computer_use failed startup teardown: %s", e))
+                raise
+        except BaseException:
+            stale, stale_lock = None, None
+            with _backend_lock:
+                if _backend_start_locks.get(owner) is start_lock:
+                    _backend_start_locks.pop(owner)
+                    stale, stale_lock = _detach_locked(owner)
+                    with _approval_lock:
+                        _session_auto_approve.pop(owner, None), _always_allow.pop(owner, None)
+            if stale is not None:
+                _stop_backend(stale, stale_lock,
+                              lambda e: logger.debug("computer_use revoked provider teardown: %s", e))
+            raise
 
 def release_computer_use_session(session_id: str) -> bool:
-    """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
+    """Release one owner's backend or acquisition generation; idempotent, True iff either was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace; approval
     state is cleared even without a backend."""
     sid = str(session_id or "")
+    owner = _backend_owner_key(sid)
     with _backend_lock:
-        backend, call_lock = _detach_locked(sid)
+        generation = _backend_start_locks.pop(owner, None)
+        backend, call_lock = _detach_locked(owner)
     with _approval_lock:
-        _session_auto_approve.pop(sid, None), _always_allow.pop(sid, None)
+        _session_auto_approve.pop(owner, None), _always_allow.pop(owner, None)
     if backend is None:
-        return False
+        return generation is not None
     _stop_backend(backend, call_lock,
                   lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
     return True
+
+@contextlib.contextmanager
+def _provider_home(home: str):
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
 
 @atexit.register
 def _shutdown_backend_atexit() -> None:
@@ -199,20 +293,35 @@ def _shutdown_backend_atexit() -> None:
     the Hermes process that spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
     disabling the cursor overlay; the process itself still lingered.
     """
-    global _backend
     with _backend_lock:
-        unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
-        if _backend is not None:
-            unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
-        _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        unique = {id(b): (owner[0], b, _backend_call_locks.get(owner)) for owner, b in _backends.items()}
+        for home, backend in _backend.items():
+            unique.setdefault(id(backend), (home, backend, _backend_call_locks.get((home, ""))))
+        _backend.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_start_locks.clear()
+        _backend_provider_revisions.clear()
     with _approval_lock:
         _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
-    for backend, call_lock in unique.values():
-        _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
+    for home, backend, call_lock in unique.values():
+        with _provider_home(home):
+            _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
+    # After the backends: a provider's leases (containers, sandboxes) outlive the backend objects that drove
+    # them. Only a provider we actually resolved can own anything, so this never forces a resolution at exit.
+    with _provider_lock:
+        resolved = list(_resolved_providers.items())
+        _resolved_providers.clear()  # consume before invoking hooks: idempotent even if a hook raises
+    for (home, _), provider in resolved:
+        try:
+            with _provider_home(home):
+                provider.emergency_cleanup()
+        except Exception as e:
+            logger.debug("computer_use provider %r cleanup failed: %s", provider.name, e)
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
+    with _provider_lock:
+        _provider_cache.clear()
+        _resolved_providers.clear()
     _AUX_VISION_ROUTE_CACHE.clear()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
@@ -255,31 +364,46 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             return err
     try:
         backend = _get_backend(session_id=session_id)
+    except UnknownComputerUseProvider as e:
+        # Its message already names the missing provider and how to fix it; the cua-driver hint below would
+        # send the user after the wrong thing.
+        return json.dumps({"error": str(e)})
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})
     try:
+        owner = _backend_owner_key(session_id)
         with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
+            call_lock = _backend_call_locks.get(owner)
+        if call_lock is None:
+            return json.dumps({"error": "computer_use session released before dispatch"})
         with call_lock:
+            # Release/replacement can detach us after lookup or while we wait for an action.
+            # Validate the pair under the cache lock; keep only the call lock during I/O,
+            # so release drains admitted actions without blocking unrelated owners.
+            with _backend_lock:
+                if _backends.get(owner) is not backend or _backend_call_locks.get(owner) is not call_lock:
+                    return json.dumps({"error": "computer_use session released or backend replaced before dispatch"})
+                _check_provider_revision(_backend_provider_revisions[owner])
             return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
 def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
-    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground
+    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND backend owner: foreground
     delivery is a visible focus change, so a background ``approve_session`` must NOT cover it; the blanket
     ``always_approve`` does. No CLI approval wired -> default allow (gateway approval runs one layer out).
 
     ``always_approve`` (the blanket "auto-approve everything" unlock) still covers foreground, since the
-    user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
+    user explicitly opted into unattended operation. State is keyed on profile and session so concurrent runs don't
     leak unlocks into one another. See #67052.
     """
     scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
+    owner = _backend_owner_key(session_id)
     with _approval_lock:
-        if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
+        if _session_auto_approve.get(owner) or scope_key in _always_allow.get(owner, set()):
             return None
     if (cb := _approval_callback) is None:
         return None
@@ -290,9 +414,9 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
         verdict = "deny"
     if verdict in ("approve_session", "always_approve"):
         with _approval_lock:
-            _always_allow.setdefault(session_id, set()).add(scope_key)
+            _always_allow.setdefault(owner, set()).add(scope_key)
             if verdict == "always_approve":
-                _session_auto_approve[session_id] = True
+                _session_auto_approve[owner] = True
     if verdict in ("approve_once", "approve_session", "always_approve"):
         return None
     return json.dumps({"error": ("approval prompt timed out — the user did not respond. Silence is not consent; "
@@ -748,11 +872,27 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
+    """True iff the active provider can run computer_use.
+
+    Host provider: macOS/Windows/Linux + cua-driver binary (`hermes computer-use doctor` names blocked checks).
+    Another provider answers for its own runtime — a container pool supplies displays a headless gateway lacks,
+    so the host platform gate is not applied on its behalf. An unknown provider name keeps the tool
+    visible so dispatch can explain the missing registration. A registered provider reporting
+    unavailable (including invalid remote configuration) hides the tool.
+    """
+    try:
+        provider = active_computer_use_provider()
+    except UnknownComputerUseProvider:
+        return True
+    if provider.name != HOST_PROVIDER_NAME:
+        try:
+            return bool(provider.is_available())
+        except Exception:  # noqa: BLE001 — a throwing provider is an absent one
+            logger.debug("computer_use provider availability check failed", exc_info=True)
+            return False
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
-    from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    return cua_driver_binary_available()
+    return provider.is_available()
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

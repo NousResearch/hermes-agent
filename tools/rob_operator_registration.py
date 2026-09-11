@@ -14,18 +14,18 @@ the model: the ``rob_`` name prefix and an explicit "[READ-ONLY]" marker
 at the start of every description below — visible to the agent choosing
 between tools, with zero new registry infrastructure.
 
-This registers the complete public tool set: all 19 functions in
-``tools/rob_operator_tools.py`` plus ``env_presence`` (20 total), proving
-the end-to-end pattern (schema → handler → guard → redaction → bounded
-result) genuinely works through the real tool-calling path, not just as
-directly-callable Python functions, for every implemented capability.
+This registers 18 of the 19 functions in ``tools/rob_operator_tools.py``
+plus ``env_presence`` (19 total), proving the end-to-end pattern (schema →
+handler → guard → redaction → bounded result) genuinely works through the
+real tool-calling path, not just as directly-callable Python functions.
+``container_exec_readonly`` is implemented and tested but deliberately not
+registered — see the comment at its former registration site below.
 """
 
 from __future__ import annotations
 
 from tools.registry import registry
 from tools.rob_operator_tools import (
-    container_exec_readonly,
     db_select,
     docker_compose_ps,
     docker_inspect,
@@ -484,29 +484,21 @@ registry.register(
     emoji="🗂️",
 )
 
-registry.register(
-    name="rob_container_exec_readonly",
-    toolset="rob_operator",
-    schema={
-        "type": "function",
-        "function": {
-            "name": "rob_container_exec_readonly",
-            "description": (
-                "[READ-ONLY] Run a read-only command inside a container (docker exec), e.g. to "
-                "inspect files or process state a host-level tool can't reach. The inner command "
-                "is checked by the exact same read-only guard as every other Rob tool — no "
-                "interactive, privileged, or user-override flags are ever passed."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "container": {"type": "string", "description": "Container name."},
-                    "command": {"type": "string", "description": "A single read-only shell command to run inside the container."},
-                },
-                "required": ["container", "command"],
-            },
-        },
-    },
-    handler=lambda args, **kw: _result_dict(container_exec_readonly(args["container"], args["command"])),
-    emoji="📦",
-)
+# ---------------------------------------------------------------------------
+# container_exec_readonly is intentionally NOT registered.
+# ---------------------------------------------------------------------------
+# It builds `docker exec <container> <command>` and re-validates the WHOLE
+# string through run_read_only_guard(), but the guard's docker validator
+# has no `exec` entry in its subcommand allowlist — every invocation is
+# therefore denied unconditionally, with no way to configure it into
+# working. Registering an always-failing tool wastes a model turn on every
+# call and mis-states the toolset's real surface, so it stays implemented
+# and tested (tools/rob_operator_tools.py, tests/tools/test_rob_operator_tools.py)
+# but out of the registry until a real `docker exec` allowlist entry is
+# added to read_only_command_guard.py's _validate_docker — deliberately
+# NOT done as part of this pass, since a `docker exec` allowlist entry is a
+# new guard capability, not a bugfix, and the guard's git/curl handling was
+# only just hardened in this same pass (see read_only_command_guard.py's
+# _validate_git/_validate_curl history). Adding new reachable surface in
+# the same commit as closing a guard gap is exactly the sequencing this
+# implementation's own review flagged as risky.

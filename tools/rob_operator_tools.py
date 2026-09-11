@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import shlex
 import socket
 import ssl
 import subprocess
 import time
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from tools.db_readonly_profile import DbProfileError, build_session_init_statements, load_profile
@@ -288,7 +289,16 @@ def http_probe(url: str, method: str = "GET", timeout: int = 10) -> ToolResult:
             headers = {k: v for k, v in resp.getheaders() if k.lower() != "authorization"}
             body = "" if method == "HEAD" else resp.read(_MAX_OUTPUT_CHARS).decode("utf-8", errors="replace")
     except Exception as exc:
-        return ToolResult(ok=False, error=f"request failed: {exc}", duration_ms=int((time.monotonic() - started) * 1000))
+        # The exception text can itself embed the requested URL (e.g. a
+        # DNS/connect failure message quoting it back), and a
+        # credential-bearing URL is a caller mistake this tool must not
+        # amplify into a leak — redact the error text same as any other
+        # output.
+        return ToolResult(
+            ok=False,
+            error=redact_text(f"request failed: {exc}"),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
     duration_ms = int((time.monotonic() - started) * 1000)
     output = redact_text(json.dumps({"status": status, "headers": headers, "body": body}))
     return ToolResult(ok=True, output=output, duration_ms=duration_ms)
@@ -347,6 +357,17 @@ _FORBIDDEN_SQL_KEYWORDS = (
     "grant", "revoke", "copy", "call", "do", "vacuum", "reindex", "cluster",
     "lock", "merge", "execute", "prepare", "listen", "notify", "refresh",
     "into",  # blocks SELECT ... INTO, which creates a table
+    # Function-call-based mutation/file-access: a bare SELECT wrapping one
+    # of these is a mutation or filesystem read in disguise, not an
+    # inspection query. This is a text-level convenience filter, not the
+    # security boundary — the boundary is the dedicated least-privilege
+    # role (sequence functions are the only one of these still callable
+    # under a real read-only role; the rest require superuser and would be
+    # refused server-side regardless).
+    "setval", "nextval",
+    "lo_import", "lo_export",
+    "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
+    "dblink", "pg_sleep",
 )
 
 
@@ -360,8 +381,6 @@ def _reject_non_select(query: str) -> str | None:
     for word in _FORBIDDEN_SQL_KEYWORDS:
         # Word-boundary check, not a naive substring match (so e.g. a
         # column literally named "deleted_at" isn't rejected).
-        import re
-
         if re.search(rf"\b{re.escape(word)}\b", lowered):
             return f"query contains a forbidden keyword: {word}"
     return None
@@ -401,7 +420,14 @@ def db_select(profile: str, query: str, params: Optional[list] = None, row_limit
                 columns = [c.name for c in cur.description] if cur.description else []
                 rows = cur.fetchall()
     except Exception as exc:
-        return ToolResult(ok=False, error=f"query failed: {exc}", duration_ms=int((time.monotonic() - started) * 1000))
+        # Postgres error text can echo the failing statement, including any
+        # literal values it contained — redact same as any other output
+        # rather than trust that a DB driver's exception text is safe.
+        return ToolResult(
+            ok=False,
+            error=redact_text(f"query failed: {exc}"),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
     duration_ms = int((time.monotonic() - started) * 1000)
 
     payload = redact_mapping({"columns": columns, "rows": [list(r) for r in rows], "row_count": len(rows)})

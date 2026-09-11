@@ -53,6 +53,69 @@ class TestDatabaseUrlRegression:
         assert "s3cr3t" not in redact_text("redis://:s3cr3t@localhost:6379")
 
 
+class TestNonUriNamePatternRegression:
+    """Direct regression test for a second, independently-confirmed leak:
+    the name-pattern matcher was `^`-anchored against the stripped line, so
+    it only fired when the secret-shaped NAME was the very first token —
+    exactly the one shape `DATABASE_URL=...` happens to have, and exactly
+    the shape almost nothing else has. A real `docker inspect` env dump
+    (JSON array of `"NAME=value"` strings, each indented and quoted) never
+    matched, so every non-URI secret in it leaked in full."""
+
+    def test_docker_inspect_env_array_shape(self):
+        # The literal shape `docker inspect`'s `.Config.Env` produces: an
+        # indented, quoted, comma-terminated JSON array element.
+        line = '            "MCP_TOKEN_SIGNING_SECRET=abc123def456",'
+        result = redact_text(line)
+        assert "abc123def456" not in result
+        assert "MCP_TOKEN_SIGNING_SECRET" in result
+
+    def test_multiple_docker_inspect_env_lines(self):
+        dump = "\n".join([
+            '        "Env": [',
+            '            "PATH=/usr/local/sbin:/usr/sbin",',
+            '            "POSTGRES_PASSWORD=s3cr3t-prod-value",',
+            '            "HERMES_SKILLS_BRIDGE_TOKEN=bridgetok123456",',
+            '            "OPENAI_API_KEY=sk-not-a-real-key-but-shaped-like-one",',
+            '        ]',
+        ])
+        result = redact_text(dump)
+        assert "s3cr3t-prod-value" not in result
+        assert "bridgetok123456" not in result
+        assert "sk-not-a-real-key-but-shaped-like-one" not in result
+        # Non-secret lines and the surrounding JSON structure survive.
+        assert "/usr/local/sbin" in result
+        assert '"Env": [' in result
+
+    def test_bare_password_variable_no_underscore_prefix(self):
+        # PGPASSWORD is the canonical Postgres env var and has no
+        # underscore before the secret word — the old key regex required
+        # one and would have missed this even at line start.
+        assert "topsecret" not in redact_text("PGPASSWORD=topsecret")
+        assert "s3cr3t" not in redact_text("    APIKEY=s3cr3t")
+
+    def test_secret_embedded_mid_line_in_json_body(self):
+        # An http_probe response body is one JSON-encoded line; the secret
+        # is nowhere near the start of the line.
+        body = '{"status": "ok", "body": "SESSION_TOKEN=abcdef123456 and more text after"}'
+        result = redact_text(body)
+        assert "abcdef123456" not in result
+        assert "and more text after" in result
+
+    def test_json_style_quoted_key_value(self):
+        line = '  "POSTGRES_PASSWORD": "hunter2value",'
+        result = redact_text(line)
+        assert "hunter2value" not in result
+        assert "POSTGRES_PASSWORD" in result
+
+    def test_benign_substring_not_falsely_flagged_by_boundary(self):
+        # "SOMETOKENISH" contains "TOKEN" but isn't secret-shaped on its
+        # own without a following separator+value — nothing here should
+        # explode or over-match past the actual value.
+        line = "DESCRIPTION=a component named SOMETOKENISH exists"
+        assert redact_text(line) == line
+
+
 class TestAuthorizationHeaderRedaction:
     def test_bearer(self):
         result = redact_text("Authorization: Bearer abcdef123456")

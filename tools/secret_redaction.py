@@ -14,16 +14,24 @@ from __future__ import annotations
 
 import re
 
+_SECRET_WORD = r"(?:TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL)"
+
 _NAME_PATTERN = re.compile(
-    # A key is a secret-shaped name either bare (`PASSWORD=x`) or with any
-    # number of underscore-separated segments before the suffix
-    # (`MCP_TOKEN_SIGNING_SECRET=x`) — the naive `_SUFFIX` form used
-    # earlier only matched when a literal underscore preceded the suffix,
-    # missing the common bare-word case entirely (caught by
-    # tests/tools/test_secret_redaction.py's own regression suite).
-    r"^(?P<key>(?:[A-Za-z0-9.-]+_)*(?:TOKEN|PASSWORD|SECRET|KEY|PASSWD|CREDENTIAL))"
-    r"(?P<sep>\s*[:=]\s*)"
-    r"(?P<value>.*)$",
+    # A key is any identifier CONTAINING a secret-shaped word segment,
+    # anywhere in the line — not just at the start of the (stripped) line.
+    # The earlier `^`-anchored version only matched when the secret-shaped
+    # name was the first token on the line, which misses the exact shape a
+    # `docker inspect` env dump actually produces (`    "MCP_TOKEN=x",` —
+    # the name is preceded by indentation AND a quote, never at line start)
+    # as well as any secret embedded mid-line (a JSON body, a log line with
+    # a prefix). A one-character negative lookbehind keeps this from
+    # matching in the middle of a longer identifier (`SOMETOKENISH` isn't
+    # falsely split), while intentionally still matching substrings like
+    # "PGPASSWORD" or "APIKEY" that have no separating underscore.
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<key>[A-Za-z0-9_.-]*" + _SECRET_WORD + r"[A-Za-z0-9_.-]*)"
+    r"(?P<sep>[\"']?\s*[:=]\s*[\"']?)"
+    r"(?P<value>[^\s,;}\]&\"']+)",
     re.IGNORECASE,
 )
 
@@ -88,12 +96,9 @@ def redact_text(text: str) -> str:
 
 
 def _redact_line(line: str) -> str:
-    m = _NAME_PATTERN.match(line.strip("\n").lstrip())
-    if m and m.group("value").strip():
-        prefix_len = len(line) - len(line.lstrip())
-        newline = "\n" if line.endswith("\n") else ""
-        return line[:prefix_len] + m.group("key") + m.group("sep") + REDACTED + newline
-
+    line = _NAME_PATTERN.sub(
+        lambda mo: f"{mo.group('key')}{mo.group('sep')}{REDACTED}", line
+    )
     line = _URI_CREDENTIAL_PATTERN.sub(
         lambda mo: f"{mo.group('scheme')}{mo.group('user')}:{REDACTED}{mo.group('at')}", line
     )
@@ -124,8 +129,10 @@ _SECRET_KEY_BARE_WORDS = ("TOKEN", "PASSWORD", "SECRET", "KEY", "PASSWD", "CREDE
 
 
 def _is_secret_key(key: str) -> bool:
-    # Same rule as _NAME_PATTERN: bare ("PASSWORD") or underscore-suffixed
-    # ("MCP_TOKEN_SIGNING_SECRET") both count — a dict key that IS exactly
-    # one of the bare words, or ends with "_" + one of them.
+    # Same rule as _NAME_PATTERN: any key CONTAINING a secret-shaped word
+    # counts, not just one ending with "_" + the word — a bare, unseparated
+    # name like "PGPASSWORD" or "APIKEY" is exactly as sensitive as
+    # "MCP_TOKEN_SIGNING_SECRET" and must not slip through for lack of an
+    # underscore.
     upper = str(key).upper()
-    return any(upper == word or upper.endswith("_" + word) for word in _SECRET_KEY_BARE_WORDS)
+    return any(word in upper for word in _SECRET_KEY_BARE_WORDS)

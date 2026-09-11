@@ -95,12 +95,23 @@ def _assert_not_superuser_dsn(dsn: str, profile_name: str) -> None:
 
 
 def build_session_init_statements(profile: ReadOnlyDsnProfile) -> list:
-    """SQL to run at the start of every Rob DB session, defense-in-depth
-    ON TOP OF the role's own GRANT-level restrictions (belt and suspenders
-    — a role misconfiguration and a session-level guard would both have
-    to fail for a write to slip through)."""
+    """SQL to run at the start of every Rob DB session/transaction,
+    defense-in-depth ON TOP OF the role's own GRANT-level restrictions
+    (belt and suspenders — a role misconfiguration and this guard would
+    both have to fail for a write to slip through).
+
+    Deliberately ``SET TRANSACTION READ ONLY``, not
+    ``SET default_transaction_read_only = on``: psycopg opens an implicit
+    transaction on the first ``cursor.execute()``, so a plain
+    ``default_transaction_read_only`` SET issued as that first statement
+    only takes effect for transactions that start AFTER it — it does
+    nothing for the very transaction it runs in, which is also the one the
+    actual query runs in here. ``SET TRANSACTION READ ONLY`` instead sets
+    the CURRENT transaction's characteristics and is valid precisely
+    because it is unconditionally the first statement executed in a fresh
+    connection/transaction in this module's calling code."""
     return [
-        "SET default_transaction_read_only = on",
+        "SET TRANSACTION READ ONLY",
         f"SET statement_timeout = {profile.statement_timeout_ms}",
         "SET search_path = public",
     ]

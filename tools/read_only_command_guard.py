@@ -164,9 +164,21 @@ _GIT_ALLOWED_SUBCOMMANDS = {
     "show",
     "rev-parse",
     "merge-base",
-    "tag",
-    "reflog",
 }
+
+
+def _git_has_file_output_flag(args: list[str]) -> bool:
+    """``--output``/``--output=<file>`` (and the short ``-o<file>`` form) redirect
+    a diff/log/show's output straight to an arbitrary file — a write primitive,
+    not a read — and are never legitimate for a read-only inspection command.
+    Checked independent of subcommand since several git subcommands share the
+    same diff/log output-routing machinery."""
+    for tok in args:
+        if tok == "--output" or tok.startswith("--output="):
+            return True
+        if tok == "-o" or (tok.startswith("-o") and not tok.startswith("--") and len(tok) > 2):
+            return True
+    return False
 
 
 def _validate_git(argv: list[str]) -> GuardResult:
@@ -174,16 +186,31 @@ def _validate_git(argv: list[str]) -> GuardResult:
     if not args:
         return _deny("git", "bare 'git' with no subcommand is not a read-only operation")
     sub = args[0]
+    rest = args[1:]
+    if _git_has_file_output_flag(rest):
+        return _deny(f"git {sub}", "writing output to a file (--output/-o) is a write primitive, not a read")
     if sub == "branch":
         # Only the read-only "what branch am I on" form is allowed — any
         # other `git branch` invocation can create/delete/rename branches.
-        if args[1:] == ["--show-current"]:
+        if rest == ["--show-current"]:
             return _allow()
         return _deny("git branch", "only 'git branch --show-current' is allowed")
     if sub == "worktree":
-        if args[1:2] == ["list"]:
+        if rest[:1] == ["list"]:
             return _allow()
         return _deny("git worktree", "only 'git worktree list' is allowed")
+    if sub == "tag":
+        # Only the bare listing form. Any operand (a tag name to create, or
+        # -d/-l/etc.) can create or delete a tag, which is a mutation.
+        if not rest:
+            return _allow()
+        return _deny("git tag", "only bare 'git tag' (listing) is allowed — creating/deleting a tag is a mutation")
+    if sub == "reflog":
+        # Only the read-only "show" form: bare, a numeric limit (`-20`), or
+        # an explicit `show`. `expire`/`delete` destroy reflog history.
+        if not rest or (rest[0] == "show") or all(tok.lstrip("-").isdigit() for tok in rest):
+            return _allow()
+        return _deny("git reflog", "only 'git reflog' / 'git reflog -N' / 'git reflog show' are allowed")
     if sub in _GIT_ALLOWED_SUBCOMMANDS:
         return _allow()
     return _deny(f"git {sub}", f"git subcommand '{sub}' is not in the read-only allowlist")
@@ -266,18 +293,39 @@ _CURL_DENIED_FLAGS = {
 }
 
 
+def _curl_flag_and_inline_value(tok: str) -> tuple[str | None, str | None]:
+    """Split one curl argument token into (flag, attached_value).
+
+    Long options (`--data=x`) attach a value after `=`. Short options
+    (`-d@file`, `-XPOST`, `-T/etc/passwd`) attach a value directly after the
+    single flag letter, with NO separator at all — a plain `tok.split("=")`
+    (the previous implementation) never observes this and lets every denied
+    short flag through whenever its value is attached rather than
+    space-separated. Both forms are normalized to (flag, value_or_None)."""
+    if tok.startswith("--"):
+        if "=" in tok:
+            flag, value = tok.split("=", 1)
+            return flag, value
+        return tok, None
+    if tok.startswith("-") and len(tok) > 1:
+        flag = tok[:2]
+        value = tok[2:] if len(tok) > 2 else None
+        return flag, value
+    return None, None
+
+
 def _validate_curl(argv: list[str]) -> GuardResult:
     args = argv[1:]
     method = "GET"
     i = 0
     while i < len(args):
         tok = args[i]
-        flag = tok.split("=", 1)[0]
+        flag, inline_value = _curl_flag_and_inline_value(tok)
         if flag in _CURL_DENIED_FLAGS:
             return _deny("curl", f"'{flag}' is not permitted (body-bearing/config/output-file curl option)")
         if flag in ("-X", "--request"):
-            if "=" in tok:
-                method = tok.split("=", 1)[1]
+            if inline_value:
+                method = inline_value
             elif i + 1 < len(args):
                 method = args[i + 1]
                 i += 1

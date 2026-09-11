@@ -74,5 +74,20 @@ class TestSessionInitStatements:
         monkeypatch.setenv("ROB_DB_PROFILE_PROJECTOS_DSN", "postgresql://projectos_ro:x@h/db")
         profile = load_profile("projectos")
         statements = build_session_init_statements(profile)
-        assert any("read_only = on" in s for s in statements)
+        # "SET TRANSACTION READ ONLY", not "SET default_transaction_read_only
+        # = on" — the latter only affects transactions that start AFTER it,
+        # which is never true here since this is always the first statement
+        # of the transaction the actual query also runs in. See
+        # build_session_init_statements' own docstring for the full reasoning
+        # (this was a real, confirmed-ineffective bug, not a style choice).
+        assert any("TRANSACTION READ ONLY" in s for s in statements)
+        assert not any("default_transaction_read_only" in s for s in statements)
         assert any(f"statement_timeout = {profile.statement_timeout_ms}" in s for s in statements)
+
+    def test_read_only_statement_runs_before_any_other_statement(self, monkeypatch):
+        # SET TRANSACTION READ ONLY is only effective as the FIRST statement
+        # of a transaction — order here isn't cosmetic.
+        monkeypatch.setenv("ROB_DB_PROFILE_PROJECTOS_DSN", "postgresql://projectos_ro:x@h/db")
+        profile = load_profile("projectos")
+        statements = build_session_init_statements(profile)
+        assert "TRANSACTION READ ONLY" in statements[0]

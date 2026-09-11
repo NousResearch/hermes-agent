@@ -18,6 +18,7 @@ import subprocess
 from dataclasses import dataclass
 
 from tools.read_only_command_guard import run_read_only_guard
+from tools.secret_redaction import redact_text
 
 
 class EnvPresenceError(Exception):
@@ -44,7 +45,11 @@ def _run_guarded(command: str, timeout: int = 10) -> str:
         command, shell=True, capture_output=True, text=True, timeout=timeout,  # noqa: S602 — guarded above
     )
     if proc.returncode != 0:
-        raise EnvPresenceError(proc.stderr.strip() or f"command exited {proc.returncode}")
+        # Never trust that a failing subprocess's stderr is itself
+        # secret-free (a mistyped target, a wrapped error message, etc.
+        # could echo back something sensitive) — redact same as any other
+        # output before it can reach a caller.
+        raise EnvPresenceError(redact_text(proc.stderr.strip()) or f"command exited {proc.returncode}")
     return proc.stdout
 
 

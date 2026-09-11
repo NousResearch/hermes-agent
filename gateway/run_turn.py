@@ -1843,10 +1843,11 @@ class GatewayTurnMixin:
         elif status_code in {400, 500}:
             # 400/500 on a large session: context overflow / payload too large.
             if len(prepared.history) > 50:
-                return self._hmwa_add_failed_turn_notice(
+                # Overflow is a deterministic request rejection, not an indeterminate-effect
+                # failure (#107567): keep the reply to the /compact / /reset guidance only.
+                return (
                     "⚠️ Session too large for the model's context window.\nUse /compact to "
-                    "compress the conversation, or /reset to start fresh.",
-                    self._PARTIAL_FAILED_TURN_NOTICE,
+                    "compress the conversation, or /reset to start fresh."
                 )
             elif status_code == 400:
                 status_hint = " The request was rejected by the API."

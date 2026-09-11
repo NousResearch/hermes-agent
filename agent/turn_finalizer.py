@@ -217,11 +217,16 @@ def _recover_final_from_stream(agent, final_response, interrupted, failed) -> Tu
 def _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream) -> None:
     """Shape the transcript tail before the durable snapshot (scaffolding already dropped
     and ``final_response`` already stream-recovered by the caller)."""
-    # An interrupt can leave a tool result as the tail; close the sequence so strict
-    # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
+    # When the turn was interrupted and the last message is a tool result, persist
+    # interruption PROVENANCE on the tool tail instead of a synthetic assistant
+    # closure (#48879, #63292). A persisted ``tool → user`` alternation makes strict
+    # providers (Gemini, Claude) hallucinate a continuation of the user's message; the
+    # durable ``interrupted_tool_tail`` marker lets the API-copy sanitizer close the
+    # sequence provider-side at the next call while the stored transcript keeps real
+    # rows only.
     if interrupted:
-        from agent.message_sanitization import close_interrupted_tool_sequence
-        close_interrupted_tool_sequence(messages, final_response)
+        from agent.message_sanitization import mark_interrupted_tool_tail
+        mark_interrupted_tool_tail(messages)
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
     # row; enforce "delivered final_response ⇒ assistant row" here. Compare content,

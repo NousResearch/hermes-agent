@@ -5,7 +5,8 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  native_mention_only_chats=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -15,6 +16,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["mention_patterns"] = mention_patterns
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if native_mention_only_chats is not None:
+        extra["native_mention_only_chats"] = native_mention_only_chats
     if dm_policy is not None:
         extra["dm_policy"] = dm_policy
     if allow_from is not None:
@@ -228,5 +231,139 @@ def test_broadcast_filter_runs_before_allowlist():
         senderId="34612345678@s.whatsapp.net",
     )
     assert adapter._should_process_message(msg) is False
+
+
+# --- native_mention_only_chats tests ---
+
+
+def test_native_mention_only_chat_ignores_wake_word_patterns():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+        native_mention_only_chats=["120363001234567890@g.us"],
+    )
+
+    assert adapter._should_process_message(_group_message("chompy status")) is False
+
+
+def test_wake_word_patterns_still_count_in_unlisted_chats():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+        native_mention_only_chats=["999999999999@g.us"],
+    )
+
+    assert adapter._should_process_message(_group_message("chompy status")) is True
+
+
+def test_native_mention_still_processed_in_native_mention_only_chat():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+        native_mention_only_chats=["120363001234567890@g.us"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "chompy status",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    ) is True
+
+
+def test_reply_to_bot_still_processed_in_native_mention_only_chat():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+        native_mention_only_chats=["120363001234567890@g.us"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "replying without any mention",
+            quotedParticipant="15551230000@lid",
+        )
+    ) is True
+
+
+def test_native_mention_only_chats_parses_list_and_csv(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_NATIVE_MENTION_ONLY_CHATS", raising=False)
+
+    list_adapter = _make_adapter(
+        native_mention_only_chats=["120363001234567890@g.us", " 999999999999@g.us "],
+    )
+    assert list_adapter._whatsapp_native_mention_only_chats() == {
+        "120363001234567890@g.us",
+        "999999999999@g.us",
+    }
+
+    csv_adapter = _make_adapter(
+        native_mention_only_chats="120363001234567890@g.us, 999999999999@g.us",
+    )
+    assert csv_adapter._whatsapp_native_mention_only_chats() == {
+        "120363001234567890@g.us",
+        "999999999999@g.us",
+    }
+
+
+def test_native_mention_only_chats_empty_means_wake_words_everywhere(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_NATIVE_MENTION_ONLY_CHATS", raising=False)
+
+    empty_adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+        native_mention_only_chats="",
+    )
+    assert empty_adapter._whatsapp_native_mention_only_chats() == set()
+    assert empty_adapter._should_process_message(_group_message("chompy status")) is True
+
+    unset_adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+    )
+    assert unset_adapter._whatsapp_native_mention_only_chats() == set()
+    assert unset_adapter._should_process_message(_group_message("chompy status")) is True
+
+
+def test_native_mention_only_chats_env_fallback(monkeypatch):
+    monkeypatch.setenv(
+        "WHATSAPP_NATIVE_MENTION_ONLY_CHATS",
+        "120363001234567890@g.us, 999999999999@g.us",
+    )
+
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        group_policy="open",
+    )
+
+    assert adapter._whatsapp_native_mention_only_chats() == {
+        "120363001234567890@g.us",
+        "999999999999@g.us",
+    }
+    assert adapter._should_process_message(_group_message("chompy status")) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "chompy status",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    ) is True
+
+
+def test_native_mention_only_chats_extra_wins_over_env(monkeypatch):
+    """Config precedence contract: extra is consulted first, env only when
+    the extra key is absent."""
+    monkeypatch.setenv("WHATSAPP_NATIVE_MENTION_ONLY_CHATS", "999999999999@g.us")
+    adapter = _make_adapter(native_mention_only_chats=["120363001234567890@g.us"])
+
+    assert adapter._whatsapp_native_mention_only_chats() == {
+        "120363001234567890@g.us"
+    }
 
 

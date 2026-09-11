@@ -288,7 +288,8 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns,
+    convert_table_to_bullets as _wrap_markdown_tables, parse_chat_id_set)
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -5101,6 +5102,20 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return False
         return f"{chat_id}:{self._topic_id_or_general(self._effective_message_thread_id(message))}" in topics
 
+    def _telegram_native_mention_only_chats(self) -> set[str]:
+        """Return chat IDs where ONLY a native @username mention counts.
+
+        In these group chats ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via a real Telegram
+        @mention entity (or a reply to the bot). Mirrors Slack's
+        ``native_mention_only_channels``. Empty set means wake words count
+        everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_chats")
+        if raw is None:
+            raw = _scoped_gate_env("TELEGRAM_NATIVE_MENTION_ONLY_CHATS")
+        return parse_chat_id_set(raw)
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Group chat IDs the bot responds in (non-empty: others need ``guest_mode`` + @mention; DMs never
         filtered; empty = no restriction)."""
@@ -5456,7 +5471,11 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message) or self._message_mentions_bot(message):
             return False
-        return not self._message_matches_mention_patterns(message)
+        # Keep observe in lockstep with the dispatch gate: in native-mention-only
+        # chats a wake-word message is NOT dispatched, so it must be observed
+        # rather than skipped here.
+        return not (chat_id_str not in self._telegram_native_mention_only_chats()
+                    and self._message_matches_mention_patterns(message))
 
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
@@ -5694,7 +5713,10 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(message)
+        return (
+            chat_id_str not in self._telegram_native_mention_only_chats()
+            and self._message_matches_mention_patterns(message)
+        )
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;

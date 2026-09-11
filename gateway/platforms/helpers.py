@@ -249,6 +249,21 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
     return _compile(texts, "[%s] Invalid mention pattern %r: %s")
 
 
+def parse_chat_id_set(raw) -> 'set[str]':
+    """Parse a chat/channel-id list value (list, or comma-separated string) into a set.
+
+    The canonical per-chat gating value shape shared by every adapter's
+    allowlist keys (``allowed_chats``, ``free_response_channels``, …): a YAML
+    list, or a comma-separated string, of chat/channel IDs. ``None`` and
+    blank entries yield the empty set.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple, set)):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
 # yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).

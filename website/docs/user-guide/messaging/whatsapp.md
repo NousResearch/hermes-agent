@@ -125,10 +125,12 @@ unauthorized_dm_behavior: pair
 
 whatsapp:
   unauthorized_dm_behavior: ignore
+  native_mention_only_chats: ""
 ```
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
+- `whatsapp.native_mention_only_chats` lists group chat IDs where ONLY a real WhatsApp @mention (or a reply to the bot) counts as a mention — `mention_patterns` wake words are ignored there. Comma-separated IDs or a list. Env: `WHATSAPP_NATIVE_MENTION_ONLY_CHATS`.
 
 Then start the gateway:
 

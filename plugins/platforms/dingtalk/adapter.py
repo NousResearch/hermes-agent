@@ -266,6 +266,17 @@ class DingTalkAdapter(BasePlatformAdapter):
         configured = self._extra_get("require_mention", "DINGTALK_REQUIRE_MENTION", "false")
         return configured.lower() in _TRUTHY if isinstance(configured, str) else bool(configured)
 
+    def _dingtalk_native_mention_only_chats(self) -> Set[str]:
+        """Return group chat IDs where ONLY a native @mention counts.
+
+        In these groups ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via the DingTalk
+        at-list (``is_in_at_list``). Mirrors Slack's
+        ``native_mention_only_channels``. Empty set means wake words count
+        everywhere.
+        """
+        return self._csv_setting("native_mention_only_chats", "DINGTALK_NATIVE_MENTION_ONLY_CHATS")
+
     def _dingtalk_allowed_chats(self) -> Set[str]:
         """Group chat whitelist; non-empty = hard gate even when @mentioned. DMs never filtered."""
         return self._csv_setting("allowed_chats", "DINGTALK_ALLOWED_CHATS")
@@ -304,7 +315,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             bool(chat_id and chat_id in self._csv_setting("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS"))
             or not self._dingtalk_require_mention()
             or bool(getattr(message, "is_in_at_list", False))
-            or self._message_matches_mention_patterns(text)
+            # Wake words do not count in native-mention-only chats.
+            or (chat_id not in self._dingtalk_native_mention_only_chats()
+                and self._message_matches_mention_patterns(text))
         )
 
     def _spawn_bg(self, coro) -> None:

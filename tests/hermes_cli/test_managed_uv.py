@@ -509,12 +509,16 @@ class TestRuntimeRepair:
              ), \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 return_value=(
+                     None,
+                     "replacement environment dependency sync failed (uv sync --locked)",
+                 ),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
 
         assert result.status == "failed"
-        assert "replacement environment" in result.detail
+        assert "dependency sync failed" in result.detail
+        assert "smoke tests" not in result.detail
         assert sentinel.read_text(encoding="utf-8") == "live"
         assert (live / "bin" / "python").read_text(encoding="utf-8") == (
             "live interpreter"
@@ -582,7 +586,7 @@ class TestRuntimeRepair:
              ), \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=candidate_venv,
+                 return_value=(candidate_venv, ""),
              ), \
              patch(
                  "hermes_cli.managed_uv._smoke_candidate_venv",
@@ -626,7 +630,7 @@ class TestStageCandidateVenvCrossPlatform:
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
              ):
-            candidate = _stage_candidate_venv(
+            candidate, detail = _stage_candidate_venv(
                 "uv",
                 project_root=root,
                 generation=generation,
@@ -634,6 +638,7 @@ class TestStageCandidateVenvCrossPlatform:
             )
 
         assert candidate is not None
+        assert detail == ""
         assert len(calls) == 2
         venv_argv, venv_kwargs = calls[0]
         sync_argv, sync_kwargs = calls[1]
@@ -1227,7 +1232,7 @@ class TestRepairRetriesAfterUvRefresh:
              ) as mock_refresh, \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 return_value=(None, "replacement environment dependency sync failed"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
         return result, attempts, mock_refresh, sentinel
@@ -1399,7 +1404,6 @@ class TestVenvPythonUpdateBoundary:
         assert _venv_python(Path("/opt/hermes/venv")) == expected
 
 
-
 class TestWindowsRuntimeSelfLock:
     """The repair pre-flight must see the ONE holder the generic scan hides:
     the updater itself (#93032).
@@ -1542,3 +1546,60 @@ class TestWindowsRuntimeSelfLock:
 
         assert locked
         assert "999" in detail
+
+
+class TestStageCandidateVenvFailureDetail:
+    """Candidate staging reports the failing phase precisely."""
+
+    @pytest.mark.parametrize(
+        ("stage", "expected_detail"),
+        [
+            ("create", "replacement environment venv creation failed"),
+            ("missing-lock", "replacement environment dependency sync refused: uv.lock is missing"),
+            ("sync", "replacement environment dependency sync failed (uv sync --locked)"),
+            ("smoke", "replacement environment did not pass dependency and import smoke tests: import failed"),
+        ],
+        ids=["create", "missing-lock", "sync", "smoke"],
+    )
+    def test_failure_detail_and_cleanup(self, tmp_path, stage, expected_detail):
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root = tmp_path / "checkout"
+        root.mkdir()
+        if stage != "missing-lock":
+            (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+        generation = root / ".hermes-runtime" / "python" / "gen"
+        python = generation / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("py", encoding="utf-8")
+        candidates = []
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[1])
+            if cmd[1] == "venv":
+                candidate = Path(cmd[2])
+                candidate.mkdir(parents=True)
+                (candidate / "partial").write_text("partial install", encoding="utf-8")
+                candidates.append(candidate)
+            failed = (stage == "create" and cmd[1] == "venv") or (stage == "sync" and cmd[1] == "sync")
+            return SimpleNamespace(returncode=int(failed), stdout="", stderr="stage failed" if failed else "")
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), patch(
+            "hermes_cli.managed_uv._smoke_candidate_venv",
+            return_value=(False, "import failed", None),
+        ) as smoke:
+            path, detail = _stage_candidate_venv(
+                "uv", project_root=root, generation=generation, python=python,
+            )
+
+        assert path is None
+        assert detail == expected_detail
+        assert len(candidates) == 1
+        assert not candidates[0].exists()
+        assert python.read_text(encoding="utf-8") == "py"
+        assert calls == (["venv"] if stage in {"create", "missing-lock"} else ["venv", "sync"])
+        if stage == "smoke":
+            smoke.assert_called_once_with(candidates[0])
+        else:
+            smoke.assert_not_called()

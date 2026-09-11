@@ -12,12 +12,14 @@ model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 import asyncio
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import hermes_home_key
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
@@ -135,3 +137,45 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
         return results
+
+
+class ProfileHookRegistries:
+    """``HookRegistry`` per served profile home, picked at emit time from the active HERMES_HOME.
+
+    The gateway holds ONE of these. Every hook emit already runs inside the routed profile's
+    ``_profile_runtime_scope`` (message handlers, /new, turn wiring), so resolving the registry by
+    ``get_hermes_home()`` there gives each profile its own ``hooks/`` and keeps the default
+    profile's handlers from seeing other profiles' messages. Each home's registry is loaded on its
+    first emit, i.e. inside that profile's scope (handler imports see its HERMES_HOME); multiplexing off
+    means a single entry for the launch home, i.e. exactly the old behaviour.
+    """
+
+    def __init__(self):
+        self._by_home: Dict[str, HookRegistry] = {}
+        self._lock = threading.Lock()
+
+    def _active(self) -> HookRegistry:
+        key = hermes_home_key(get_hermes_home())
+        registry = self._by_home.get(key)
+        if registry is None:
+            with self._lock:
+                registry = self._by_home.get(key)
+                if registry is None:
+                    registry = HookRegistry()
+                    registry.discover_and_load()
+                    self._by_home[key] = registry
+        return registry
+
+    @property
+    def loaded_hooks(self) -> List[dict]:
+        return self._active().loaded_hooks
+
+    def discover_and_load(self) -> None:
+        """Load the active home's hooks now (startup, or a secondary profile's scoped startup)."""
+        self._active()
+
+    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+        await self._active().emit(event_type, context)
+
+    async def emit_collect(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+        return await self._active().emit_collect(event_type, context)

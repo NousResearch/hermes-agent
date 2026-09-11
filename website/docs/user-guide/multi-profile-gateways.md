@@ -306,6 +306,19 @@ sent to another profile's proxy or self-hosted server. `WEIXIN_HOME_CHANNEL`,
 likewise per profile, and end-of-session memory extraction for an evicted
 secondary session runs under that profile's scope.
 
+Per-turn runtime settings follow the routed profile as well: `agent.max_turns`,
+`fallback_providers`, `file_read_max_chars`, `tool_output.*`, `browser.*`
+timeouts, `timezone` (including the `TZ` handed to `execute_code` sandboxes),
+the media-delivery policy (`gateway.strict`, `media_delivery_allow_dirs`,
+`trust_recent_files*`) and the Nous `auth.json` used for auxiliary calls are all
+read from the profile serving the turn, never from the profile the gateway was
+launched under. The same holds for per-profile state files (`processes.json`,
+`checkpoints/`, sandbox snapshot stores, Feishu comment rules/pairing) and for
+gateway hooks: each profile's `hooks/` directory is loaded on its own and fires
+only for that profile's events. Shell hooks run with the routed profile's
+`HERMES_HOME`, without the default profile's secrets in their environment, and
+their stdin payload carries a `profile` field naming the profile that fired them.
+
 ### Serving selected profiles
 
 By default, `gateway.multiplex_profiles: true` serves every valid named profile

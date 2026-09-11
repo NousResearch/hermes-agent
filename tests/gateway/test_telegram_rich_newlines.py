@@ -76,3 +76,27 @@ class TestRichMessageTableProtection:
         assert "  \n" not in md
         assert md == content
 
+
+@pytest.mark.parametrize("block", [
+    "$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$",
+    "  $$ \n\\begin{matrix}\n1 & 2 \\\\\n3 & 4\n\\end{matrix}\n\t$$",
+])
+def test_display_math_is_preserved_inside_normalized_prose(adapter, block):
+    content = f"Before\n{block}\nAfter"
+    md = adapter._rich_message_payload(content)["markdown"]
+    assert md == f"Before  \n{block}  \nAfter"
+
+
+@pytest.mark.parametrize("prose, protected", [
+    ("Cost is $$5 today", "```\nx = $$y\nz = $$w\n```"),
+    ("$$", "```\n$$\nx\ny\n```"),
+    ("$$", "| A | B |\n|---|---|\n| $$ | x |"),
+    ("inline $$x = 1$$ here", ""),
+    ("Price $$5\nPlus $$10", ""),
+])
+def test_math_delimiters_never_cross_protected_regions(adapter, prose, protected):
+    content = f"{prose}\n{protected}\nAfter" if protected else f"{prose}\nAfter"
+    expected_prose = prose.replace("\n", "  \n")
+    expected = (f"{expected_prose}  \n{protected}  \nAfter" if protected
+                else f"{expected_prose}  \nAfter")
+    assert adapter._rich_message_payload(content)["markdown"] == expected

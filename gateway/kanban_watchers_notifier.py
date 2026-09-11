@@ -8,6 +8,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 from __future__ import annotations
 
 import re
+import time
 from functools import partial
 from pathlib import Path
 import weakref
@@ -50,6 +51,8 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 # every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
 # unattended gate where a false drop means silent work pileup.
 MAX_SEND_FAILURES = 12
+_FAILURE_DEDUPE_SECONDS = 30 * 60
+_FAILURE_KINDS = frozenset({"crashed", "gave_up"})
 
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
@@ -406,10 +409,21 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.failure_dedupe: dict[tuple, dict[str, Any]] = getattr(
+            runner, "_kanban_failure_dedupe", {},
+        )
+        runner._kanban_failure_dedupe = self.failure_dedupe
+        self.events: list[Any] = []
+        self.event_suffixes: dict[int, str] = {}
+        self._dedupe_before: Optional[dict[str, Any]] = None
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
     async def rewind(self) -> None:
+        if self._dedupe_before is None:
+            self.failure_dedupe.pop(self.sub_key, None)
+        else:
+            self.failure_dedupe[self.sub_key] = self._dedupe_before
         await _to_thread_process_service(
             self.runner._kanban_rewind, self.sub, self.d["cursor"], self.d.get("old_cursor", 0), self.board_slug,
         )
@@ -441,6 +455,45 @@ class _KanbanNotification:
 
     # -- formatting --
 
+    @staticmethod
+    def _failure_error(ev: Any) -> str:
+        payload = getattr(ev, "payload", None) or {}
+        return _safe_review_reason(payload.get("error") or payload.get("reason") or "unknown error", 200)
+
+    @staticmethod
+    def _digest(state: dict[str, Any]) -> str:
+        count = int(state.get("suppressed", 0))
+        if not count:
+            return ""
+        return f"\nCrash storm digest: {count} suppressed; latest error: {state.get('latest_error') or 'unknown error'}"
+
+    def prepare_events(self) -> None:
+        """Suppress repeated task failures while preserving recovery and expiry digests."""
+        now = time.monotonic()
+        state = self.failure_dedupe.get(self.sub_key)
+        self._dedupe_before = dict(state) if state is not None else None
+        for ev in self.d["events"]:
+            if ev.kind in _FAILURE_KINDS:
+                if state is not None and now - state["last_emitted"] < _FAILURE_DEDUPE_SECONDS:
+                    state["suppressed"] += 1
+                    state["latest_error"] = self._failure_error(ev)
+                    continue
+                suffix = self._digest(state) if state is not None else ""
+                state = {"last_emitted": now, "suppressed": 0, "latest_error": self._failure_error(ev)}
+                self.failure_dedupe[self.sub_key] = state
+                if suffix:
+                    self.event_suffixes[ev.id] = suffix
+                self.events.append(ev)
+                continue
+
+            if state is not None:
+                suffix = self._digest(state)
+                if suffix:
+                    self.event_suffixes[ev.id] = suffix
+                self.failure_dedupe.pop(self.sub_key, None)
+                state = None
+            self.events.append(ev)
+
     def format_event(self, ev: Any) -> Optional[str]:
         """Render one event; accumulates wake handoff/review detail. None → silent kind."""
         formatter = _EVENT_FORMATTERS.get(ev.kind)
@@ -451,12 +504,12 @@ class _KanbanNotification:
             self.wake_handoff = handoff
         if review_detail is not None:
             self.wake_review_detail = review_detail
-        return msg
+        return msg + self.event_suffixes.get(ev.id, "")
 
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = {ev.kind for ev in self.events if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         if not self.wake_kinds:
             return
         if self.is_push_adapter:
@@ -550,7 +603,7 @@ class _KanbanNotification:
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
-        for ev in self.d["events"]:
+        for ev in self.events:
             msg = self.format_event(ev)
             if msg is None:
                 continue
@@ -600,6 +653,8 @@ class _KanbanNotification:
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
+
+        self.prepare_events()
 
         if not await self._send_pings():
             return

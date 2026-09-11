@@ -288,7 +288,10 @@ Consequence: any codepath that said "check if this PID is alive" via `os.kill(pi
 ## Common pitfalls
 
 **`hermes: command not found` right after install.**
-Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA\hermes\bin\hermes.exe"`.
+Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA%\hermes\bin\hermes.exe"`.
+
+**Hermes is blocked at launch on a brand-new Windows 11 machine — a "Smart App Control blocked this app" dialog, and nothing ever runs.**
+Smart App Control (SAC) ships in evaluation mode on new Windows 11 installs and may switch itself on; when on, it blocks unsigned binaries such as `hermes.exe` and the bundled `uv.exe` before they execute. SAC has no per-app or per-folder allowlist, so the only way forward is turning it off in **Settings → Privacy & security → Windows Security → App & browser control → Smart App Control settings → Off** — a one-way switch Windows won't let you undo without a reset. SAC blocks never appear in Protection History; confirm the blocker in **Event Viewer → Applications and Services Logs → Microsoft → Windows → CodeIntegrity → Operational**. See the README's troubleshooting section for the full story.
 
 **`WinError 193: %1 is not a valid Win32 application` when running a tool.**
 You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolves commands through `shutil.which(cmd, path=local_bin)` so PATHEXT picks up `.CMD` — if you're invoking the tool via a hardcoded path instead, switch to the `.cmd` variant (e.g., `npx.cmd`, not `npx`).

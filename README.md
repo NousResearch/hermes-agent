@@ -100,6 +100,14 @@ If attestation says "Verification succeeded" and the last line prints `True`, yo
 
 For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553), [astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011), [astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079).
 
+#### Windows 11 Smart App Control blocks Hermes before it ever runs
+
+Smart App Control (SAC) ships in evaluation mode on new Windows 11 installs and may switch itself on. When on, it blocks unsigned binaries — `hermes.exe` and the bundled `uv.exe` both qualify — before the app or Node ever gets to run them, typically with a "Smart App Control blocked this app" dialog. SAC has **no per-app or per-folder allowlist**, so unlike the Defender case above there is no targeted exclusion: the only way to run Hermes alongside SAC is to turn SAC off entirely (**Settings → Privacy & security → Windows Security → App & browser control → Smart App Control settings → Off**). That is a one-way switch — Windows will not let you re-enable SAC afterwards without resetting the device.
+
+SAC blocks do **not** appear in Windows Security's Protection History. To confirm SAC is what blocked a binary, open **Event Viewer → Applications and Services Logs → Microsoft → Windows → CodeIntegrity → Operational** and look for events naming the blocked file (Microsoft's [SAC testing guide](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/test-your-app-with-smart-app-control) documents this log).
+
+The Sigstore/GitHub-attestation provenance above verifies authenticity, but it is not the Authenticode signature type SAC checks — running with SAC enabled would require signed Windows release binaries ([#99766](https://github.com/NousResearch/hermes-agent/issues/99766)).
+
 ---
 
 ## Getting Started

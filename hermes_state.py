@@ -53,7 +53,9 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
+from hermes_state_wal import (
+    _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
+)
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
@@ -615,7 +617,12 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
-            self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            mode = apply_wal_with_fallback(conn, db_label="state.db")
+            # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
+            # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.
+            # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
+            # on a file that may really be in rollback-journal mode.
+            self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)

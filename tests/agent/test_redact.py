@@ -1,5 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import inspect
 import logging
 
 import pytest
@@ -1178,3 +1179,397 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+
+class TestRedactSensitiveTextApiCompatibility:
+    def test_extra_sensitive_keys_is_keyword_only_with_default_none(self):
+        # Signature regression guard: ``extra_sensitive_keys`` must remain
+        # keyword-only with a default of ``None``. This catches accidental
+        # conversion to a positional parameter (which would break all 74
+        # existing keyword callers) and accidental change of the default.
+        # We deliberately do NOT pin the absolute parameter list so that
+        # future independent kw-only additions do not force a churn here.
+        sig = inspect.signature(redact_sensitive_text)
+        assert "extra_sensitive_keys" in sig.parameters
+        param = sig.parameters["extra_sensitive_keys"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is None
+
+    def test_existing_keyword_only_parameters_unchanged(self):
+        # Pin the four existing keyword-only parameters and their defaults so
+        # an accidental reorder or default change surfaces here.
+        sig = inspect.signature(redact_sensitive_text)
+        for name, expected_default in (
+            ("force", False),
+            ("code_file", False),
+            ("file_read", False),
+            ("redact_url_credentials", False),
+        ):
+            assert name in sig.parameters
+            assert sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+            assert sig.parameters[name].default is expected_default
+
+    def test_normal_text_with_no_extra_sensitive_keys_passes_through(self):
+        # ``force=True`` with all features off must pass benign text through
+        # unchanged. Pins the no-op default behavior.
+        assert redact_sensitive_text(
+            "normal",
+            force=True,
+            code_file=True,
+            file_read=False,
+            redact_url_credentials=False,
+        ) == "normal"
+
+
+class TestExtraSensitiveKeys:
+    def test_session_id_without_opt_in_is_unchanged(self):
+        text = "session_id=session-value"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def _assert_focused_repair(self, text, expected, *, secrets):
+        result = redact_sensitive_text(
+            text,
+            force=True,
+            extra_sensitive_keys={"session_id"},
+        )
+        assert result == expected
+        for secret in secrets:
+            assert secret not in result
+        assert redact_sensitive_text(
+            result,
+            force=True,
+            extra_sensitive_keys={"session_id"},
+        ) == result
+        return result
+
+    def test_focused_repair_nested_unquoted_yaml_preserves_indentation(self):
+        self._assert_focused_repair(
+            "parent:\n  session_id: secret",
+            "parent:\n  session_id: ***",
+            secrets=("secret",),
+        )
+
+    def test_focused_repair_nested_quoted_yaml_preserves_mapping(self):
+        import yaml
+
+        result = self._assert_focused_repair(
+            'parent:\n    session_id: "secret"',
+            'parent:\n    session_id: "***"',
+            secrets=("secret",),
+        )
+        assert yaml.safe_load(result) == {"parent": {"session_id": "***"}}
+
+    def test_focused_repair_yaml_preserves_mixed_indentation_bytes(self):
+        self._assert_focused_repair(
+            "parent:\n \t session_id: secret",
+            "parent:\n \t session_id: ***",
+            secrets=("secret",),
+        )
+
+    def test_focused_repair_unquoted_yaml_redacts_complete_multiword_value(self):
+        # Teknium review finding on predecessor PR: unquoted multi-word values
+        # must redact the WHOLE value, not just the first token.
+        self._assert_focused_repair(
+            "session_id: my secret value",
+            "session_id: ***",
+            secrets=("my", "secret", "value"),
+        )
+
+    def test_focused_repair_assignment_redacts_complete_multiword_value(self):
+        self._assert_focused_repair(
+            "session_id = my secret value",
+            "session_id = ***",
+            secrets=("my", "secret", "value"),
+        )
+
+    def test_focused_repair_yaml_preserves_separated_trailing_comment(self):
+        self._assert_focused_repair(
+            "session_id: my secret value # trailing comment",
+            "session_id: *** # trailing comment",
+            secrets=("my", "secret", "value"),
+        )
+
+    def test_focused_repair_yaml_unspaced_hash_remains_in_sensitive_value(self):
+        self._assert_focused_repair(
+            "session_id: my#secret # public",
+            "session_id: *** # public",
+            secrets=("my", "secret"),
+        )
+
+    def test_focused_repair_double_quoted_yaml_uses_true_closing_quote(self):
+        self._assert_focused_repair(
+            'session_id: "my \\" secret" # public',
+            'session_id: "***" # public',
+            secrets=("my", "secret"),
+        )
+
+    def test_focused_repair_json_uses_true_closing_quote(self):
+        self._assert_focused_repair(
+            '{"session_id": "my \\" secret", "public": "ok"}',
+            '{"session_id": "***", "public": "ok"}',
+            secrets=("my", "secret"),
+        )
+
+    def test_focused_repair_single_quoted_yaml_honors_doubled_quotes(self):
+        self._assert_focused_repair(
+            "session_id: 'my ''secret''' # public",
+            "session_id: '***' # public",
+            secrets=("my", "secret"),
+        )
+
+    def test_focused_repair_quoted_assignment_preserves_public_suffix(self):
+        self._assert_focused_repair(
+            'session_id = "my secret" public-content',
+            'session_id = "***" public-content',
+            secrets=("my", "secret"),
+        )
+
+    def test_unquoted_extra_sensitive_assignment_redacts_raw_ampersand_through_eol(self):
+        text = "session_id=LEFTPART&RIGHTPART\nSAFE_KEY=visible"
+        result = redact_sensitive_text(
+            text,
+            force=True,
+            extra_sensitive_keys={"session_id"},
+        )
+        assert result == "session_id=***\nSAFE_KEY=visible"
+        assert "LEFTPART" not in result
+        assert "RIGHTPART" not in result
+        assert "SAFE_KEY=visible" in result
+
+    def test_unquoted_extra_sensitive_assignment_with_ampersand_preserves_next_line(self):
+        text = "session_id=my secret&next=value\nSAFE_KEY=visible"
+        result = redact_sensitive_text(
+            text,
+            force=True,
+            extra_sensitive_keys={"session_id"},
+        )
+        assert result == "session_id=***\nSAFE_KEY=visible"
+        assert "my secret" not in result
+        assert "next=value" not in result
+        assert "SAFE_KEY=visible" in result
+
+    @pytest.mark.parametrize("line_ending", ["\r", "\n", "\r\n"], ids=["cr", "lf", "crlf"])
+    def test_focused_repair_assignment_does_not_cross_line_endings(self, line_ending):
+        self._assert_focused_repair(
+            f"session_id=my secret{line_ending}public=value",
+            f"session_id=***{line_ending}public=value",
+            secrets=("my", "secret"),
+        )
+
+    @pytest.mark.parametrize(
+        "text,key,secret",
+        [
+            ("session_id=session-value", "session_id", "session-value"),
+            ("session-id=session-value", "session_id", "session-value"),
+            ("SESSION_ID=session-value", "session_id", "session-value"),
+            ('"session_id": "session-value"', "session_id", "session-value"),
+            ("session_id: session-value", "session_id", "session-value"),
+            ("session_id='session-value'", "session_id", "session-value"),
+            ('session_id="session-value"', "session_id", "session-value"),
+            ("  session_id: 'session-value'", "session_id", "session-value"),
+        ],
+    )
+    def test_explicit_key_redacts_supported_textual_forms(self, text, key, secret):
+        result = redact_sensitive_text(text, force=True, extra_sensitive_keys={key})
+        assert secret not in result
+        assert "***" in result
+
+    def test_hyphen_key_opt_in_matches_underscore(self):
+        result = redact_sensitive_text(
+            "session_id=session-value",
+            force=True,
+            extra_sensitive_keys={"session-id"},
+        )
+        assert "session-value" not in result
+
+    def test_unrelated_similar_keys_remain_unchanged(self):
+        text = "session_name=session-value token_count=12345678901234567890"
+        assert redact_sensitive_text(text, force=True, extra_sensitive_keys={"session_id"}) == text
+
+    @pytest.mark.parametrize("bad", ["session_id", b"session_id"])
+    def test_top_level_string_collections_rejected(self, bad):
+        with pytest.raises(TypeError):
+            redact_sensitive_text("session_id=session-value", force=True, extra_sensitive_keys=bad)
+
+    def test_non_string_entry_rejected(self):
+        with pytest.raises(TypeError):
+            redact_sensitive_text(
+                "session_id=session-value",
+                force=True,
+                extra_sensitive_keys={object()},  # type: ignore[arg-type]
+            )
+
+    def test_empty_collection_does_not_change_behavior(self):
+        text = "session_id=session-value"
+        assert redact_sensitive_text(text, force=True, extra_sensitive_keys=set()) == text
+
+    def test_empty_keys_are_ignored(self):
+        text = "session_id=session-value"
+        assert redact_sensitive_text(text, force=True, extra_sensitive_keys={"", "   "}) == text
+
+    def test_does_not_persist_between_calls(self):
+        first = redact_sensitive_text(
+            "session_id=session-value",
+            force=True,
+            extra_sensitive_keys={"session_id"},
+        )
+        second = redact_sensitive_text("session_id=session-value", force=True)
+        assert "session-value" not in first
+        assert second == "session_id=session-value"
+
+    def test_code_file_explicit_key_still_redacts(self):
+        # ``code_file=True`` skips the structured redaction pipeline for source
+        # code, but caller-opted-in keys must still mask.
+        text = "SESSION_ID=session-value"
+        result = redact_sensitive_text(
+            text,
+            force=True,
+            code_file=True,
+            extra_sensitive_keys={"session_id"},
+        )
+        assert "session-value" not in result
+
+
+class TestCliSensitiveSeparateValues:
+    def _assert_secret_redacted(
+        self,
+        text,
+        *,
+        secrets,
+        preserved=(),
+        expected=None,
+    ):
+        result = redact_sensitive_text(text, force=True)
+        assert "***" in result
+        for secret in secrets:
+            assert secret not in result
+        for external in preserved:
+            assert external in result
+        if expected is not None:
+            assert result == expected
+        assert redact_sensitive_text(result, force=True) == result
+
+    @pytest.mark.parametrize(
+        "text,secret,expected",
+        [
+            ("cmd --password secret-value", "secret-value", "cmd --password ***"),
+            ('cmd --password "secret-value"', "secret-value", 'cmd --password "***"'),
+            ("cmd --password 'secret-value'", "secret-value", "cmd --password '***'"),
+            ("cmd --passwd secret-value", "secret-value", "cmd --passwd ***"),
+            ("cmd --secret secret-value", "secret-value", "cmd --secret ***"),
+            ("cmd --token secret-value", "secret-value", "cmd --token ***"),
+            ("cmd --api-key secret-value", "secret-value", "cmd --api-key ***"),
+            ("cmd --api_key secret-value", "secret-value", "cmd --api_key ***"),
+            ("cmd --client-secret secret-value", "secret-value", "cmd --client-secret ***"),
+            ("cmd --password   secret-value", "secret-value", "cmd --password   ***"),
+        ],
+    )
+    def test_space_separated_sensitive_flag_values(self, text, secret, expected):
+        result = redact_sensitive_text(text, force=True)
+        assert secret not in result
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--password",
+            "--passwd",
+            "--secret",
+            "--token",
+            "--api-key",
+            "--api_key",
+            "--client-secret",
+        ],
+    )
+    def test_each_sensitive_long_flag_equals_form_redacts_full_payload(self, flag):
+        payload = "LEFT=MIDDLE=RIGHT"
+        result = redact_sensitive_text(f"cmd {flag}={payload}", force=True)
+        assert result == f"cmd {flag}=***"
+        for fragment in ("LEFT", "MIDDLE", "RIGHT"):
+            assert fragment not in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "cmd --password=secret-value",
+            "cmd --token=secret-value",
+            "cmd --api-key=secret-value",
+        ],
+    )
+    def test_equals_form_still_redacts(self, text):
+        result = redact_sensitive_text(text, force=True)
+        assert "secret-value" not in result
+
+    def test_multiple_sensitive_flags_one_line(self):
+        result = redact_sensitive_text("cmd --password one --token two", force=True)
+        assert "one" not in result
+        assert "two" not in result
+        assert result == "cmd --password *** --token ***"
+
+    def test_flag_at_end_stable(self):
+        # ``--password`` alone (no value, EOL) must remain unchanged.
+        assert redact_sensitive_text("cmd --password", force=True) == "cmd --password"
+
+    def test_next_flag_not_consumed(self):
+        # ``--password --verbose``: the second flag is a sibling flag, not a
+        # value. ``skip_next_flag`` protects the space form from consuming it.
+        assert redact_sensitive_text("cmd --password --verbose", force=True) == "cmd --password --verbose"
+
+    def test_similar_prefix_flag_unchanged(self):
+        # The trailing ``[ \t]+`` / ``=`` anchor ensures suffix-flag names
+        # (``--password-file``) cannot match the keyword class.
+        assert redact_sensitive_text("cmd --password-file path", force=True) == "cmd --password-file path"
+
+    def test_quoted_empty_not_changed(self):
+        # ``--password ""`` and ``--password=""`` must remain unchanged; an
+        # empty value carries no secret and PR's contract preserves benign
+        # forms.
+        assert redact_sensitive_text('cmd --password ""', force=True) == 'cmd --password ""'
+        assert redact_sensitive_text('cmd --password=""', force=True) == 'cmd --password=""'
+
+    def test_unterminated_escaped_quote_redacts_through_eol_only(self):
+        # An escaped quote inside an unterminated quoted value must not expose
+        # the sensitive suffix. PR redacts through EOL.
+        text = 'cmd --secret "prefix ' + '\\"' + ' sensitive-suffix --next' + "\nvisible-next-line"
+        result = redact_sensitive_text(text, force=True)
+        assert result == 'cmd --secret "***\nvisible-next-line'
+        assert "prefix" not in result
+        assert "sensitive-suffix" not in result
+        assert "--next" not in result
+        assert "visible-next-line" in result
+        assert redact_sensitive_text(result, force=True) == result
+
+    def test_idempotent_redaction(self):
+        first = redact_sensitive_text("cmd --password hunter2", force=True)
+        second = redact_sensitive_text(first, force=True)
+        assert first == second
+        assert "hunter2" not in first
+
+    def test_equals_form_consumes_embedded_equals_in_value(self):
+        # ``--password=KEY=VAL`` must consume the full value payload including
+        # any embedded ``=`` characters. The value-extraction terminator class
+        # does not include ``=``, so the loop continues through it.
+        result = redact_sensitive_text("cmd --password=KEY=VAL", force=True)
+        assert "KEY" not in result
+        assert "VAL" not in result
+        assert result == "cmd --password=***"
+
+    def test_equals_form_consumes_chained_equals(self):
+        # Use a value payload whose characters do not collide with the flag
+        # name (``--password``) or the command prefix (``cmd``) so we can
+        # assert each character was consumed.
+        result = redact_sensitive_text("xyz --password=ONE=TWO=THR", force=True)
+        assert "ONE" not in result
+        assert "TWO" not in result
+        assert "THR" not in result
+        assert result == "xyz --password=***"
+
+    def test_equals_form_jwt_like_value_redacted(self):
+        # ``--token=header.payload.signature`` — a JWT-shaped value with
+        # embedded ``.``. None of these characters is in the value-extraction
+        # terminator class, so the whole value is consumed.
+        result = redact_sensitive_text("cmd --token=header.payload.signature", force=True)
+        assert "header" not in result
+        assert "payload" not in result
+        assert "signature" not in result
+        assert result == "cmd --token=***"

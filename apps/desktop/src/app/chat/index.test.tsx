@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -48,7 +48,16 @@ vi.mock('@/lib/model-options', () => ({
 }))
 vi.mock('./chat-drop-overlay', () => ({ ChatDropOverlay: () => null }))
 vi.mock('./chat-swap-overlay', () => ({ ChatSwapOverlay: () => null, ChatSyncBadge: () => null }))
-vi.mock('./composer', () => ({ ChatBar: () => null, ChatBarFallback: () => null }))
+const chatBarFocusKeys = vi.hoisted(() => ({ current: [] as Array<string | null | undefined> }))
+
+vi.mock('./composer', () => ({
+  ChatBar: ({ focusKey }: { focusKey?: string | null }) => {
+    chatBarFocusKeys.current.push(focusKey)
+
+    return null
+  },
+  ChatBarFallback: () => null
+}))
 vi.mock('./hooks/use-file-drop-zone', () => ({
   useFileDropZone: () => ({ dragKind: null, dropHandlers: {} })
 }))
@@ -74,6 +83,7 @@ function assistantMessage(id: string, text: string): ChatMessage {
 describe('ChatView render isolation', () => {
   beforeEach(() => {
     threadRenderCount.current = 0
+    chatBarFocusKeys.current = []
     $activeSessionId.set('runtime-1')
     $awaitingResponse.set(false)
     $busy.set(false)
@@ -160,5 +170,65 @@ describe('ChatView render isolation', () => {
     // memo(ChatView) with stable props must absorb the parent's idle tick —
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
+  })
+
+  it('keeps the composer focusKey stable while the runtime id churns on a same-session resume retry (#101712)', () => {
+    const props = {
+      gateway: null,
+      maxVoiceRecordingSeconds: 120,
+      onAddContextRef: vi.fn(),
+      onAddUrl: vi.fn(),
+      onAttachDroppedItems: vi.fn(),
+      onAttachImageBlob: vi.fn(),
+      onBranchInNewChat: vi.fn(),
+      onCancel: vi.fn(),
+      onDeleteSelectedSession: vi.fn(),
+      onEdit: vi.fn(),
+      onPasteClipboardImage: vi.fn(),
+      onPickFiles: vi.fn(),
+      onPickFolders: vi.fn(),
+      onPickImages: vi.fn(),
+      onReload: vi.fn(),
+      onRemoveAttachment: vi.fn(),
+      onRetryResume: vi.fn(),
+      onSteer: vi.fn(),
+      onSubmit: vi.fn(),
+      onThreadMessagesChange: vi.fn(),
+      onToggleSelectedPin: vi.fn(),
+      onTranscribeAudio: vi.fn()
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } }
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/stored-1']}>
+          <ChatView {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    expect(chatBarFocusKeys.current.at(-1)).toBe('stored-1')
+
+    // A failed resume attempt against the SAME routed session (a 404-looping
+    // reconciliation, e.g. auto-continue after a backend restart mid-turn)
+    // unbinds the runtime id before retrying — $selectedStoredSessionId never
+    // moves off the routed session, only $activeSessionId churns.
+    act(() => {
+      $activeSessionId.set(null)
+    })
+
+    expect(chatBarFocusKeys.current.at(-1)).toBe('stored-1')
+
+    act(() => {
+      $activeSessionId.set('runtime-2')
+    })
+
+    // Every focusKey observed across the churn must be the stable stored id —
+    // never null and never the transient runtime id — so the composer's
+    // focus-on-key-change effect never re-fires (and steals focus) mid-retry.
+    expect(chatBarFocusKeys.current.every(key => key === 'stored-1')).toBe(true)
   })
 })

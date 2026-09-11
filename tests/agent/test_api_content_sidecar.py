@@ -886,6 +886,13 @@ class TestMaxIterationsSummaryReplay:
             m for m in captured["messages"] if m.get("role") == "user"
         ]
         assert sent_users[0]["content"] == "q1\n\nPLUGIN-CTX"
+        assert len(sent_users) == 1
+        runtime_results = [
+            m for m in captured["messages"]
+            if m.get("role") == "tool" and m.get("tool_call_id", "").startswith("runtime-notification-")
+        ]
+        assert len(runtime_results) == 1
+        assert runtime_results[0]["content"].startswith("You've reached the maximum number")
         for m in captured["messages"]:
             assert "api_content" not in m
         # The live history dict is never mutated.

@@ -939,7 +939,7 @@ class TestRotationChildFlushDedup:
         )
 
     def test_no_real_user_anchor_guard_not_entered(self, tmp_path: Path):
-        """Negative regression: placeholder_appended/already_present must not
+        """Negative regression: runtime-notification/already-present must not
         enter the anchor-source guard branch — no exception, rotation happens,
         no live row outside the handoff carries the marker."""
         db = SessionDB(db_path=tmp_path / "state.db")

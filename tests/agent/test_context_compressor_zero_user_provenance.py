@@ -20,6 +20,7 @@ from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
     compress_context,
 )
+from agent.message_metadata import RUNTIME_NOTIFICATION_TOOL_NAME
 from hermes_state import SessionDB
 from tools.process_registry_notifications import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
@@ -218,6 +219,20 @@ def test_max_iterations_nudge_is_synthetic_not_actionable():
     assert ContextCompressor._is_synthetic_compression_user_turn(human) is False
     assert ContextCompressor._transcript_has_real_user_turn([nudge]) is False
     assert ContextCompressor._transcript_has_real_user_turn([human, nudge]) is True
+
+
+def test_zero_user_compaction_continue_uses_runtime_tool_provenance():
+    compressed = [{"role": "assistant", "content": "compressed history"}]
+
+    outcome = _ensure_compressed_has_user_turn([], compressed)
+
+    assert outcome == "runtime_notification_appended"
+    assert not any(message.get("role") == "user" for message in compressed)
+    assert compressed[-2]["tool_calls"][0]["function"]["name"] == RUNTIME_NOTIFICATION_TOOL_NAME
+    assert compressed[-1]["role"] == "tool"
+    assert compressed[-1]["tool_name"] == RUNTIME_NOTIFICATION_TOOL_NAME
+    assert compressed[-1]["tool_call_id"] == compressed[-2]["tool_calls"][0]["id"]
+    assert compressed[-1]["content"] == COMPRESSION_CONTINUATION_USER_CONTENT
 
 
 def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):

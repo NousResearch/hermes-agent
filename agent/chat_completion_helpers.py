@@ -2120,10 +2120,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
     summary_call_outcome = "failed"
 
-    # Shared constant so compaction recognizers can identify this runtime nudge by its stable
-    # content after SessionDB projection strips metadata flags.
+    # Keep the stable text for legacy transcript recognition, but emit new
+    # notifications through a structurally-attributed virtual tool.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    from agent.message_metadata import append_runtime_notification
+    append_runtime_notification(messages, MAX_ITERATIONS_SUMMARY_REQUEST)
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)

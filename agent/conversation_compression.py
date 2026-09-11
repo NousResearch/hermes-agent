@@ -2083,7 +2083,9 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         target.pop(flag, None)
 
 
-CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]
+CompressedUserTurnOutcome = Literal[
+    "inserted", "merged", "already_present", "runtime_notification_appended",
+]
 
 
 def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurnOutcome:
@@ -2148,9 +2150,9 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
         steer_text = _extract_steer_text_from_message(message)
         if steer_text:
             return _insert_real_user_anchor(compressed, {"role": "user", "content": steer_text})
-    from agent.message_metadata import append_message
-    append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT})
-    return "placeholder_appended"
+    from agent.message_metadata import append_runtime_notification
+    append_runtime_notification(compressed, COMPRESSION_CONTINUATION_USER_CONTENT)
+    return "runtime_notification_appended"
 
 
 def _messages_match_scoped_identity(left: Any, right: Any) -> bool:

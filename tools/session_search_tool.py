@@ -339,32 +339,6 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
-def _locate_session_db(session_id: str):
-    """Scan every profile's ``state.db`` -> ``(db, profile_name)`` or ``(None, None)``.
-    Ids are globally unique, so the first hit is authoritative."""
-    from pathlib import Path
-    try:
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-    except Exception:
-        return None, None
-    targets = [("default", profiles_mod.get_profile_dir("default"))] + _quiet(
-        lambda: [(info.name, info.path) for info in profiles_mod.list_profiles()], [],
-        "list_profiles failed during session locate")
-    seen: set = set()
-    for name, home in targets:
-        db_path = Path(home) / "state.db"
-        if str(db_path) in seen or not db_path.exists():
-            continue
-        seen.add(str(db_path))
-        pdb = _quiet(lambda: SessionDB(db_path=db_path, read_only=True), None, "open %s failed", db_path)
-        if pdb and _get_session_meta(pdb, session_id):
-            return pdb, name
-        if pdb:
-            pdb.close()
-    return None, None
-
-
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
@@ -384,17 +358,13 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 
 
 def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
-    """Read shape; on a miss scan every profile (the model may have dropped the owning
-    profile from the link) and tag the result with where it was found."""
-    result = _read_session(db, sid, link_profile=profile)
-    located, owner = (None, None) if json.loads(result).get("success") else _locate_session_db(sid)
-    if located is None:
-        return result
-    try:
-        found = json.loads(_read_session(located, sid, link_profile=owner))
-    finally:
-        located.close()
-    return json.dumps({**found, "profile": owner}, ensure_ascii=False) if found.get("success") else result
+    """Read shape from the already-resolved profile DB.
+
+    A bare session_id miss does not scan other profiles. Cross-profile reads
+    require an explicit ``profile=`` argument or an embedded ``profile/id``
+    session_id (including ``@session:profile/id``), both handled in ``_dispatch``.
+    """
+    return _read_session(db, sid, link_profile=profile)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:

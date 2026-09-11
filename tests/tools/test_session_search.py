@@ -523,14 +523,14 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
-        # The real-world failure: model dropped the owning profile and passed a
-        # bare id. The tool must scan profiles and find it anyway.
+    def test_bare_id_miss_does_not_scan_across_profiles(self, db, tmp_path, monkeypatch):
+        # Bare session_id + no profile must not silent-scan every profile's
+        # state.db and return another profile's transcript (#106761).
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
         other.create_session("s_far", source="cli")
-        other.append_message("s_far", role="user", content="hi")
+        other.append_message("s_far", role="user", content="secret-from-asdf-profile")
         other._conn.commit()
 
         from collections import namedtuple
@@ -539,11 +539,13 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
 
-        # `db` (current profile) lacks s_far; no profile passed → scan finds it.
+        # `db` (current profile) lacks s_far; no profile passed → not found.
         result = json.loads(session_search(session_id="s_far", db=db))
-        assert result["success"] is True
-        assert result["mode"] == "read"
-        assert result["profile"] == "asdf"
+        assert result["success"] is False
+        payload = json.dumps(result)
+        assert "secret-from-asdf-profile" not in payload
+        assert result.get("profile") != "asdf"
+        assert "asdf" not in payload
 
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):

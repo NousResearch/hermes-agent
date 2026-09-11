@@ -46,6 +46,19 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     """
     if source not in _CWD_RECORDING_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
+    if source == "kanban":
+        # The dispatcher launches workers with ``cwd=workspace if os.path.isdir(workspace) else
+        # None`` (hermes_cli/kanban_db_dispatch.py). When the workspace dir is missing at spawn,
+        # the worker inherits the DISPATCHER's cwd, and stamping os.getcwd() would silently
+        # attribute the session to the gateway's directory. The worker knows the real workspace
+        # from HERMES_KANBAN_WORKSPACE: stamp that when it exists, nothing otherwise.
+        workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+        if not workspace:
+            return None
+        try:
+            return workspace if os.path.isdir(workspace) else None
+        except OSError:
+            return None
     try:
         return os.getcwd()
     except OSError:  # cwd was unlinked out from under us

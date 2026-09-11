@@ -221,8 +221,11 @@ def _process_accounting_lines(r: dict) -> list:
     completion lands here) and what it left running (terminated at teardown — never trust a child's "watcher running")."""
     lines = []
     for h in r.get("handed_off_processes") or []:
+        delivery = ("You own it now; poll/log/wait for its result (asynchronous delivery is unavailable)."
+                    if h.get("notify_on_complete") is False else
+                    "You own it now; its completion notice will arrive here.")
         lines.append(f"Handed off to you: {h.get('session_id')} ({h.get('command', '')[:120]}) — {h.get('note', '')}. "
-                     "You own it now; its completion notice will arrive here.")
+                     + delivery)
     orphans = r.get("orphaned_processes") or []
     if orphans:
         lines.append(f"Child left {len(orphans)} background process(es) running that were TERMINATED with it "

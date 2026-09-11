@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import fs from 'node:fs'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { expect, test, vi } from 'vitest'
 import { generateIcons } from '../scripts/generate-icons.mjs'
@@ -61,6 +63,41 @@ with TemporaryDirectory() as directory:
 `], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' })
   expect(result.error).toBeUndefined()
   expect(result.status, result.stderr).toBe(0)
+})
+
+test.each([
+  { HERMES_PAYLOAD_TAG: 'v1.2.3', HERMES_BUILD_COMMIT: '' },
+  { HERMES_PAYLOAD_TAG: 'v1.2.3-canary.20260911010203', HERMES_BUILD_COMMIT: '' },
+  { HERMES_PAYLOAD_TAG: '', HERMES_BUILD_COMMIT: 'abcdef0'.padEnd(40, '1') }
+])('build identity reaches the child unchanged with separate source/output roots: %j', (identity) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-icon-env-'))
+  try {
+    const source = path.join(root, 'separate source')
+    const out = path.join(root, 'generated output')
+    const driver = path.join(root, 'scripts', 'build')
+    fs.mkdirSync(driver, { recursive: true })
+    fs.mkdirSync(source)
+    // Observe the real subprocess environment at the PM-driver boundary.
+    fs.writeFileSync(path.join(driver, 'icon_environment.py'), `
+import json, os, pathlib, sys
+out = pathlib.Path(sys.argv[sys.argv.index('--out') + 1])
+out.mkdir()
+(out / 'child.json').write_text(json.dumps({
+    'identity': {key: os.environ.get(key) for key in ['HERMES_PAYLOAD_TAG', 'HERMES_BUILD_COMMIT']},
+    'source': sys.argv[sys.argv.index('--source') + 1],
+    'cwd': os.getcwd(),
+}))
+`)
+    expect(generateIcons(['--source', source, '--out', out], {
+      root, env: { ...process.env, ...identity }
+    })).toBe(0)
+    expect(JSON.parse(fs.readFileSync(path.join(out, 'child.json'), 'utf8'))).toEqual({
+      identity, source, cwd: source
+    })
+    expect(fs.readdirSync(source)).toEqual([])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('failed icon processes cannot report a successful build', () => {

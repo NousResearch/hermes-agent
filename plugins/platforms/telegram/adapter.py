@@ -5992,8 +5992,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
                 except ValueError as e:
-                    logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
-                    return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")
+                    # Image MIME on a non-raster document (e.g. DWG/DXF sent as `image/vnd.dwg`): cache
+                    # as a generic binary document instead of dropping the bytes. Override the MIME to
+                    # octet-stream so cache_media_bytes skips its image branch (which would return None).
+                    logger.warning("[Telegram] Image-MIME but non-image bytes (%s); caching as a generic document: %s",
+                                   display, _redact_telegram_error_text(e))
+                    from gateway.platforms.base import cache_media_bytes_async as _cache_doc_async
+                    cached = await _cache_doc_async(
+                        bytes(image_bytes),
+                        filename=original_filename or f"document{ext or '.bin'}",
+                        mime_type="application/octet-stream",
+                    )
+                    if cached is None:
+                        return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
+                    event.media_urls = [cached.path]
+                    event.media_types = [cached.media_type]
+                    logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
+                    await self.handle_message(event)
+                    return True
                 self._set_cached_media(
                     event, cached_path, doc_mime if doc_mime.startswith(
                         "image/"

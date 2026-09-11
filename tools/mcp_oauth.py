@@ -856,9 +856,29 @@ def _is_figma_remote_mcp(server_name: str | None = None, server_url: str | None 
     return "figma" in (server_name or "").lower() and (not url or "figma" in base_url_hostname(url))
 
 
+# NetSuite's authorization-server metadata always advertises the fixed vendor issuer
+# regardless of the account-specific discovery host (Oracle, "OAuth 2.0 Token Structure
+# and Certificate Rotation": "The value of the iss parameter is https://system.netsuite.com").
+_NETSUITE_ISSUER = "https://system.netsuite.com"
+
+
+def _is_netsuite_mcp(server_url: str | None = None) -> bool:
+    """True when this MCP server is a NetSuite account-specific SuiteTalk endpoint."""
+    from utils import base_url_hostname
+    host = base_url_hostname((server_url or "").lower())
+    return host.endswith(".suitetalk.api.netsuite.com")
+
+
 def apply_oauth_provider_defaults(cfg: dict, *, server_name: str = "", server_url: str | None = None) -> dict:
     """Mutate *cfg* with provider-specific OAuth workarounds (before building client metadata /
     pre-registering); returns *cfg*. Only fills keys the user left unset — explicit values win."""
+    if _is_netsuite_mcp(server_url) and not cfg.get("trusted_issuers"):
+        # NetSuite: accept the documented fixed issuer for this server only (see _NETSUITE_ISSUER).
+        cfg["trusted_issuers"] = [_NETSUITE_ISSUER]
+        logger.info(
+            "MCP OAuth '%s': NetSuite advertises the fixed issuer %s regardless of account host — "
+            "trusting it for this server (override via oauth.trusted_issuers)",
+            server_name or server_url, _NETSUITE_ISSUER)
     if _is_figma_remote_mcp(server_name, server_url):
         if not cfg.get("client_name"):
             cfg["client_name"] = _FIGMA_DCR_CLIENT_NAME

@@ -1251,12 +1251,20 @@ class SessionDB(
         refcount instead of tearing down the connection: the registry owns the lifecycle and only closes on
         the final release (#90837). This prevents one caller's close from tearing down the writer connection
         that other callers in the same process are still using — while still letting legacy ``close()`` call
-        sites return their reference instead of leaking it.
+        sites return their reference instead of leaking it. If the registry no longer tracks the instance
+        (its generation record was retired out from under the handle, #82919) close() falls through to a real
+        close: a released-but-live handle is a stranded descriptor nobody else will ever close.
         """
         if self._shared_registry_owned:
             from hermes_state_registry import release
-            release(self)
-            return
+            if release(self):
+                return
+            # The registry does not own this instance after all: a pool entry was
+            # retired out from under the handle, or the pooled marker outlived its
+            # generation record (#82919). Returning here would strand the
+            # connection -- nothing else closes it -- so fall through to a real
+            # close instead of leaking the descriptor with the marker set.
+            self._shared_registry_owned = False
         self._stop_token_writer()
         hook, self._token_atexit_hook = self._token_atexit_hook, None
         if hook is not None:

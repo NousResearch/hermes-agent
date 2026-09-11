@@ -22,6 +22,9 @@ router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+# Pooled handles must be handed BACK to the registry, not torn down (see
+# hermes_state_registry.release_or_close); a bare read-only handle still closes.
+release_or_close = late("release_or_close", "hermes_state_registry")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 save_config = late("save_config", "hermes_cli.config")
 
@@ -135,7 +138,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             "tools": usage["tools"],  # per-tool-name counts; desktop aggregates per toolset
         }
     finally:
-        db.close()
+        release_or_close(db)
 
 
 @router.get("/api/analytics/usage")
@@ -296,7 +299,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
 
         return {"models": models, "totals": totals, "period_days": days}
     finally:
-        db.close()
+        release_or_close(db)
 
 
 @router.get("/api/analytics/models")

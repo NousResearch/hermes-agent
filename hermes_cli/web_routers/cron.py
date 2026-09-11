@@ -34,6 +34,8 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+# Pooled handles go back to the registry (release_or_close), not down via close().
+release_or_close = late("release_or_close", "hermes_state_registry")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -134,7 +136,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
                 s["profile"] = selected
         return {"runs": runs, "limit": limit_n}
     finally:
-        db.close()
+        release_or_close(db)
 
 
 _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}

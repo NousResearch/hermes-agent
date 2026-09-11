@@ -219,13 +219,16 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
             return
+        from hermes_state_registry import release_or_close
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
             db.maybe_auto_archive(
                 idle_days=float(cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(cfg.get("min_interval_hours", 24)))
         finally:
-            db.close()
+            # read_only=False returns a REGISTRY-OWNED handle: hand it back so the
+            # borrow is accounted (release_or_close closes bare handles instead).
+            release_or_close(db)
     except Exception as exc:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 

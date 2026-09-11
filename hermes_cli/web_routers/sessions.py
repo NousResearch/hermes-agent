@@ -33,6 +33,10 @@ manage_router = APIRouter()
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+# Pooled handles (read_only=False opens, and the shared registry instances behind
+# them) must be handed BACK, not torn down: release_or_close releases a
+# registry-owned instance and falls back to close() for bare read-only handles.
+release_or_close = late("release_or_close", "hermes_state_registry")
 
 _NOT_FOUND = "Session not found"
 
@@ -110,7 +114,7 @@ def _prune_sessions(body: SessionPrune):
             sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
         return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
-        db.close()
+        release_or_close(db)
 
 
 _ACTIVE_WINDOW_S = 300
@@ -128,12 +132,13 @@ def _is_active(row: dict, now: float) -> bool:
 
 
 def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
-    """Open the profile's session DB, run ``fn(db)``, always close."""
+    """Open the profile's session DB, run ``fn(db)``, always return the handle
+    to the registry (``release_or_close``: releases pooled, closes bare)."""
     db = _open_session_db_for_profile(profile, read_only=read_only)
     try:
         return fn(db)
     finally:
-        db.close()
+        release_or_close(db)
 
 
 def _serving_profile(profile: Optional[str]) -> str:
@@ -221,7 +226,7 @@ def get_sessions(
                 _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
-            db.close()
+            release_or_close(db)
     except HTTPException:
         raise
     except sqlite3.OperationalError as exc:
@@ -386,7 +391,7 @@ async def search_sessions(
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
             return {"results": list(seen.values())}
         finally:
-            db.close()
+            release_or_close(db)
 
 
 @manage_router.post("/api/sessions/bulk-delete")
@@ -685,7 +690,7 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
                     break
             yield "]}"
         finally:
-            db.close()
+            release_or_close(db)
 
     return StreamingResponse(_stream_export(), media_type="application/json")
 

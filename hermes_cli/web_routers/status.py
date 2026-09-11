@@ -51,6 +51,8 @@ get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+# Pooled handles go back to the registry (release_or_close), not down via close().
+release_or_close = late("release_or_close", "hermes_state_registry")
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
@@ -81,7 +83,7 @@ def _count_status_active_sessions() -> int:
         return sum(1 for s in sessions if s.get("ended_at") is None
                    and (now - s.get("last_active", s.get("started_at", 0))) < 300)
     finally:
-        db.close()
+        release_or_close(db)
 
 
 async def _status_active_sessions() -> int:

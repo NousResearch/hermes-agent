@@ -362,3 +362,85 @@ def test_chain_walk_async(plugin, monkeypatch):
         return sync(*a, **k)
     r = asyncio.run(plugin._wrap_candidate(cand, True)(None, "minimax/minimax-m3", "fallback_chain[0](custom)", task="vision"))
     assert r == f"served by {V41}"
+
+
+# ── 1.0.5: time-windowed usage (plugin_api.usage) ─────────────────────────────────────────────
+NOW = 1789200000.0   # 2026-09-12 ~20:00 NZST
+
+
+@pytest.fixture()
+def api(core):
+    return _load(PLUGIN_DIR / "dashboard" / "plugin_api.py", "fleet_models_api_under_test")
+
+
+def _ledger(root, prof, rows):
+    import sqlite3
+    d = root if prof == "root" else root / "profiles" / prof
+    d.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(d / "state.db")
+    c.execute("CREATE TABLE IF NOT EXISTS session_model_usage (session_id TEXT, model TEXT, provider_name TEXT, "
+              "billing_base_url TEXT, task TEXT, api_call_count INT, input_tokens INT, output_tokens INT, "
+              "cache_read_tokens INT, cache_write_tokens INT, actual_cost_usd REAL, total_cost REAL, "
+              "estimated_cost_usd REAL, cost_source TEXT, first_seen REAL, last_seen REAL)")
+    for r in rows:
+        c.execute("INSERT INTO session_model_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  ("s", r.get("model", V41), r.get("host", "DeepInfra"), r.get("base", "https://openrouter.ai/api/v1"),
+                   r.get("task", ""), r["calls"], 1000 * r["calls"], 100 * r["calls"], 0, 0, 0, r.get("cost", 0.0), 0,
+                   r.get("src", ""), r["fs"], r["ls"]))
+    c.commit(); c.close()
+
+
+def test_usage_spreads_long_rows_and_every_view_reconciles(api, tmp_path):
+    N = NOW + 100   # mid-bucket, so the current bucket is partial
+    _ledger(tmp_path, "root", [
+        {"calls": 10, "cost": 0.10, "fs": N - 600, "ls": N - 600},          # a point, inside the last hour
+        {"calls": 40, "cost": 0.40, "fs": N - 7200, "ls": N},               # 2 h span: half falls in the last hour
+        {"calls": 99, "cost": 9.99, "fs": N - 9000, "ls": N - 3700},        # ended before the window
+    ])
+    _ledger(tmp_path, "karl", [{"calls": 6, "model": FLASH, "host": "", "base": "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+                                "src": "modelark subscription", "fs": N - 1200, "ls": N - 1200}])
+    u = api.usage(3600, bucket=300, tz="Pacific/Auckland", now=N, root=tmp_path)
+    calls = sum(r["calls"] for r in u["rows"])
+    assert calls == 10 + 20 + 6
+    assert abs(sum(r["billed_usd"] for r in u["rows"]) - (0.10 + 0.20)) < 1e-9
+    assert abs(sum(s["calls"] for s in u["series"]) - calls) < 0.01             # the chart sums to the tiles
+    assert abs(sum(u["by_profile"]["root"]["calls"]) - 30) < 0.01
+    assert abs(sum(s["modelark_calls"] for s in u["series"]) - 6) < 0.01
+    karl = [r for r in u["rows"] if r["profile"] == "karl"][0]
+    assert karl["modelark"] and karl["billed_usd"] == 0 and karl["cap_equivalent_usd"] > 0
+    assert u["bucket"] == 300 and 12 <= len(u["series"]) <= 13
+    assert u["series"][-1]["partial"]
+
+
+def test_usage_buckets_follow_the_local_clock_across_dst(api, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    nz = ZoneInfo("Pacific/Auckland")
+    _ledger(tmp_path, "root", [])
+    dst = datetime(2026, 9, 28, 12, 0, tzinfo=nz).timestamp()   # NZ clocks went forward 27 Sep 02:00 → 03:00
+    days = api.usage(5 * 86400, bucket=86400, tz="Pacific/Auckland", now=dst, root=tmp_path)["series"]
+    assert all(datetime.fromtimestamp(s["t"], nz).hour == 0 for s in days)
+    assert sorted({round((s["end"] - s["t"]) / 3600) for s in days}) == [23, 24]   # the short day is one bucket
+    hours = api.usage(86400, bucket=3600, tz="Pacific/Auckland", now=datetime(2026, 9, 27, 14, 0, tzinfo=nz).timestamp(), root=tmp_path)["series"]
+    assert all(datetime.fromtimestamp(s["t"], nz).minute == 0 for s in hours)
+    sixes = api.usage(7 * 86400, bucket=21600, tz="Pacific/Auckland", now=dst, root=tmp_path)["series"]
+    assert all(datetime.fromtimestamp(s["t"], nz).hour in (0, 6, 12, 18) for s in sixes[1:])
+
+
+def test_usage_clamps_window_and_bucket(api, tmp_path):
+    _ledger(tmp_path, "root", [])
+    assert api.usage(60, now=NOW, root=tmp_path)["window"] == 900
+    assert api.usage(86400, bucket=7, now=NOW, root=tmp_path)["bucket"] == 3600          # not a nice size → natural
+    u = api.usage(30 * 86400, bucket=60, now=NOW, root=tmp_path)                          # 43,200 buckets → coarsened
+    assert len(u["series"]) <= api.MAX_BUCKETS + 1 and u["bucket"] in api.NICE_BUCKETS
+    assert api.usage(10 ** 9, now=NOW, root=tmp_path)["window"] == api.WINDOW_MAX
+    assert api.usage(3600, tz="../../etc/passwd", now=NOW, root=tmp_path)["tz"] != "../../etc/passwd"
+
+
+def test_usage_route_keeps_the_old_daily_shape_for_open_104_tabs(api, tmp_path, monkeypatch):
+    import time as _t
+    _ledger(tmp_path, "root", [{"calls": 3, "cost": 0.03, "fs": _t.time() - 7200, "ls": _t.time() - 7200}])
+    monkeypatch.setenv("FLEET_MODELS_ROOT", str(tmp_path))
+    old = api.get_usage(days=7)
+    assert "daily" in old and sum(d["calls"] for d in old["daily"]) == sum(r["calls"] for r in old["rows"]) == 3
+    assert "daily" not in api.get_usage(window=3600, bucket=300, tz="Pacific/Auckland")

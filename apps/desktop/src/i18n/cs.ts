@@ -1,7 +1,6 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { defineLocale } from './define-locale'
-
 export const cs = defineLocale({
   common: {
     apply: 'Použít',
@@ -11,9 +10,9 @@ export const cs = defineLocale({
     cancel: 'Zrušit',
     change: 'Změna',
     choose: 'Vyberte si',
-    clear: 'Jasný',
+    clear: 'Vymazat',
     close: 'Zavřít',
-    collapse: 'kolaps',
+    collapse: 'Sbalit',
     confirm: 'Potvrďte',
     connect: 'Připojte se',
     connecting: 'Připojování',
@@ -22,7 +21,7 @@ export const cs = defineLocale({
     copy: 'Kopírovat',
     copyFailed: 'Kopírování se nezdařilo',
     delete: 'Smazat',
-    docs: 'Docs',
+    docs: 'Dokumentace',
     done: 'Hotovo',
     error: 'Chyba',
     expand: 'Rozšířit',
@@ -37,7 +36,7 @@ export const cs = defineLocale({
     retry: 'Zkuste to znovu',
     run: 'Spustit',
     send: 'Odeslat',
-    set: 'Set',
+    set: 'Nastavit',
     skip: 'Přeskočit',
     update: 'Aktualizovat',
     tryHint: term => `Zkusit "${term}"`,
@@ -57,7 +56,10 @@ export const cs = defineLocale({
     renameLabel: 'Nové jméno',
     deleteTitle: name => `Smazat ${name}?`,
     deleteBody: 'Bude přesunuta do koše – odtud ji můžete obnovit.',
-    pathCopied: 'Cesta zkopírována'
+    pathCopied: 'Cesta zkopírována',
+    download: 'Stáhnout',
+    downloadSaved: 'Uloženo',
+    downloadFailed: 'Stažení se nezdařilo'
   },
   boot: {
     ready: 'Hermes Desktop je připraven',
@@ -67,7 +69,8 @@ export const cs = defineLocale({
       loadingSettings: 'Načítání nastavení Hermes',
       loadingSessions: 'Načítání posledních relací',
       startingDesktopConnection: 'Spouštění připojení k ploše',
-      startingHermesDesktop: 'Spouštění Hermes Desktop…'
+      startingHermesDesktop: 'Spouštění Hermes Desktop…',
+      retryingRemoteBackend: 'Opětovné připojování ke vzdálenému backendu Hermes…'
     },
     errors: {
       backgroundExited: 'Proces pozadí Hermes byl ukončen.',
@@ -76,13 +79,17 @@ export const cs = defineLocale({
       desktopBootFailed: 'Spuštění z plochy se nezdařilo',
       gatewayConnectionLost: 'Ztratilo se připojení k bráně',
       gatewaySignInRequired: 'Je vyžadováno přihlášení k bráně',
-      ipcBridgeUnavailable: 'Most IPC pro stolní počítače není k dispozici.'
+      ipcBridgeUnavailable: 'Most IPC pro stolní počítače není k dispozici.',
+      gatewayConnectionLostDetail:
+        'Stále se o to pokoušíme na pozadí. Můžete dál číst a psát — pokud to přetrvává, otevřete nastavení brány.'
     },
     failure: {
       title: 'Hermes nemohl nastartovat',
-      description: 'Brána na pozadí se neobjevila. Vyzkoušejte jeden z níže uvedených kroků obnovení. Nic zde nesmaže vaše chaty ani nastavení.',
+      description:
+        'Brána na pozadí se neobjevila. Vyzkoušejte jeden z níže uvedených kroků obnovení. Nic zde nesmaže vaše chaty ani nastavení.',
       remoteTitle: 'Je vyžadováno přihlášení ke vzdálené bráně',
-      remoteDescription: 'Platnost relace vzdálené brány vypršela. Chcete-li se znovu připojit, přihlaste se znovu. Nic zde nesmaže vaše chaty ani nastavení.',
+      remoteDescription:
+        'Platnost relace vzdálené brány vypršela. Chcete-li se znovu připojit, přihlaste se znovu. Nic zde nesmaže vaše chaty ani nastavení.',
       retry: 'Zkuste to znovu',
       repairInstall: 'Opravná instalace',
       useLocalGateway: 'Použijte místní bránu',
@@ -90,7 +97,8 @@ export const cs = defineLocale({
       back: 'Zpět',
       openLogs: 'Otevřete protokoly',
       repairHint: 'Oprava znovu spustí instalační program a na novém počítači může trvat několik minut.',
-      remoteSignInHint: signInLabel => `Odhlásí uloženou relaci vzdáleného prohlížeče a poté otevře ${signInLabel}. Místo toho použijte místní bránu k přechodu na spojený backend.`,
+      remoteSignInHint: signInLabel =>
+        `Odhlásí uloženou relaci vzdáleného prohlížeče a poté otevře ${signInLabel}. Místo toho použijte místní bránu k přechodu na spojený backend.`,
       signOutAndSignIn: 'Odhlásit se a přihlásit',
       remoteFailureHint: 'Zkontrolujte URL brány a přihlášení v Nastavení → Brána, nebo přepněte na místní bránu.',
       hideRecentLogs: 'Skrýt nedávné protokoly',
@@ -102,7 +110,13 @@ export const cs = defineLocale({
       signInFailed: 'Přihlášení se nezdařilo',
       signInToRemoteGateway: 'Přihlaste se ke vzdálené bráně',
       signInWithProvider: provider => `Přihlaste se pomocí ${provider}`,
-      identityProvider: 'vašeho poskytovatele identity'
+      identityProvider: 'vašeho poskytovatele identity',
+      cloudDownTitle: 'Agent Nous Cloud je mimo provoz',
+      cloudDownDescription:
+        'Cloudový agent spravovaný Nous, ke kterému se tato brána připojuje, vrací chybu serveru. Odtud jej nelze restartovat — zkontrolujte jeho stav, přepněte na místní bránu nebo vyhledejte podporu.',
+      cloudDownHint: 'Tlačítka níže otevřou Nous Portal (stav a ovládání instance) a náš Discord pro podporu.',
+      cloudDownCheckPortal: 'Zkontrolovat stav portálu',
+      cloudDownDiscord: 'Získat pomoc na Discordu'
     }
   },
   notifications: {
@@ -116,7 +130,8 @@ export const cs = defineLocale({
     copyDetail: 'Kopírovat detail',
     copyDetailFailed: 'Podrobnosti oznámení nelze zkopírovat',
     backendOutOfDateTitle: 'Backend je zastaralý',
-    backendOutOfDateMessage: 'Váš backend Hermes je starší než tato desktopová sestava a nemusí fungovat správně. Aktualizujte je, abyste je zarovnali.',
+    backendOutOfDateMessage:
+      'Váš backend Hermes je starší než tato desktopová sestava a nemusí fungovat správně. Aktualizujte je, abyste je zarovnali.',
     installMethodUnsupportedTitle: 'Nepodporovan způsob instalace',
     updateHermes: 'Aktualizujte Hermes',
     updateReadyTitle: 'Aktualizace připravena',
@@ -128,11 +143,14 @@ export const cs = defineLocale({
       elevenLabsRejectedKey: 'ElevenLabs odmítlo klíč API (401).',
       diskFull: 'Disk je plný — uvolněte místo a zkuste znovu.',
       gatewayAuthFailed: 'Hermes selhal — zkontrolujte API_SERVER_KEY.',
-      methodNotAllowed: 'Backend desktopu tento požadavek odmítl (405 metoda není povolena). Zkuste restartovat Hermes Desktop.',
+      methodNotAllowed:
+        'Backend desktopu tento požadavek odmítl (405 metoda není povolena). Zkuste restartovat Hermes Desktop.',
       microphonePermission: 'Povolení mikrofonu bylo odepřeno.',
       openaiRejectedApiKey: 'OpenAI odmítl klíč API.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI odmítla klíč API (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'OpenAI TTS potřebuje VOICE_TOOLS_OPENAI_KEY nebo OPENAI_API_KEY.'
+      openaiTtsNeedsKey: 'OpenAI TTS potřebuje VOICE_TOOLS_OPENAI_KEY nebo OPENAI_API_KEY.',
+      codeSkewRestartRequired:
+        'Tento backend po aktualizaci běží na starém kódu. Restartujte jej, aby se načetl nový kód.'
     },
     voice: {
       configureSpeechToText: 'Nakonfigurujte převod řeči na text pro použití hlasového režimu.',
@@ -166,10 +184,19 @@ export const cs = defineLocale({
       backgroundDoneTitle: 'Úloha na pozadí dokončena',
       backgroundFailedTitle: 'Úloha na pozadí se nezdařila',
       creditsTitle: 'Kredity'
+    },
+    mcp: {
+      needsAuthTitle: 'Server MCP vyžaduje opětovné ověření',
+      needsAuthMessage: name => `${name} MCP vyžaduje opětovné ověření.`,
+      errorTitle: 'Server MCP je nedostupný',
+      errorMessage: name => `${name} MCP neprošel kontrolou stavu.`,
+      signIn: 'Přihlásit se',
+      view: 'Zobrazit'
     }
   },
   remoteDisplayBanner: {
-    message: reason => `Softwarové vykreslování aktivní – detekován vzdálený displej (${reason}). Akcelerace GPU je deaktivována, aby se zabránilo blikání.`,
+    message: reason =>
+      `Softwarové vykreslování aktivní – detekován vzdálený displej (${reason}). Akcelerace GPU je deaktivována, aby se zabránilo blikání.`
   },
   billingBlock: {
     titleNous: 'Nedostatek kreditů Nous',
@@ -195,6 +222,9 @@ export const cs = defineLocale({
     exitHud: 'Ukončit režim HUD',
     layoutEditor: 'Editor rozvržení',
     layoutEditorTitle: mod => `Editor rozvržení — ${mod}-klik obnoví rozvržení`,
+    unreadSessions: count =>
+      count === 1 ? '1 nepřečtená relace' : count < 5 ? `${count} nepřečtené relace` : `${count} nepřečtených relací`,
+    resetHudLayout: 'Obnovit velikost a polohu HUD'
   },
   keybinds: {
     title: 'Klávesové zkratky',
@@ -227,7 +257,7 @@ export const cs = defineLocale({
       'session.new': 'Nová relace',
       'session.newTab': 'Nová karta relace',
       'session.newWindow': 'Nová relace v okně',
-      'session.next': 'Další sezení',
+      'session.next': 'Další relace',
       'session.prev': 'Předchozí relace',
       'session.slot.1': 'Přepnout na poslední relaci 1',
       'session.slot.2': 'Přepnout na poslední relaci 2',
@@ -292,14 +322,17 @@ export const cs = defineLocale({
       'profile.create': 'Vytvořit profil',
       'composer.send': 'Odeslat zprávu',
       'composer.newline': 'Vložit nový řádek',
-      'composer.steer': 'Řídit běžeckou zatáčku',
-      'composer.queue': 'Zakontrolovat zprávu',
+      'composer.steer': 'Nasměrovat běžící tah',
+      'composer.queue': 'Zařadit zprávu do fronty',
       'composer.sendQueued': 'Odeslat další kolo ve frontě',
-      'composer.mention': 'Referenční soubory, složky, URLs',
-      'composer.slash': 'Paleta příkazů lomítka',
+      'composer.mention': 'Odkazovat soubory, složky, URL',
+      'composer.slash': 'Paleta lomítkových příkazů',
       'composer.help': 'Rychlá pomoc',
       'composer.history': 'Cyklovat popover / historii',
       'composer.cancel': 'Zavřít vyskakovací okno · zrušit běh',
+      'view.toggleTabStrip': 'Přepnout karty',
+      'view.showBrowser': 'Otevřít prohlížeč',
+      'view.selectionToComposer': 'Odeslat výběr do editoru zprávy'
     }
   },
   findInPage: {
@@ -338,6 +371,8 @@ export const cs = defineLocale({
       about: 'O',
       billing: 'Fakturace',
       notifications: 'Oznámení',
+      providerLocalModels: 'Místní modely',
+      vault: 'Hesla a přihlašovací údaje'
     },
     plugins: {
       title: 'Desktop pluginy',
@@ -355,10 +390,66 @@ export const cs = defineLocale({
         disk: 'na disku',
         runtime: 'běhové'
       },
+      agentHalfMissing: 'agentní část zde chybí',
+      agentHalfMissingTip:
+        'Toto je desktopová část zabaleného pluginu, ale jeho agentní část není nainstalována na aktuálně připojeném backendu/profilu. Nainstalujte ji v sekci Dovednosti a nástroje → Pluginy.',
+      installModal: {
+        installFromGit: 'Instalovat z Gitu',
+        reviewRepository: 'Zkontrolovat repozitář',
+        repoPlaceholder: 'https://github.com/owner/repo',
+        title: 'Nainstalovat plugin',
+        description: 'Před instalací si prohlédněte, co tento repozitář obsahuje.',
+        repoLabel: 'Repozitář',
+        includesHeading: 'Tento balíček obsahuje',
+        agentLabel: 'Agentní plugin',
+        desktopLabel: 'Rozhraní desktopu',
+        agentTargetLocal: (profile, dir) => `Nainstaluje se do backendu ${profile} (${dir})`,
+        agentTargetRemote: profile => `Nainstaluje se do připojeného backendu ${profile}`,
+        catalogPinned: (name, sha) =>
+          `Záznam v katalogu Hermes „${name}“ — agentní komponenta se nainstaluje na zkontrolovaný pin${sha ? ` ${sha}` : ''}, nikoli na konec větve.`,
+        reviewedHeading: 'Zkontrolovaný záznam v katalogu',
+        reviewedIntro:
+          'Tento záznam byl lidsky zkontrolován na svém připnutém commitu. Přesný kód si můžete prohlédnout níže.',
+        restartToApply: 'Chcete-li plugin aktivovat, restartujte bránu.',
+        restartNow: 'Restartovat bránu',
+        missingEnvAction: 'Nastavit',
+        alreadyInstalled: (name: string) => `${name} je již nainstalováno.`,
+        desktopTarget: 'Nainstaluje se do místní složky desktop-plugins této aplikace',
+        desktopTargetFromPackage: 'Načteno do této aplikace z balíčku výše — stejné pro každý profil',
+        desktopOnlyNote: 'Balíčky pouze pro desktop neinstalují agentní plugin backendu.',
+        insecureWarning:
+          'Tato URL používá nezabezpečené nebo místní schéma. Pro produkční instalace použijte raději https:// nebo git@.',
+        securityHeading: 'Než začnete instalovat',
+        securityIntro:
+          'Instalujte pouze ze zdrojů, kterým důvěřujete — chcete-li vidět, co bude přidáno, prohlédněte si repozitář níže.',
+        sourceHeading: 'Zdrojový kód',
+        viewRepository: 'Zobrazit repozitář',
+        viewPluginFiles: 'Zobrazit soubory pluginu',
+        gitCloneLabel: 'URL pro git clone',
+        enableAgent: 'Po instalaci povolit agentní plugin',
+        forceReinstall: 'Vynutit přeinstalaci (nahradit, pokud je již nainstalováno)',
+        pinToCommit: 'Připnout ke commitu (volitelné)',
+        pinToCommitPlaceholder: 'Úplný 40znakový SHA commitu',
+        pinToCommitHint:
+          'Každý, kdo nainstaluje tento SHA, získá stejný kód; plugin poté odmítá aktualizace, dokud nebude znovu připnut. Pro nejnovější commit ponechte prázdné.',
+        pinToCommitInvalid: 'Musí jít o úplný 40znakový SHA commitu (větve a značky se nepřijímají).',
+        install: 'Instalovat',
+        installing: 'Instaluje se…',
+        probing: 'Kontrola repozitáře…',
+        probeUnavailable: 'Kontrola pluginů není v tomto prostředí k dispozici.',
+        desktopUnavailable: 'Instalace desktopových pluginů není v tomto prostředí k dispozici.',
+        selectComponent: 'Vyberte alespoň jednu komponentu k instalaci.',
+        agentSuccess: name => `Agentní plugin ${name} byl nainstalován`,
+        desktopSuccess: name => `Desktopový plugin ${name} byl nainstalován`,
+        agentFailed: 'Instalace agentního pluginu se nezdařila',
+        desktopFailed: 'Instalace desktopového pluginu se nezdařila',
+        missingEnv: vars => `Chybí proměnné prostředí: ${vars}. Přidejte je v Nastavení → Klíče.`
+      }
     },
     notifications: {
       title: 'Oznámení',
-      intro: 'Nativní oznámení na ploše, oddělená od toastů v aplikaci. Jedná se o místní nastavení – každý počítač si uchovává svá vlastní nastavení.',
+      intro:
+        'Nativní oznámení na ploše, oddělená od toastů v aplikaci. Jedná se o místní nastavení – každý počítač si uchovává svá vlastní nastavení.',
       enableAll: 'Povolit upozornění',
       enableAllDesc: 'Hlavní vypínač. Vypněte toto, chcete-li ztišit všechna níže uvedená oznámení.',
       focusedHint: 'Dokončení upozorní pouze na oheň, když je Hermes v pozadí.',
@@ -395,7 +486,8 @@ export const cs = defineLocale({
       test: 'Odeslat testovací oznámení',
       testTitle: 'Hermes',
       testBody: 'Oznámení fungují.',
-      testSent: 'Test odeslán. Pokud se nic neobjeví, zkontrolujte oprávnění k upozornění operačního systému a možnost Zaostřit/nerušit.',
+      testSent:
+        'Test odeslán. Pokud se nic neobjeví, zkontrolujte oprávnění k upozornění operačního systému a možnost Zaostřit/nerušit.',
       testUnsupported: 'Tento systém nepodporuje nativní oznámení.',
       completionSoundTitle: 'Zvuk dokončení',
       completionSoundDesc: 'Hraje se, když skončí tah agenta. Vyberte předvolbu a zobrazte její náhled zde.',
@@ -435,7 +527,8 @@ export const cs = defineLocale({
     },
     appearance: {
       title: 'Vzhled',
-      intro: 'Toto jsou předvolby zobrazení pouze pro stolní počítače. Režim ovládá jas; motiv ovládá paletu zvýraznění a stylování povrchu chatu.',
+      intro:
+        'Toto jsou předvolby zobrazení pouze pro stolní počítače. Režim ovládá jas; motiv ovládá paletu zvýraznění a stylování povrchu chatu.',
       colorMode: 'Barevný režim',
       colorModeDesc: 'Vyberte pevný režim nebo nechte Hermes sledovat vaše systémové nastavení.',
       toolViewTitle: 'Zobrazení volání nástroje',
@@ -443,14 +536,16 @@ export const cs = defineLocale({
       reasoningCollapsedTitle: 'Sbalovat myšlení ve výchozím nastavení',
       reasoningCollapsedDesc: 'Udržovat uspořádané myšlení dostupné bez rozbalení, dokud neotevřete.',
       uiScaleTitle: 'Měřítko UI',
-      uiScaleDesc: (percent) => `Měřítkuje text a ovládací prvky v celé aplikaci. Cmd/Ctrl s +, - a 0 také funguje. Aktuální: ${percent}%.`,
+      uiScaleDesc: percent =>
+        `Měřítkuje text a ovládací prvky v celé aplikaci. Cmd/Ctrl s +, - a 0 také funguje. Aktuální: ${percent}%.`,
       sessionDensityTitle: 'Hustota seznamu relací',
       sessionDensityDesc: 'Zvolte, kolik kontextu se zobrazuje pod názvy relací v postranním panelu.',
       sessionDensityCompact: 'Kompaktní',
       sessionDensityComfortable: 'Pohodlné',
       sessionDensityDetailed: 'Podrobné',
       terminalFontTitle: 'Písmo terminálu',
-      terminalFontDesc: 'Zvolte nainstalované písmo pro terminály Desktopu. Nerd Fonts vykresluje Powerlevel10k a ikony shellu; nechte prázdné pro použití vestavěného JetBrains Mono.',
+      terminalFontDesc:
+        'Zvolte nainstalované písmo pro terminály Desktopu. Nerd Fonts vykresluje Powerlevel10k a ikony shellu; nechte prázdné pro použití vestavěného JetBrains Mono.',
       terminalFontPlaceholder: 'MesloLGS NF nebo CSS stack písma',
       terminalFontPreview: 'Náhled glyfů',
       terminalFontReset: 'Použít výchozí',
@@ -463,11 +558,12 @@ export const cs = defineLocale({
       composerPopoutTitle: 'Plovící editor',
       composerPopoutDesc: 'Povolit odsouvání editora z jeho dokování. Vypnout pro zablokování u dna.',
       embedsTitle: 'Inline vložení',
-      embedsDesc: 'Bohaté náhledy se načítají z webů třetích stran (YouTube, X, …). Ask zobrazuje zástupný symbol, dokud každý nepovolíte; Vždy je načte automaticky; Vypnuto zachovává jednoduché odkazy.',
+      embedsDesc:
+        'Bohaté náhledy se načítají z webů třetích stran (YouTube, X, …). Ask zobrazuje zástupný symbol, dokud každý nepovolíte; Vždy je načte automaticky; Vypnuto zachovává jednoduché odkazy.',
       embedsAsk: 'Zeptejte se',
       embedsAlways: 'Vždy',
       embedsOff: 'Vypnuto',
-      embedsReset: (count) => `Resetování ${count} povoleno ${count === 1 ? 'service' : 'services'}`,
+      embedsReset: count => `Resetování ${count} povoleno ${count === 1 ? 'service' : 'services'}`,
       product: 'Produkt',
       productDesc: 'Činnost nástroje přátelského k člověku se stručným shrnutím.',
       technical: 'Technický',
@@ -476,7 +572,8 @@ export const cs = defineLocale({
       themeDesc: 'Pouze stolní palety. Vybraný režim se použije nahoře.',
       themeProfileNote: profile => `Uloženo pro profil ${profile} — každý profil si uchovává své vlastní téma.`,
       installTitle: 'Nainstalujte z VS Code',
-      installDesc: 'Vložte ID rozšíření Marketplace (např. dracula-theme.theme-dracula), abyste převedli jeho barevný motiv na paletu plochy.',
+      installDesc:
+        'Vložte ID rozšíření Marketplace (např. dracula-theme.theme-dracula), abyste převedli jeho barevný motiv na paletu plochy.',
       installPlaceholder: 'vydavatel.rozšíření',
       installButton: 'Instalovat',
       installing: 'Instalace…',
@@ -486,8 +583,10 @@ export const cs = defineLocale({
       importedBadge: 'Importováno',
       pet: {
         title: 'Domácí mazlíček',
-        intro: 'Přijměte animovaného maskota petdex, který se vznáší nad aplikací a reaguje na to, co Hermes dělá – běží, zatímco nástroje pracují, slaví úspěch, trucuje kvůli chybám.',
-        restartHint: 'Domácí mazlíčci potřebují rychlý restart – spuštěná aplikace se spustila před přidáním této funkce. Odejděte a znovu otevřete Hermese, pak se vraťte sem.',
+        intro:
+          'Přijměte animovaného maskota petdex, který se vznáší nad aplikací a reaguje na to, co Hermes dělá – běží, zatímco nástroje pracují, slaví úspěch, trucuje kvůli chybám.',
+        restartHint:
+          'Domácí mazlíčci potřebují rychlý restart – spuštěná aplikace se spustila před přidáním této funkce. Odejděte a znovu otevřete Hermese, pak se vraťte sem.',
         on: 'Zapnuto',
         off: 'Vypnuto',
         scaleTitle: 'Velikost',
@@ -520,7 +619,47 @@ export const cs = defineLocale({
         noneAvailable: 'Momentálně nejsou k dispozici žádná domácí zvířata, která by se dala zapnout.',
         turnOnFailed: 'Zvířátko se nepodařilo zapnout.',
         turnOffFailed: 'Zvířátko se nepodařilo vypnout.'
-      }
+      },
+      tabStripTitle: 'Pruh karet',
+      tabStripDesc: 'Zobrazit karty nad zónou. Režim Auto je skryje, když zóna obsahuje jediný panel.',
+      tabStripAuto: 'Auto',
+      tabStripAlways: 'Vždy',
+      tabStripNever: 'Nikdy',
+      translucencyGlassDesc:
+        'Matné sklo: plocha prosvítá jako jemné rozostření, přičemž text zůstává ostrý. Laděno zvlášť pro světlý a tmavý režim.',
+      translucencyModeClear: 'Čiré',
+      translucencyModeGlass: 'Sklo',
+      translucencyTintTitle: 'Odstín',
+      translucencyFadeTitle: 'Prolnutí',
+      translucencyFrostTitle: 'Námraza',
+      translucencyFrost: {
+        'under-window': 'Hluboké',
+        popover: 'Jemné',
+        titlebar: 'Světlé',
+        header: 'Odlesk'
+      },
+      translucencyScopeTitle: 'Oblast',
+      translucencyScope: {
+        window: 'Celé okno',
+        sidebar: 'Jen postranní panel'
+      },
+      userBubbleTitle: 'Bublina zprávy',
+      userBubbleDesc: 'Jak průhledné jsou vaše vlastní zprávy. Při 0 plné; při 100 zůstane jen obrys.',
+      introSplashTitle: 'Uvítací úvod',
+      introSplashDesc: 'Logo a prompt zobrazené v prázdném chatu.',
+      tipsTitle: 'Tipy v aplikaci',
+      tipsDesc:
+        'Malá bublina ukazující na jednu část aplikace, zobrazovaná občas při nečinnosti a Hermesem, když to pomůže. Každý tip se objeví jednou.',
+      tipsReset: (count: number) =>
+        `Znovu zobrazit ${count} ${count === 1 ? 'tip' : count >= 2 && count <= 4 ? 'tipy' : 'tipů'}`,
+      toursTitle: 'Prohlídky s průvodcem',
+      toursDesc: 'Nechte Hermes provést vás aplikací – ztmaví obrazovku a zvýrazní každý krok.',
+      vibeHeartsTitle: 'Srdíčka',
+      vibeHeartsDesc:
+        'Plovoucí srdíčka, když poděkujete, napíšete ily, good bot nebo pošlete srdce. Oddělené od Reakcí na zprávy výše.',
+      resumeLastSessionTitle: 'Znovu otevřít poslední chat při spuštění',
+      resumeLastSessionDesc:
+        'Je-li zapnuto, aplikace při studeném startu znovu otevře váš nejnovější chat. Vypněte, chcete-li vždy začínat novým chatem.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -545,12 +684,20 @@ export const cs = defineLocale({
       justNowSuffix: '· právě teď',
       automaticUpdates: 'Automatické aktualizace',
       automaticUpdatesDesc: 'Hermes automaticky kontroluje aktualizace na pozadí a dá vám vědět, když je připravena.',
-      branchCommit: (branch, commit) => `Větev ${branch} · Zavázat ${commit}`,
+      branchCommit: (branch, commit) => `Větev ${branch} · commit ${commit}`,
       never: 'nikdy',
       justNow: 'právě teď',
       minAgo: count => `Před ${count} min`,
       hoursAgo: count => `${count} před hodinami`,
-      daysAgo: count => `Před ${count} dny`
+      daysAgo: count => `Před ${count} dny`,
+      bundleOutOfSync: 'Sestava aplikace je zastaralá',
+      bundleOutOfSyncDesc:
+        'Běhové prostředí Hermes bylo aktualizováno, ale samotná desktopová aplikace je stále starší sestava — nové funkce rozhraní (jako režim Bot) budou chybět, dokud se neaktualizuje. Spuštěním níže uvedené aktualizace aplikaci znovu sestavte. Pokud toto varování nezmizí, nainstalujte aplikaci znovu z nejnovějšího instalačního programu pro desktop.',
+      bundleOutOfSyncAction: 'Získat instalační program',
+      bundleSwapPending: 'Dokončete aktualizaci restartem',
+      bundleSwapPendingDesc:
+        'Aktualizovaná aplikace je již nainstalována — Hermes stačí restartovat, aby ji načetl. Chaty a nastavení zůstanou nedotčeny.',
+      bundleSwapPendingAction: 'Restartovat Hermes'
     },
     config: {
       none: 'žádný',
@@ -568,19 +715,23 @@ export const cs = defineLocale({
       autosaveFailed: 'Automatické ukládání se nezdařilo',
       imported: 'Konfigurace importována',
       invalidJson: 'Neplatná konfigurace JSON',
-      toolsetsWipeConfirm: 'Odstranit všechny povolené sady nástrojů? To znemožní paměť, terminál, webové vyhledávání, delegování a většinu ostatních nástrojů, dokud je nepovolíte znovu.',
+      toolsetsWipeConfirm:
+        'Odstranit všechny povolené sady nástrojů? To znemožní paměť, terminál, webové vyhledávání, delegování a většinu ostatních nástrojů, dokud je nepovolíte znovu.',
       keepAwakeTitle: 'Nechat počítač bdít',
-      keepAwakeDesc: 'Zabránit usnutí tohoto počítače během dlouhých nebo přes noc běžících úloh. Displej může stále zatrpít.',
+      keepAwakeDesc:
+        'Zabránit usnutí tohoto počítače během dlouhých nebo přes noc běžících úloh. Displej může stále zatrpít.',
       disableF12Title: 'Zakázat F12 DevTools',
       disableF12Desc: 'Blokace F12 otevírá Vývojářské nástroje. Ctrl+Shift+I (nebo Cmd+Opt+I na Macu) stále funguje.',
       attachmentSizeTitle: 'Maximální náhled / velikost načítání obrázků',
-      attachmentSizeDesc: 'Jak velký lokální soubor načte Desktop pro náhledy a přiložení obrázků v MB. Výchozí je 16. Vzdálené ne-obrazové přiložení používá oddělený limit 256 MB. Příliš vysoká hodnota načte celý soubor do paměti a může zamrznout nebo spadnout aplikace.',
+      attachmentSizeDesc:
+        'Jak velký lokální soubor načte Desktop pro náhledy a přiložení obrázků v MB. Výchozí je 16. Vzdálené ne-obrazové přiložení používá oddělený limit 256 MB. Příliš vysoká hodnota načte celý soubor do paměti a může zamrznout nebo spadnout aplikace.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximální náhled / velikost načítání obrázků v megabajtech'
     },
     quickEntry: {
       enabledTitle: 'Rychký vstup',
-      enabledDesc: 'Přivolání malého editora odkudkoli pomocí globální zkratky a odeslání promptu bez otevírání Hermes.',
+      enabledDesc:
+        'Přivolání malého editora odkudkoli pomocí globální zkratky a odeslání promptu bez otevírání Hermes.',
       shortcutTitle: 'Zkratka pro rychký vstup',
       shortcutDesc: 'Potřebuje alespoň jeden modifikátor, např. CommandOrControl+Shift+Space.',
       active: 'Zkratka je aktivní.',
@@ -595,22 +746,24 @@ export const cs = defineLocale({
       couldNotSave: 'Pověření se nepodařilo uložit.',
       remove: 'Odebrat',
       getKey: 'Získejte klíč',
-      saving: 'Ukládání',
+      saving: 'Ukládání'
     },
     envActions: {
       actions: 'Akce',
       manageInKeys: 'Spravovat v API klíčích',
-      docs: 'Docs',
+      docs: 'Dokumentace',
       hideValue: 'Skrýt hodnotu',
       revealValue: 'Odhalit hodnotu',
       replace: 'Vyměňte',
-      set: 'Set',
-      clear: 'Jasný',
+      set: 'Nastavit',
+      clear: 'Vymazat'
     },
     connections: {
       title: 'Připojení',
-      intro: 'Zaregistrujte každé místo, kde vaše agenti žijí — tento zařízení, vzdálené brány ve vaší síti a instance Hermes Cloud. Všechny jsou uloženy zde.',
-      stagedNote: 'Chaty a seznam agentů následují zdroj, který si vyberete; backend spravovaný aplikací je stále volič v Nastavení → Brána.',
+      intro:
+        'Zaregistrujte každé místo, kde vaše agenti žijí — tento zařízení, vzdálené brány ve vaší síti a instance Hermes Cloud. Všechny jsou uloženy zde.',
+      stagedNote:
+        'Chaty a seznam agentů následují zdroj, který si vyberete; backend spravovaný aplikací je stále volič v Nastavení → Brána.',
       loadFailed: 'Nelze načíst spojení',
       primaryPill: 'Primární',
       managedPill: 'Toto zařízení',
@@ -618,7 +771,8 @@ export const cs = defineLocale({
       editConnection: 'Upravit',
       removeConnection: 'Odstranit',
       removeConfirmTitle: 'Odstranit tohoto spojení?',
-      removeConfirmDesc: (label) => `"${label}" bude odstraněn z této aplikace. Instance sama nebude dotčena — můžete ji přidat znovu kdykoli.`,
+      removeConfirmDesc: label =>
+        `"${label}" bude odstraněn z této aplikace. Instance sama nebude dotčena — můžete ji přidat znovu kdykoli.`,
       makePrimary: 'Nastavit jako primární',
       testConnection: 'Test',
       testOk: 'Dosažitelný',
@@ -639,14 +793,34 @@ export const cs = defineLocale({
       kindCloudDesc: 'Hostovaná instance zjištěná prostřednictvím vašeho účtu Hermes Cloud.',
       kindSshDesc: 'Instalace Hermes dosažitelná přes SSH.',
       labelTitle: 'Název',
-      labelDesc: 'Požadováno. Zobrazováno všude, kde se tato instance objeví; musí být jedineční (např. "Homelab", "Work laptop").',
+      labelDesc:
+        'Požadováno. Zobrazováno všude, kde se tato instance objeví; musí být jedineční (např. "Homelab", "Work laptop").',
       labelPlaceholder: 'Homelab',
       urlTitle: 'URL brány',
       sshHostTitle: 'SSH host',
       save: 'Uložit spojení',
       saving: 'Ukládání…',
       cancel: 'Zrušit',
-      empty: 'Zatím žádná spojení registrovaná.'
+      empty: 'Zatím žádná spojení registrovaná.',
+      launchModeTitle: 'Při spuštění se vrátit k relacím na naposledy použité bráně',
+      launchModeDesc: 'Když je vypnuto, relace se otevřou na primární bráně.',
+      searchPlaceholder: 'Hledat brány…',
+      noSearchResults: 'Vašemu hledání neodpovídají žádné brány.',
+      currentPill: 'Aktuální',
+      headersTitle: 'Další hlavičky brány',
+      headersDesc:
+        'Odesílá se s každým požadavkem HTTP a WebSocket na tuto bránu — pro přístupové proxy, jako je Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Hodnoty se ukládají šifrovaně. Hlavičky, které spravuje Hermes (Authorization, Cookie, Host…), se ignorují.',
+      headerValuePlaceholder: 'Hodnota',
+      headerValueSaved: 'Uloženo — ponechte prázdné pro zachování',
+      headerAdd: 'Přidat hlavičku',
+      headerRemove: 'Odebrat',
+      duplicateLocal: 'Tato aplikace už spravuje místní připojení — může existovat jen jedno.',
+      duplicateUrl: (label: string) => `Připojení k této URL brány už existuje („${label}“).`,
+      duplicateSsh: (label: string) => `Připojení k tomuto SSH hostu už existuje („${label}“).`,
+      sameBackendHint: (label: string) => `Stejný backend jako „${label}“`,
+      localAddHint: 'Místní není k dispozici: spravované místní připojení už existuje (existuje vždy jen jedno).',
+      cloudAddHint:
+        'Tip: přihlášením k Hermes Cloud výše automaticky zjistíte své agenty — tento formulář použijte jen k ruční registraci známé URL instance.'
     },
     gateway: {
       loading: 'Načítání nastavení brány...',
@@ -654,15 +828,19 @@ export const cs = defineLocale({
       unavailableDesc: 'Most IPC pro stolní počítače neodhaluje nastavení brány.',
       title: 'Připojení brány',
       envOverride: 'přepsání env',
-      intro: 'Hermes Desktop ve výchozím nastavení spouští vlastní místní bránu. Pokud chcete, aby tato aplikace ovládala již běžící backend Hermes na jiném počítači nebo za důvěryhodným proxy serverem, použijte vzdálenou bránu. Níže vyberte profil a přidělte mu vlastního vzdáleného hostitele.',
+      intro:
+        'Hermes Desktop ve výchozím nastavení spouští vlastní místní bránu. Pokud chcete, aby tato aplikace ovládala již běžící backend Hermes na jiném počítači nebo za důvěryhodným proxy serverem, použijte vzdálenou bránu. Níže vyberte profil a přidělte mu vlastního vzdáleného hostitele.',
       envOverrideTitle: 'Tuto relaci plochy řídí proměnné prostředí.',
-      envOverrideDesc: 'Chcete-li použít níže uložené nastavení, zrušte nastavení HERMES_DESKTOP_REMOTE_URL a HERMES_DESKTOP_REMOTE_TOKEN.',
+      envOverrideDesc:
+        'Chcete-li použít níže uložené nastavení, zrušte nastavení HERMES_DESKTOP_REMOTE_URL a HERMES_DESKTOP_REMOTE_TOKEN.',
       modeTitle: 'Režim připojení',
       localTitle: 'Místní brána',
       localDesc: 'Spusťte soukromý backend Hermes na localhost. Toto je výchozí nastavení a funguje offline.',
       remoteTitle: 'Vzdálená brána',
-      remoteDesc: 'Připojte tento desktopový shell ke vzdálenému backendu Hermes. Hostované brány používají OAuth nebo uživatelské jméno a heslo; samoobslužné mohou používat token relace.',
-      remoteAuthHint: 'Hostované brány používají OAuth nebo uživatelské jméno a heslo; vlastní hostované mohou použít relační token.',
+      remoteDesc:
+        'Připojte tento desktopový shell ke vzdálenému backendu Hermes. Hostované brány používají OAuth nebo uživatelské jméno a heslo; samoobslužné mohou používat token relace.',
+      remoteAuthHint:
+        'Hostované brány používají OAuth nebo uživatelské jméno a heslo; vlastní hostované mohou použít relační token.',
       cloudTitle: 'Hermes Cloud',
       cloudDesc: 'Jednou se přihlaste k Hermes Cloud a vyberete z agentů na vašem účtě — není třeba vkládat URL.',
       cloudSignInTitle: 'Hermes Cloud',
@@ -695,7 +873,8 @@ export const cs = defineLocale({
       cloudAgentProvisioning: 'Zřizování…',
       cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Dálkové ovládání URL',
-      remoteUrlDesc: 'Základna URL pro backend vzdáleného řídicího panelu. Podporovány jsou předpony cest, například /hermes.',
+      remoteUrlDesc:
+        'Základna URL pro backend vzdáleného řídicího panelu. Podporovány jsou předpony cest, například /hermes.',
       probing: 'Kontrola, jak se tato brána ověřuje…',
       probeError: 'K této bráně se zatím nelze dostat. Zkontrolujte URL — metoda ověřování se objeví, jakmile odpoví.',
       signedIn: 'Přihlášeno',
@@ -703,20 +882,26 @@ export const cs = defineLocale({
       signOut: 'Odhlaste se',
       signInWith: provider => `Přihlaste se pomocí ${provider}`,
       authTitle: 'Autentizace',
-      authSignedInPassword: 'Tato brána používá uživatelské jméno a heslo. Jste přihlášeni; relace se automaticky obnoví.',
+      authSignedInPassword:
+        'Tato brána používá uživatelské jméno a heslo. Jste přihlášeni; relace se automaticky obnoví.',
       authSignedInOauth: 'Tato brána používá OAuth. Jste přihlášeni; relace se automaticky obnoví.',
-      authNeedsPassword: 'Tato brána používá uživatelské jméno a heslo. Chcete-li autorizovat tuto počítačovou aplikaci, přihlaste se.',
-      authNeedsOauth: provider => `Tato brána používá OAuth. Chcete-li autorizovat tuto počítačovou aplikaci, přihlaste se pomocí ${provider}.`,
+      authNeedsPassword:
+        'Tato brána používá uživatelské jméno a heslo. Chcete-li autorizovat tuto počítačovou aplikaci, přihlaste se.',
+      authNeedsOauth: provider =>
+        `Tato brána používá OAuth. Chcete-li autorizovat tuto počítačovou aplikaci, přihlaste se pomocí ${provider}.`,
       tokenTitle: 'Token relace',
-      tokenDesc: 'Token relace řídicího panelu používaný pro přístup REST a WebSocket. Chcete-li uložit uložený token, ponechte prázdné.',
+      tokenDesc:
+        'Token relace řídicího panelu používaný pro přístup REST a WebSocket. Chcete-li uložit uložený token, ponechte prázdné.',
       existingToken: value => `Stávající token ${value}`,
       savedToken: 'uloženo',
       pasteSessionToken: 'Vložit token relace',
       plainTextConfirmTitle: 'Uložit token brány jako prostý text?',
-      plainTextConfirmDesc: 'Na tomto počítači nebyla nalezena žádná služba OS keyring, takže token by byl uložen nešifrovaně v souboru nastavení spojení aplikace, čitelný pro jakýkoli proces běžící jako tento uživatel. Nainstalujte nebo povolte GNOME Keyring nebo KWallet pro šifrované úložiště.',
+      plainTextConfirmDesc:
+        'Na tomto počítači nebyla nalezena žádná služba OS keyring, takže token by byl uložen nešifrovaně v souboru nastavení spojení aplikace, čitelný pro jakýkoli proces běžící jako tento uživatel. Nainstalujte nebo povolte GNOME Keyring nebo KWallet pro šifrované úložiště.',
       plainTextConfirmAction: 'Uložit jako prostý text',
       plainTextStoredTitle: 'Token uložen jako prostý text',
-      plainTextStoredDesc: 'Bezpečné úložiště není k dispozici, takže uložený token je nešifrovaně uložen v souboru nastavení spojení této aplikace. Nainstalujte nebo povolte GNOME Keyring nebo KWallet pro šifrování.',
+      plainTextStoredDesc:
+        'Bezpečné úložiště není k dispozici, takže uložený token je nešifrovaně uložen v souboru nastavení spojení této aplikace. Nainstalujte nebo povolte GNOME Keyring nebo KWallet pro šifrování.',
       testRemote: 'Test dálkového ovládání',
       saveForRestart: 'Uložte pro příští restart',
       saveAndReconnect: 'Uložte a znovu připojte',
@@ -744,7 +929,8 @@ export const cs = defineLocale({
       applyFailed: 'Nastavení brány nelze použít',
       saveFailed: 'Nastavení brány nelze uložit',
       sshTitle: 'Připojit přes SSH',
-      sshDesc: 'Hermes je spuštěn na vzdáleném počítači přes SSH a tunelován do této aplikace — nic nevyžaduje k instalaci ani exposes. Vyžaduje fungující klíčové SSH připojení k hostiteli.',
+      sshDesc:
+        'Hermes je spuštěn na vzdáleném počítači přes SSH a tunelován do této aplikace — nic nevyžaduje k instalaci ani exposes. Vyžaduje fungující klíčové SSH připojení k hostiteli.',
       sshTrustHint: 'První prezentovaný hostitelský klíč je důvěryhodný a připojený; pozdější změny selžou.',
       sshHostTitle: 'Hostitel',
       sshHostDesc: 'uživatel@host, nebo Host.alias z ~/.ssh/config.',
@@ -768,13 +954,26 @@ export const cs = defineLocale({
       sshReachable: (host, platform) => `Dosažitelný: ${host} (${platform}) — Hermes nalezen`,
       sshIncompleteHost: 'Zadejte SSH hostitele před připojením.',
       sshErrUnreachable: 'Nelze dosáhnout tohoto hostitele přes SSH. Zkontrolujte hostitele, port a vaši síť.',
-      sshErrAuth: 'SSH ověření selhalo. Načtěte svůj klíč do ssh-agenta (ssh-add) nebo nastavte IdentityFile v ~/.ssh/config — Hermes běží ssh neinteraktivně.',
-      sshErrHostKey: 'Hostitelský klíč se ZMĚNIL od vašeho posledního připojení. ověřte, že je to očekávané, pak spusťte ssh-keygen -R <host> a připojte se znovu.',
-      sshErrNotInstalled: 'Hermes není nainstalován na vzdáleném hostiteli. nainstalujte ho tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) nebo nastavte cestu Hermes.',
-      sshErrPlatform: 'Nepodporovaná vzdálená platforma. Režim SSH pro Desktop podporuje Linux, macOS a Windows vzdálené hostitele.',
+      sshErrAuth:
+        'SSH ověření selhalo. Načtěte svůj klíč do ssh-agenta (ssh-add) nebo nastavte IdentityFile v ~/.ssh/config — Hermes běží ssh neinteraktivně.',
+      sshErrHostKey:
+        'Hostitelský klíč se ZMĚNIL od vašeho posledního připojení. ověřte, že je to očekávané, pak spusťte ssh-keygen -R <host> a připojte se znovu.',
+      sshErrNotInstalled:
+        'Hermes není nainstalován na vzdáleném hostiteli. nainstalujte ho tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) nebo nastavte cestu Hermes.',
+      sshErrPlatform:
+        'Nepodporovaná vzdálená platforma. Režim SSH pro Desktop podporuje Linux, macOS a Windows vzdálené hostitele.',
       sshErrTimeout: 'SSH spojení vypršelo. Hostitel může být nedosažitelný nebo spící.',
       sshErrUpdateRequired: 'Aktualizujte Hermes na vzdáleném hostiteli před připojením pomocí Desktop SSH.',
-      sshErrUnknown: 'SSH spojení selhalo.'
+      sshErrUnknown: 'SSH spojení selhalo.',
+      cloudSavedTitle: 'Uložené cloudové brány',
+      cloudSavedDesc:
+        'Použijte uloženou bránu, aniž byste měnili výchozí. Přihlaste se níže a přidejte instance. Názvy a přihlášení spravujte v seznamu uložených připojení.',
+      cloudUseSaved: 'Použít bránu',
+      cloudActive: 'Aktivní v tomto okně',
+      keychainEncryptionTitle: 'Šifrovat uložená tajemství pomocí klíčenky operačního systému',
+      keychainEncryptionDesc:
+        'Ve výchozím nastavení vypnuto. Po zapnutí se tokeny brány a přihlašovací údaje šifrují pomocí systémové klíčenky (Keychain Access, GNOME Keyring nebo Windows DPAPI) — systém může požádat o oprávnění nebo heslo. Po vypnutí se ukládají jako běžné soubory čitelné pouze pro váš uživatelský účet.',
+      keychainEncryptionFailed: 'Šifrování tajemství nelze změnit'
     },
     keys: {
       loading: 'Načítání klíčů a přihlašovacích údajů API...',
@@ -810,13 +1009,13 @@ export const cs = defineLocale({
       saveServer: 'Uložit server',
       test: 'Testovat připojení',
       testing: 'Testování...',
-      testOk: count => `Připojeno — ${count} nástroj${count === 1 ? "" : "ů"} k dispozici`,
+      testOk: count => `Připojeno — ${count} nástroj${count === 1 ? '' : 'ů'} k dispozici`,
       testFailed: 'Připojení selhalo',
       enableServer: name => `Povolit ${name}`,
       disableServer: name => `Zakázat ${name}`,
       serverEnabled: name => `${name} povoleno — použije se v nových relacích.`,
       serverDisabled: name => `${name} zakázán — použije se v nových relacích.`,
-      toggleFailed: (name, enabled) => `Nelze přepnout ${name} ${enabled ? "zapnout" : "vypnout"}`,
+      toggleFailed: (name, enabled) => `Nelze přepnout ${name} ${enabled ? 'zapnout' : 'vypnout'}`,
       tabServers: 'Servery',
       tabCatalog: 'Katalog',
       catalogLoading: 'Načítám katalog MCP...',
@@ -831,7 +1030,8 @@ export const cs = defineLocale({
       catalogInstallFailed: name => `Instalace ${name} selhala`,
       catalogEnvPrompt: name => `${name} vyžaduje pověření`,
       catalogEnvRequired: 'Vyplňte požadované hodnoty před instalací.',
-      capabilitySummary: (tools, prompts, resources) => `${[`${tools} nástrojů`, ...(prompts ? [`${prompts} výzev`] : []), ...(resources ? [`${resources} zdrojů`] : [])].join(', ')} povoleno`,
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`${tools} nástrojů`, ...(prompts ? [`${prompts} výzev`] : []), ...(resources ? [`${resources} zdrojů`] : [])].join(', ')} povoleno`,
       statusConnecting: 'Připojování…',
       statusNeedsAuth: 'Vyžaduje ověření',
       statusError: 'Chyba',
@@ -844,7 +1044,31 @@ export const cs = defineLocale({
       unsavedConnect: 'Neuloženo — uložte mcp.json pro připojení.',
       enableTool: tool => `Povolit ${tool}`,
       disableTool: tool => `Zakázat ${tool}`,
-      noOutput: 'Zatím žádný výstup.'
+      noOutput: 'Zatím žádný výstup.',
+      costTokens: tokens => `~${tokens} tok./volání`,
+      usage30d: uses => `${uses} použití/30 dní`,
+      unusedPill: 'nepoužito',
+      deepLinkTitle: 'Přidat server MCP?',
+      deepLinkDescription:
+        'Odkaz požádal o přidání tohoto serveru MCP do Hermes. Zkontrolujte přesnou konfiguraci níže — pochází z odkazu, nikoli z Hermes.',
+      deepLinkStdioWarning:
+        'Tento server spouští na vašem počítači místní proces pomocí níže uvedeného příkazu. Pokračujte jen tehdy, pokud důvěřujete jeho zdroji.',
+      deepLinkConfirm: 'Přidat server',
+      deepLinkNameInvalid: 'Názvy používají 1–64 písmen, číslic, teček, pomlček nebo podtržítek.',
+      deepLinkNameConflict: name => `Server s názvem ${name} už existuje — zvolte jiný název, nebo akci zrušte.`,
+      deepLinkErrorTitle: 'Odkaz pro instalaci MCP byl odmítnut',
+      deepLinkErrorName: 'Název serveru v odkazu chybí nebo je neplatný.',
+      deepLinkErrorConfig: 'Konfigurace v odkazu není platné JSON kódované v base64.',
+      deepLinkErrorShape: 'Konfigurace musí být objekt JSON s řetězcovým polem `url` nebo `command`.',
+      deepLinkErrorUrl: 'Povoleny jsou pouze adresy URL serverů http:// a https://.',
+      deepLinkErrorTooLarge: 'Data konfigurace překračují limit 32 KB.',
+      importButton: 'Importovat',
+      importPlaceholder:
+        'Vložte úryvek souboru mcp.json, příkaz npx/docker, řádek claude mcp add, adresu URL nebo odkaz Cursor…',
+      importNoMatch: 'Ve vloženém textu nebyla rozpoznána žádná konfigurace serveru.',
+      importConfirm: 'Přidat do mcp.json',
+      importConfirmMany: count =>
+        `Přidat ${count} ${count === 1 ? 'server' : count >= 2 && count <= 4 ? 'servery' : 'serverů'} do mcp.json`
     },
     model: {
       loading: 'Načítání konfigurace modelu...',
@@ -858,7 +1082,8 @@ export const cs = defineLocale({
       defaultsFailed: 'Nepodařilo se uložit výchozí nastavení modelu',
       auxiliaryTitle: 'Pomocné modely',
       resetAllToMain: 'Obnovit vše na hlavní',
-      auxiliaryDesc: 'Pomocné úlohy se standardně spouštějí na hlavním modelu. Přiřaďte vyhrazený model jakékoli úloze, kterou chcete přepsat.',
+      auxiliaryDesc:
+        'Pomocné úlohy se standardně spouštějí na hlavním modelu. Přiřaďte vyhrazený model jakékoli úloze, kterou chcete přepsat.',
       setToMain: 'Nastavte na hlavní',
       change: 'Změna',
       autoUseMain: 'auto · použít hlavní model',
@@ -894,15 +1119,25 @@ export const cs = defineLocale({
         curator: {
           label: 'kurátor',
           hint: 'Kontrola využití dovedností'
+        },
+        review: {
+          label: 'Recenze',
+          hint: '/review reviewer subagent'
         }
-      }
+      },
+      loadFailed: 'Modely nelze načíst',
+      restartRequired: 'Tento backend po aktualizaci běží na starém kódu. Restartujte jej, aby se načetl nový kód.',
+      restartBackend: 'Restartovat backend',
+      restartingBackend: 'Restartování backendu...',
+      restartFailed: 'Backend se nepodařilo restartovat'
     },
     providers: {
       connectAccount: 'Připojte účet',
       haveApiKey: 'Máte místo toho klíč API?',
-      intro: 'Přihlaste se pomocí předplatného – žádný klíč API ke kopírování. Hermes za vás spustí přihlášení do prohlížeče přímo zde v aplikaci.',
+      intro:
+        'Přihlaste se pomocí předplatného – žádný klíč API ke kopírování. Hermes za vás spustí přihlášení do prohlížeče přímo zde v aplikaci.',
       connected: 'Připojeno',
-      collapse: 'kolaps',
+      collapse: 'Sbalit',
       connectAnother: 'Připojte jiného poskytovatele',
       otherProviders: 'Ostatní poskytovatelé',
       disconnect: 'Odpojit',
@@ -910,7 +1145,8 @@ export const cs = defineLocale({
       removeConfirm: provider => `Odebrat ${provider}?`,
       removeExternalGeneric: provider => `${provider} je spravován vlastním CLI – odstraňte jej tam.`,
       removeKeyManaged: provider => `${provider} se konfiguruje pomocí klíče API. Vyjměte jej z klíčů API.`,
-      removeTerminalConfirm: (provider, command) => `Odpojit ${provider}? Tím se v terminálu spustí „${command}“ a vymaže se přihlašovací údaje.`,
+      removeTerminalConfirm: (provider, command) =>
+        `Odpojit ${provider}? Tím se v terminálu spustí „${command}“ a vymaže se přihlašovací údaje.`,
       removeTerminalRunning: provider => `Probíhá odpojení ${provider} v terminálu…`,
       removedTitle: 'Účet byl odstraněn',
       removedMessage: provider => `${provider} byl odstraněn.`,
@@ -927,7 +1163,8 @@ export const cs = defineLocale({
     sessions: {
       loading: 'Načítání archivovaných relací…',
       archivedTitle: 'Archivované relace',
-      archivedIntro: 'Archivované chaty jsou skryté na postranním panelu, ale uchovávají všechny zprávy. Chcete-li chat archivovat, podržte klávesu Ctrl/⌘ a klikněte na postranním panelu.',
+      archivedIntro:
+        'Archivované chaty jsou skryté na postranním panelu, ale uchovávají všechny zprávy. Chcete-li chat archivovat, podržte klávesu Ctrl/⌘ a klikněte na postranním panelu.',
       emptyArchivedTitle: 'Nic nebylo archivováno',
       emptyArchivedDesc: 'Archivujte chat, abyste jej zde skryli.',
       unarchive: 'Zrušit archivaci',
@@ -936,17 +1173,19 @@ export const cs = defineLocale({
       restored: 'Obnoveno',
       deleteConfirm: title => `Trvale smazat "${title}"? Toto nelze vrátit zpět.`,
       autoArchiveTitle: 'Archivovat neaktivní chaty',
-      autoArchiveDesc: 'Automaticky archivovat chaty, se kterými jste nedávno nepracovali. Připnuté chaty se nikdy nearchivují a nic se neodstraňuje — archivované chaty se jen přesunují sem.',
+      autoArchiveDesc:
+        'Automaticky archivovat chaty, se kterými jste nedávno nepracovali. Připnuté chaty se nikdy nearchivují a nic se neodstraňuje — archivované chaty se jen přesunují sem.',
       autoArchiveDaysLabel: 'Archivovat po',
       autoArchiveDaysUnit: 'dnech nečinnosti',
       autoArchiveFailed: 'Nelze aktualizovat automatické archivování',
       defaultDirTitle: 'Výchozí adresář projektu',
-      defaultDirDesc: 'Nové relace začínají v této složce, pokud nevyberete jinou. Chcete-li použít svůj domovský adresář, ponechte jej nenastavený.',
+      defaultDirDesc:
+        'Nové relace začínají v této složce, pokud nevyberete jinou. Chcete-li použít svůj domovský adresář, ponechte jej nenastavený.',
       defaultDirUpdated: 'Výchozí adresář projektu aktualizován — začněte nový chat (Ctrl/⌘+N), aby se projevil',
       defaultsTo: label => `Výchozí hodnota je ${label}.`,
       change: 'Změna',
       choose: 'Vyberte si',
-      clear: 'Jasný',
+      clear: 'Vymazat',
       notSet: 'Nenastaveno',
       failedLoad: 'Nelze načíst archivované relace',
       unarchiveFailed: 'Obnovení archivu se nezdařilo',
@@ -964,13 +1203,14 @@ export const cs = defineLocale({
       failedRemove: key => `Odebrání ${key} se nezdařilo`,
       failedReveal: key => `Nepodařilo se odhalit ${key}`,
       removeConfirm: key => `Odebrat ${key} z .env?`,
-      set: 'Set',
+      set: 'Nastavit',
       notSet: 'Nenastaveno',
       selectedTitle: 'Vybrán poskytovatel',
       selectedMessage: provider => `${provider} je nyní aktivní.`,
       failedSelect: provider => `Nepodařilo se vybrat ${provider}`,
       failedLoad: 'Konfigurace nástroje se nepodařilo načíst',
-      noProviderOptions: 'Tato sada nástrojů nemá žádné možnosti poskytovatele – povolte ji a bude fungovat s vaším aktuálním nastavením.',
+      noProviderOptions:
+        'Tato sada nástrojů nemá žádné možnosti poskytovatele – povolte ji a bude fungovat s vaším aktuálním nastavením.',
       noProviders: 'Pro tuto sadu nástrojů nejsou momentálně k dispozici žádní poskytovatelé.',
       ready: 'Připraven',
       needsSignIn: 'Vyžaduje přihlášení',
@@ -980,13 +1220,15 @@ export const cs = defineLocale({
       useBackend: 'Použít tento backend',
       nousIncluded: 'Zahrnuje předplatné Nous – pro aktivaci se přihlaste k portálu Nous.',
       nousAuthNeededTitle: 'Přihlásit se k portálu Nous',
-      nousAuthNeededMessage: provider => `${provider} je uložen, ale nebude aktivován, dokud se nepřihlásíte do Portálu Nous.`,
+      nousAuthNeededMessage: provider =>
+        `${provider} je uložen, ale nebude aktivován, dokud se nepřihlásíte do Portálu Nous.`,
       nousAuthSignIn: 'Přihlásit se',
       nousAuthDoneTitle: 'Portál Nous připojen',
       nousAuthDoneMessage: 'Vaše předplatné backendů je nyní aktivní.',
       nousAuthFailed: 'Přihlášení k portálu Nous se nekompletovalo',
       noApiKeyRequired: 'Není potřeba žádný klíč API.',
-      postSetupHint: step => `Tento backend vyžaduje jednorázovou instalaci (${step}). Běží na tomto počítači — může to trvat několik minut.`,
+      postSetupHint: step =>
+        `Tento backend vyžaduje jednorázovou instalaci (${step}). Běží na tomto počítači — může to trvat několik minut.`,
       postSetupInstalledHint: 'Nainstalováno. Znovuspuštění setupu pouze v případě, že je něco poškozené.',
       postSetupRun: 'Spusťte nastavení',
       postSetupRerun: 'Znovuspuštění setupu',
@@ -1009,7 +1251,7 @@ export const cs = defineLocale({
       failedSelectCapability: provider => `Nelze nastavit ${provider}`,
       loadingModels: 'Načítám katalog modelů...',
       modelSectionTitle: 'Model',
-      modelCount: count => `${count} model${count === 1 ? "" : "y"}`,
+      modelCount: count => `${count} model${count === 1 ? '' : 'y'}`,
       modelInUse: 'V použití',
       modelDefault: 'výchozí',
       modelInactiveHint: 'Nejprve vyberte tento backend pro změnu jeho modelu.',
@@ -1028,7 +1270,246 @@ export const cs = defineLocale({
         selectedMessage: backend => `Příkazy terminálu nyní běží přes ${backend}. Použije se v nových relacích.`,
         failedSelect: backend => `Nelze vybrat ${backend}`,
         needsSetupHint: 'Můžete tento backend vybrat — příkazy selžou, dokud nebude nastavení dokončeno.'
+      },
+      browserRealProfile: {
+        label: 'Použít můj skutečný profil prohlížeče',
+        description:
+          'Zkopíruje přihlášení a cookies z vašeho výchozího prohlížeče do spravovaného snímku, se kterým agent prohlíží. Váš aktivní profil se nikdy neotevírá přímo. Platí pro nové relace.',
+        enabledTitle: 'Prohlížení se skutečným profilem zapnuto',
+        enabledMessage: 'Nové relace budou prohlížet se snímkem profilu vašeho výchozího prohlížeče.',
+        disabledTitle: 'Prohlížení se skutečným profilem vypnuto',
+        disabledMessage: 'Snímek profilu bude smazán; nové relace použijí čistý prohlížeč.',
+        failedSave: 'Nastavení skutečného profilu se nepodařilo uložit',
+        prompt: {
+          title: 'Zůstaňte přihlášeni na svých stránkách',
+          body: 'Nechte Hermes prohlížet se snímkem profilu vašeho výchozího prohlížeče, aby se stránky otevíraly už přihlášené.',
+          bulletSnapshot: 'Cookies a přihlášení se zkopírují do spravovaného snímku.',
+          bulletLiveProfile: 'Váš aktivní profil prohlížeče se nikdy neotevírá přímo.',
+          bulletLocal: 'Nic neopouští tento počítač.',
+          dontShowAgain: 'Znovu nezobrazovat',
+          notNow: 'Teď ne',
+          enable: 'Použít můj profil'
+        }
       }
+    },
+    search: {
+      placeholder: 'Prohledat všechna nastavení…',
+      pill: 'Hledat'
+    },
+    profileScope: {
+      appliesTo: 'Platí pro',
+      editsProfile: profile => `Změny na této stránce platí pro profil „${profile}“.`
+    },
+    vault: {
+      title: 'Hesla a přihlášení',
+      blurb:
+        'Řekněte „přihlas mě do GitHubu“ a agent se přihlásí za vás. Když poprvé narazí na přihlašovací stránku, vyžádá si od vás přihlašovací údaje přímo tam; poté už to funguje samo. Hesla jsou na tomto počítači šifrována a vyplňují se přímo do stránky — model je nikdy nevidí.',
+      count: n => `${n} uloženo`,
+      loadFailed: 'Položky trezoru se nepodařilo načíst',
+      empty: 'Zatím nic neuloženo',
+      emptyDesc:
+        'Nic sem přidávat nemusíte. Požádejte agenta, aby se přihlásil na nějaký web, a on si od vás vyžádá přihlašovací údaje jednou, přímo na místě. Pokud je chcete zadat předem, použijte tlačítko Přidat.',
+      add: 'Přidat',
+      addTitle: 'Přidat přihlášení, kartu nebo adresu',
+      addDescription: 'Uloženo šifrovaně na tomto počítači. Agent heslo nikdy nevidí.',
+      added: 'Uloženo.',
+      adding: 'Ukládání…',
+      addConfirm: 'Uložit',
+      kindField: 'Druh',
+      kinds: {
+        login: 'Přihlášení',
+        payment: 'Platební karta',
+        address: 'Adresa'
+      },
+      labelField: 'Označení',
+      labelPlaceholder: 'např. pracovní účet GitHub',
+      labelRequired: 'Označení je povinné.',
+      originField: 'Původ webu',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'Zadejte platnou URL, například https://example.com.',
+      identifierTypeField: 'Typ identifikátoru',
+      identifierTypes: {
+        email: 'E-mail',
+        phone: 'Telefon',
+        username: 'Uživatelské jméno'
+      },
+      identifierField: 'Identifikátor',
+      identifierShown: identifier => identifier,
+      passwordField: 'Heslo',
+      loginFieldsRequired: 'Identifikátor a heslo jsou povinné.',
+      cardNumberField: 'Číslo karty',
+      cardNameField: 'Jméno na kartě',
+      expMonthField: 'Měsíc platnosti',
+      expYearField: 'Rok platnosti',
+      cvcField: 'CVC',
+      postalField: 'PSČ',
+      addressLine1Field: 'Adresa – řádek 1',
+      addressLine2Field: 'Adresa – řádek 2',
+      cityField: 'Město',
+      stateField: 'Kraj / region',
+      countryField: 'Země',
+      createdOn: date => `Přidáno ${date}`,
+      deleteAction: 'Odebrat uloženou položku',
+      otpField: 'Klíč autentizátoru',
+      otpPlaceholder: 'Tajný klíč Base32 nebo odkaz otpauth://',
+      otpHint: '„Nastavovací klíč“, který web zobrazí, když zapnete 2FA. Když ho uložíte, Hermes generuje kódy sám.',
+      twoFactorBadge: '2FA auto',
+      deleteTitle: 'Smazat tuto položku?',
+      deleteDescription: label => `„${label}“ bude odebráno. Toto nelze vrátit.`,
+      deleteConfirm: 'Smazat',
+      sources: {
+        title: 'Správci hesel',
+        blurb:
+          'Nainstalované správce hesel Hermes rozpozná automaticky. Když bude poprvé potřebovat přihlašovací údaje z některého z nich, vyzve vás k jeho odemknutí (jednou za relaci); v paměti zůstane jen token relace a agent nikdy nevidí vaše hlavní heslo ani žádné přihlašovací údaje.',
+        toggleFailed: 'Správce hesel se nepodařilo aktualizovat',
+        notInstalled: name =>
+          `Nezjištěno. Nainstalujte nástroj příkazového řádku ${name} a přihlaste se k němu; Hermes ho rozpozná automaticky.`,
+        disabledDesc: 'Rozpoznán, ale pro Hermes vypnut.',
+        lockedDesc:
+          'Rozpoznán. Agent vás vyzve k odemknutí, až bude potřebovat přihlašovací údaje, nebo jej odemkněte nyní.',
+        unlockedDesc:
+          'Odemčen pro tuto relaci. Automaticky se zamkne po 30 minutách nečinnosti nebo při zavření Hermes.',
+        statusLocked: 'Zamčeno',
+        statusNotDetected: 'Nezjištěno',
+        statusOff: 'Vypnuto',
+        statusUnlocked: 'Odemčeno',
+        unlock: 'Odemknout',
+        unlocking: 'Odemykání…',
+        lock: 'Zamknout',
+        unlocked: name => `${name} odemčen pro tuto relaci.`,
+        unlockTitle: name => `Odemknout ${name}`,
+        unlockDescription:
+          'Zadejte své hlavní heslo. Předá se správci hesel na tomto počítači a zahodí se — nikdy se neukládá, nezapisuje do protokolů ani se nezobrazuje agentovi.',
+        masterPasswordPlaceholder: 'Hlavní heslo'
+      },
+      optional: '(volitelné)'
+    },
+    managedUpdates: {
+      title: 'Spravované aktualizace',
+      intro:
+        'Aktualizujte instalace SSH spravované desktopem transakčně: relace se vypustí, vzdálené pracovní kopie se aktualizují a každý profil se obnoví s provázaným potvrzením.',
+      sshConnection: 'Instalace SSH spravovaná desktopem',
+      update: 'Aktualizovat',
+      updating: 'Aktualizace…',
+      progress: 'Vypouštění relací, aktualizace vzdálené instalace a obnovování profilů…',
+      updated: 'Aktualizováno',
+      partial: 'Aktualizováno — obnovení se nezdařilo',
+      refused: 'Odmítnuto',
+      failed: 'Aktualizace se nezdařila',
+      alreadyRunning: 'Aktualizace už probíhá',
+      receipt: (id: string, outcome: string) => `Potvrzení ${id} · ${outcome}`,
+      receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
+      scopesRestored: (profiles: string) => `Obnovené profily: ${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `Profil „${profile}“ nebyl obnoven: ${error}`
+    },
+    localModels: {
+      title: 'Lokální modely',
+      runtimeTitle: 'Lokální běhové prostředí',
+      runtimeReady: backend => `Připraveno · ${backend}`,
+      serverRunning: 'Běží',
+      runtimeInstalled: 'Běhové prostředí llama.cpp nainstalováno',
+      runtimeInstalledDetail: (tag, backend) =>
+        `Sestavení ${tag}, backend ${backend}. Hermes server spustí a spravuje za vás.`,
+      installTitle: 'Nainstalovat lokální běhové prostředí',
+      installDetail:
+        'Stáhne inferenční běhové prostředí llama.cpp (několik set MB). Modely, které si stáhnete, běží zcela na tomto počítači — žádný účet, z vašeho počítače nic neodchází.',
+      installAction: 'Nainstalovat běhové prostředí',
+      installing: 'Instalace běhového prostředí…',
+      installFailed: 'Instalace běhového prostředí se nezdařila',
+      hardwareTitle: 'Tento počítač',
+      hardwareLoading: 'Kontrola hardwaru…',
+      vram: label => `${label} paměť GPU`,
+      ram: label => `${label} RAM`,
+      unifiedMemory: 'Unifikovaná paměť',
+      modelsTitle: 'Modely',
+      recommended: 'Doporučeno',
+      downloaded: 'Staženo',
+      downloadAction: size => `Stáhnout · ${size}`,
+      downloadProgress: (done, total) => `Stahování ${done} z ${total}`,
+      downloadDoneToast: model => `${model} je připraven.`,
+      installDoneToast: 'Lokální běhové prostředí je nainstalováno a připraveno.',
+      quickstartTitle: 'Spustit model na tomto počítači',
+      quickstartDetail: (model, size) =>
+        `Jedno kliknutí nastaví vše: lokální běhové prostředí, ${model} (stažení ${size}) a výchozí model pro nové chaty. Z tohoto počítače nic neodchází.`,
+      quickstartDetailReady: model =>
+        `Jedno kliknutí nastaví ${model} jako výchozí pro nové chaty. Vše běží na tomto počítači.`,
+      quickstartAction: 'Nastavit za mě',
+      quickstartConfigure: 'Nakonfigurovat…',
+      quickstartDoneToast: model => `${model} je nastaven — nové chaty běží na tomto počítači.`,
+      quickstartFailed: 'Nastavení lokálního modelu se nezdařilo',
+      quickstartStageEngine: 'Běhové prostředí',
+      quickstartStageModel: 'Model',
+      quickstartStageFinish: 'Dokončení',
+      useAction: 'Použít',
+      activePill: 'Výchozí',
+      updateTitle: 'Je dostupná aktualizace běhového prostředí',
+      updateDetail: (next, current) =>
+        `Novější sestavení llama.cpp (${next}) je připraveno k instalaci — vy máte ${current}. Během stahování modely fungují dál.`,
+      updateAction: 'Aktualizovat běhové prostředí',
+      updating: 'Aktualizace běhového prostředí…',
+      upToDateTitle: 'Běhové prostředí je aktuální',
+      upToDateDetail: (tag, backend) =>
+        `Běží llama.cpp ${tag} (${backend}) — nejnovější sestavení, které Hermes dodává.`,
+      updateToast: next =>
+        `Je dostupné novější sestavení lokálního běhového prostředí (${next}). Aktualizujte v Nastavení → Lokální modely.`,
+      activeDetail: 'Nové chaty používají tento model — načte se, když odešlete první zprávu',
+      activeNotLoaded: 'Načte se při první zprávě',
+      loadedPill: 'V paměti',
+      placementResident: 'vše na GPU',
+      placementSpilled: 'částečně v RAM',
+      placementResidentTip: 'Běží zcela v paměti GPU při tomto kontextovém okně — plnou rychlostí.',
+      placementSpilledTip:
+        'Část tohoto modelu běží ze systémové RAM — funguje to, ale pomaleji. Kompaktnější sestavení nebo menší kontext by se vešly celé.',
+      loadingPill: 'Načítání…',
+      ejectTip: 'Uvolnit paměť GPU (načte se znovu u další zprávy)',
+      ejected: 'Model uvolněn — paměť GPU byla uvolněna.',
+      ejectFailed: 'Model se nepodařilo uvolnit',
+      stopServer: 'Vypnout',
+      startServer: 'Zapnout',
+      runtimeRunningDetail:
+        'Místní server běží. Jeho vypnutím uvolníte veškerou paměť GPU a nové chaty přestanou používat lokální modely, dokud jej znovu nezapnete.',
+      serverStopped: 'Místní server zastaven — paměť GPU uvolněna.',
+      serverStarted: 'Místní server běží.',
+      serverStopFailed: 'Místní server se nepodařilo zastavit',
+      serverStartFailed: 'Místní server se nepodařilo spustit',
+      activating: 'Spouštění…',
+      activateFailed: model => `Nepodařilo se přepnout na ${model}`,
+      activateDoneToast: model => `Nové chaty používají ${model}.`,
+      downloadFailed: model => `Stažení ${model} se nezdařilo`,
+      pillFitsGpu: 'Vejde se do GPU',
+      pillUsesRam: 'Využívá systémovou RAM',
+      pillTooBig: 'Příliš velký pro tento počítač',
+      browseTitle: 'Najít další modely',
+      browseHint:
+        'Prohledejte celý Hugging Face. Modely, které zde stáhnete, se automaticky přizpůsobí vašemu počítači, ale netestovali jsme je.',
+      browsePlaceholder: 'Hledat modely podle názvu nebo autora…',
+      browseSearching: 'Prohledávání Hugging Face',
+      browseListing: 'Čtení souborů modelu',
+      browseShowFiles: 'Zobrazit soubory',
+      browseRefresh: 'Obnovit',
+      browseDownloads: 'stažení',
+      browseLikes: 'líbí se',
+      browseGated: 'vyžaduje přihlášení k Hugging Face',
+      browseNoGguf: 'Nebyly nalezeny žádné kompatibilní soubory modelu.',
+      browseFitUnknown: 'Vhodnost neznámá',
+      browseAlreadyDownloaded: 'Již staženo.',
+      addedByYou: 'Přidali jste',
+      browseDownloadStarted: 'Stahování {name}',
+      browseDownloadAria: 'Stáhnout {name}',
+      sideloadButton: 'Přidat soubor modelu',
+      sideloadTitle: 'Vyberte soubor modelu GGUF',
+      sideloadDone: 'Přidáno {name}.',
+      sideloadAlreadyPresent: 'Již je ve vaší knihovně.',
+      pillFullContext: max => `Plný kontext ${max}`,
+      pillFullContextTip: 'Běží od začátku na úplném kontextovém okně modelu',
+      pillUpTo: max => `Až ${max} kontextu`,
+      pillGrowsTip: 'Automaticky roste, jak konverzace potřebuje více místa',
+      pillVision: 'Vidí obrázky',
+      deleteAction: 'Smazat model',
+      deleteConfirm: model => `Smazat ${model} z disku?`,
+      deleted: model => `${model} smazán.`,
+      deleteFailed: 'Smazání se nezdařilo'
     }
   },
   skills: {
@@ -1049,7 +1530,8 @@ export const cs = defineLocale({
     noDescription: 'Bez popisu.',
     configured: 'Nakonfigurováno',
     needsKeys: 'Potřebuje klíče',
-    visionModelHint: 'Vision používá vaši konfiguraci doplňkových modelů — obrázk-capacitní model je zvolen tam, ne podle poskytovatele.',
+    visionModelHint:
+      'Vision používá vaši konfiguraci doplňkových modelů — obrázk-capacitní model je zvolen tam, ne podle poskytovatele.',
     visionModelLink: 'Zvolit vision model v Nastavení → Modely',
     toolsetsEnabled: (enabled, total) => `Povoleny sady nástrojů ${enabled}/${total}`,
     configureToolset: label => `Nakonfigurujte ${label}`,
@@ -1093,9 +1575,10 @@ export const cs = defineLocale({
       connectingHubs: 'Připojování k centrum dovedností...',
       connectedHubs: 'Připojené centra:',
       featured: 'Doporučené dovednosti',
-      landingHint: 'Hledání centra pro procházení instalovatelných dovedností z oficiálního indexu, GitHubu a komunitních zdrojů.',
+      landingHint:
+        'Hledání centra pro procházení instalovatelných dovedností z oficiálního indexu, GitHubu a komunitních zdrojů.',
       noResults: 'V centru nebyly nalezeny žádné odpovídající dovednosti.',
-      resultCount: (count, ms) => `${count} výsledek${count === 1 ? "" : "y"}${ms !== null ? ` během ${ms}ms` : ""}`,
+      resultCount: (count, ms) => `${count} výsledek${count === 1 ? '' : 'y'}${ms !== null ? ` během ${ms}ms` : ''}`,
       timedOut: sources => `Vypršel čas: ${sources}`,
       installed: 'Instalováno',
       install: 'Instalovat',
@@ -1121,7 +1604,7 @@ export const cs = defineLocale({
       policyAllow: 'Instalace povolena',
       policyAsk: 'Revidovat před instalací',
       policyBlock: 'Instalace blokována politikou',
-      findings: count => `${count} nález${count === 1 ? "" : "y"}`,
+      findings: count => `${count} nález${count === 1 ? '' : 'y'}`,
       noFindings: 'Žádné bezpečnostní nálezy.',
       installStarted: name => `Instalace ${name}...`,
       uninstallStarted: name => `Odinstalovávám ${name}...`,
@@ -1132,7 +1615,62 @@ export const cs = defineLocale({
       previewFailed: 'Náhled se nezdařil',
       scanFailed: 'Bezpečnostní sken selhal',
       searchFailed: 'Hledání v centru selhalo',
+      alreadyInstalled: (name: string) => `"${name}" je již nainstalováno`,
+      pickerTitle: 'Skills Hub',
+      pickerBrowse: 'Procházet celé centrum',
+      pickerHide: 'Skrýt prohlížeč centra',
+      pickerHint:
+        'U libovolné dovednosti klikněte na „+ Add to this Agent“ — nainstaluje se a objeví se v seznamu výše.'
     },
+    tabPlugins: 'Pluginy',
+    plugins: {
+      agentTitle: 'Pluginy agenta',
+      agentBlurb: 'Rozšiřte agenta pro vybraný profil — nástroje, hooky, poskytovatele. Projeví se po restartu brány.',
+      pageBlurb:
+        'Jeden řádek na plugin. Plugin může rozšířit tuto aplikaci, agenta, nebo obojí — každá část má vlastní přepínač.',
+      halfDesktop: 'Desktop',
+      halfDesktopHint: 'tato aplikace, stejná pro všechny profily',
+      halfAgent: 'Agent',
+      halfAgentIn: (profile: string) => `Agent v profilu ${profile}`,
+      defaultProfile: 'Hermes (výchozí)',
+      kindAgent: 'Agent',
+      kindDesktop: 'Desktop',
+      kindBoth: 'Agent + Desktop',
+      installAgentHere: 'Nainstalovat sem',
+      installAgentHereTip: (profile: string) =>
+        `Desktopová část je načtena v této aplikaci, ale část agenta v profilu ${profile} nainstalována není. Nainstalujte ji tam.`,
+      installAgentHereNoOrigin:
+        'Část agenta není v tomto profilu nainstalována a tento balíček byl zkopírován ručně (žádná položka katalogu ani git remote), takže jej odsud nelze nainstalovat. Zkopírujte jeho složku do profilu nebo jej přeinstalujte z Gitu.',
+      desktopHalfPending: 'kopírování…',
+      desktopHalfPendingTip:
+        'Tento balíček obsahuje desktopovou část, která zatím nebyla zkopírována do aplikace. Použijte Znovuskenovat nebo restartujte aplikaci.',
+      emptyAll: 'Zatím žádné pluginy.',
+      empty: 'V tomto profilu nejsou nainstalovány žádné pluginy agenta.',
+      emptyHint: 'Projděte si katalog níže a nainstalujte zkontrolovaný plugin jediným kliknutím.',
+      loadFailed: 'Pluginy agenta se nepodařilo načíst',
+      toggleFailed: (name: string) => `Nepodařilo se přepnout ${name}`,
+      legacyBackend:
+        'Tento backend pochází z doby před přepínači pluginů adresovanými klíčem — aktualizujte Hermes, abyste je mohli spravovat odsud.',
+      portableBadge: 'přenosný',
+      catalogTitle: 'Katalog pluginů',
+      catalogBrowse: 'Procházet',
+      catalogHide: 'Skrýt prohlížeč katalogu',
+      catalogHint:
+        'U libovolného pluginu klikněte na „+ Add to this Agent“ — zkontrolované položky se nainstalují na svém připnutém commitu do vybraného profilu. Zabaléné pluginy agent+desktop nabízejí obě části.',
+      alreadyInstalled: (name: string) => `${name} je v tomto profilu již nainstalován.`,
+      catalogProvenance: (sha: string) => `Nainstalováno z katalogu Hermes${sha ? ` na pinu ${sha}` : ''}.`,
+      pinnedProvenance: (sha: string) =>
+        `Připnuto ke commitu ${sha}. Aktualizace jsou odmítány, dokud nebude přeinstalováno s novým pinem.`,
+      pinnedBadge: (sha: string) => `připnuto @ ${sha}`,
+      tierOfficial: 'oficiální',
+      tierCommunity: 'komunitní',
+      updateToPin: (sha: string) => `Aktualizovat na ${sha}`,
+      updateFailed: (name: string) => `Nepodařilo se aktualizovat ${name}`,
+      updated: (name: string) =>
+        `${name} byl aktualizován na aktuální pin katalogu. Restartujte bránu, aby se změny projevily.`
+    },
+    officialCatalog: 'K dispozici k instalaci',
+    officialPill: 'Oficiální'
   },
   starmap: {
     title: 'Graf paměti',
@@ -1149,7 +1687,8 @@ export const cs = defineLocale({
     emptyTitle: 'Zatím se nic nenaučilo',
     emptyDesc: 'Jak Hermes buduje dovednosti a vzpomínky pro vaši práci, objevují se zde.',
     share: 'Sdílejte mapu',
-    shareHint: 'Chcete-li tuto mapu sdílet, zkopírujte kód nebo jej vložte a načtěte jej. Zahrnuje pouze rozložení, nikoli vaši paměť nebo text dovedností.',
+    shareHint:
+      'Chcete-li tuto mapu sdílet, zkopírujte kód nebo jej vložte a načtěte jej. Zahrnuje pouze rozložení, nikoli vaši paměť nebo text dovedností.',
     shareTitle: 'Import / export mapy',
     sharePlaceholder: 'Vložte kód mapy…',
     copy: 'Zkopírujte kód mapy',
@@ -1190,6 +1729,18 @@ export const cs = defineLocale({
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} tok`,
+    extendedTranscript: 'Rozšířený přepis',
+    transcriptTruncated: 'Zobrazeno posledních 16 KiB',
+    transcriptUnavailable: 'Živý přepis není k dispozici',
+    moreAgents: count =>
+      `+${count} ${count === 1 ? 'další agent' : count >= 2 && count <= 4 ? 'další agenti' : 'dalších agentů'}`,
+    queued: 'Ve frontě',
+    waitingActivity: 'Čekání na aktivitu',
+    steer: 'Řídit',
+    steerPlaceholder: 'Pokyny pro tohoto subagenta',
+    steerQueued: 'Zařazeno do fronty pro další kontrolní bod',
+    stopRequested: 'Vyžádáno zastavení',
+    requestRejected: 'Subagent tento požadavek nepřijal'
   },
   commandCenter: {
     close: 'Zavřete velitelské centrum',
@@ -1247,7 +1798,8 @@ export const cs = defineLocale({
       slowProviderHint: 'To může trvat několik minut',
       remix: 'Remix',
       remixConfirmTitle: 'Remixovat tento vzhled?',
-      remixConfirmBody: 'Tím se vygeneruje nová sada konceptů s použitím tohoto jako výchozího bodu. Může to trvat několik minut.',
+      remixConfirmBody:
+        'Tím se vygeneruje nová sada konceptů s použitím tohoto jako výchozího bodu. Může to trvat několik minut.',
       genericError: 'Generování se nezdařilo – zkuste to znovu nebo vyberte návrh.',
       referenceImageTooLarge: 'Referenční obrázek je příliš velký. Použijte jeden do 16 MB.',
       referenceImageInvalid: 'Referenční obrázek nelze přečíst. Vyzkoušejte PNG, JPG, WebP nebo GIF.',
@@ -1404,7 +1956,9 @@ export const cs = defineLocale({
       actionFailed: name => `${name} se nepodařilo spustit`,
       running: 'Probíhá...',
       viewLog: 'Protokol akcí'
-    }
+    },
+    openBrowser: 'Otevřít prohlížeč',
+    reloadWindow: 'Znovu načíst okno'
   },
   messaging: {
     search: 'Hledat zprávy...',
@@ -1440,7 +1994,7 @@ export const cs = defineLocale({
     saveChanges: 'Uložte změny',
     saved: 'Uloženo',
     replaceValue: 'Nahraďte aktuální hodnotu',
-    openDocs: 'Otevřete dokumenty',
+    openDocs: 'Otevřít dokumentaci',
     clearField: key => `Vymazat ${key}`,
     enableAria: name => `Povolit ${name}`,
     disableAria: name => `Zakázat ${name}`,
@@ -1455,7 +2009,7 @@ export const cs = defineLocale({
     failedSave: name => `Nepodařilo se uložit ${name}`,
     failedClear: key => `Vymazání ${key} se nezdařilo`,
     pendingRequests: count => `Čekající požadavky (${count})`,
-    pendingAria: count => `${count} čekajících ${count === 1 ? "požadavek" : "požadavky"}`,
+    pendingAria: count => `${count} čekajících ${count === 1 ? 'požadavek' : 'požadavky'}`,
     approvedUsers: count => `Schválení uživatelé (${count})`,
     approve: 'Schválit',
     approving: 'Schvaluji...',
@@ -1463,14 +2017,14 @@ export const cs = defineLocale({
     revoking: 'Zvednuji...',
     revokeAria: name => `Zrevokovat ${name}`,
     revokeTitle: 'Zvednout přístup',
-    revokeDesc: (name) => `${name} ztratí přístup a přestane být rozpoznáván při jeho další zprávě.`,
+    revokeDesc: name => `${name} ztratí přístup a přestane být rozpoznáván při jeho další zprávě.`,
     approvedUser: name => `${name} schválen`,
     approvedHint: 'Jsou rozpoznáváni automaticky při jejich další zprávě.',
     revokedUser: name => `${name} zrevokováno`,
     failedApprove: name => `Nelze schválit ${name}`,
     failedRevoke: name => `Nelze zrevokovat ${name}`,
     pairingLockedOut: 'Příliš mnoho selžených schválení — tato platforma je vymazaná. Zkuste to znovu později.',
-    waitingSince: minutes => (minutes < 1 ? "právě teď" : `${minutes}m ago`),
+    waitingSince: minutes => (minutes < 1 ? 'právě teď' : `${minutes}m ago`),
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Token bota',
@@ -1594,23 +2148,57 @@ export const cs = defineLocale({
         help: 'Doporučeno. Čárkami oddělená telefonní čísla nebo WhatsApp ID.'
       }
     },
-    platformIntro: {
-
+    platformIntro: {},
+    restartNeeded: 'Uloženo. Restartujte bránu pro zasílání zpráv, aby se nová nastavení projevila.',
+    restartNow: 'Restartovat nyní',
+    restarting: 'Restartování…',
+    restartFailedManual: 'Restart brány se nezdařil — restartujte ji ručně a zkontrolujte protokoly brány.',
+    telegramQr: {
+      title: 'Zvolte, jak propojit svého Telegram bota',
+      subtitle:
+        'Obě možnosti propojí bota, který vám patří, a uloží jeho přihlašovací údaje pouze do této instalace Hermes.',
+      quickSetup: 'Rychlé nastavení',
+      recommended: 'Doporučeno',
+      quickHelp:
+        'Naskenujte QR kód a potvrďte v Telegramu. Hermes bota vytvoří a automaticky zjistí vaše uživatelské ID na Telegramu.',
+      createWithQr: 'Vytvořit pomocí QR',
+      starting: 'Spouštění…',
+      replaceWarning:
+        'Přihlašovací údaje Telegramu jsou již nastaveny. Nové nastavení přes QR nebo token bota při uložení nahradí stávajícího bota.',
+      scanHint: 'Naskenujte aplikací Telegram v telefonu nebo odkaz otevřete na tomto počítači.',
+      waiting: 'Čekání na Telegram…',
+      expiresIn: remaining => `Vyprší za ${remaining}`,
+      expired: 'Vypršelo',
+      openTelegram: 'Otevřít Telegram',
+      ready: 'Bot vytvořen',
+      allowedUsers: 'Povolení uživatelé',
+      ownerDetected: 'Vlastník rozpoznán',
+      addAtLeastOne: 'Přidejte alespoň jedno uživatelské ID Telegramu.',
+      userIdPlaceholder: 'ID uživatele Telegram',
+      add: 'Přidat',
+      numericOnly: 'Povolená uživatelská ID Telegramu musí být číselná.',
+      saveAndRestart: 'Uložit a restartovat',
+      applying: 'Ukládání…',
+      pairingExpired: 'Platnost párování s Telegramem vypršela. Zkuste to znovu novým nastavením přes QR.',
+      stillWaiting: detail => `Stále čekáme na Telegram. Další pokus za: ${detail}`,
+      savedRestarting: 'Telegram uložen; brána se restartuje…',
+      savedRestartFailed: detail => `Telegram uložen; restart brány se nezdařil${detail}`
     }
   },
   webhooks: {
     search: 'Hledat webhooky...',
     loading: 'Načítám webhooky...',
     loadFailed: 'Načtení webhooků selhalo',
-    subscriptions: (count) => `Předplatítosti (${count})`,
+    subscriptions: count => `Předplatítosti (${count})`,
     hint: 'Změny předplatného se okamžitě načtou, jakmile běží přijímač. Zakázané předplatné odmítají příchozí události.',
     empty: 'Zatím žádné předplatné webhooků.',
     disabledTitle: 'Přijímač webhooků zakázán',
-    disabledBody: 'Webhooks jsou vlastní platformou brány. Povolit zde pro přijímání HTTP událostí; kanály chatů jsou potřeba jen tehdy, když předplatné doručuje do Telegramu, Discordu, Slacu nebo dalšího kanálu.',
+    disabledBody:
+      'Webhooky jsou nativní funkcí brány. Povolte je zde pro příjem HTTP událostí; kanály chatů jsou potřeba jen tehdy, když předplatné doručuje do Telegramu, Discordu, Slaku nebo jiného kanálu.',
     enable: 'Povolit webhooky',
     enabling: 'Povoluji...',
-    enabled: (name) => `Povoleno: "${name}"`,
-    disabled: (name) => `Zakázáno: "${name}"`,
+    enabled: name => `Povoleno: "${name}"`,
+    disabled: name => `Zakázáno: "${name}"`,
     enableRow: 'Povolit',
     disableRow: 'Zakázat',
     delete: 'Smazat',
@@ -1619,14 +2207,14 @@ export const cs = defineLocale({
     deleteTitle: 'Smazat webhook',
     deleteDescPrefix: 'Tímto trvale odstraníte ',
     deleteDescSuffix: '. Toto nelze vrátit.',
-    deleteFailed: (name) => `Nelze smazat "${name}"`,
-    toggleFailed: (name, enabled) => `Nelze přepnout "${name}" ${enabled ? "zapnout" : "vypnout"}`,
+    deleteFailed: name => `Nelze smazat "${name}"`,
+    toggleFailed: (name, enabled) => `Nelze přepnout "${name}" ${enabled ? 'zapnout' : 'vypnout'}`,
     newSubscription: 'Nové předplatné',
     restarting: 'Brána se restartuje...',
     restartNeeded: 'Webhooks jsou povoleny, ale brána ještě potřebuje restart, než přijímač může běžet.',
     restartGateway: 'Restartovat bránu',
     restartingGateway: 'Restartuji...',
-    restartFailed: (detail) => `Restart brány selhal${detail}`,
+    restartFailed: detail => `Restart brány selhal${detail}`,
     enabledRestarting: 'Webhooks povoleny; brána se restartuje...',
     all: '(vše)',
     deliverOnly: 'doručit pouze',
@@ -1651,14 +2239,14 @@ export const cs = defineLocale({
     create: 'Vytvořit',
     creating: 'Vytvářím...',
     created: 'Vytvořeno',
-    createFailed: (detail) => `Vytvoření selhalo: ${detail}`,
+    createFailed: detail => `Vytvoření selhalo: ${detail}`,
     copy: 'Kopírovat',
     deliverOptions: {
       log: 'Protokol',
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: 'Email',
+      email: 'E-mail',
       github_comment: 'GitHub komentář'
     }
   },
@@ -1703,7 +2291,8 @@ export const cs = defineLocale({
     notSet: 'Nenastaveno',
     soulDesc: 'Do tohoto profilu se vložila systémová výzva a osobní pokyny.',
     soulOptional: 'volitelné',
-    soulPlaceholder: mode => `Systémová výzva / persona pro tento profil.\\nChcete-li zachovat výchozí nastavení ${mode}, ponechte prázdné.`,
+    soulPlaceholder: mode =>
+      `Systémová výzva / persona pro tento profil.\\nChcete-li zachovat výchozí nastavení ${mode}, ponechte prázdné.`,
     soulPlaceholderCloned: 'klonované',
     soulPlaceholderEmpty: 'prázdný',
     unsavedChanges: 'Neuložené změny',
@@ -1744,6 +2333,54 @@ export const cs = defineLocale({
     failedSaveSoul: 'Nepodařilo se uložit SOUL.md',
     failedCreate: 'Vytvoření profilu se nezdařilo',
     failedRename: 'Přejmenování profilu se nezdařilo',
+    switchToConnection: name => `Přepnout na ${name}`,
+    switchConnectionFailed: name => `Nepodařilo se připojit k ${name}`,
+    connectGateway: 'Spravovat brány…',
+    fleet: {
+      allOnGateway: 'Všechny profily na této bráně',
+      gateway: gateway => `Profily na ${gateway}`,
+      gatewayUnreachable: gateway => `${gateway} · nedostupná`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `Přepnout na ${name} na ${gateway}`,
+      deleteOn: gateway => ` na ${gateway}`
+    },
+    remoteOverride: {
+      menuItem: 'Připojit ke vzdálenému hostiteli…',
+      badge: (host: string) => `Běží na ${host}`,
+      title: (profile: string) => `Připojit ${profile} ke vzdálenému hostiteli`,
+      description:
+        'Relace v tomto profilu poběží na vzdáleném Hermes, na který jej nasměrujete, místo na tomto počítači.',
+      urlLabel: 'Vzdálená adresa',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'Zadejte úplnou adresu začínající http:// nebo https://',
+      tokenLabel: 'Přístupový token',
+      tokenPlaceholder: 'Vložte token vzdálené relace',
+      tokenSavedHint: 'Token je již uložen. Ponechte prázdné, chcete-li jej zachovat.',
+      plainTextOptIn:
+        'Tento počítač nemá zabezpečené úložiště klíčů, takže token by byl uložen nešifrovaně na disk. Přesto jej uložit.',
+      collisionWarning: (label: string) =>
+        `V nastavení již existuje brána s názvem „${label}“. Toto připojení profilu je samostatné a nezmění ji.`,
+      confirmTitle: 'Připojit tento profil ke vzdálenému hostiteli?',
+      confirmNote: (profile: string, host: string) =>
+        `Nové chaty v profilu ${profile} poběží na ${host}. Příkazy se budou spouštět a soubory číst tam, ne na tomto počítači. Připojujte se jen k hostiteli, kterému důvěřujete.`,
+      confirmBack: 'Zpět',
+      connect: 'Připojit',
+      connecting: 'Připojování…',
+      disconnect: 'Odebrat vzdálené připojení',
+      savedTitle: 'Profil připojen',
+      savedMessage: (profile: string, host: string) => `${profile} nyní běží na ${host}`,
+      removedTitle: 'Vzdálené připojení odebráno',
+      removedMessage: (profile: string) => `${profile} nyní běží na tomto počítači`,
+      removeFailed: 'Vzdálené připojení se nepodařilo odebrat',
+      authFailedTitle: 'Vzdálený hostitel odmítl uložený token',
+      authFailedMessage: (profile: string, host: string) =>
+        `${host} odmítl token uložený pro profil ${profile}. Možná byl na vzdálené straně změněn.`,
+      updateToken: 'Zadat nový token…'
+    },
+    exportMenu: 'Exportovat…',
+    displayNameTitle: 'Pojmenujte tohoto agenta',
+    displayNameDesc: 'Nastaví zobrazované jméno v celé aplikaci. Interní ID profilu zůstává "default".',
+    displayNameLabel: 'Zobrazované jméno'
   },
   cron: {
     close: 'Zavřete cron',
@@ -1751,10 +2388,15 @@ export const cs = defineLocale({
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     modelImpact: {
       title: 'Naplánované úlohy potřebují kontrolu',
-      message: count => `${count} naplánovaných ${count === 1 ? "úloha" : "úlohy"} budou přeskočeny dokud nebudou přezkoumány jejich nastavení modelu.`,
+      message: count =>
+        `${count} naplánovaných ${count === 1 ? 'úloha' : 'úlohy'} budou přeskočeny dokud nebudou přezkoumány jejich nastavení modelu.`,
       detailMore: (names, remaining) => `${names} a ${remaining} více`,
       review: 'Revidovat naplánované úlohy',
-      saveFailed: 'Hermes neuložil tuto změnu modelu.'
+      saveFailed: 'Hermes neuložil tuto změnu modelu.',
+      confirmTitle: 'Varování při výběru modelu',
+      confirmDetail: 'Potvrďte jen tehdy, pokud s touto výměnou souhlasíte.',
+      confirmAction: 'Potvrdit',
+      declined: 'Změna modelu zrušena — odmítli jste upozornění na úroveň trénování na datech.'
     },
     search: 'Vyhledat pracovní místa cron...',
     loading: 'Načítání úloh cronu...',
@@ -1772,7 +2414,7 @@ export const cs = defineLocale({
       telegram: 'telegram',
       discord: 'Nesoulad',
       slack: 'Slack',
-      email: 'Email'
+      email: 'E-mail'
     },
     scheduleLabels: {
       daily: 'Denně',
@@ -1810,7 +2452,8 @@ export const cs = defineLocale({
     topOfHour: 'Na vrcholu každé hodiny',
     everyHourAt: minute => `Každou hodinu v :${minute}`,
     newCron: 'Nový cron',
-    emptyDescNew: 'Naplánujte spuštění výzvy na výrazu cron. Hermes to spustí a doručí výsledky do místa určení, které si vyberete.',
+    emptyDescNew:
+      'Naplánujte spuštění výzvy na výrazu cron. Hermes to spustí a doručí výsledky do místa určení, které si vyberete.',
     emptyDescSearch: 'Zkuste širší vyhledávací dotaz.',
     emptyTitleNew: 'Zatím žádné naplánované úlohy',
     emptyTitleSearch: 'Žádné zápasy',
@@ -1846,7 +2489,8 @@ export const cs = defineLocale({
     editTitle: 'Upravit úlohu cron',
     createTitle: 'Nová práce cron',
     editDesc: 'Aktualizujte plán, výzvu nebo cíl doručení. Změny platí při příštím spuštění.',
-    createDesc: 'Naplánujte automatické spuštění výzvy. Použijte syntaxi cron nebo přirozenou frázi jako „každých 15 minut“.',
+    createDesc:
+      'Naplánujte automatické spuštění výzvy. Použijte syntaxi cron nebo přirozenou frázi jako „každých 15 minut“.',
     nameLabel: 'Jméno',
     namePlaceholder: 'Ranní briefing',
     promptLabel: 'Výzva',
@@ -1883,7 +2527,7 @@ export const cs = defineLocale({
       failedLoad: 'Načtení modelů selhalo',
       emptyTitle: 'Žádné modely k dispozici',
       emptyDesc: 'Na tomto backendu nejsou k dispozici žádné automatizační modely.'
-    },
+    }
   },
   artifacts: {
     search: 'Hledat artefakty...',
@@ -2005,13 +2649,15 @@ export const cs = defineLocale({
       copyPath: 'Kopírovat cestu',
       removeFromSidebar: 'Skrýt z postranního panelu',
       createFailed: 'Projekt nelze vytvořit',
-      staleBackend: 'Aktualizujte backend Hermes, abyste mohli vytvářet projekty – váš backend je starší než tato desktopová aplikace (Nastavení → Aktualizace → Backend).',
-      deleteConfirm: 'To odstraní uložený projekt z Hermes. Soubory, úložiště git a pracovní stromy zůstanou nedotčeny.',
+      staleBackend:
+        'Aktualizujte backend Hermes, abyste mohli vytvářet projekty – váš backend je starší než tato desktopová aplikace (Nastavení → Aktualizace → Backend).',
+      deleteConfirm:
+        'To odstraní uložený projekt z Hermes. Soubory, úložiště git a pracovní stromy zůstanou nedotčeny.',
       startWork: 'Nový pracovní strom',
       newWorktreeTitle: 'Nový pracovní strom',
       newWorktreeDesc: 'Pojmenujte větev pro tento pracovní strom.',
       branchPlaceholder: 'např. můj rys',
-      branchOff: () => ({ after: "", before: "větev od " }),
+      branchOff: () => ({ after: '', before: 'větev od ' }),
       baseBranchPlaceholder: 'Hledat větve…',
       baseBranchNone: 'Žádné větve nenalezeny',
       startWorkFailed: 'Nelze vytvořit pracovní strom',
@@ -2020,8 +2666,8 @@ export const cs = defineLocale({
       worktreeProjectNone: 'Žádné projekty se složkou',
       convertBranch: 'Převést větev…',
       convertBranchTitle: 'Převést větev',
-      convertBranchDesc: 'Otevřete odhlášené pobočky nebo vytvořte pracovní strom pro volnou pobočku.',
-      convertBranchPlaceholder: 'Hledat pobočky…',
+      convertBranchDesc: 'Otevřete odpojené větve nebo vytvořte pracovní strom pro volnou větev.',
+      convertBranchPlaceholder: 'Hledat větve…',
       convertBranchInstead: 'Převést existující větev',
       branchOpenExisting: 'otevřít',
       branchSwitchHome: 'přejít domů',
@@ -2031,21 +2677,27 @@ export const cs = defineLocale({
       noBranches: 'Nebyly nalezeny žádné větve',
       removeWorktree: 'Odstraňte pracovní strom',
       removeWorktreeFailed: 'Nelze odstranit pracovní strom (nepotvrzené změny?)',
-      removeWorktreeConfirm: 'Odstraňte jej z git (smaže adresář pracovního stromu; větev zůstane), nebo jednoduše skryjte pruh z postranního panelu a nechte pracovní strom na disku.',
-      removeWorktreeDirty: 'Tento pracovní strom obsahuje nepotvrzené změny. Vynucené odstranění (zahodí tyto změny), nebo jen skryjte pruh a ponechte jej na disku.',
+      removeWorktreeConfirm:
+        'Odstraňte jej z git (smaže adresář pracovního stromu; větev zůstane), nebo jednoduše skryjte pruh z postranního panelu a nechte pracovní strom na disku.',
+      removeWorktreeDirty:
+        'Tento pracovní strom obsahuje nepotvrzené změny. Vynucené odstranění (zahodí tyto změny), nebo jen skryjte pruh a ponechte jej na disku.',
       forceRemove: 'Vynutit odstranění',
       enter: label => `Otevřete ${label}`,
       reorder: label => `Znovu objednejte ${label}`,
       toggle: label => `Přepnout relace ${label}`,
-      back: 'Všechny projekty'
+      back: 'Všechny projekty',
+      showAllSessions: 'Zobrazit všechny relace',
+      autoDiscovered: 'Automaticky objeveno',
+      worktreeStaleBackend:
+        'Aktualizujte backend Hermes, abyste přes toto vzdálené připojení mohli vytvářet pracovní stromy — pochází z doby před API git worktree.'
     },
     newSessionIn: label => `Nová relace v ${label}`,
     showMoreIn: (count, label) => `Zobrazit více ${count} v ${label}`,
     loading: 'Načítání…',
     loadMore: 'Načíst více',
     loadCount: step => `Načtěte ${step} více`,
-    messageCount: count => `${count} ${count === 1 ? "zpráva" : "zprávy"}`,
-    toolCallCount: count => `${count} ${count === 1 ? "volání nástrojem" : "volání nástrojem"}`,
+    messageCount: count => `${count} ${count === 1 ? 'zpráva' : 'zprávy'}`,
+    toolCallCount: count => `${count} ${count === 1 ? 'volání nástrojem' : 'volání nástrojem'}`,
     row: {
       pin: 'Pin',
       unpin: 'Odepnout',
@@ -2082,12 +2734,12 @@ export const cs = defineLocale({
       deleting: 'Maže se...',
       deleted: 'Relace smazána',
       untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? "zpráva" : "zprávy"}`,
+      messageCount: count => `${count} ${count === 1 ? 'zpráva' : 'zprávy'}`,
       todoProgress: 'Dokončené úlohy',
       ageNow: 'teď',
       ageDay: 'd',
       ageHour: 'h',
-      ageMin: 'm',
+      ageMin: 'm'
     },
     dateDivider: {
       today: 'Dříve dnes',
@@ -2101,6 +2753,18 @@ export const cs = defineLocale({
       done: 'Hotovo'
     },
     markAllRead: 'Označit vše jako přečtené',
+    gatewayGroups: {
+      grouping: 'Brána a profil',
+      rename: 'Přejmenovat skupinu',
+      aliasLabel: 'Zobrazované jméno',
+      aliasHint: 'Pouze zobrazované jméno; názvy brány a profilu zůstávají nezměněny.',
+      resetName: 'Obnovit jméno',
+      moveUp: 'Posunout nahoru',
+      moveDown: 'Posunout dolů',
+      reorder: 'Změnit pořadí skupiny',
+      actions: 'Akce skupiny'
+    },
+    projectLoadFailed: 'Relace nelze načíst'
   },
   composer: {
     message: 'Zpráva',
@@ -2108,8 +2772,24 @@ export const cs = defineLocale({
     placeholderStarting: 'Spuštění Hermese...',
     placeholderReconnecting: 'Opětovné připojení k Hermes…',
     placeholderFollowUp: 'Pošlete sledování',
-    newSessionPlaceholders: ['co stavíme?', 'Dejte Hermesovi úkol', 'co máš na srdci?', 'Popište, co potřebujete', 'Co bychom měli řešit?', 'Zeptejte se na cokoliv', 'Začněte s cílem'],
-    followUpPlaceholders: ['Pošlete zprávu', 'Přidejte další kontext', 'Upřesněte žádost', 'co bude dál?', 'Jen tak dál', 'Posuňte to dál', 'Upravte nebo pokračujte'],
+    newSessionPlaceholders: [
+      'co stavíme?',
+      'Dejte Hermesovi úkol',
+      'co máš na srdci?',
+      'Popište, co potřebujete',
+      'Co bychom měli řešit?',
+      'Zeptejte se na cokoliv',
+      'Začněte s cílem'
+    ],
+    followUpPlaceholders: [
+      'Pošlete zprávu',
+      'Přidejte další kontext',
+      'Upřesněte žádost',
+      'co bude dál?',
+      'Jen tak dál',
+      'Posuňte to dál',
+      'Upravte nebo pokračujte'
+    ],
     startVoice: 'Zahajte hlasovou konverzaci',
     openDirective: 'Otevřít',
     queueMessage: 'Zpráva ve frontě',
@@ -2168,7 +2848,7 @@ export const cs = defineLocale({
     queued: count => `${count} Ve frontě`,
     queuedPaused: count => `${count} Frontováno — pozastaveno`,
     attachmentOnly: 'Otočení pouze u nástavce',
-    emptyTurn: 'Prázdná zatáčka',
+    emptyTurn: 'Prázdný tah',
     attachments: count => `Příloha ${count}${count === 1 ? '' : 's'}`,
     editingInComposer: 'Úprava ve skladateli',
     editingQueuedInComposer: 'Úpravy zařazené do fronty ve skladateli',
@@ -2259,7 +2939,8 @@ export const cs = defineLocale({
         description: 'Projděte si, jak vybraný kód funguje, a vytvořte odkaz na klíčové soubory.',
         text: 'Vysvětlete prosím, jak to funguje, a nasměrujte mě na klíčové soubory.'
       }
-    }
+    },
+    voiceControls: 'Hlas'
   },
   statusStack: {
     agents: 'Agenti',
@@ -2276,7 +2957,7 @@ export const cs = defineLocale({
     exit: code => `výstup ${code}`,
     coding: {
       title: 'Pracovní strom',
-      noBranch: 'Žádná pobočka',
+      noBranch: 'Žádná větev',
       detached: 'oddělený',
       clean: 'Čistý',
       changed: count => `${count} změněno`,
@@ -2286,24 +2967,24 @@ export const cs = defineLocale({
       close: 'Zavřít',
       openChanges: 'Otevřete Změny',
       openFile: 'Otevřete soubor',
-      stage: 'Jeviště',
-      unstage: 'Unstage',
-      stageAll: 'Zinscenujte vše',
+      stage: 'Přidat do indexu',
+      unstage: 'Odebrat z indexu',
+      stageAll: 'Přidat vše do indexu',
       viewAsTree: 'Zobrazit jako strom',
       viewAsList: 'Zobrazit jako seznam',
       revert: 'Vrátit zpět',
       revertAll: 'Vrátit vše',
-      revertConfirm: 'Zahodit změny tohoto souboru a obnovit jej do potvrzeného stavu? Toto nelze vrátit zpět.',
-      revertAllConfirm: 'Zahodit každou změnu a obnovit soubory do potvrzeného stavu? Toto nelze vrátit zpět.',
-      staged: 'Inscenováno',
+      revertConfirm: 'Zahodit změny tohoto souboru a vrátit jej do stavu posledního commitu? Toto nelze vrátit zpět.',
+      revertAllConfirm: 'Zahodit všechny změny a vrátit soubory do stavu posledního commitu? Toto nelze vrátit zpět.',
+      staged: 'V indexu',
       noChanges: 'Žádné změny',
       notRepo: 'Ne git repozitář',
       noDiff: 'Žádný rozdíl k zobrazení',
-      scopeUncommitted: 'Bez závazků',
+      scopeUncommitted: 'Nezapsané změny',
       scopeBranch: 'Pobočka',
-      scopeLastTurn: 'Poslední zatáčka',
-      commit: 'Zavázat se',
-      commitAndPush: 'Commit & Push',
+      scopeLastTurn: 'Poslední tah',
+      commit: 'Vytvořit commit',
+      commitAndPush: 'Commit a push',
       commitPlaceholder: shortcut => `Zpráva (${shortcut} pro potvrzení)`,
       generateCommitMessage: 'Vygenerovat zprávu o potvrzení',
       stopGenerating: 'Přestaňte generovat',
@@ -2311,12 +2992,104 @@ export const cs = defineLocale({
       openPr: 'Otevřete PR',
       ghMissing: 'Nainstalujte GitHub CLI (gh) a přihlaste se, abyste mohli otevřít PR',
       agentShip: 'Požádejte Hermese, aby otevřel PR',
-      agentShipPrompt: 'Zkontrolujte aktuální změny, potvrďte je jasnou zprávou konvenčního potvrzení, posuňte větev a otevřete požadavek na stažení.',
-      newBranch: 'Nová pobočka',
+      agentShipPrompt:
+        'Zkontrolujte aktuální změny, potvrďte je jasnou zprávou konvenčního potvrzení, posuňte větev a otevřete požadavek na stažení.',
+      newBranch: 'Nová větev',
       branchOffFrom: base => `Nová větev od ${base}`,
       switchTo: branch => `Přepněte na ${branch}`,
       switchFailed: branch => `Nelze přepnout na ${branch}`,
-      worktrees: 'Pracovní stromy'
+      worktrees: 'Pracovní stromy',
+      agentShipUnavailable: 'Chat, kterému tyto změny patří, není na obrazovce.'
+    },
+    goalBlocked: 'Cíl zablokován',
+    control: {
+      goalActiveTurns: (turn, maxTurns) => `Tah ${turn}/${maxTurns}`,
+      goalDoneTurns: turns => `${turns} ${turns === 1 ? 'tah' : turns >= 2 && turns <= 4 ? 'tahy' : 'tahů'}`,
+      goalTurn: turn => `Tah ${turn}`,
+      goalActions: 'Akce cíle',
+      viewDetails: 'Zobrazit podrobnosti',
+      addCriterion: 'Přidat kritérium',
+      addCriterionDialogTitle: 'Přidat kritérium',
+      addCriterionPlaceholder: 'Zadejte text kritéria...',
+      criterionLabel: 'Kritérium',
+      pauseGoal: 'Pozastavit cíl',
+      resumeGoal: 'Obnovit cíl',
+      resumeNow: 'Obnovit nyní',
+      clearGoal: 'Vymazat cíl',
+      clearGoalConfirmTitle: 'Vymazat cíl?',
+      clearGoalConfirmBody: 'Opravdu chcete vymazat aktivní cíl? Toto nelze vrátit zpět.',
+      copyCriterion: index => `Kopírovat kritérium ${index}`,
+      removeCriterion: index => `Odebrat kritérium ${index}`,
+      removeCriterionConfirmTitle: index => `Odebrat kritérium ${index}?`,
+      removeCriterionConfirmBody: index => `Opravdu chcete odebrat kritérium ${index}?`,
+      clearCriteria: 'Vymazat všechna kritéria',
+      clearCriteriaConfirmTitle: 'Vymazat všechna kritéria?',
+      clearCriteriaConfirmBody: 'Opravdu chcete odebrat všechna kritéria z tohoto cíle?',
+      criteriaHeader: count => `Kritéria · ${count}`,
+      noCriteria: 'Žádná kritéria',
+      goalDetailsTitle: 'Podrobnosti cíle',
+      objectiveLabel: 'Cíl',
+      contractOutcome: 'Výsledek',
+      contractVerification: 'Ověření',
+      contractConstraints: 'Omezení',
+      contractBoundaries: 'Hranice',
+      contractStopWhen: 'Kdy zastavit',
+      waitBarrierTitle: 'Podmínka čekání',
+      waitUntil: target => `Čekání do ${target}`,
+      waitSession: target => `Čekání na relaci ${target}`,
+      waitPid: pid => `Čekání na proces ${pid}`,
+      qualityGatesTitle: 'Kontroly kvality',
+      gateCommand: 'Příkaz',
+      gateAttempts: (attempts, max) => `Pokusy ${attempts}/${max}`,
+      gateTimeout: seconds => `časový limit ${seconds} s`,
+      gateLastExit: code => (code === null ? 'Čeká' : `Návratový kód: ${code}`),
+      loopActive: 'Smyčka aktivní',
+      loopPaused: 'Smyčka pozastavena',
+      loopDeferred: 'Smyčka odložena',
+      loopFinished: 'Smyčka dokončena',
+      loopRuns: runs => `${runs} ${runs === 1 ? 'běh' : runs >= 2 && runs <= 4 ? 'běhy' : 'běhů'}`,
+      loopRunCount: (current, total) => `Běh ${current}/${total}`,
+      loopNext: time => `další ${time}`,
+      loopEverySeconds: seconds => `každých ${seconds} s`,
+      loopEveryMinutes: minutes => `každých ${minutes} min`,
+      loopEveryHours: hours => `každých ${hours} h`,
+      loopSelfPaced: 'vlastním tempem',
+      loopActions: 'Akce smyčky',
+      pauseLoop: 'Pozastavit smyčku',
+      resumeLoop: 'Obnovit smyčku',
+      stopLoop: 'Zastavit smyčku',
+      stopLoopConfirmTitle: 'Zastavit smyčku?',
+      stopLoopConfirmBody: 'Opravdu chcete zastavit tuto smyčku?',
+      dismissLoop: 'Skrýt smyčku',
+      loopPromptLabel: 'Prompt',
+      loopCadenceLabel: 'Interval',
+      loopUntilLabel: 'Podmínka ukončení',
+      loopDeferredNotice: 'Relaci nyní řídí aktivní cíl.',
+      loopAwaitingResponse: 'Čekání na odpověď',
+      heartbeatActive: 'Heartbeat aktivní',
+      heartbeatPaused: 'Heartbeat pozastaven',
+      heartbeatEveryMinutes: minutes => `každých ${minutes} min`,
+      heartbeatEveryHours: hours => `každých ${hours} h`,
+      heartbeatEverySeconds: seconds => `každých ${seconds} s`,
+      heartbeatNext: time => `další ${time}`,
+      heartbeatDueWaitingForIdle: 'je čas — čeká se na nečinnost',
+      heartbeatActions: 'Akce heartbeatu',
+      pauseHeartbeat: 'Pozastavit heartbeat',
+      resumeHeartbeat: 'Obnovit heartbeat',
+      clearHeartbeat: 'Vymazat heartbeat',
+      clearHeartbeatConfirmTitle: 'Vymazat heartbeat?',
+      clearHeartbeatConfirmBody: 'Opravdu chcete vymazat tento heartbeat?',
+      heartbeatFiredCount: count => `Spuštěno ${count}×`,
+      actionFailed: msg => `Akce se nezdařila: ${msg}`,
+      actionSucceeded: 'Akce proběhla úspěšně',
+      copySuccess: 'Kritérium zkopírováno do schránky',
+      copyFailure: 'Kopírování kritéria do schránky se nezdařilo',
+      continuationFailed: 'Pokračování cíle se nepodařilo odeslat',
+      continuationQueued: 'Cíl obnoven — pokračování zařazeno do fronty, dokud neskončí aktuální tah',
+      continuationBusy: 'Cíl obnoven — relace je zaneprázdněná, přerušte aktuální tah příkazem /interrupt',
+      controlUnavailable: msg => `Ovládání relace není k dispozici: ${msg}`,
+      dismissError: 'Skrýt chybu',
+      add: 'Přidat'
     }
   },
   updates: {
@@ -2347,20 +3120,25 @@ export const cs = defineLocale({
     availableBody: 'Nová verze Hermes je připravena k instalaci.',
     availableTitleBackend: 'K dispozici je aktualizace backendu',
     availableBodyBackend: 'Novější verze připojeného backendu Hermes je připravena k instalaci.',
-    availableBodyNoChangelog: 'Novější verze je připravena. Poznámky k vydání nejsou pro tento typ instalace k dispozici.',
+    availableBodyNoChangelog:
+      'Novější verze je připravena. Poznámky k vydání nejsou pro tento typ instalace k dispozici.',
     updateNow: 'Aktualizujte nyní',
     maybeLater: 'Možná později',
     moreChanges: count => `+ ${count} další změna${count === 1 ? '' : 's'} v ceně.`,
     manualTitle: 'Aktualizujte z vašeho terminálu',
-    manualBody: 'Hermes jste nainstalovali z příkazového řádku, takže aktualizace běží i tam. Vložte toto do svého terminálu:',
+    manualBody:
+      'Hermes jste nainstalovali z příkazového řádku, takže aktualizace běží i tam. Vložte toto do svého terminálu:',
     manualPickedUp: 'Hermes si novou verzi vyzvedne, až ji příště spustíte.',
     guiSkewTitle: 'Aktualizujte desktopovou aplikaci',
-    guiSkewBody: 'Backend byl aktualizován, ale tento balíček aplikace pro stolní počítače se nezměnil. Aktualizujte nebo přeinstalujte desktopovou aplikaci Hermes (váš AppImage / .deb / .rpm), aby odpovídala.',
+    guiSkewBody:
+      'Backend byl aktualizován, ale tento balíček aplikace pro stolní počítače se nezměnil. Aktualizujte nebo přeinstalujte desktopovou aplikaci Hermes (váš AppImage / .deb / .rpm), aby odpovídala.',
     copy: 'Kopírovat',
     copied: 'Zkopírováno',
     done: 'Hotovo',
-    applyingBody: 'Aktualizátor Hermes převezme kontrolu ve svém vlastním okně a po dokončení automaticky znovu otevře Hermes. Během aktualizace sami Hermes znovu neotevírejte.',
-    applyingBodyBackend: 'Vzdálený backend aplikuje aktualizaci a restartuje se. Hermes se automaticky znovu připojí, když je zpět.',
+    applyingBody:
+      'Aktualizátor Hermes převezme kontrolu ve svém vlastním okně a po dokončení automaticky znovu otevře Hermes. Během aktualizace sami Hermes znovu neotevírejte.',
+    applyingBodyBackend:
+      'Vzdálený backend aplikuje aktualizaci a restartuje se. Hermes se automaticky znovu připojí, když je zpět.',
     applyingClose: 'Toto okno se během aktualizace zavře a poté se Hermes znovu otevře.',
     errorTitle: 'Aktualizace nebyla dokončena',
     errorBody: 'Žádný strach – nic se neztratilo. Nyní to můžete zkusit znovu.',
@@ -2372,7 +3150,28 @@ export const cs = defineLocale({
       notAvailable: 'Aktualizace pro tento backend není k dispozici.',
       failed: 'Aktualizace backendu se nezdařila.',
       noReturn: 'Backend se nevrátil online. Aktualizace možná nebyla dokončena — zkontrolujte hostitele backendu.'
-    }
+    },
+    blockerTitle: 'Zavřete místní náhledy a aktualizujte Hermes?',
+    blockerBody: 'Hermes musí před aktualizací zastavit tyto místní náhledy. Vaše soubory to nezmění ani nesmaže.',
+    foreignBlockerTitle: 'Zavřete ostatní procesy a aktualizujte Hermes',
+    foreignBlockerBody:
+      'Hermes nedokáže tyto procesy bezpečně zavřít automaticky. Zavřete aplikaci, terminál nebo službu, která každý z nich vlastní, a zkuste aktualizaci znovu.',
+    mixedBlockerBody:
+      'Hermes může zavřít níže uvedené místní náhledy. Ostatní procesy musíte před pokračováním aktualizace zavřít ručně.',
+    closePreviewsAndUpdate: 'Zavřít náhledy a aktualizovat',
+    closePreviewsAndCheckAgain: 'Zavřít náhledy a zkontrolovat znovu',
+    localPreview: 'Místní náhled',
+    portLabel: port => `Port ${port}`,
+    pidLabel: pid => `PID ${pid}`,
+    technicalDetails: 'Technické podrobnosti',
+    clientAlsoBehindTitle: 'Desktopová aplikace zaostává',
+    clientAlsoBehindMessage:
+      'Backend je aktuální, ale tato desktopová aplikace stále běží na starší verzi. Aktualizujte ji, abyste získali nejnovější opravy.',
+    clientAlsoBehindAction: 'Aktualizovat desktopovou aplikaci',
+    everythingDispatched: 'Aktualizace odeslána',
+    everythingSkipped: 'Přeskočeno',
+    everythingRowFailed: 'Aktualizace se nezdařila',
+    everythingFanoutFailedTitle: 'Ostatní instance se nepodařilo aktualizovat'
   },
   install: {
     stageStates: {
@@ -2383,22 +3182,26 @@ export const cs = defineLocale({
       failed: 'Nepodařilo se'
     },
     oneTimeTitle: 'Hermes potřebuje jednorázovou instalaci',
-    unsupportedDesc: platform => `Automatická instalace při prvním spuštění zatím není na ${platform} k dispozici. Otevřete Terminál a spusťte níže uvedený příkaz a poté tuto aplikaci znovu spusťte. Další spuštění tento krok přeskočí.`,
+    unsupportedDesc: platform =>
+      `Automatická instalace při prvním spuštění zatím není na ${platform} k dispozici. Otevřete Terminál a spusťte níže uvedený příkaz a poté tuto aplikaci znovu spusťte. Další spuštění tento krok přeskočí.`,
     installCommand: 'Instalovat příkaz',
     copyCommand: 'Kopírovat příkaz',
-    viewDocs: 'Zobrazit instalační dokumenty',
+    viewDocs: 'Zobrazit dokumentaci k instalaci',
     installTo: 'Nainstaluje se do',
     retryAfterRun: 'Spustil jsem to – zkuste to znovu',
     setupChoiceTitle: 'Nastavit Hermes Desktop',
-    setupChoiceDesc: 'Připojit tuto aplikaci k bráně Hermes, kterou už běžíte, nebo nainstalovat Hermes místně na tomto počítači.',
+    setupChoiceDesc:
+      'Připojit tuto aplikaci k bráně Hermes, kterou už běžíte, nebo nainstalovat Hermes místně na tomto počítači.',
     connectExistingTitle: 'Připojit k existujícímu Hermes',
     connectExistingShort: 'Připojit existující',
-    connectExistingDesc: 'Použijte vzdálený backend s relačním tokenem nebo přihlášením přes prohlížeč. Žádná místní instalace se ne spustí.',
+    connectExistingDesc:
+      'Použijte vzdálený backend s relačním tokenem nebo přihlášením přes prohlížeč. Žádná místní instalace se ne spustí.',
     installLocalTitle: 'Nainstalovat Hermes místně',
     installLocalDesc: 'Stáhnout Hermes, vytvořit Python prostředí a spustit backend na tomto počítači.',
     localStartUnavailable: 'Místní instalace se nemohla spustit. restartujte Hermes Desktop a zkuste znovu.',
     remoteSetupTitle: 'Připojit k existujícímu Hermes',
-    remoteSetupDesc: 'Zadejte vaši URL brány. Hermes Desktop zjistí, zda potřebuje token nebo přihlášení přes prohlížeč.',
+    remoteSetupDesc:
+      'Zadejte vaši URL brány. Hermes Desktop zjistí, zda potřebuje token nebo přihlášení přes prohlížeč.',
     remoteUrlTitle: 'URL brány',
     remoteUrlDesc: 'Použijte základní URL brány Hermes, včetně https:// pokud je vzdálená.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
@@ -2419,14 +3222,16 @@ export const cs = defineLocale({
     incompleteSignInTest: 'Přihlašte se před testováním této OAuth chráněné brány.',
     incompleteTokenTest: 'Zadejte relační token před testováním této brány.',
     testConnection: 'Testovat připojení',
-    testSucceeded: (baseUrl, version) => `Připojeno k ${baseUrl}${version ? ` (${version})` : ""}.`,
+    testSucceeded: (baseUrl, version) => `Připojeno k ${baseUrl}${version ? ` (${version})` : ''}.`,
     applyRemote: 'Použít a připojit znovu',
     backToSetup: 'Zpět',
     failedTitle: 'Instalace se nezdařila',
     settingUpTitle: 'Nastavení Hermes Agent',
     finishingTitle: 'Dokončování',
-    failedDesc: 'Jeden z kroků instalace selhal. V systému Windows k tomu může dojít, pokud je spuštěna jiná instance Hermes CLI nebo desktop. Zastavte všechny spuštěné instance Hermes a zkuste to znovu. Úplný přepis naleznete v níže uvedených podrobnostech nebo v protokolu na ploše.',
-    activeDesc: 'Toto je jednorázové nastavení. Instalační program Hermes stahuje závislosti a konfiguruje váš počítač. Další spuštění tento krok přeskočí.',
+    failedDesc:
+      'Jeden z kroků instalace selhal. V systému Windows k tomu může dojít, pokud je spuštěna jiná instance Hermes CLI nebo desktop. Zastavte všechny spuštěné instance Hermes a zkuste to znovu. Úplný přepis naleznete v níže uvedených podrobnostech nebo v protokolu na ploše.',
+    activeDesc:
+      'Toto je jednorázové nastavení. Instalační program Hermes stahuje závislosti a konfiguruje váš počítač. Další spuštění tento krok přeskočí.',
     progress: (completed, total) => `Kroky ${completed} z ${total} dokončeny`,
     currentStage: stage => `-- nyní: ${stage}`,
     fetchingManifest: 'Načítání manifestu instalačního programu...',
@@ -2448,7 +3253,7 @@ export const cs = defineLocale({
     preparingInstall: 'Hermes dokončuje instalaci. To obvykle trvá méně než minutu při prvním spuštění.',
     starting: 'Spouštění Hermes…',
     lookingUpProviders: 'Vyhledávání poskytovatelů...',
-    collapse: 'kolaps',
+    collapse: 'Sbalit',
     otherProviders: 'Ostatní poskytovatelé',
     haveApiKey: 'Mám klíč API',
     chooseLater: 'Poskytovatele si vyberu později',
@@ -2479,8 +3284,9 @@ export const cs = defineLocale({
         description: 'Přímý přístup k modelům xAI Grok.'
       },
       local: {
-        short: 'self-hosted',
-        description: 'Nasměrujte Hermes na místní nebo samostatně hostovaný koncový bod kompatibilní s OpenAI (vLLM, llama.cpp, Ollama atd.).'
+        short: 'vlastní hostování',
+        description:
+          'Nasměrujte Hermes na místní nebo samostatně hostovaný koncový bod kompatibilní s OpenAI (vLLM, llama.cpp, Ollama atd.).'
       }
     },
     backToSignIn: 'Zpět k přihlášení',
@@ -2494,7 +3300,7 @@ export const cs = defineLocale({
     flowSubtitles: {
       pkce: 'Otevře prohlížeč k přihlášení a poté pokračuje zde',
       device_code: 'Otevře ověřovací stránku ve vašem prohlížeči — Hermes se připojí automaticky',
-      external: 'Jednou se přihlaste do svého terminálu a poté se vraťte k chatu',
+      external: 'Jednou se přihlaste do svého terminálu a poté se vraťte k chatu'
     },
     startingSignIn: provider => `Spouštění přihlašování pro ${provider}...`,
     verifyingCode: provider => `Ověřování kódu pomocí ${provider}...`,
@@ -2508,10 +3314,12 @@ export const cs = defineLocale({
     copyAuthCode: 'Zkopírujte autorizační kód a vložte jej níže.',
     pasteAuthCode: 'Vložte autorizační kód',
     reopenAuthPage: 'Znovu otevřete autorizační stránku',
-    autoBrowser: provider => `Otevřeli jsme ${provider} ve vašem prohlížeči. Autorizujte tam Hermes a budete připojeni automaticky – nic ke kopírování nebo vkládání.`,
+    autoBrowser: provider =>
+      `Otevřeli jsme ${provider} ve vašem prohlížeči. Autorizujte tam Hermes a budete připojeni automaticky – nic ke kopírování nebo vkládání.`,
     reopenSignInPage: 'Znovu otevřete přihlašovací stránku',
     waitingAuthorize: 'Čeká se na vaši autorizaci...',
-    externalPending: provider => `${provider} se přihlašuje prostřednictvím svého vlastního CLI. Spusťte tento příkaz v terminálu, poté se vraťte a vyberte „Přihlásil jsem se“:`,
+    externalPending: provider =>
+      `${provider} se přihlašuje prostřednictvím svého vlastního CLI. Spusťte tento příkaz v terminálu, poté se vraťte a vyberte „Přihlásil jsem se“:`,
     signedIn: 'Přihlásil jsem se',
     deviceCodeOpened: provider => `Otevřeli jsme ${provider} ve vašem prohlížeči. Zadejte tam tento kód:`,
     reopenVerification: 'Znovu otevřete ověřovací stránku',
@@ -2523,7 +3331,11 @@ export const cs = defineLocale({
     price: (input, output) => `Vstup ${input} / výstup ${output} na Mtok`,
     change: 'Změna',
     startChatting: 'Začněte',
-    docs: provider => `Dokumenty ${provider}`
+    docs: provider => `Dokumenty ${provider}`,
+    localModelsTitle: 'Spouštět modely lokálně',
+    localModelsPitch: 'Není potřeba žádný účet — stáhněte model a spusťte jej na tomto počítači',
+    signInExpired:
+      'Přihlášení vypršelo při čekání na autorizaci. Obvykle to znamená, že se přihlašovací stránka v otevřené kartě zasekla (problém na straně serveru) — dokončete přihlášení tam a poté to zkuste znovu. Pokud to stále selhává, použijte místo toho klíč API nebo záložní variantu přes CLI.'
   },
   modelPicker: {
     title: 'Model přepínače',
@@ -2539,7 +3351,10 @@ export const cs = defineLocale({
     free: 'Zdarma',
     freeTier: 'Volná úroveň',
     priceTitle: 'Vstupní / výstupní cena za milion tokenů',
-    wasPrice: 'byl'
+    wasPrice: 'byl',
+    loadingIntoMemory: 'Načítání do paměti',
+    downloading: 'Stahování',
+    localDownloadsHeading: 'Místní'
   },
   modelVisibility: {
     title: 'Modelky',
@@ -2556,7 +3371,7 @@ export const cs = defineLocale({
       noModels: 'Nebyly nalezeny žádné modely',
       editModels: 'Upravit modely…',
       refreshModels: 'Aktualizovat modely',
-      fast: 'Rychle',
+      fast: 'Rychle'
     },
     modelOptions: {
       noOptions: 'Pro tento model nejsou žádné možnosti',
@@ -2587,7 +3402,8 @@ export const cs = defineLocale({
       connection: label => `Připojení: ${label}`,
       recentActivity: 'Nedávná aktivita',
       viewAllLogs: 'Zobrazit všechny protokoly →',
-      messagingPlatforms: 'Platformy pro zasílání zpráv'
+      messagingPlatforms: 'Platformy pro zasílání zpráv',
+      reconnectGateway: 'Znovu připojit bránu'
     },
     approvalMode: {
       title: 'Režim schválení',
@@ -2617,8 +3433,8 @@ export const cs = defineLocale({
       backendLabel: version => `backend v${version}`,
       commit: sha => `spáchat ${sha}`,
       branch: branch => `větev ${branch}`,
-      closeCommandCenter: 'Zavřete Command Center',
-      openCommandCenter: 'Otevřete Command Center',
+      closeCommandCenter: 'Zavřít Centrum příkazů',
+      openCommandCenter: 'Otevřít Centrum příkazů',
       showTerminal: 'Zobrazit terminál',
       hideTerminal: 'Skrýt terminál',
       gateway: 'Brána',
@@ -2634,7 +3450,7 @@ export const cs = defineLocale({
       resetStatusbar: 'Obnovit na výchozí',
       toggleApprovalMode: 'Schválení',
       toggleBackendVersion: 'Verze backendu',
-      toggleCommandCenter: 'Command Center',
+      toggleCommandCenter: 'Centrum příkazů',
       toggleContextUsage: 'Kontextový metr',
       toggleRunningTimer: 'Časovač běhu',
       toggleSessionTimer: 'Časovač relace',
@@ -2673,7 +3489,8 @@ export const cs = defineLocale({
         tokenSummary: (used, max) => `Tokeny ${used} / ${max}`
       },
       session: 'Relace',
-      yoloOn: 'YOLO zapnuto — automatické schvalování nebezpečných příkazů. Kliknutím vypnete. Shift+kliknutí jej přepne globálně.',
+      yoloOn:
+        'YOLO zapnuto — automatické schvalování nebezpečných příkazů. Kliknutím vypnete. Shift+kliknutí jej přepne globálně.',
       yoloOff: 'YOLO vypnuto – kliknutím automaticky schválíte nebezpečné příkazy. Shift+kliknutí jej přepne globálně.',
       modelNone: 'žádný',
       noModel: 'žádný model',
@@ -2682,6 +3499,22 @@ export const cs = defineLocale({
       modelPinned: 'připojeno vámi; nové chaty používají to místo výchozího nastavení',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      gatewayUnavailable: 'inference není k dispozici',
+      toggleCacheHitRate: 'Míra zásahů mezipaměti',
+      toggleTokensPerSecond: 'Tokeny za sekundu',
+      toggleFreeTier: 'Tarif zdarma',
+      cacheHitRateTitle:
+        'Míra zásahů mezipaměti promptu v této relaci — uložené tokeny jsou levnější, takže vyšší hodnota znamená nižší náklady',
+      tokensPerSecondTitle: 'Výstupní tokeny za sekundu, průměr za posledních 10 volání modelu',
+      systemResources: {
+        title: 'Systémové prostředky',
+        loading: 'Prostředky…',
+        gpuUtilization: 'Vytížení GPU',
+        gpuMemory: 'Paměť GPU',
+        ram: 'RAM',
+        unifiedNote: 'Sjednocená paměť — GPU a systém sdílejí tento fond.',
+        toggle: 'Systémové prostředky'
+      }
     }
   },
   rightSidebar: {
@@ -2731,8 +3564,8 @@ export const cs = defineLocale({
     openInBrowser: 'Otevřít v prohlížeči',
     linkHint: 'Kliknutím se stisknutou klávesou ⌘/Ctrl zobrazíte panel náhledu',
     sourceLineTitle: 'Kliknutím vyberete · Shift a kliknutím protáhnete · přetažením do skladatele',
-    source: 'SOURCE',
-    renderedPreview: 'PREVIEW',
+    source: 'ZDROJ',
+    renderedPreview: 'NÁHLED',
     diff: 'DIFF',
     unknownSize: 'neznámá velikost',
     binaryTitle: 'Vypadá to jako binární soubor',
@@ -2765,7 +3598,7 @@ export const cs = defineLocale({
       copySelected: 'Zkopírovat vybrané do schránky',
       copyAll: 'Zkopírujte vše do schránky',
       copy: 'Kopírovat',
-      clear: 'Jasný',
+      clear: 'Vymazat',
       empty: 'Zatím žádné zprávy konzoly.',
       promptHeader: 'Konzole náhledu:',
       sentTitle: 'Odesláno do chatu',
@@ -2794,23 +3627,52 @@ export const cs = defineLocale({
       reloadingNow: 'Nyní se náhled znovu načítá.',
       restartFailedTitle: 'Restartování náhledu se nezdařilo',
       restartFailedMessage: 'Hermes nemohl restartovat server.',
-      stillWorking: 'Hermes stále funguje, ale výsledek restartu se zatím nedostavil. Příkaz serveru může být spuštěn na popředí.',
+      stillWorking:
+        'Hermes stále funguje, ale výsledek restartu se zatím nedostavil. Příkaz serveru může být spuštěn na popředí.',
       workspaceReloading: 'Pracovní prostor se změnil, znovu se načítá náhled',
       fileChanged: url => `Soubor změněn, znovu načítání náhledu: ${url}`,
       filesChanged: (count, url) => `Změny souboru ${count}, náhled opětovného načtení: ${url}`,
       watchFailed: message => `Nelze sledovat soubor náhledu: ${message}`,
-      moduleMimeDescription: 'Skripty modulu jsou poskytovány s nesprávným typem MIME. To obvykle znamená, že statický souborový server obsluhuje aplikaci Vite/React namísto projektového dev serveru.',
+      moduleMimeDescription:
+        'Skripty modulu jsou poskytovány s nesprávným typem MIME. To obvykle znamená, že statický souborový server obsluhuje aplikaci Vite/React namísto projektového dev serveru.',
       loadFailedConsole: (code, message) => `Načtení se nezdařilo${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'Stránka náhledu nebyla dostupná.',
       openTarget: url => `Otevřete ${url}`,
-      fallbackTitle: 'Náhled'
+      fallbackTitle: 'Náhled',
+      remoteLoopback:
+        'Tato adresa ukazuje na počítač, kde běží váš agent, ne na tento. Panel prohlížeče načítá stránky místně, takže vzdálený vývojový server potřebuje přesměrování portu nebo dostupný název hostitele.',
+      goBack: 'Zpět',
+      goForward: 'Vpřed',
+      reload: 'Znovu načíst stránku',
+      address: 'Adresa',
+      addressPlaceholder: 'Zadejte adresu',
+      blankPageBody: 'Napište výše adresu a procházejte web, nebo požádejte Hermes o otevření stránky.',
+      annotate: 'Komentovat',
+      annotateOn: 'Ukončit komentování',
+      annotateNeedPage: 'Nejprve otevřete stránku v prohlížeči v aplikaci.',
+      annotateFailed: 'Režim komentování se nepodařilo spustit',
+      commenting: 'Komentování',
+      addComments: count =>
+        count === 1
+          ? 'Přidat 1 komentář'
+          : count >= 2 && count <= 4
+            ? `Přidat ${count} komentáře`
+            : `Přidat ${count} komentářů`,
+      commentPlaceholder: 'Přidejte komentář...',
+      commentTitle: n => `Komentář ${n}`,
+      saveComment: 'Uložit',
+      cancelComment: 'Zrušit komentář'
     },
+    openInExternal: 'Otevřít v externí aplikaci',
+    popIn: 'Vrátit do panelu',
+    popOut: 'Vysunout do okna'
   },
   zones: {
     minimize: 'Minimalizovat',
     restore: 'Obnovit',
     closeRunningTitle: 'Zavřít běžící kartu?',
-    closeRunningBody: 'Tento chat stále pracuje (nebo čeká na vaši odpověď). Zavření karty ho skryje — relace zachová pokrok a může být znovu otevřena z postranního panelu.',
+    closeRunningBody:
+      'Tento chat stále pracuje (nebo čeká na vaši odpověď). Zavření karty ho skryje — relace zachová pokrok a může být znovu otevřena z postranního panelu.',
     closeRunningConfirm: 'Zavřít kartu',
     reload: 'Načíst znovu',
     closeOthers: 'Zavřít ostatní',
@@ -2843,16 +3705,26 @@ export const cs = defineLocale({
     saveApply: 'Uložit a použít',
     notExpressible: 'toto uspořádání se propojí (pinwheel) — zatím není vyjadřitelné jako vložené rozdělení',
     zoneCount: count => `${count} zóny`,
-    tabCount: count => `${count} karty`
+    tabCount: count => `${count} karty`,
+    showTabStrip: 'Zobrazit karty',
+    hideTabStrip: 'Skrýt karty',
+    showStripTab: title => `Zobrazit ${title}`,
+    hideStripTab: title => `Skrýt ${title}`,
+    lastTabKeptTitle: 'Poslední karta zůstává',
+    lastTabKeptBody:
+      'Tato zóna potřebuje alespoň jednu viditelnou kartu. Nejprve zobrazte jinou kartu, nebo sbalte celý postranní panel.',
+    toggleStripTab: title => `Přepnout kartu ${title}`,
+    newTab: 'Nová karta'
   },
   assistant: {
     thread: {
       loadingSession: 'Načítání relace',
       showEarlier: 'Zobrazit dřívější zprávy',
       loadingResponse: 'Hermes načítá odpověď',
-      resumeWhenBackgroundDone: count => count === 1
-                ? 'Will resume when the background task finishes'
-                : `Obnoví se po dokončení úloh na pozadí ${count}`,
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'Will resume when the background task finishes'
+          : `Obnoví se po dokončení úloh na pozadí ${count}`,
       thinking: 'myšlení',
       thought: 'Myšlenka',
       thoughtBriefly: 'Stručně',
@@ -2865,7 +3737,7 @@ export const cs = defineLocale({
       branchNewChat: 'Pobočka v novém chatu',
       react: 'Reagovat',
       dismissError: 'Odmítnout chybu',
-      filesChanged: count => (count === 1 ? "1 soubor změněn" : `${count} soubory změněny`),
+      filesChanged: count => (count === 1 ? '1 soubor změněn' : `${count} soubory změněny`),
       reviewChanges: 'Recenzovat',
       readAloudFailed: 'Čtení nahlas se nezdařilo',
       preparingAudio: 'Příprava zvuku...',
@@ -2884,7 +3756,32 @@ export const cs = defineLocale({
       restoreNext: 'Obnovit další kontrolní bod',
       goForward: 'Jděte vpřed',
       sendEdited: 'Odeslat upravenou zprávu',
-      attachingFile: 'Připojování…'
+      attachingFile: 'Připojování…',
+      loadingLocalModel: model => `Načítání ${model} do paměti`,
+      processingPrompt: 'Zpracování promptu',
+      turnDuration: duration => `Tento tah trval ${duration}`,
+      errorLayers: {
+        auth: 'Chyba ověření',
+        billing: 'Nedostatek kreditů',
+        disk: 'Disk je plný',
+        endpoint: 'Chyba vlastního koncového bodu',
+        gateway: 'Chyba brány',
+        generic: 'Tah se nezdařil',
+        provider: 'Chyba poskytovatele',
+        runtime: 'Chyba místního běhového prostředí',
+        streaming: 'Chyba streamovacího připojení'
+      },
+      errorRetry: 'Zkusit znovu',
+      errorStartNewSession: 'Zahájit novou relaci',
+      errorSwitchProvider: 'Přepnout poskytovatele',
+      errorSignInAgain: provider => `Znovu se přihlaste k ${provider}`,
+      errorOauthExpired: provider =>
+        `Platnost vašeho přihlášení k ${provider} vypršela nebo bylo odvoláno. Přihlaste se znovu, abyste mohli pokračovat v chatování.`,
+      errorOpenLogs: 'Otevřít protokoly',
+      errorOpenLogsFailed: 'Složku s protokoly se nepodařilo otevřít',
+      errorOpenDesktopLogs: 'Otevřít protokoly Desktopu',
+      errorCopyDiagnostics: 'Kopírovat podrobnosti chyby',
+      errorSendDiagnostics: 'Odeslat diagnostiku'
     },
     approval: {
       gatewayDisconnected: 'Brána Hermes není připojena',
@@ -2897,7 +3794,8 @@ export const cs = defineLocale({
       jumpToApproval: 'Je potřeba schválení',
       reject: 'Odmítnout',
       alwaysTitle: 'Vždy povolit tento příkaz?',
-      alwaysDescription: pattern => `Tím přidáte vzor „${pattern}“ do vašeho trvalého seznamu povolených (~/.hermes/config.yaml). Hermes už nebude žádat o příkazy jako je tento – v této ani žádné budoucí relaci.`,
+      alwaysDescription: pattern =>
+        `Tím přidáte vzor „${pattern}“ do vašeho trvalého seznamu povolených (~/.hermes/config.yaml). Hermes už nebude žádat o příkazy jako je tento – v této ani žádné budoucí relaci.`,
       alwaysAllow: 'Vždy povolte'
     },
     clarify: {
@@ -2912,7 +3810,10 @@ export const cs = defineLocale({
       continueLabel: 'Pokračovat',
       lateAnswer: (question, choice) => `Re: "${question}" — moje odpověď: ${choice}`,
       lateAnswerTip: 'Napsat tuto odpověď jako návstavbu',
-      lateAnswerHint: 'Tento prompt už nechce odpovědět. Vyberte možnost, abyste ho převedli jako odpověď.'
+      lateAnswerHint: 'Tento prompt už nechce odpovědět. Vyberte možnost, abyste ho převedli jako odpověď.',
+      confirmAndContinueLabel: 'Potvrdit a pokračovat',
+      answeredBadge: 'Zodpovězeno',
+      questionProgress: (answered, total) => `Zodpovězeno ${answered} z ${total}`
     },
     mcpSetup: {
       installTitle: server => `Přidat MCP server ${server}?`,
@@ -2928,7 +3829,7 @@ export const cs = defineLocale({
       authorized: server => `Autorizováno ${server}`,
       failed: server => `Nastavení selhalo pro ${server}`,
       unanswered: 'Bez odpovědi',
-      toolCount: count => (count === 1 ? "1 nástroj" : `${count} nástroje`),
+      toolCount: count => (count === 1 ? '1 nástroj' : `${count} nástroje`),
       notInCatalog: server => `"${server}" není v katalogu MCP`,
       catalogSource: 'Z oficiálního katalogu Nousu',
       envRequired: 'Nejprve vyplňte požadované pověření',
@@ -3100,7 +4001,7 @@ export const cs = defineLocale({
           pending: 'Úprava souboru',
           pendingAction: 'Editace'
         }
-      },
+      }
     }
   },
   prompts: {
@@ -3108,11 +4009,38 @@ export const cs = defineLocale({
     sudoSendFailed: 'Heslo sudo nelze odeslat',
     secretSendFailed: 'Tajné se nepodařilo odeslat',
     sudoTitle: 'Heslo správce',
-    sudoDesc: 'Hermes potřebuje vaše sudo heslo ke spuštění privilegovaného příkazu. Odesílá se pouze místnímu zástupci.',
+    sudoDesc:
+      'Hermes potřebuje vaše sudo heslo ke spuštění privilegovaného příkazu. Odesílá se pouze místnímu zástupci.',
     sudoPlaceholder: 'sudo heslo',
     secretTitle: 'Je vyžadováno tajemství',
     secretDesc: 'Hermes potřebuje pověření, aby mohl pokračovat.',
-    secretPlaceholder: 'tajná hodnota'
+    secretPlaceholder: 'tajná hodnota',
+    vaultUnlockSendFailed: 'Hlavní heslo se nepodařilo odeslat',
+    vaultUnlockTitle: name => `Odemknout ${name}`,
+    vaultUnlockDesc: name =>
+      `Agent se chce přihlásit na web s přihlašovacími údaji uloženými v ${name}. Zadejte hlavní heslo pro odemknutí pro tuto relaci — heslo jde přímo do ${name} na tomto počítači a nikdy se neukládá ani se agentovi nezobrazuje.`,
+    vaultUnlockPlaceholder: 'Hlavní heslo',
+    vaultUnlockKeepLocked: 'Ponechat zamčené',
+    vaultUnlockConfirm: 'Odemknout',
+    vaultSaveSendFailed: 'Přihlašovací údaje se nepodařilo uložit',
+    vaultSaveTitle: site => `Uložit přihlašovací údaje pro ${site}?`,
+    vaultSaveDesc: origin =>
+      `Hermes narazil na přihlašovací stránce na ${origin} a nemá pro ni přihlašovací údaje. Zadejte je zde jednou; jsou zašifrovány na tomto počítači a vyplněny do stránky, aniž by model někdy uviděl heslo.`,
+    vaultSaveIdentifierLabel: 'E-mail nebo uživatelské jméno',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: 'Heslo',
+    vaultSaveFootnote: 'Uložené přihlašovací údaje spravujte v Nastavení → Hesla a přihlášení.',
+    vaultSaveDecline: 'Neukládat',
+    vaultSaveConfirm: 'Uložit a přihlásit se',
+    vaultCodeSendFailed: 'Kód se nepodařilo odeslat',
+    vaultCodeTitle: site => `Ověřovací kód pro ${site}`,
+    vaultCodeDesc: site =>
+      `${site} žádá jednorázový kód (SMS zpráva, e-mail nebo aplikace pro ověřování). Zadejte jej zde a Hermes jej napíše do stránky; model jej nikdy neuvidí.`,
+    vaultCodeLabel: 'Kód',
+    vaultCodeFootnote:
+      'Tip: uložte klíč pro ověřování k těmto přihlašovacím údajům v Nastavení → Hesla a přihlášení a Hermes bude za vás zadávat kódy.',
+    vaultCodeSkip: 'Přeskočit',
+    vaultCodeConfirm: 'Zadat kód'
   },
   desktop: {
     audioReadFailed: 'Nelze přečíst nahraný zvuk',
@@ -3129,7 +4057,8 @@ export const cs = defineLocale({
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} pro tuto relaci`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'Nelze přepnout YOLO',
-    profileStatus: current => `Profil: ${current}. Chcete-li zahájit chat v jiném profilu, použijte /profile <name> nebo výběr "Nová relace".`,
+    profileStatus: current =>
+      `Profil: ${current}. Chcete-li zahájit chat v jiném profilu, použijte /profile <name> nebo výběr "Nová relace".`,
     unknownProfile: 'Neznámý profil',
     noProfileNamed: (target, available) => `Žádný profil s názvem „${target}“. Dostupné: ${available}`,
     newChatsProfile: name => `Nové chaty budou používat profil ${name}.`,
@@ -3140,7 +4069,8 @@ export const cs = defineLocale({
     editFailed: 'Úprava se nezdařila',
     resumeFailed: 'Obnovení se nezdařilo',
     resumeStrandedTitle: 'Tuto relaci nelze načíst',
-    resumeStrandedBody: 'Připojení k této relaci se nezdařilo a automatické opakování se vzdalo. Zkontrolujte, zda je brána spuštěna, a zkuste to znovu.',
+    resumeStrandedBody:
+      'Připojení k této relaci se nezdařilo a automatické opakování se vzdalo. Zkontrolujte, zda je brána spuštěna, a zkuste to znovu.',
     resumeRetry: 'Zkuste to znovu',
     nothingToBranch: 'Nic na větvení',
     branchNeedsChat: 'Zahajte nebo obnovte chat před větvením.',
@@ -3155,7 +4085,7 @@ export const cs = defineLocale({
     cwdChangeFailed: 'Změna pracovního adresáře se nezdařila',
     cwdStagedTitle: 'Pracovní adresář inscenován',
     cwdStagedMessage: 'Restartujte backend plochy, abyste na tuto aktivní relaci aplikovali změny cwd.',
-    modelSwitchFailed: 'Přepínač modelu selhal',
+    modelSwitchFailed: 'Přepnutí modelu selhalo',
     sessionExported: 'Relace byla exportována',
     sessionExportFailed: 'Nelze exportovat relaci',
     imageSaved: 'Obrázek uložen',
@@ -3181,7 +4111,13 @@ export const cs = defineLocale({
       systemNote: platform => `↻ Předáno ${platform} – pokračujte zde kdykoli.`,
       failed: error => `Předání se nezdařilo: ${error}`,
       timedOut: 'Při čekání na bránu vypršel časový limit. Běží `hermes gateway`?'
-    }
+    },
+    editTurnUnavailable: 'Tento tah už není v historii serveru (mohl být komprimován).',
+    readOnlyTranscriptTitle: 'Otevřeno pouze pro čtení',
+    readOnlyTranscriptBody:
+      'Tento starší chat zatím nemá přiřazen žádný připojený backend, a proto se otevřel jako přepis pouze pro čtení. Jeho historie je nedotčená; odesílání je zakázáno, dokud si jej některý backend nepřiřadí.',
+    readOnlyTranscriptSendBlocked: 'Tento chat je otevřen jako přepis pouze pro čtení — odesílání je zakázáno.',
+    hydrationSyncing: (profile: string) => `Synchronizace ${profile}…`
   },
   errors: {
     genericFailure: 'Něco se pokazilo',
@@ -3205,6 +4141,173 @@ export const cs = defineLocale({
       title: 'Postranní panel',
       description: 'Zobrazí postranní panel pro mobilní zařízení.',
       toggle: open => `${open ? 'Zobrazit' : 'Skrýt'} postranní panel`
+    }
+  },
+  freeTier: {
+    providerRowTitle: 'Nous · volná úroveň',
+    providerRowPitch: 'Přihlaste se účtem Nous a odemkněte další modely a nástroje.',
+    readyTitle: 'Hermes je připraven.',
+    readyCaption: 'Zdarma · včetně konektorů',
+    begin: 'Začít',
+    signInInstead: 'Místo toho se přihlaste účtem Nous',
+    otherProviders: 'Další poskytovatelé',
+    stripTitle: 'Inference Nous zdarma a konektory jsou nyní k dispozici.',
+    stripBody: 'Otevřete výběr modelu a vyzkoušejte je, nebo se přihlaste účtem Nous.',
+    openModelPicker: 'Otevřít výběr modelu',
+    dismiss: 'Zavřít',
+    signIn: 'Přihlásit se',
+    signInHeading: 'Přihlaste se účtem Nous a odemkněte další modely a nástroje.',
+    settingUp: 'Nastavuje se inference zdarma…',
+    codeBody: 'Pro dokončení přihlášení zadejte tento kód v prohlížeči.',
+    copyLink: 'Kopírovat odkaz',
+    doNotShare: 'Tento kód nikomu nesdělujte.',
+    waiting: 'Čekání na přihlášení…',
+    finishingHeading: 'Dokončování přihlášení…',
+    finishingBody: 'Schváleno v prohlížeči. Načítají se tokeny vašeho účtu.',
+    signedIn: 'Jste přihlášeni.',
+    completedBody: 'Váš účet nyní zahrnuje inferenci a nástroje.',
+    defaultModel: 'Výchozí model',
+    change: 'Změnit',
+    done: 'Hotovo',
+    notNow: 'Teď ne',
+    tryAgain: 'Zkuste to znovu',
+    startAgain: 'Začít znovu',
+    didNotComplete: 'Přihlášení nebylo dokončeno',
+    rejectedBody: 'Přihlášení bylo v prohlížeči zamítnuto. Stále máte volnou úroveň.',
+    supersededBody: 'Tento kód byl nahrazen novějším přihlašovacím kódem.',
+    timedOutHeading: 'Vypršel časový limit přihlášení',
+    timedOutBody: 'Kód nebyl včas použit. Stále máte volnou úroveň.',
+    retiredBody: 'Tato identita volné úrovně byla již použita nebo vypršela; nová se nastaví při příštím spuštění.',
+    errorBody: 'Přihlášení nebylo dokončeno; spusťte je znovu.',
+    alreadySignedInHeading: 'Již jste přihlášeni.',
+    alreadySignedInBody: 'Tento Hermes je již přihlášen k účtu Nous.',
+    statusLabel: model => `Nous · volná úroveň · ${model}`,
+    signedInAs: email => `Přihlášeni jako ${email}`
+  },
+  sessionImport: {
+    title: 'Pokračovat z jiné aplikace',
+    subtitle: 'Přeneste konverzaci do Hermes a navazte tam, kde jste skončili.',
+    action: 'Importovat relaci',
+    readingFrom: 'Čte se z',
+    connectedComputer: 'připojený počítač',
+    destination: 'Importovat do',
+    all: 'Vše',
+    search: 'Hledat v načtených relacích',
+    scanning: 'Hledání konverzací',
+    scanError: 'Nepodařilo se najít relace',
+    scanHelp: 'Zkontrolujte připojení k backendu a zkuste to znovu. Starší backendy mohou vyžadovat aktualizaci.',
+    empty: 'Nebyly nalezeny žádné konverzace',
+    emptyHelp: 'Zde se objeví relace Claude Code a Codex z tohoto backendu.',
+    noMatches: 'Žádné odpovídající konverzace',
+    searchHelp: 'Zkuste jiný název nebo složku, případně načtěte další relace.',
+    skipped: 'Některé protokoly byly prázdné, nečitelné nebo příliš velké pro náhled.',
+    more: 'Načíst další relace',
+    messages: 'zpráv',
+    choose: 'Konverzace, u které stojí za to pokračovat',
+    chooseHelp: 'Vyberte relaci a přečtěte si její historii, než ji přenesete do Hermes.',
+    previewLoading: 'Otevírání náhledu',
+    previewError: 'Náhled není k dispozici',
+    previewHelp: 'Zdroj se mohl přesunout nebo změnit. Obnovte seznam a zkuste to znovu.',
+    previewLimit: 'Náhled byl zkrácen kvůli čitelnosti. Importuje se celá konverzace.',
+    you: 'Vy',
+    snapshot: 'Tato konverzace již v Hermes je. Chcete-li pokračovat, otevřete stávající kopii.',
+    copyNotice:
+      'Zkopíruje text konverzace. Zdrojové soubory zůstanou nezměněny. Výstup nástrojů a uvažování se nepřenáší.',
+    importing: 'Importování…',
+    open: 'Otevřít v Hermes',
+    continue: 'Pokračovat v Hermes',
+    importError: 'Tuto konverzaci nelze importovat.'
+  },
+  sendDiagnostics: {
+    title: 'Odeslat diagnostiku společnosti Nous',
+    privacyNotice:
+      'Tímto se nahraje ladicí balíček do interního úložiště Nous (nejde o veřejný paste). Obsahuje systémové informace (OS, verze, poskytovatel, které klíče API jsou nastaveny — nikdy samotné klíče) a úplné protokoly agenta, brány a desktopu (až 512 KB každý), které pravděpodobně obsahují obsah konverzací, výstupy nástrojů a cesty k souborům. Tajné údaje se před nahráním odstraní. Balíček mohou zobrazit pouze zaměstnanci Nous a moderátoři Discord ze seznamu povolených a po 14 dnech se automaticky smaže.',
+    upload: 'Nahrát',
+    uploading: 'Nahrávání…',
+    cancel: 'Zrušit',
+    close: 'Zavřít',
+    copyLink: 'Kopírovat odkaz',
+    uploadIdFallback: id => `Nebyl vrácen odkaz na zobrazení — uveďte v podpoře ID nahrání ${id}`,
+    doneTitle: 'Diagnostika odeslána',
+    doneDescription:
+      'Váš balíček byl nahrán soukromě. Sdílejte níže uvedený odkaz ve svém vlákně podpory, aby tým mohl vidět vaše protokoly.',
+    failedTitle: 'Nahrávání se nezdařilo',
+    failedHint:
+      'Můžete také z terminálu spustit `hermes debug share --nous`, nebo `hermes debug share --local` pro vypsání zprávy bez nahrání.',
+    handoffLead: 'Pokračujte v diskusi v:',
+    links: {
+      github: 'Issues na GitHubu',
+      portal: 'Podpora portálu Nous',
+      discord: 'Discord'
+    }
+  },
+  tips: {
+    close: 'Tento tip už nezobrazovat',
+    items: {
+      'new-session': {
+        title: 'Začněte od nuly',
+        text: 'Nový chat má vlastní kontext, terminál a pracovní adresář.'
+      },
+      skills: {
+        title: 'Naučte jej jednou',
+        text: 'Dovednosti jsou složky s pokyny, které Hermes načte, když je práce vyžaduje.'
+      },
+      messaging: {
+        title: 'Hermes i když nejste u počítače',
+        text: 'Připojte Telegram, Discord, Slack a další — stejný agent, stejná paměť.'
+      },
+      artifacts: {
+        title: 'Vše, co Hermes vytvořil',
+        text: 'Obrázky, soubory a odkazy ze všech relací, indexované na jednom místě.'
+      },
+      cron: {
+        title: 'Práce, která se spustí sama',
+        text: 'Naplánujte výzvu každou hodinu, každou noc nebo podle výrazu cron.'
+      },
+      'command-palette': {
+        title: 'Jedno pole pro vše',
+        text: 'Relace, nastavení, dovednosti i příkazy najdete v paletě.'
+      },
+      profiles: {
+        title: 'Profily jsou oddělené',
+        text: 'Každý je vlastní Hermes — vlastní klíče, vlastní paměť, vlastní relace.'
+      },
+      'composer-mentions': {
+        title: 'Připojení a příkazy',
+        text: 'Napište @ pro vložení souboru do konverzace a / pro spuštění příkazu.'
+      },
+      'local-setup': {
+        title: 'Tento počítač umí spouštět modely lokálně',
+        text: 'Váš hardware zvládne obsluhovat místní model. Chaty zůstávají ve vašem počítači a nic nestojí.',
+        action: 'Nastavit'
+      },
+      'right-pane': {
+        title: 'Pracovní panel',
+        text: 'Soubory, terminál, recenze a prohlížeč v aplikaci sdílejí pravou stranu.'
+      }
+    }
+  },
+  contextMenu: {
+    link: {
+      openInApp: 'Otevřít v prohlížeči aplikace',
+      openExternal: 'Otevřít v externím prohlížeči',
+      copyUrl: 'Kopírovat URL',
+      copyResolvedUrl: 'Kopírovat přeloženou URL'
+    },
+    image: {
+      copyImage: 'Kopírovat obrázek',
+      copyImageAddress: 'Kopírovat adresu obrázku',
+      saveImageAs: 'Uložit obrázek jako…'
+    },
+    edit: {
+      cut: 'Vyjmout',
+      paste: 'Vložit',
+      selectAll: 'Vybrat vše',
+      addToDictionary: 'Přidat do slovníku'
+    },
+    page: {
+      copyPageUrl: 'Kopírovat URL stránky',
+      inspectElement: 'Prozkoumat prvek'
     }
   }
 })

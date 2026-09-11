@@ -107,6 +107,28 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_script_with_arguments(self, cron_env):
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "argv_probe.py"
+        script.write_text(
+            "import json\n"
+            "import sys\n"
+            "print(json.dumps(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script('argv_probe.py --hours 168 --label "weekly run"')
+        assert success is True
+        assert json.loads(output) == ["--hours", "168", "--label", "weekly run"]
+
+    def test_script_with_invalid_quoted_spec_fails_cleanly(self, cron_env):
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script('argv_probe.py --label "unterminated')
+        assert success is False
+        assert "Invalid script specification" in output
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""

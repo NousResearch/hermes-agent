@@ -1482,9 +1482,37 @@ class GatewayTurnMixin:
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
+            # Session-aware effort: /reasoning --session overrides live in gateway memory
+            # (not config.yaml), so the footer must resolve through the gateway's own resolver.
+            try:
+                _session_model = agent_result.get("model") or ""
+                _effort_cfg = self._resolve_session_reasoning_config(
+                    source=source, model=_session_model,
+                )
+                if _effort_cfg is None:
+                    _effort_override = None
+                elif _effort_cfg.get("enabled") is False:
+                    _effort_override = "none"
+                else:
+                    _effort_override = str(_effort_cfg.get("effort") or "medium")
+            except Exception as _eff_err:
+                logger.debug("footer effort resolution failed: %s", _eff_err)
+                _effort_override = None
+            # Ground truth: routed model captured from the live response at stamp time (file
+            # written by turn_usage). Survives agent re-creation; footer stays pure.
+            _routed = agent_result.get("routed_model")
+            if _routed is None:
+                try:
+                    import json as _json
+                    with open("/tmp/hermes-routed-model.json") as _f:
+                        _routed = _json.load(_f).get("routed_model")
+                except Exception:
+                    _routed = None
             return _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
+                routed_model=_routed,
+                effort_override=_effort_override,
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,

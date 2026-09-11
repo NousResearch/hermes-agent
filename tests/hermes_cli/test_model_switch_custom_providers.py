@@ -1548,12 +1548,17 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     ``_save_discovered_models_to_config`` does.
     """
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models",
-        lambda api_key, base_url, **kw: [
-            "discovered-a",
-            "discovered-b",
-            "discovered-c",
-        ],
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url, **kw: {
+            "models": [
+                "discovered-a",
+                "discovered-b",
+                "discovered-c",
+            ],
+            "used_fallback": False,
+            "probed_url": f"{base_url.rstrip('/')}/models",
+            "resolved_base_url": base_url.rstrip("/"),
+        },
     )
     # Non-interactive model selection.
     monkeypatch.setattr(

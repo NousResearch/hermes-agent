@@ -145,16 +145,24 @@ class TestCustomProviderModelSwitch:
             "model": "qwen3.6-35b-fast",
         }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["qwen3.6-35b-fast"],
+                "used_fallback": False,
+                "probed_url": "https://api.example-provider.test/v1/models",
+                "resolved_base_url": "https://api.example-provider.test/v1",
+            },
+        ) as mock_probe, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        mock_fetch.assert_called_once_with(
+        mock_probe.assert_called_once_with(
             "sk-live-example-provider",
             "https://api.example-provider.test/v1",
-            headers=None,
+            request_headers=None,
             timeout=8.0,
         )
         config = yaml.safe_load(config_path.read_text()) or {}
@@ -187,7 +195,15 @@ class TestCustomProviderModelSwitch:
             "model": "qwen3.6-35b-fast",
         }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]), \
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["qwen3.6-35b-fast"],
+                "used_fallback": False,
+                "probed_url": "https://api.example-provider.test/v1/models",
+                "resolved_base_url": "https://api.example-provider.test/v1",
+            },
+        ), \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
@@ -244,16 +260,21 @@ class TestCustomProviderModelSwitch:
 
         with patch("hermes_cli.main._prompt_provider_choice",
                    side_effect=_pick_neuralwatt), \
-             patch("hermes_cli.models.fetch_api_models",
-                   return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+             patch("hermes_cli.models.probe_api_models",
+                   return_value={
+                       "models": ["qwen3.6-35b-fast"],
+                       "used_fallback": False,
+                       "probed_url": "https://api.neuralwatt.com/v1/models",
+                       "resolved_base_url": "https://api.neuralwatt.com/v1",
+                   }) as mock_probe, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             select_provider_and_model()
 
         # The live probe must still use the resolved secret.
-        mock_fetch.assert_called_once()
-        probe_args, probe_kwargs = mock_fetch.call_args
+        mock_probe.assert_called_once()
+        probe_args, probe_kwargs = mock_probe.call_args
         assert probe_args[0] == "sk-live-neuralwatt-secret"
 
         # But config.yaml must keep the env reference, not the plaintext secret.
@@ -310,17 +331,22 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["claude-opus-4-7"],
-        ) as mock_fetch, \
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["claude-opus-4-7"],
+                "used_fallback": False,
+                "probed_url": "http://127.0.0.1:3000/api/v1/models",
+                "resolved_base_url": "http://127.0.0.1:3000/api/v1",
+            },
+        ) as mock_probe, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
         # The /models probe must resolve the secret from the env var.
-        mock_fetch.assert_called_once()
-        probe_args, _ = mock_fetch.call_args
+        mock_probe.assert_called_once()
+        probe_args, _ = mock_probe.call_args
         assert probe_args[0] == "cr_live_secret_xyz"
 
         # The providers entry must NOT gain an api_key field — neither the
@@ -423,8 +449,13 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["claude-opus-4-7"],
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["claude-opus-4-7"],
+                "used_fallback": False,
+                "probed_url": "http://127.0.0.1:3000/api/v1/models",
+                "resolved_base_url": "http://127.0.0.1:3000/api/v1",
+            },
         ), \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
@@ -458,14 +489,14 @@ class TestCustomProviderDiscoverModels:
             "model": "qwen3:8b",
         }
 
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+        with patch("hermes_cli.models.probe_api_models") as mock_probe, \
              patch("hermes_cli.models_local.fetch_ollama_local_models") as mock_ollama, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        mock_fetch.assert_not_called()
+        mock_probe.assert_not_called()
         mock_ollama.assert_not_called()
 
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
@@ -482,13 +513,13 @@ class TestCustomProviderDiscoverModels:
             "model": "kimi-k2.5",
         }
 
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+        with patch("hermes_cli.models.probe_api_models") as mock_probe, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        mock_fetch.assert_not_called()
+        mock_probe.assert_not_called()
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict)
@@ -509,7 +540,15 @@ class TestCustomProviderDiscoverModels:
             "model": "fallback-a",
         }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": [],
+                "used_fallback": False,
+                "probed_url": "https://gw.example.com/v1/models",
+                "resolved_base_url": "https://gw.example.com/v1",
+            },
+        ), \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
@@ -533,10 +572,209 @@ class TestCustomProviderDiscoverModels:
             "model": "kimi-k2.5",
         }
 
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+        with patch("hermes_cli.models.probe_api_models") as mock_probe, \
              patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        mock_fetch.assert_not_called()
+        mock_probe.assert_not_called()
+
+
+class TestNamedCustomProbeVerifiedUrl:
+    """#89334: when the catalog probe only answers via the /v1 fallback, the
+    keyed ``providers:`` entry must be rewritten to the verified base URL —
+    otherwise the runtime OpenAI transport appends /chat/completions to the
+    raw URL and every request 404s."""
+
+    def test_keyed_provider_persists_probe_verified_v1_url(self, config_home):
+        import yaml
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom:192.168.124.39:8001\n"
+            "providers:\n"
+            "  192.168.124.39:8001:\n"
+            "    name: Local Ninfer\n"
+            "    api: http://192.168.124.39:8001\n"
+            "    api_key: local\n"
+            "    default_model: Qwen3.8-27B-NVFP4\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "Local Ninfer",
+            "base_url": "http://192.168.124.39:8001",
+            "api_key": "local",
+            "model": "Qwen3.8-27B-NVFP4",
+            "provider_key": "192.168.124.39:8001",
+        }
+
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["Qwen3.8-27B-NVFP4"],
+                "used_fallback": True,
+                "probed_url": "http://192.168.124.39:8001/v1/models",
+                "resolved_base_url": "http://192.168.124.39:8001/v1",
+                "suggested_base_url": "http://192.168.124.39:8001/v1",
+            },
+        ), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        entry = config["providers"]["192.168.124.39:8001"]
+        # The verified URL replaces the raw one, in the same key the entry uses.
+        assert entry["api"] == "http://192.168.124.39:8001/v1"
+        assert entry["default_model"] == "Qwen3.8-27B-NVFP4"
+        assert config["model"]["provider"] == "custom:192.168.124.39:8001"
+        assert config["model"]["default"] == "Qwen3.8-27B-NVFP4"
+
+    def test_keyed_provider_repair_writes_existing_url_key_only(self, config_home):
+        """An entry that stores its URL under ``base_url`` must be repaired in
+        place — no ``api``/``url`` alias may be added."""
+        import yaml
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom:local-gw\n"
+            "providers:\n"
+            "  local-gw:\n"
+            "    name: Local Gateway\n"
+            "    base_url: http://127.0.0.1:1234\n"
+            "    api_key: local\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "Local Gateway",
+            "base_url": "http://127.0.0.1:1234",
+            "api_key": "local",
+            "model": "gw-model",
+            "provider_key": "local-gw",
+        }
+
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["gw-model"],
+                "used_fallback": True,
+                "probed_url": "http://127.0.0.1:1234/v1/models",
+                "resolved_base_url": "http://127.0.0.1:1234/v1",
+            },
+        ), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        entry = config["providers"]["local-gw"]
+        assert entry["base_url"] == "http://127.0.0.1:1234/v1"
+        assert "api" not in entry
+        assert "url" not in entry
+
+    def test_keyed_provider_no_repair_when_exact_url_probe_succeeds(self, config_home):
+        """A probe that succeeded on the exact configured URL must leave the
+        stored URL untouched (no gratuitous rewrite)."""
+        import yaml
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom:192.168.124.39:8001\n"
+            "providers:\n"
+            "  192.168.124.39:8001:\n"
+            "    name: Local Ninfer\n"
+            "    api: http://192.168.124.39:8001/v1\n"
+            "    api_key: local\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "Local Ninfer",
+            "base_url": "http://192.168.124.39:8001/v1",
+            "api_key": "local",
+            "model": "Qwen3.8-27B-NVFP4",
+            "provider_key": "192.168.124.39:8001",
+        }
+
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["Qwen3.8-27B-NVFP4"],
+                "used_fallback": False,
+                "probed_url": "http://192.168.124.39:8001/v1/models",
+                "resolved_base_url": "http://192.168.124.39:8001/v1",
+            },
+        ), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        entry = config["providers"]["192.168.124.39:8001"]
+        assert entry["api"] == "http://192.168.124.39:8001/v1"
+
+    def test_keyed_provider_no_repair_when_probe_fails(self, config_home):
+        """A failed probe (no catalog at either URL) must not rewrite the
+        stored URL; the configured models: list is still selectable."""
+        import yaml
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom:local-gw\n"
+            "providers:\n"
+            "  local-gw:\n"
+            "    name: Local Gateway\n"
+            "    base_url: http://127.0.0.1:1234\n"
+            "    api_key: local\n"
+            "    models:\n"
+            "      gw-a: {}\n"
+            "      gw-b: {}\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "Local Gateway",
+            "base_url": "http://127.0.0.1:1234",
+            "api_key": "local",
+            "model": "gw-a",
+            "models": {"gw-a": {}, "gw-b": {}},
+            "provider_key": "local-gw",
+        }
+
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": None,
+                "used_fallback": False,
+                "probed_url": "http://127.0.0.1:1234/models",
+                "resolved_base_url": "http://127.0.0.1:1234",
+            },
+        ), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        entry = config["providers"]["local-gw"]
+        assert entry["base_url"] == "http://127.0.0.1:1234"
+        assert config["model"]["default"] == "gw-a"
+        assert entry["default_model"] == "gw-a"

@@ -36,6 +36,7 @@ def runtime(tmp_path, monkeypatch):
             "anon_token": f"test-{home.name}-identity", "expires_at": "2099-01-01T00:00:00Z",
         }}}))
     monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
     import requests
@@ -124,8 +125,8 @@ def test_connector_rpc_uses_owning_profile_and_real_policy_pipeline(runtime, mon
     assert r.owner["history"] == []  # UI consent does not inject a model turn or private-data read.
 
 
-@pytest.mark.parametrize("gate", ["empty", "restricted", "disabled", "config", "account", "guest_off"])
-def test_connector_gates_deny_without_io(runtime, gate):
+@pytest.mark.parametrize("gate", ["empty", "restricted", "disabled", "config", "account", "guest_off", "flag_off"])
+def test_connector_gates_deny_without_io(runtime, monkeypatch, gate):
     r = runtime
     if gate == "empty":
         r.agent.enabled_toolsets = []
@@ -137,6 +138,8 @@ def test_connector_gates_deny_without_io(runtime, gate):
         (r.profile / "config.yaml").write_text("tools:\n  connectors: false\n")
     elif gate == "account":
         (r.profile / "auth.json").unlink()
+    elif gate == "flag_off":
+        monkeypatch.delenv("HERMES_GUEST_ONBOARDING")
     else:
         (r.profile / "config.yaml").write_text("nous:\n  guest: false\n")
     assert r.call("connectors.list")["result"] == {"available": False, "connectors": []}

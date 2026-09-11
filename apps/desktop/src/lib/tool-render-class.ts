@@ -8,6 +8,8 @@
  * rather than inside either one.
  */
 
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
@@ -29,10 +31,14 @@ export function isFileEditTool(toolName: string): boolean {
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp', 'manage_connections'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
 
 export function isCardTool(toolName: string): boolean {
-  return CARD_TOOL_NAMES.has(toolName) || isFileEditTool(toolName)
+  return (
+    CARD_TOOL_NAMES.has(toolName) ||
+    isFileEditTool(toolName) ||
+    (toolName === 'manage_connections' && isOnboardingEnabled())
+  )
 }
 
 // Activity tools that render nothing at all: `todo` parts are hoisted to a

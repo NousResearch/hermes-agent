@@ -211,13 +211,20 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
     if not _connector_tool_lifecycle(name, args):
         return _emit(event, sid, payload)
     from tui_gateway.connector_payload import connector_ui_payload
+    from tui_gateway.event_replay import _stamp_event
 
     payload = connector_ui_payload(payload)
-    # Projection can take time. Check and publish under the session lock so
-    # an id reuse between the callback and write_json cannot receive this link.
+    # Capture the owner after projection so id reuse cannot redirect its link,
+    # then release the session lock before potentially blocking transport I/O.
     with _sessions_lock:
-        if not _connector_lifecycle_is_stale(sid, name, args):
-            _emit(event, sid, payload)
+        if _connector_lifecycle_is_stale(sid, name, args):
+            return
+        transport = (_sessions.get(sid) or {}).get("transport")
+        if transport is None:
+            transport = current_transport() or _stdio_transport
+    frame = _event_frame(event, sid, payload)
+    _stamp_event(frame)
+    transport.write(frame)
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):

@@ -1,6 +1,8 @@
 """Connection actions remain visible with optional tool chrome off."""
 
 import json
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,12 +21,12 @@ def test_only_connector_lifecycle_survives_progress_off(monkeypatch, name, args,
     from tui_gateway import server
     events = []
     monkeypatch.setattr(server, "_sessions", {"owner": {"tool_progress_mode": "off"}})
-    monkeypatch.setattr(server, "_emit", lambda event, sid, payload: events.append((event, sid, payload)))
+    monkeypatch.setattr(server, "_stdio_transport", SimpleNamespace(write=events.append))
     server._on_tool_start("owner", "call", name, args)
     server._on_tool_complete("owner", "call", name, args, json.dumps(result))
-    assert [event for event, _, _ in events] == ["tool.start", "tool.complete"]
-    assert events[-1][2]["result"] == result
-    assert all(sid == "owner" for _, sid, _ in events)
+    assert [frame["params"]["type"] for frame in events] == ["tool.start", "tool.complete"]
+    assert events[-1]["params"]["payload"]["result"] == result
+    assert all(frame["params"]["session_id"] == "owner" for frame in events)
     events.clear()
     for other, other_args in (("terminal", {"command": "whoami"}),
                               ("tool_call", {"name": "web_search", "arguments": {}})):
@@ -34,11 +36,18 @@ def test_only_connector_lifecycle_survives_progress_off(monkeypatch, name, args,
 
 
 def test_connector_lifecycle_drops_retired_generation_and_redacts_secrets(monkeypatch):
-    from tui_gateway import server
-    owner = {"tool_progress_mode": "off"}
-    monkeypatch.setattr(server, "_sessions", {"owner": owner})
+    from tui_gateway import event_replay, server
     events = []
-    monkeypatch.setattr(server, "_emit", lambda *event: events.append(event))
+    lock = threading.RLock()
+    monkeypatch.setattr(server, "_sessions_lock", lock)
+
+    def write(frame):
+        assert not lock._is_owned(), "transport I/O must not hold the session lock"
+        events.append(frame)
+        return True
+
+    owner = {"tool_progress_mode": "off", "transport": SimpleNamespace(write=write)}
+    monkeypatch.setattr(server, "_sessions", {"owner": owner})
     args = {"action": "connect", "connectors": ["gmail"]}
     result = {"results": [{"connector": "gmail", "status": "initiated",
                            "connect_url": "https://connect.example/?token=keep",
@@ -49,9 +58,21 @@ def test_connector_lifecycle_drops_retired_generation_and_redacts_secrets(monkey
         server._on_tool_start("owner", "call", "manage_connections", args)
         server._on_tool_complete("owner", "call", "manage_connections", args, json.dumps(result))
         assert "private-" not in json.dumps(events)
-        assert events[-1][2]["result"]["results"][0]["connect_url"].endswith("token=keep")
+        assert events[-1]["params"]["payload"]["result"]["results"][0]["connect_url"].endswith("token=keep")
+        stamp = event_replay._stamp_event
+
+        def reuse_id(frame):
+            stamp(frame)
+            server._sessions["owner"] = {
+                "tool_progress_mode": "off",
+                "transport": SimpleNamespace(write=lambda frame: pytest.fail("link sent to the replacement session")),
+            }
+
+        monkeypatch.setattr(event_replay, "_stamp_event", reuse_id)
+        server._on_tool_complete("owner", "in-flight", "manage_connections", args, json.dumps(result))
+        assert events[-1]["params"]["payload"]["tool_id"] == "in-flight"
+        assert event_replay.events_since("owner", events[-1]["params"]["seq"] - 1) == [events[-1]["params"]]
         events.clear()
-        server._sessions["owner"] = {"tool_progress_mode": "off"}
         server._on_tool_start("owner", "old", "manage_connections", args)
         server._on_tool_complete("owner", "old", "manage_connections", args, json.dumps(result))
         assert events == []
@@ -64,7 +85,7 @@ def test_connector_generation_is_rechecked_after_payload_projection(monkeypatch)
     owner = {"tool_progress_mode": "off"}
     monkeypatch.setattr(server, "_sessions", {"owner": owner})
     events = []
-    monkeypatch.setattr(server, "_emit", lambda *event: events.append(event))
+    monkeypatch.setattr(server, "_stdio_transport", SimpleNamespace(write=events.append))
     project = connector_payload.connector_ui_payload
 
     def retire(value):

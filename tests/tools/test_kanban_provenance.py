@@ -132,11 +132,46 @@ def test_creation_without_session_keeps_origin_absent_on_legacy_board(tmp_path, 
         assert "## Origin" not in kb.build_worker_context(conn, task_id)
 
 
-def test_dashboard_bundle_renders_origin_session_link_and_message():
-    from pathlib import Path
+def test_origin_redacts_secret_before_persistence_and_display(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from gateway.session_context import set_session_vars, clear_session_vars
 
-    bundle = (Path(__file__).resolve().parents[2]
-              / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
-    assert "function OriginMeta" in bundle
-    assert "origin.session_link" in bundle
-    assert "origin.message_row_id" in bundle
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "daily")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    kb.init_db()
+    secret = "sk-proj-" + ("a" * 40)
+    tokens = set_session_vars(
+        platform="telegram", chat_id="-10042", message_id="811",
+        profile="daily", session_id="session-with-secret",
+    )
+    try:
+        result = json.loads(kt._handle_create(
+            {"title": "safe origin", "assignee": "daily"},
+            session_id="session-with-secret",
+            tool_origin={
+                "message_row_id": 767,
+                "prompt": f"Prepare the launch checklist using API key {secret} today",
+            },
+        ))
+    finally:
+        clear_session_vars(tokens)
+
+    assert result["ok"], result
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, result["task_id"])
+        assert task is not None
+        assert task.origin is not None
+        shown = json.loads(kt._handle_show({"task_id": task.id}))
+        worker_context = kb.build_worker_context(conn, task.id)
+
+    persisted = json.dumps(task.origin)
+    displayed = json.dumps(shown)
+    for surface in (persisted, displayed, worker_context):
+        assert secret not in surface
+        assert "sk-proj-" not in surface
+        assert "Prepare the launch checklist" in surface
+    assert task.origin["prompt_excerpt"] != (
+        f"Prepare the launch checklist using API key {secret} today"
+    )

@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Enforced dock invariants: a pane whose dock hint carries `enforce: true`
-// (Bot Mode's Bots pane) re-homes onto its center anchor at EVERY boot's
-// first adoption pass — persisted layouts otherwise pin the stale stacked
-// arrangement forever, because adoption only ever places panes MISSING from
-// the tree. Unlike the retired one-time heal, nothing exempts the pane: not
-// a previously burned heal token, not $userPlacedPanes. The invariant is
-// boot-scoped, so an intra-session drag sticks until the next launch.
+// (Bot Mode's Bots pane, Cronjobs) is guaranteed present and sanely docked
+// at boot. A stale stacked arrangement WITHOUT a user-placed record still
+// re-homes — persisted layouts otherwise pin that broken shape forever,
+// because adoption only ever places panes MISSING from the tree. A pane the
+// user explicitly dragged (`$userPlacedPanes`) whose persisted group still
+// resolves keeps that spot across boots. An unusable persisted spot (the
+// pane's group no longer resolves) re-homes even when the drag record
+// exists. Unlike the retired one-time heal, a burned heal token does not
+// exempt the pane. The invariant is boot-scoped, so an intra-session drag
+// sticks until the next launch.
 
 const TREE_KEY = 'hermes.desktop.layoutTree.v2'
 const USER_PLACED_KEY = 'hermes.desktop.userPlacedPanes.v1'
@@ -109,7 +113,7 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     expect(JSON.stringify(persisted)).toContain('"panes":["sessions","hermes-bots:pane"]')
   })
 
-  it('re-homes even a USER-PLACED pane — the owner invariant beats the drag record', async () => {
+  it('keeps a USER-PLACED pane whose persisted group still resolves', async () => {
     window.localStorage.setItem(USER_PLACED_KEY, JSON.stringify(['hermes-bots:pane']))
 
     const { model, tree } = await setup()
@@ -118,7 +122,10 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
 
     const group = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:pane')!
 
-    expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
+    // The user dragged Bots out of the sessions strip into its own zone.
+    // That group still resolves, so boot must not stomp it.
+    expect(group.panes).toEqual(['hermes-bots:pane'])
+    expect(group.id).toBe('g-bots')
   })
 
   it('re-homes even when the retired heal token was already burned, and clears the stale ledger', async () => {
@@ -243,6 +250,88 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     expect(botsGroup.active).toBe('hermes-bots:pane')
     expect(routinesGroup.panes).toEqual(['hermes-bots:routines'])
     expect(routinesGroup.id).not.toBe(botsGroup.id)
+  })
+
+  it('keeps a USER-PLACED edge-enforced pane at a resolvable stacked spot', async () => {
+    // Field report: Cronjobs (`pos: 'right'` of workspace, `enforce: true`)
+    // was dragged into its own zone under the chat. That placement is
+    // recorded and still resolves — boot must not yank it back to a
+    // workspace-right split.
+    const userStackedRoutinesTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3],
+      children: [
+        {
+          type: 'group',
+          id: 'g-sessions',
+          panes: ['sessions', 'hermes-bots:pane'],
+          active: 'hermes-bots:pane'
+        },
+        {
+          type: 'split',
+          id: 'main-col',
+          orientation: 'column',
+          weights: [3, 1],
+          children: [
+            { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' },
+            {
+              type: 'group',
+              id: 'g-routines',
+              panes: ['hermes-bots:routines'],
+              active: 'hermes-bots:routines'
+            }
+          ]
+        }
+      ]
+    }
+
+    window.localStorage.setItem(USER_PLACED_KEY, JSON.stringify(['hermes-bots:routines']))
+
+    const { model, tree } = await setupTree(userStackedRoutinesTree, { routines: true })
+
+    tree.watchContributedPanes()
+
+    const routinesGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:routines')!
+
+    expect(routinesGroup.panes).toEqual(['hermes-bots:routines'])
+    expect(routinesGroup.id).toBe('g-routines')
+    expect(tree.$layoutTree.get()).toEqual(userStackedRoutinesTree)
+  })
+
+  it('re-homes a USER-PLACED pane whose persisted group no longer resolves', async () => {
+    // Anchor destroyed: Cronjobs was user-placed, but its group is gone from
+    // the persisted tree (the pane is missing). Enforce + adoption must still
+    // guarantee it is present and docked on workspace's right edge.
+    const missingRoutinesTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3],
+      children: [
+        {
+          type: 'group',
+          id: 'g-sessions',
+          panes: ['sessions', 'hermes-bots:pane'],
+          active: 'hermes-bots:pane'
+        },
+        { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' }
+      ]
+    }
+
+    window.localStorage.setItem(USER_PLACED_KEY, JSON.stringify(['hermes-bots:routines']))
+
+    const { model, tree } = await setupTree(missingRoutinesTree, { routines: true })
+
+    tree.watchContributedPanes()
+
+    const routinesGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:routines')!
+    const workspaceGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!
+
+    expect(routinesGroup.panes).toEqual(['hermes-bots:routines'])
+    expect(routinesGroup.id).not.toBe(workspaceGroup.id)
+    expect(routinesGroup.id).not.toBe('g-sessions')
   })
 
   it('leaves an edge-enforced pane alone when it already occupies the declared split', async () => {

@@ -253,6 +253,61 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_explicit_mention_reply_threads_to_new_thread(adapter, monkeypatch):
+    """A direct bot mention in a quote-reply is a new thread-first task."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+
+    parent = FakeTextChannel(channel_id=456)
+    created_thread = FakeThread(channel_id=90002, name="reply-task", parent=parent)
+    adapter._auto_create_thread = AsyncMock(return_value=created_thread)
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=parent,
+        content=f"<@{bot_user.id}> review this task",
+        mentions=[bot_user],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once_with(message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "review this task"
+    assert event.source.chat_id == "90002"
+    assert event.source.thread_id == "90002"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_reply_ping_without_inline_mention_stays_inline(adapter, monkeypatch):
+    """Discord's automatic reply-ping is not a new explicit invocation."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    parent = FakeTextChannel(channel_id=457)
+    adapter._auto_create_thread = AsyncMock()
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=parent,
+        content="continuing the earlier discussion",
+        # Discord can resolve a reply-ping into mentions without an inline
+        # <@bot> token in content.
+        mentions=[bot_user],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "457"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_thread(adapter, monkeypatch):
     """Active voice-linked text channels should behave like free-response channels."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")

@@ -1,5 +1,4 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -8,7 +7,12 @@ import type {
   SessionActiveItem,
   SessionActiveListResponse,
   SessionCloseResponse,
-  SessionDeleteResponse
+  SessionDeleteResponse,
+  SessionExportResponse,
+  SessionListItem,
+  SessionListResponse,
+  SessionRenameResponse,
+  SessionTitleResponse
 } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -22,6 +26,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
+const PAGE_SIZE = 50
 
 const STATUS_GLYPH: Record<string, string> = {
   idle: '✓',
@@ -82,11 +87,11 @@ export const relativeSessionAge = (ts?: number) => {
   return `${Math.floor(days)}d ago`
 }
 
-/** Drop already-live sessions from the resumable history list (dedupe by id). */
-export const resumableHistory = (history: readonly SessionListRow[], live: readonly SessionActiveItem[]) => {
-  const liveIds = new Set(live.map(s => s.id))
+/** Drop already-live sessions from the resumable history list. */
+export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
+  const liveSessionIds = new Set(live.map(session => session.session_key ?? session.id))
 
-  return history.filter(h => !liveIds.has(h.id))
+  return history.filter(session => !liveSessionIds.has(session.id))
 }
 
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
@@ -218,7 +223,7 @@ export const draftModelNameFromArg = (value: string) => {
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!
 
-    if (part === '--provider' || part === '--reasoning') {
+    if (part === '--provider') {
       i++
 
       continue
@@ -296,7 +301,7 @@ export function ActiveSessionSwitcher({
   t
 }: ActiveSessionSwitcherProps) {
   const [items, setItems] = useState<SessionActiveItem[]>([])
-  const [history, setHistory] = useState<SessionListRow[]>([])
+  const [history, setHistory] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -310,17 +315,22 @@ export function ActiveSessionSwitcher({
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<null | SessionActiveItem | SessionListItem>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [hasMore, setHasMore] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
   // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
   // re-derives the resumable list from this against the latest live set, so a
   // session that was hidden while live reappears in history once it closes —
   // without re-querying the DB. Only refreshed on a full (includeHistory) load.
-  const rawHistoryRef = useRef<SessionListRow[]>([])
+  const rawHistoryRef = useRef<SessionListItem[]>([])
   // Mirror the displayed lists so the async poll can re-anchor the selection to
   // the *same* row (by session id) after live sessions appear/disappear, rather
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
-  const historyDisplayRef = useRef<SessionListRow[]>([])
+  const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -340,7 +350,7 @@ export function ActiveSessionSwitcher({
     // `quiet` skips the loading spinner (used by the live-status poll);
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
     // poll, which only needs fresh live-session status).
-    async (quiet = false, includeHistory = true) => {
+    async (quiet = false, includeHistory = true, append = false) => {
       if (!quiet) {
         setLoading(true)
       }
@@ -353,7 +363,13 @@ export function ActiveSessionSwitcher({
           gw.request<SessionActiveListResponse>('session.active_list', {
             current_session_id: currentSessionId
           }),
-          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
+          includeHistory
+            ? gw.request<SessionListResponse>('session.list', {
+                limit: PAGE_SIZE,
+                offset: append ? rawHistoryRef.current.length : 0,
+                query: query || undefined
+              })
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
@@ -374,10 +390,13 @@ export function ActiveSessionSwitcher({
 
         if (includeHistory) {
           if (histRes.status === 'fulfilled') {
-            const parsedHist = asRpcResult<SessionListResult>(histRes.value)
+            const parsedHist = asRpcResult<SessionListResponse>(histRes.value)
 
             if (parsedHist) {
-              rawHistoryRef.current = parsedHist.sessions ?? []
+              rawHistoryRef.current = append
+                ? [...rawHistoryRef.current, ...(parsedHist.sessions ?? [])]
+                : (parsedHist.sessions ?? [])
+              setHasMore(Boolean(parsedHist.has_more))
             } else {
               histError = 'invalid response: session.list'
             }
@@ -433,7 +452,7 @@ export function ActiveSessionSwitcher({
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, gw, query]
   )
 
   useEffect(() => {
@@ -447,6 +466,12 @@ export function ActiveSessionSwitcher({
 
     return () => clearInterval(timer)
   }, [load])
+
+  const loadMore = useCallback(() => {
+    if (hasMore && !loading) {
+      void load(true, true, true)
+    }
+  }, [hasMore, load, loading])
 
   const submitDraft = useCallback(
     (value: string) => {
@@ -533,6 +558,67 @@ export function ActiveSessionSwitcher({
     [deleting, gw, history, items.length]
   )
 
+  const selectedKind = rowKind(sel)
+  const newSelected = selectedKind === 'new'
+  const draftHasText = Boolean(draft.trim())
+
+  const submitRename = useCallback(
+    (title: string) => {
+      const value = title.trim()
+
+      if (!renameTarget || !value) {
+        return
+      }
+
+      const liveTarget = 'status' in renameTarget
+      const storedId = liveTarget ? renameTarget.session_key : renameTarget.id
+
+      const request = storedId
+        ? gw.request<SessionRenameResponse>('session.rename', { session_id: storedId, title: value })
+        : gw.request<SessionTitleResponse>('session.title', { session_id: renameTarget.id, title: value })
+
+      request
+        .then(raw => {
+          const result = asRpcResult<SessionRenameResponse>(raw)
+
+          if (!result) {
+            throw new Error('invalid response: session.rename')
+          }
+
+          setRenameTarget(null)
+          setRenameValue('')
+          void load(true)
+        })
+        .catch((e: unknown) => setErr(rpcErrorMessage(e)))
+    },
+    [gw, load, renameTarget]
+  )
+
+  const exportSelected = useCallback(() => {
+    const target = selectedKind === 'live' ? items[sel - 1] : history[sel - 1 - items.length]
+
+    if (!target) {
+      return
+    }
+
+    const storedId = selectedKind === 'history'
+      ? target.id
+      : ('session_key' in target ? target.session_key : undefined)
+
+    if (!storedId) {
+      setErr('save before export')
+
+      return
+    }
+
+    gw.request<SessionExportResponse>('session.export', { session_id: storedId })
+      .then(raw => {
+        const result = asRpcResult<SessionExportResponse>(raw)
+        setErr(result?.file ? `saved: ${result.file}` : 'invalid response: session.export')
+      })
+      .catch((e: unknown) => setErr(rpcErrorMessage(e)))
+  }, [gw, history, items, sel, selectedKind])
+
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
@@ -558,12 +644,8 @@ export function ActiveSessionSwitcher({
     [history, items, onResume, onSelect, rowKind, total]
   )
 
-  const selectedKind = rowKind(sel)
-  const newSelected = selectedKind === 'new'
-  const draftHasText = Boolean(draft.trim())
-
   useInput((ch, key) => {
-    if (pickingModel || deleting) {
+    if (pickingModel || deleting || searching || renameTarget) {
       return
     }
 
@@ -594,6 +676,29 @@ export function ActiveSessionSwitcher({
 
     if (isCtrl('r')) {
       void load()
+
+      return
+    }
+
+    if (ch === '/') {
+      setSearching(true)
+
+      return
+    }
+
+    if (lower === 'r' && selectedKind !== 'new') {
+      const target = selectedKind === 'live' ? items[sel - 1] : history[sel - 1 - items.length]
+
+      if (target) {
+        setRenameTarget(target)
+        setRenameValue(target.title || '')
+      }
+
+      return
+    }
+
+    if (lower === 'e' && selectedKind !== 'new') {
+      exportSelected()
 
       return
     }
@@ -631,6 +736,10 @@ export function ActiveSessionSwitcher({
     }
 
     if (key.downArrow && sel < total - 1) {
+      if (sel >= total - 3) {
+        loadMore()
+      }
+
       return setSel(s => Math.min(total - 1, s + 1))
     }
 
@@ -692,6 +801,14 @@ export function ActiveSessionSwitcher({
         Sessions
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+
+      {searching ? (
+        <Box><Text color={t.color.label}>search › </Text><TextInput color={t.color.text} columns={promptColumns}
+          onChange={setQuery} onSubmit={() => setSearching(false)} value={query} /></Box>
+      ) : renameTarget ? (
+        <Box><Text color={t.color.label}>rename › </Text><TextInput color={t.color.text} columns={promptColumns}
+          onChange={setRenameValue} onSubmit={submitRename} value={renameValue} /></Box>
+      ) : null}
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 
@@ -776,13 +893,13 @@ export function ActiveSessionSwitcher({
 
               <Box {...fixedSessionColumnStyle()} width={11}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {relativeSessionAge(h.started_at)}
+                  {relativeSessionAge(h.last_active || h.started_at)}
                 </Text>
               </Box>
 
               <Box {...fixedSessionColumnStyle()} width={18}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {h.message_count} msgs
+                  {h.message_count} msgs · {shortModel(h.model)}
                 </Text>
               </Box>
 
@@ -892,6 +1009,7 @@ export function ActiveSessionSwitcher({
         </Box>
       )}
 
+      <Text color={t.color.muted}>/ search · r rename · e export · d delete</Text>
       <OrchestratorHintText segments={orchestratorGlobalHotkeyHintSegments} t={t} />
     </Box>
   )

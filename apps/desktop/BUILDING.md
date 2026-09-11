@@ -121,7 +121,8 @@ defaults into the desktop app, for example:
 ```sh
 python scripts/release.py --build-commit REV --remote fork --publish \
   --bundle-env HERMES_GUEST_ONBOARDING=1 \
-  --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test
+  --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test \
+  --bundle-unset HERMES_HOME
 ```
 
 These defaults run before Electron initializes its paths and are inherited by
@@ -129,8 +130,19 @@ local backend processes. Explicit runtime environment values win, including
 empty values. Do not pass secrets: the values are visible in the workflow inputs
 and packaged JavaScript. This option affects desktop bundles, not Termux.
 The suffix is appended literally; include a leading hyphen if desired.
-For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts the same defaults as
-a JSON object of strings. Defaults are not applied to the build runner itself.
+`--bundle-unset NAME` explicitly clears an inherited value at app launch, even
+if the caller supplied it. Internally it sets the value to an empty string, not
+an absent key. Clearing `HERMES_HOME` also disables the Windows registry fallback:
+older installers saved that variable permanently, which otherwise takes priority
+over the test suffix. It does not edit the registry or the existing install.
+For full data-path isolation, also clear `HERMES_DESKTOP_USER_DATA_DIR` if that
+machine uses an explicit Electron directory. Ordinary defaults still preserve
+runtime overrides; `--bundle-env HERMES_HOME=` is a default, not a forced clear.
+
+For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
+string values are defaults and whose `null` values are explicit clears. For example,
+`{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. These settings are
+not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
 defaults: an existing artifact is never overwritten with different bytes.
 

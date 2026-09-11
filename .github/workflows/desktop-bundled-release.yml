@@ -106,7 +106,7 @@ on:
         type: string
         default: ''
       bundle_env:
-        description: 'Commit desktop bundles only: JSON object of non-secret runtime environment defaults. Explicit runtime values win.'
+        description: 'Commit desktop bundles only: JSON object of non-secret defaults (strings) or forced clears (null). Runtime values win over defaults, not clears.'
         required: false
         type: string
         default: '{}'

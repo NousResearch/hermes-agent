@@ -79,7 +79,7 @@ def resolve_revision(rev: str, remote: str, repo: Path) -> str:
 
 
 def dispatch_command(commit: str, repository: str, branch: str,
-                     bundle_env: dict[str, str] | None = None) -> list[str]:
+                     bundle_env: dict[str, str | None] | None = None) -> list[str]:
     from scripts.releases.bundle_env import validate
 
     require_commit(commit)
@@ -97,7 +97,7 @@ def cmd_build_commit(args) -> None:
     from scripts.releases.bundle_env import parse_assignments
 
     try:
-        bundle_env = parse_assignments(args.bundle_env)
+        bundle_env = parse_assignments(args.bundle_env, args.bundle_unset)
         remote = release.resolve_push_remote(args.remote)
         repository = release.remote_github_repo(remote)
         if not repository:

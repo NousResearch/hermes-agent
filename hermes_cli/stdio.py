@@ -7,6 +7,7 @@ subprocesses and child Python ``print()`` calls agree on encoding.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import sys
 
@@ -90,6 +91,18 @@ def _default_windows_editor() -> str:
     return "notepad" if shutil.which("notepad") else ""
 
 
+def _path_key(path: str) -> str:
+    r"""Comparison key for PATH dedup under Windows semantics (works on any host OS).
+
+    ``ntpath`` treats ``/`` and ``\`` as equivalent separators and resolves ``.``/``..``
+    lexically, so ``C:\a\b``, ``c:/a/b/`` and ``C:\a\x\..\b`` all map to the same key. A bare
+    ``str.lower()`` comparison (what the dedup used before) misses these variants — MSYS
+    auto-translation and trailing-slash forms especially — which made every Python startup
+    prepend the same venv ``Scripts`` dir again, snowballing into 70+ duplicate PATH entries.
+    """
+    return ntpath.normpath(path.rstrip("\\/")).casefold()
+
+
 def _augment_path_with_known_tools() -> None:
     r"""Prepend Hermes-managed tool directories to ``PATH`` (no-op on POSIX / missing dirs).
 
@@ -114,7 +127,7 @@ def _augment_path_with_known_tools() -> None:
         os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
-    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]
+    existing_keys = {_path_key(p) for p in existing.split(os.pathsep) if p}
+    prepend = [d for d in candidate_dirs if os.path.isdir(d) and _path_key(d) not in existing_keys]
     if prepend:
         os.environ["PATH"] = os.pathsep.join([*prepend, existing])

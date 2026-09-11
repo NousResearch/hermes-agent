@@ -20,6 +20,7 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.stdio import _path_key
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
@@ -417,10 +418,13 @@ def _compute_git_bash_bin_dirs() -> list[str]:
 
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
-    """Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
-    dir keeps its position; unchanged input when nothing is missing."""
+    r"""Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
+    dir keeps its position; unchanged input when nothing is missing. Comparison goes
+    through ``_path_key`` so Windows-equivalent spellings (case, ``/`` vs ``\``,
+    trailing separator) don't count as missing and duplicate themselves."""
     entries = [e for e in existing_path.split(os.pathsep) if e]
-    missing = [d for d in dirs if d not in entries]
+    existing_keys = {_path_key(e) for e in entries}
+    missing = [d for d in dirs if _path_key(d) not in existing_keys]
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 

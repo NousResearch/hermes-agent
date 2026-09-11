@@ -291,6 +291,33 @@ class TestGitBashCoreutilsOnPath:
 
 
 # ---------------------------------------------------------------------------
+# _prepend_missing_path_entries — Windows-equivalent spellings must dedup
+# ---------------------------------------------------------------------------
+
+class TestPrependMissingPathEntries:
+    """Issue #108508: a bare string-equality ``in`` check treated Windows-equivalent
+    spellings of the same dir (case, ``/`` vs ``\\``, trailing separator) as missing,
+    so each prepended a duplicate of itself. Keys come from ``_path_key``.
+
+    Drive-letter-free spellings keep these tests host-agnostic: on POSIX the
+    ``os.pathsep`` separator is ``:``, which would otherwise split at the ``C:``
+    colon. Drive-letter forms are covered by the ``_path_key`` unit tests in
+    ``tests/hermes_cli/test_stdio_path_dedup.py``."""
+
+    def test_windows_equivalent_spelling_counts_as_present(self):
+        existing = "\\Git\\usr\\BIN"
+        assert local_mod._prepend_missing_path_entries(existing, ["/git/usr/bin/"]) == existing
+
+    def test_prepends_only_truly_missing(self):
+        result = local_mod._prepend_missing_path_entries("\\other", ["\\Git\\usr\\bin"])
+        assert result == "\\Git\\usr\\bin" + os.pathsep + "\\other"
+
+    def test_unchanged_when_nothing_missing(self):
+        existing = "\\Git\\usr\\bin"
+        assert local_mod._prepend_missing_path_entries(existing, ["\\Git\\usr\\bin"]) == existing
+
+
+# ---------------------------------------------------------------------------
 # Command wrapping — native Windows cwd must be Git Bash-friendly for cd
 # ---------------------------------------------------------------------------
 

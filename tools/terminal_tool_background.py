@@ -153,6 +153,18 @@ def spawn_background_process(
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        # The persistent/background branch returns before the foreground
+        # canonicalization seam. Apply the same fail-open hook contract to
+        # its immediate model-visible response, while the process registry
+        # handles subsequent command output from poll/wait/log/kill.
+        from tools.process_registry import render_process_output
+        result_data["output"] = render_process_output(
+            result_data["output"],
+            command=command,
+            returncode=None,
+            task_id=effective_task_id or "",
+            env_type=env_type,
+        )
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:

@@ -31,6 +31,10 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
+from agent import redact as _redact_module
+from agent.redact import redact_sensitive_text
+from hermes_cli import lifecycle as _lifecycle
+from tools.ansi_strip import strip_ansi
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -364,10 +368,72 @@ def _not_found(session_id: str) -> dict:
 
 
 def _output_tail(session: "ProcessSession", n: int) -> str:
-    """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
+    """Last *n* chars of the session output (raw — ANSI stripping happens in render_process_output)."""
+    return session.output_buffer[-n:] if session.output_buffer else ""
 
-    return strip_ansi(session.output_buffer[-n:])
+
+def transform_terminal_output(
+    output: str,
+    *,
+    command: str = "",
+    returncode: Optional[int] = None,
+    task_id: str = "",
+    env_type: str = "",
+) -> str:
+    """Apply the terminal-output hook to one background-process payload.
+
+    Background output has several consumers (process actions, autonomous
+    gateway notifications, and the CLI completion queue). Keeping the hook at
+    this seam gives every consumer the same fail-open, first-string-wins
+    behavior as the foreground terminal path.
+    """
+    if not isinstance(output, str) or not output:
+        return output
+
+    try:
+        hook_results = _lifecycle.invoke_hook(
+            "transform_terminal_output",
+            command=command,
+            output=output,
+            returncode=returncode,
+            task_id=task_id or "",
+            env_type=env_type or "",
+        )
+        for hook_result in hook_results:
+            if isinstance(hook_result, str):
+                return hook_result
+    except Exception:
+        # Hooks are optional extensions. A broken plugin must never make a
+        # background process result unavailable.
+        pass
+    return output
+
+
+def render_process_output(
+    output: str,
+    *,
+    command: str = "",
+    returncode: Optional[int] = None,
+    task_id: str = "",
+    env_type: str = "",
+) -> str:
+    """Apply the shared background-output pipeline before delivery.
+
+    Every consumer receives the same raw input, then the hook runs before ANSI
+    stripping and terminal-output redaction. Keeping this sequence here avoids
+    gateway and process-tool paths drifting apart as new delivery surfaces are
+    added.
+    """
+    transformed = transform_terminal_output(
+        output,
+        command=command,
+        returncode=returncode,
+        task_id=task_id,
+        env_type=env_type,
+    )
+    return _redact_module.redact_terminal_output(
+        strip_ansi(transformed), command
+    )
 
 
 @dataclass
@@ -1281,8 +1347,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
             }
-            _redact_process_result(notification)
-            self.completion_queue.put(notification)
+            self.completion_queue.put(
+                _redact_process_result(notification, task_id=session.task_id)
+            )
         session._completion_event.set()
 
     @staticmethod
@@ -1596,13 +1663,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
         with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+            full_output = session.output_buffer
         lines = full_output.splitlines()
         total_lines = len(lines)
         # offset=None -> last N lines; an explicit offset=0 means the HEAD (don't
@@ -2085,22 +2150,42 @@ PROCESS_SCHEMA = {
 }
 
 
-def _redact_process_result(result: dict) -> dict:
+def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     """Redact secrets from background-process output before it reaches the model,
     session.db and CLI, mirroring the foreground ``terminal`` redaction so the two
     surfaces can't diverge. Respects ``security.redact_secrets``; ``redact_terminal_output``
     picks ``code_file`` from the recorded command. The command itself is redacted too.
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
+
+    Invokes ``transform_terminal_output`` before redaction so background output
+    follows the documented foreground pipeline. Any hook replacement then
+    passes through the existing redaction loop before it can reach the model.
+    Every background action returns through here, so ``poll``, ``wait``,
+    ``log``, and ``kill`` are covered by the single call site. ``returncode``
+    is None while a process has not exited. The hook is fail-open (first valid
+    string return wins); exceptions are swallowed so a misbehaving plugin
+    can't break process polling.
     """
     if not isinstance(result, dict):
         return result
-    from agent.redact import redact_sensitive_text, redact_terminal_output
-
     command = result.get("command") or ""
-    for key in ("output", "output_preview"):
-        if isinstance(value := result.get(key), str) and value:
-            result[key] = redact_terminal_output(value, command)
+    returncode = result.get("exit_code")
+
+    # Match the foreground terminal path: transform raw output first, then
+    # redact the final value. This prevents a hook replacement from injecting
+    # an unmasked credential into the model-visible result.
+    for field in ("output", "output_preview"):
+        value = result.get(field)
+        if isinstance(value, str) and value:
+            result[field] = render_process_output(
+                value,
+                command=command,
+                returncode=returncode,
+                task_id=task_id,
+                env_type=result.get("env_type", ""),
+            )
+
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)
     return result
@@ -2189,7 +2274,7 @@ def _handle_process(args, **kw):
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
-        return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
+        return json.dumps(_redact_process_result(result, task_id=kw.get("task_id") or "") if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 

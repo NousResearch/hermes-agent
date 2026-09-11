@@ -7420,6 +7420,12 @@
   },
   {
    "facade": "hermes_state",
+   "name": "close_shared_session_dbs",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "hermes_state",
    "name": "collect_state_db_stats",
    "kind": "moved-lazy",
    "target": "hermes_state_dbfile"
@@ -7453,6 +7459,12 @@
    "name": "fts5_cjk_so_path",
    "kind": "moved-lazy",
    "target": "hermes_state_fts"
+  },
+  {
+   "facade": "hermes_state",
+   "name": "get_shared_session_db",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "hermes_state",
@@ -7495,6 +7507,12 @@
    "name": "release_or_close",
    "kind": "moved-lazy",
    "target": "hermes_state_registry"
+  },
+  {
+   "facade": "hermes_state",
+   "name": "release_shared_session_db",
+   "kind": "restored-def",
+   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "hermes_state",
@@ -12534,7 +12552,7 @@
    "facade": "gateway.startup_watchdog",
    "name": "*",
    "kind": "module-stub",
-   "target": "gateway.shutdown_watchdog"
+   "target": "hermes_startup_watchdog"
   },
   {
    "facade": "hermes_cli.observability.relay_runtime",

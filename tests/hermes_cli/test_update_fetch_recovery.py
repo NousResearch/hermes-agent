@@ -137,7 +137,7 @@ def test_update_check_fetch_reports_effective_timeout(tmp_path: Path) -> None:
     proc = _FetchProcess(timeout=True)
     with (
         patch.object(update_cmd.subprocess, "Popen", return_value=proc),
-        patch.object(update_cmd, "_terminate_update_check_fetch", return_value=False),
+        patch.object(update_cmd, "_terminate_update_check_fetch", return_value=True),
     ):
         result = update_cmd._run_update_check_fetch(
             ["git"], [], "origin", "main", tmp_path, timeout_seconds=10

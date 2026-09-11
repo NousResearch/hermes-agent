@@ -191,3 +191,14 @@ describe('signInLabel', () => {
     expect(signInLabel(null)).toBe('Sign in with your identity provider')
   })
 })
+
+describe('token rejection (#100530)', () => {
+  it('a rejected session token is auth-shaped: it escalates post-boot instead of staying in the reconnect loop', () => {
+    const message = "This connection's session token was rejected. Open Settings → Gateway and paste a new session token."
+
+    expect(isRemoteReauthError(message)).toBe(true)
+    expect(shouldApplyPostBootProgressError(message)).toBe(true)
+    // …but it is NOT an OAuth sign-in: the token overlay keeps Gateway settings / Retry / Use local.
+    expect(isRemoteReauthFailure(config({ remoteAuthMode: 'token', remoteOauthConnected: false }), message)).toBe(false)
+  })
+})

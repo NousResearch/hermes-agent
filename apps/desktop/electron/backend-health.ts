@@ -33,10 +33,29 @@ export interface HermesReadyOptions {
    * two very different meanings of a 401 (see `waitForHermesReady`).
    */
   probeIsCredentialed?: boolean
+  /**
+   * A GATED route to hit once with `fetchJson` after the backend answers
+   * ready. `/api/health` and `/api/status` are public, so a credential the
+   * gateway no longer accepts (the loopback session token rotates on every
+   * dashboard restart) sails through readiness and only fails at the WS
+   * upgrade — which browsers report as an anonymous handshake error, so the
+   * renderer redials forever (#100530). A 401/403 here is the confirmed
+   * rejection; any other failure (404 on an older backend, 5xx) is ignored.
+   */
+  verifyCredentialPath?: string
+  /** Message for the reauth error thrown when `verifyCredentialPath` is rejected. */
+  credentialRejectedMessage?: string
 }
 
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+
+// Cheapest session-token-gated GET that every backend since mid-2026 serves:
+// a DB count, no bodies, no config. Public routes cannot prove a credential.
+export const REMOTE_TOKEN_VERIFY_PATH = '/api/sessions/empty/count'
+
+export const REMOTE_TOKEN_REJECTED_MESSAGE =
+  "This connection's session token was rejected. Open Settings → Gateway and paste a new session token."
 
 export const REMOTE_UNSIGNED_OAUTH_MESSAGE =
   'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
@@ -192,8 +211,8 @@ export function isGatedMissingHealthError(error: unknown): boolean {
 }
 
 /** Tag a terminal reauth failure the main process latches and the overlay keys on. */
-export function makeReauthRequiredError(detail?: string): Error {
-  const error = new Error(REMOTE_SESSION_EXPIRED_MESSAGE) as any
+export function makeReauthRequiredError(detail?: string, message = REMOTE_SESSION_EXPIRED_MESSAGE): Error {
+  const error = new Error(message) as any
   error.needsOauthLogin = true
   error.isReauthRequired = true
 
@@ -228,6 +247,19 @@ function supersededError() {
   error.kind = 'superseded'
 
   return error
+}
+
+async function verifyCredential(url: string, options: HermesReadyOptions, timeoutMs: number): Promise<void> {
+  try {
+    await options.fetchJson(url, options.token, { timeoutMs })
+  } catch (error) {
+    if (isAuthRejectionError(error)) {
+      throw makeReauthRequiredError(
+        error instanceof Error ? error.message : String(error),
+        options.credentialRejectedMessage
+      )
+    }
+  }
 }
 
 export async function waitForHermesReady(baseUrl: string, options: HermesReadyOptions): Promise<void> {
@@ -270,8 +302,6 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
       } else {
         await probeHealth(`${base}/api/health`, { timeoutMs: healthProbeTimeoutMs })
       }
-
-      return
     } catch (error) {
       lastError = error
 
@@ -298,7 +328,17 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
       }
 
       await sleep(pollMs)
+
+      continue
     }
+
+    // Outside the retry loop's catch on purpose: a confirmed rejection here
+    // is terminal, not another transient miss to poll past.
+    if (options.verifyCredentialPath) {
+      await verifyCredential(`${base}${options.verifyCredentialPath}`, options, healthProbeTimeoutMs)
+    }
+
+    return
   }
 
   const detail = lastError instanceof Error ? lastError.message : 'timeout'

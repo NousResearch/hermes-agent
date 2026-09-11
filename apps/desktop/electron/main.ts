@@ -49,9 +49,12 @@ import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import {
+  type HermesReadyOptions,
   isReauthRequiredError,
   makeNousCloudBackendDownError,
   makeUnsignedOauthError,
+  REMOTE_TOKEN_REJECTED_MESSAGE,
+  REMOTE_TOKEN_VERIFY_PATH,
   waitForHermesReady
 } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
@@ -6519,7 +6522,7 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   return { probeHealth: fetchPublicJson, probeIsCredentialed: false }
 }
 
-async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
+async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}, verify: Partial<HermesReadyOptions> = {}) {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
   return waitForHermesReady(baseUrl, {
@@ -6530,8 +6533,25 @@ async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
       ? (url, _token, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers))
       : fetchJson,
     probeHealth: (url, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers)),
-    probeIsCredentialed
+    probeIsCredentialed,
+    ...(probeIsCredentialed ? verify : {})
   })
+}
+
+// A remote gateway (URL / registry / SSH tunnel) token must be PROVEN against a
+// gated route once the backend answers ready: `/api/health` and `/api/status`
+// are public, the loopback session token rotates on every dashboard restart,
+// and the WS upgrade's rejection reaches the renderer as an anonymous handshake
+// error — without this the renderer redials the stale token forever (#100530).
+// OAuth connections prove theirs at the WS-ticket mint; local children mint
+// their own token and never rotate it underneath a running app.
+async function waitForRemoteHermes(remote: { baseUrl: string; token?: string; authMode?: string; headers?: Record<string, string> }) {
+  const verify =
+    remote.authMode === 'token'
+      ? { verifyCredentialPath: REMOTE_TOKEN_VERIFY_PATH, credentialRejectedMessage: REMOTE_TOKEN_REJECTED_MESSAGE }
+      : {}
+
+  return waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers, verify)
 }
 
 function getWindowButtonPosition(win = mainWindow) {
@@ -11939,7 +11959,7 @@ async function connectRegistryBackend(
     source.headers
   )
 
-  await waitForHermes(connection.baseUrl, connection.token, undefined, connection.authMode, connection.headers)
+  await waitForRemoteHermes(connection)
   poolEntry.remoteBaseUrl = connection.baseUrl
 
   return {
@@ -12606,7 +12626,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   profileDeletionGate.assertCanStart(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+    await waitForRemoteHermes(remote)
 
     // Recorded on the entry so revalidation can probe this descriptor without
     // awaiting connectionPromise, which may still be pending for a sibling.
@@ -13024,7 +13044,7 @@ async function startHermes() {
       }
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+      await waitForRemoteHermes(remote)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.

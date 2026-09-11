@@ -186,6 +186,57 @@ class TestRequireServiceInstalled:
         gateway_cli._require_service_installed("start")
 
 
+class TestServiceIdentityForForeignHome:
+    """A HERMES_HOME that is neither ``~/.hermes`` nor ``~/.hermes/profiles/<name>`` must never resolve to
+    the default profile's ``hermes-gateway`` unit (a temp-home harness uninstalled the production gateway)."""
+
+    @pytest.fixture
+    def machine_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        return home
+
+    def test_foreign_home_gets_its_own_unit(self, machine_home, tmp_path, monkeypatch):
+        foreign = tmp_path / "elsewhere"
+        foreign.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(foreign))
+
+        default_unit = machine_home / ".config" / "systemd" / "user" / "hermes-gateway.service"
+        assert gateway_cli.get_service_name() != "hermes-gateway"
+        assert gateway_cli.get_systemd_unit_path() != default_unit
+        assert gateway_cli.get_systemd_unit_path().parent == default_unit.parent
+
+    def test_default_and_named_profile_homes_keep_their_names(self, machine_home, monkeypatch):
+        default_home = machine_home / ".hermes"
+        (default_home / "profiles" / "alpha").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "alpha"))
+        assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
+
+
+class TestUninstallRefusesForeignUnit:
+    """systemd_uninstall must not stop/disable/unlink a unit pinned to another HERMES_HOME."""
+
+    def test_unit_for_other_home_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text('[Service]\nEnvironment="HERMES_HOME=/somewhere/else"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "mine"))
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_systemd_scope_preamble", lambda *a, **k: False)
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **k: calls.append(args))
+
+        gateway_cli.systemd_uninstall(system=False)
+
+        assert unit_path.exists()
+        assert calls == []
+        assert "/somewhere/else" in capsys.readouterr().out
+
+
 class TestGetCronDrainTimeout:
     def test_missing_config_falls_back_to_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
@@ -2461,6 +2512,71 @@ class TestLaunchctlBootstrapEioRetry:
         with pytest.raises(subprocess.CalledProcessError) as excinfo:
             gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
         assert excinfo.value.returncode == 5
+
+
+class TestLaunchdUnloadedJobStderrStaysOffTerminal:
+    """#106273: against an UNLOADED job, ``launchctl bootout`` / ``kickstart -k`` exit 3 and print
+    ``Could not find service ...`` / ``Boot-out failed: 3`` on fd 2. Those exits are the *handled*
+    case, so a real launchctl child (fake binary on PATH, real fd inheritance) must leave the
+    terminal's stderr empty while the CLI's own status lines print. ``capfd`` reads fd 2, so an
+    inherited-stderr regression fires even though ``subprocess.run`` never touches ``sys.stderr``."""
+
+    @pytest.fixture
+    def fake_launchctl(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        script = bin_dir / "launchctl"
+        # bootout exits $FAKE_BOOTOUT_RC (default 3 = unloaded); `kickstart -k` is the unloaded 3;
+        # bootstrap / plain kickstart / print succeed. Every invocation is logged for the caller.
+        script.write_text(
+            "#!/bin/sh\n"
+            'echo "$@" >> "$FAKE_LAUNCHCTL_LOG"\n'
+            'case "$1" in\n'
+            '  bootout) echo "Boot-out failed: ${FAKE_BOOTOUT_RC:-3}: No such process" >&2; exit "${FAKE_BOOTOUT_RC:-3}" ;;\n'
+            '  kickstart) if [ "$2" = "-k" ]; then echo "Could not find service in domain for user gui: 501" >&2; exit 3; fi ;;\n'
+            "esac\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        log = tmp_path / "calls.log"
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_LAUNCHCTL_LOG", str(log))
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "ai.hermes.gateway.plist")
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_mark_planned_stop", lambda *a, **k: None)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda *a, **k: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        return log
+
+    def test_restart_of_unloaded_job_reloads_without_launchctl_noise(self, fake_launchctl, capfd):
+        gateway_cli.launchd_restart()
+
+        out, err = capfd.readouterr()
+        assert "↻ launchd job was unloaded; reloading" in out
+        assert "✓ Service restarted" in out
+        assert err == ""
+        verbs = [line.split()[0] for line in fake_launchctl.read_text(encoding="utf-8").splitlines()]
+        assert verbs == ["kickstart", "bootout", "bootstrap", "kickstart"]
+
+    def test_stop_of_unloaded_job_is_quiet_but_a_real_bootout_failure_keeps_stderr(
+        self, fake_launchctl, capfd, monkeypatch
+    ):
+        gateway_cli.launchd_stop()
+        out, err = capfd.readouterr()
+        assert "✓ Service stopped" in out
+        assert err == ""
+
+        # Unexpected exit code: not swallowed, and the captured stderr rides on the exception for
+        # the caller's diagnostic instead of having been printed raw by launchctl.
+        monkeypatch.setenv("FAKE_BOOTOUT_RC", "1")
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli.launchd_stop()
+        assert excinfo.value.returncode == 1
+        assert "Boot-out failed: 1" in excinfo.value.stderr
+        assert capfd.readouterr().err == ""
 
 
 class TestRetryLaunchctlBootstrapUntilRegistered:

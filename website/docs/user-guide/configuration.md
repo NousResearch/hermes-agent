@@ -152,11 +152,22 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Update Behavior
 
-### Background checks and SSH authentication
+### Background checks
+
+Passive update checks (CLI banner, TUI badge, dashboard, desktop app) ask the
+GitHub REST API for the tip of `main` and, when it differs from your checkout,
+the compare endpoint for the exact count and changelog. They never run
+`git fetch`, and every install asks at most **once per 24 hours** (a failed check
+retries after an hour). Applying an update (`hermes update`, or the desktop's
+Update button) always fetches fresh and invalidates the cached answer. Explicit
+checks — `hermes update --check`, the desktop's "Check for Updates…" menu item,
+Settings → About → "Check now" — bypass the cache.
+
+### SSH authentication
 
 The startup update check reads the origin URL with the same isolated Git
 configuration used for its network calls. Global `url.*.insteadOf` rewrites
-therefore cannot hide an official SSH remote from the public HTTPS check.
+therefore cannot hide an official SSH remote from the public HTTPS path.
 
 Hermes's isolated internal Git commands default to `ssh -o BatchMode=yes`:
 unknown host keys, passwords, and encrypted keys needing a passphrase fail

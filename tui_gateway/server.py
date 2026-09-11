@@ -249,6 +249,11 @@ class _SlashWorker:
         env = _prepend_tool_paths(build_subprocess_env(
             hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
             inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
+        # Internal slash workers must import the same checkout as their parent.
+        module_root = str(Path(__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (module_root, env.get("PYTHONPATH", "")) if part
+        )
         # start_new_session: otherwise the worker inherits the gateway's pgid and mcp_tool's orphan
         # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
         # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.
@@ -380,7 +385,11 @@ def _get_db():
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            _db, _db_error = acquire(), None
+            # Pin to import-time launch home (#102526). A bare acquire() follows
+            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
+            # overrides per profile at startup — first touch inside a foreign window
+            # permanently binds this process-wide handle to the wrong state.db.
+            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -590,8 +599,8 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
-def _emit(event: str, sid: str, payload: dict | None = None):
-    write_json(_event_frame(event, sid, payload))
+def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+    return write_json(_event_frame(event, sid, payload))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -788,6 +797,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
         ctx = contextvars.copy_context()  # the pool worker must see the bound transport
+        if normalized[1] in _CONNECTOR_RPC_METHODS:
+            ctx.run(_capture_connector_rpc_owner, normalized[2])
 
         def run():
             try:
@@ -1247,7 +1258,8 @@ def _enable_gateway_prompts() -> None:
 # Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
 # returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
 _EXPIRING_REQUESTS = frozenset({
-    "secret.request", "sudo.request", "clarify.request", "terminal.read.request",
+    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
+    "terminal.read.request",
     "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
     "tour.request",
 })
@@ -2059,9 +2071,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = sess.get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    provider = mirror.get("provider", getattr(agent, "provider", ""))
+    if provider == "custom" and "provider" not in mirror and agent is not None:
+        # Clients reuse this identity for new chats without carrying the endpoint or key.
+        # Broadcast/resume callers need not be bound to this session's profile.
+        with _profile_build_scope(sess.get("profile_home") or _hermes_home):
+            provider = _runtime_model_config(agent).get("provider", provider)
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
-        "provider": pending_provider or mirror.get("provider", getattr(agent, "provider", "")),
+        "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "service_tier": service_tier, "fast": service_tier == "priority",
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
@@ -2713,9 +2731,12 @@ def _live_session_payload(
     else:
         with _session_db(session) as db:
             history = _live_visible_history(session, db, in_memory_history)
+    # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
+    # (a hidden seed row is in ``history`` but never on the wire).
+    messages = [] if omit_messages else _history_to_messages(history)
     payload = {
-        "info": _fallback_session_info(session), "message_count": len(history),
-        "messages": [] if omit_messages else _history_to_messages(history),
+        "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
+        "messages": messages,
         "messages_omitted": omit_messages, "running": running, "turn_started_at": turn_started_at,
         "session_id": sid, "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
@@ -3202,6 +3223,7 @@ from . import (  # noqa: E402
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
+    session_wisdom as _session_wisdom,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
@@ -3213,16 +3235,18 @@ from . import (  # noqa: E402
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
-    methods_session_control as _methods_session_control, methods_subagents as _methods_subagents)
+    methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
+    methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
+    methods_connectors as _methods_connectors)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
-    _session_compression, _change_watcher, _tool_progress, _session_notifications,
+    _session_compression, _change_watcher, _tool_progress, _session_wisdom, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
     _m.register(sys.modules[__name__])
 del _m

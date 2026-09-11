@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from hermes_cli.auth_codex import _pool_entries
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_NOUS_CLIENT_ID,
-    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE,
+    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     _nous_err, httpx)
@@ -103,7 +103,10 @@ def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
 # else would leak. Consulted only for URLs from the NETWORK side (Portal refresh responses);
 # the NOUS_INFERENCE_BASE_URL env override bypasses it (documented dev/staging escape hatch, the
 # user set it themselves).
-_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({"inference-api.nousresearch.com"})
+_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
+    "inference-api.nousresearch.com",
+    # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
+    "welcome-api.nousresearch.com"})
 
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
@@ -329,7 +332,9 @@ def _shared_lock_timeout(timeout_seconds: float) -> float:
 # OAuth fields mirrored between a profile's Nous state and the shared cross-profile store.
 _NOUS_SHARED_STATE_KEYS = (
     "access_token", "refresh_token", "token_type", "scope", "client_id", "portal_base_url",
-    "inference_base_url", "obtained_at", "expires_at")
+    "inference_base_url", "obtained_at", "expires_at",
+    # Guest (``auth_method: anonymous``) identity: the ``anon_`` credential is the refresh material.
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id")
 
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
@@ -338,7 +343,7 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     shared = _read_shared_nous_state() or {}
     shared_refresh = shared.get("refresh_token")
     if not _nonempty_str(shared_refresh):
-        return False
+        return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
     shared_access_exp = _parse_iso_timestamp(shared.get("expires_at")) or 0.0
     local_access_exp = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
@@ -359,8 +364,12 @@ def _nous_shared_shape(src: Dict[str, Any]) -> Dict[str, Any]:
         "scope": src.get("scope") or DEFAULT_NOUS_SCOPE,
         "client_id": src.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
         "portal_base_url": src.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
-        "inference_base_url": src.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
-        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at")}
+        # A guest's route defaults to the welcome host: the paid host cross-refuses its JWT.
+        "inference_base_url": src.get("inference_base_url") or (
+            DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
+        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
+        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
+           if src.get(k) not in (None, "")}}
 
 
 def _write_shared_nous_state(state: Dict[str, Any]) -> None:
@@ -370,8 +379,10 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     """
     from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
     refresh_token = state.get("refresh_token")
-    # No refresh_token = nothing worth sharing across profiles
-    if not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
+    # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
+    # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
+    is_guest = _nonempty_str(state.get("anon_token"))
+    if not is_guest and not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
         return
     shared = {
         "_schema": 1, **_nous_shared_shape(state),
@@ -407,8 +418,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(payload, dict):
         return None
-    has_tokens = (
-        _nonempty_str(payload.get("refresh_token")) and _nonempty_str(payload.get("access_token")))
+    has_tokens = _nonempty_str(payload.get("anon_token")) or (
+        _nonempty_str(payload.get("access_token")) and _nonempty_str(payload.get("refresh_token")))
     return payload if has_tokens else None
 
 
@@ -796,10 +807,13 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
                 "(host %r or scheme not allowed), using default",
                 portal_url, portal_host)
             portal_url = DEFAULT_NOUS_PORTAL_URL
+    # A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there
+    # (400 naming the welcome host), so an absent or disallowed URL heals to the welcome literal.
+    from hermes_cli.anon_auth import is_guest_state
     stored_inference_url = (
         _validate_nous_inference_url_from_network(
             _optional_base_url(state.get("inference_base_url")))
-        or DEFAULT_NOUS_INFERENCE_URL)
+        or (DEFAULT_NOUS_WELCOME_URL if is_guest_state(state) else DEFAULT_NOUS_INFERENCE_URL))
     return (
         portal_url, stored_inference_url, _nous_inference_env_override() or stored_inference_url,
         str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID))
@@ -919,6 +933,17 @@ class _NousRuntimeResolve:
 
     def ensure_usable_access_token(self, client: httpx.Client) -> None:
         """Merge from the shared store / refresh until the access token is a usable invoke JWT."""
+        from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+        if is_guest_state(self.state):
+            # Guest seam: the anon_ credential is the refresh material; re-exchange instead of
+            # redeeming a rotating refresh token. Quarantine never applies to a guest.
+            if self.force_refresh or self.invoke_jwt_status() is not None:
+                refresh_guest_state(self.state, client)
+                self.access_token = self.state["access_token"]
+                self.stored_inference_base_url = self.state.get("inference_base_url") or self.stored_inference_base_url
+                self.inference_base_url = _nous_inference_env_override() or self.stored_inference_base_url
+                self.persist("guest_exchange")
+            return
         if not self.has_access_token():
             with self.shared_lock():
                 if self.merge_shared():
@@ -939,6 +964,30 @@ class _NousRuntimeResolve:
 
 
 def resolve_nous_runtime_credentials(
+    *, timeout_seconds: float = 15.0, insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None, force_refresh: bool = False,
+    stale_access_token: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve Nous inference credentials for runtime use (refreshing under the auth-store lock).
+
+    A guest whose ``anon_`` credential NAS no longer knows (reaped or claimed) is retired and a new
+    identity is set up once, transparently -- the one client rule covering both reap and claim.
+    """
+    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    try:
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
+            force_refresh=force_refresh, stale_access_token=stale_access_token)
+    except AnonCredentialDead:
+        from hermes_cli.auth import get_provider_auth_state
+        dead = get_provider_auth_state("nous") or {}
+        clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
+        if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
+            raise
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)
+
+
+def _resolve_nous_runtime_credentials(
     *, timeout_seconds: float = 15.0, insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None, force_refresh: bool = False,
     stale_access_token: Optional[str] = None) -> Dict[str, Any]:
@@ -1042,7 +1091,9 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 def _nous_status_from_state(
     state: Dict[str, Any], *, logged_in: bool, source: str) -> Dict[str, Any]:
     """Auth-store-backed Nous status snapshot (shared by the live and refresh-free variants)."""
+    from hermes_cli.anon_auth import is_guest_state
     access_token = state.get("access_token")
+    account_tier = state.get("account_tier")
     return {
         "logged_in": logged_in, "portal_base_url": state.get("portal_base_url"),
         "inference_base_url": state.get("inference_base_url"),
@@ -1050,7 +1101,10 @@ def _nous_status_from_state(
         "agent_key_expires_at": state.get("agent_key_expires_at"),
         "has_refresh_token": bool(state.get("refresh_token")), "access_token": access_token,
         "inference_credential_present": bool(access_token or state.get("agent_key")),
-        "credential_source": "auth_store", "source": source}
+        "credential_source": "auth_store", "source": source,
+        # Free tier: display surfaces render it with the free-tier copy, never as an account login.
+        "account_tier": account_tier if isinstance(account_tier, str) else None,
+        "free_tier": is_guest_state(state)}
 
 
 def _compute_nous_auth_status() -> Dict[str, Any]:
@@ -1394,8 +1448,11 @@ def _offer_shared_nous_import(timeout_seconds: float) -> Optional[Dict[str, Any]
     auth state when the user accepted and the import succeeded, else None.
     """
     from hermes_cli.auth import _prompt_yes_no, _read_shared_nous_state
+    from hermes_cli.anon_auth import is_guest_state
     shared = _read_shared_nous_state()
-    if not shared:
+    if not shared or is_guest_state(shared):
+        # A free-tier identity is not an OAuth credential to import; a real sign-in replaces it
+        # (persist_nous_credentials overwrites the singleton and the shared store).
         return None
     try:
         shared_path = _nous_shared_store_path()

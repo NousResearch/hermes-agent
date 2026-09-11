@@ -422,8 +422,7 @@ export const ru = defineLocale({
       archivedChats: 'Архив чатов',
       about: 'О программе',
       billing: 'Оплата',
-      notifications: 'Уведомления',
-      plugins: 'Плагины'
+      notifications: 'Уведомления'
     },
     plugins: {
       title: 'Плагины приложения',
@@ -437,26 +436,6 @@ export const ru = defineLocale({
       failed: 'ошибка',
       empty: 'Плагины приложения пока не установлены.',
       kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
-      agent: {
-        title: 'Плагины агента',
-        blurb:
-          'Плагины, установленные в бэкенд Hermes — инструменты, навыки, MCP-серверы, хуки и slash-команды. Переносимые — пакеты Agent Plugins (навыки + MCP-бандлы, работающие и в других агентах). Переключатели действуют для новых сеансов.',
-        appliesTo: 'Применяется к:',
-        empty: 'Плагины агента пока не установлены.',
-        loadFailed: 'Не удалось загрузить плагины агента',
-        portable: 'переносимый',
-        search: 'Поиск плагинов…',
-        noMatches: 'Плагины, подходящие под поиск, не найдены.',
-        toggleFailed: name => `Не удалось переключить ${name}`,
-        updateBackendToManage: 'Обновите бэкенд Hermes, чтобы управлять этим плагином из приложения.',
-        sources: {
-          bundled: 'встроенный',
-          user: 'пользовательский',
-          git: 'git',
-          project: 'проектный',
-          entrypoint: 'pip'
-        }
-      },
       installModal: {
         title: 'Установка плагина',
         description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
@@ -464,7 +443,7 @@ export const ru = defineLocale({
         includesHeading: 'Состав пакета',
         agentLabel: 'Плагин агента',
         desktopLabel: 'UI приложения',
-        agentTargetLocal: profile => `Устанавливается в локальный бэкенд ${profile} (~/.hermes/plugins/)`,
+        agentTargetLocal: (profile, dir) => `Устанавливается в локальный бэкенд ${profile} (${dir})`,
         agentTargetRemote: profile => `Устанавливается в подключённый бэкенд ${profile}`,
         desktopTarget: 'Устанавливается в локальную папку desktop-plugins этого приложения',
         desktopOnlyNote: 'Пакеты только для приложения не устанавливают плагин агента.',
@@ -479,6 +458,11 @@ export const ru = defineLocale({
         gitCloneLabel: 'URL для git clone',
         enableAgent: 'Включить плагин агента после установки',
         forceReinstall: 'Принудительная переустановка (заменить, если уже установлен)',
+        pinToCommit: 'Закрепить на коммите (необязательно)',
+        pinToCommitPlaceholder: 'Полный SHA коммита (40 символов)',
+        pinToCommitHint:
+          'Все, кто установит этот SHA, получат одинаковый код; плагин перестанет обновляться до смены пина. Оставьте пустым для последнего коммита.',
+        pinToCommitInvalid: 'Нужен полный SHA коммита из 40 символов (ветки и теги не принимаются).',
         install: 'Установить',
         installing: 'Установка…',
         probing: 'Осмотр репозитория…',
@@ -584,6 +568,10 @@ export const ru = defineLocale({
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
+      appActionsTitle: 'Действия приложения',
+      appActionsDesc: 'Где в заголовке окна сидят Настройки, Макет и HUD. Справа оставляют место для вкладок слева.',
+      appActionsLeft: 'Слева',
+      appActionsRight: 'Справа',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',
@@ -1525,6 +1513,49 @@ export const ru = defineLocale({
     }
   },
   skills: {
+    collective: {
+      publishToTeam: 'Опубликовать для команды',
+      submitForApproval: 'Отправить на одобрение',
+      publishLocalNotice:
+        'Подтверждение загрузит именно этот пакет и опубликует его для команды после обязательных проверок.',
+      submitLocalNotice:
+        'Подтверждение загрузит именно этот пакет на одобрение организации. До завершения модерации он не будет опубликован.',
+      reloadReview: 'Обновить проверку',
+      notificationPreferences: {
+        title: 'Настройки уведомлений',
+        scope:
+          'Ваши инициативные уведомления во всех клиентах этой организации. Просмотр и публикация вручную остаются доступны.',
+        on: 'Уведомления включены',
+        muted: 'Уведомления отключены',
+        day: '1 день',
+        week: '1 неделя',
+        month: '30 дней',
+        forever: 'Бессрочно',
+        pending: 'Выбор сохранён локально и ожидает синхронизации.',
+        failed: 'Сбой синхронизации. Обновите настройки и выберите снова.',
+        conflict: 'Настройка изменена в другом клиенте. Обновите для проверки.',
+        expired: 'Срок действия выбора истёк. Обновите настройки и повторите.'
+      },
+      qualificationFirst: organizationName =>
+        `${organizationName ? `Ваша организация (${organizationName})` : 'Ваша организация'} включила Collective Wisdom — функцию, которая автоматически находит полезные навыки у всех участников команды. Поздравляем! Hermes обнаружил навык, который может быть полезен вашей команде.`,
+      qualificationReturning: 'Hermes обнаружил ещё один навык, который может быть полезен вашей команде.',
+      sendPrivateReview: 'Отправить черновик',
+      sharePrompt: 'Хотите поделиться?',
+      reviewFirst: 'Сначала проверить',
+      runSetupStep: 'Выполнить этот шаг',
+      confirmSetupPrerequisite: 'Подтвердить предварительное условие',
+      setupCommand: 'Предлагаемая команда (локальный терминал)',
+      setupStepApprovalNotice: 'Подтверждение разрешает только этот шаг. Не вводите учётные данные в чате.',
+      notNow: 'Не сейчас',
+      yes: 'Да',
+      share: 'Поделиться',
+      reviewPreviousPage: 'Предыдущая страница проверки',
+      reviewNextPage: 'Следующая страница проверки',
+      sharePreparationNotice:
+        'Будет подготовлен локальный пакет. Перед загрузкой или публикацией вы отдельно проверите и одобрите его.',
+      muteNotificationsSoon: 'Отключить уведомления (скоро)',
+      unmuteNotificationsSoon: 'Включить уведомления (скоро)'
+    },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
@@ -1961,6 +1992,41 @@ export const ru = defineLocale({
     failedRevoke: name => `Не удалось отозвать ${name}`,
     pairingLockedOut: 'Слишком много неудачных одобрений — эта платформа заблокирована. Попробуйте позже.',
     waitingSince: minutes => (minutes < 1 ? 'только что' : `${minutes}м назад`),
+    restartNeeded: 'Сохранено. Перезапустите шлюз сообщений, чтобы применить новые настройки.',
+    restartNow: 'Перезапустить',
+    restarting: 'Перезапуск…',
+    restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    telegramQr: {
+      title: 'Выберите способ подключения Telegram-бота',
+      subtitle:
+        'Оба способа подключают бота под вашим контролем и сохраняют его данные только в этой установке Hermes.',
+      quickSetup: 'Быстрая настройка',
+      recommended: 'Рекомендуется',
+      quickHelp:
+        'Отсканируйте QR-код и подтвердите в Telegram. Hermes создаст бота и определит ваш Telegram ID автоматически.',
+      createWithQr: 'Создать по QR',
+      starting: 'Запуск…',
+      replaceWarning:
+        'Данные Telegram уже настроены. Новая QR-настройка или токен заменят текущего бота при сохранении.',
+      scanHint: 'Отсканируйте в приложении Telegram на телефоне или откройте ссылку на этом компьютере.',
+      waiting: 'Ожидание Telegram…',
+      expiresIn: remaining => `Истекает через ${remaining}`,
+      expired: 'Истёк',
+      openTelegram: 'Открыть Telegram',
+      ready: 'Бот создан',
+      allowedUsers: 'Разрешённые пользователи',
+      ownerDetected: 'Владелец определён',
+      addAtLeastOne: 'Добавьте хотя бы один Telegram ID.',
+      userIdPlaceholder: 'Telegram ID пользователя',
+      add: 'Добавить',
+      numericOnly: 'Telegram ID должны быть числовыми.',
+      saveAndRestart: 'Сохранить и перезапустить',
+      applying: 'Сохранение…',
+      pairingExpired: 'Срок QR-настройки истёк. Начните новую.',
+      stillWaiting: detail => `Всё ещё ждём Telegram. Повтор после: ${detail}`,
+      savedRestarting: 'Telegram сохранён; шлюз перезапускается…',
+      savedRestartFailed: detail => `Telegram сохранён; перезапуск шлюза не удался${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Токен бота',
@@ -2445,6 +2511,7 @@ export const ru = defineLocale({
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {
+      showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',
       home: 'Главная',
       newButton: 'Новый проект',
@@ -2992,6 +3059,10 @@ export const ru = defineLocale({
       noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.'
     }
   },
+  guidedGreeting: {
+    line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
+    nameSuggestion: (name: string) => `(Могу звать вас просто ${name}, если так удобнее.)`
+  },
   install: {
     stageStates: {
       pending: 'Ожидает',
@@ -3463,7 +3534,7 @@ export const ru = defineLocale({
     closeAll: 'Закрыть все',
     newSessionTab: 'Вкладка нового сеанса',
     pluginDisabled: pluginId => `Плагин «${pluginId}» отключён`,
-    pluginDisabledBody: 'Включите его снова в Настройки → Плагины, чтобы вернуть панель.',
+    pluginDisabledBody: 'Включите его снова в Возможности → Плагины, чтобы вернуть панель.',
     missingPane: paneId => `нет панели: ${paneId}`,
     editTitle: 'Раскладки',
     editHint: 'Выберите раскладку или перетащите панели между зонами.',
@@ -3754,6 +3825,9 @@ export const ru = defineLocale({
     resumeStrandedTitle: 'Не удалось загрузить этот сеанс',
     resumeStrandedBody:
       'Соединение с этим сеансом оборвалось, и автоматические повторные попытки исчерпаны. Проверьте, что шлюз работает, и попробуйте снова.',
+    poolSlotTimeoutBody:
+      'Все слоты локальных бэкендов профилей заняты. Увеличьте Warm Bot Backends в «Настройки» → «Дополнительно» или повторите попытку после освобождения неактивного бэкенда.',
+    poolSlotTimeoutOpenSettings: 'Открыть расширенные настройки',
     resumeRetry: 'Повторить',
     nothingToBranch: 'Нечего ветвить',
     branchNeedsChat: 'Начните или возобновите чат перед ветвлением.',

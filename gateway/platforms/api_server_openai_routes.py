@@ -473,6 +473,13 @@ class OpenAICompatRoutesMixin:
             try:
                 db = await self._ensure_session_db_async()
                 if db is not None:
+                    # #98619/#13437: a client-addressed id from before a compression rotation
+                    # must adopt the live continuation tip — history loads from it, the turn and
+                    # the wake target bind it, and a detached delegation delivery row persisted
+                    # on the tip is what this continuation consumes. Same canonical resolution
+                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
+                    from gateway.platforms.api_server_runs import _resolve_live_session_id
+                    session_id = await _resolve_live_session_id(self, provided_session_id)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
@@ -494,7 +501,13 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route)
+            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
+            # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
+            # and the client can resume the session by sending it again). A fingerprint-derived
+            # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
+            # there — the wake would hard-fail or land in history that client never reloads.
+            session_history_delivery=("1" if provided_session_id else ""))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -524,9 +537,14 @@ class OpenAICompatRoutesMixin:
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete, **run_kwargs)
+            # #13437 identity contract: an explicit-header client keeps addressing the id it
+            # sent; the response echoes that stable id while reads/writes adopt the live tip,
+            # so a rotation mid-turn (after these headers are prepared) never changes what the
+            # client should send next — it re-sends the same id and the tip resolution above
+            # finds whatever session is live by then.
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=session_id,
+                agent_task, agent_ref, session_id=(provided_session_id or session_id),
                 gateway_session_key=gateway_session_key)
 
         async def _compute_completion():
@@ -543,7 +561,10 @@ class OpenAICompatRoutesMixin:
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
         finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
-        response_headers = {"X-Hermes-Session-Id": result.get("session_id", session_id)}
+        # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
+        # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
+        # id the agent actually resolved, so headerless clients still learn where the turn went.
+        response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK

@@ -345,6 +345,7 @@ gateway:
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
     effort:                "**الجهد:** `{effort}`"
+    free_tier:             "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"

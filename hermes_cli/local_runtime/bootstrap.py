@@ -91,8 +91,9 @@ def _presets_stale() -> bool:
     with suppress(Exception):
         from hermes_cli.local_runtime.presets import read_preset_decisions
 
-        known = set(read_preset_decisions())
-        return any(mid not in known for mid in staged_model_ids())
+        known = read_preset_decisions()
+        return any(mid not in known or (not known[mid].refusal and not (known[mid].keys or {}).get("model"))
+                   for mid in staged_model_ids())
     return False
 
 

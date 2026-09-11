@@ -36,10 +36,12 @@ it('shows live work only from the composer session and keeps it hidden after col
     </MemoryRouter>
   )
 
-  expect(screen.getByText('Task 0')).toBeTruthy()
-  expect(screen.getByText('Reading actual source')).toBeTruthy()
+  expect(screen.queryByText('Task 0')).toBeNull()
   expect(screen.queryByText('Private foreign task')).toBeNull()
   const header = screen.getByRole('button', { name: /5 Subagents/ })
+  fireEvent.click(header)
+  expect(screen.getByText('Task 0')).toBeTruthy()
+  expect(screen.getByText('Reading actual source')).toBeTruthy()
   fireEvent.click(header)
   expect(screen.queryByText('Task 0')).toBeNull()
   expect(screen.queryByText('Task 4')).toBeNull()
@@ -67,6 +69,7 @@ it('collapses a single worker and its selected detail using the caret, preservin
     </MemoryRouter>
   )
 
+  fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   fireEvent.click(screen.getByRole('button', { name: /Single task/ }))
   expect(view.container.querySelector('[data-slot="composer-subagent-detail"]')).toBeTruthy()
   const draft = screen.getByRole('textbox')
@@ -88,6 +91,7 @@ it('retires the live frame only after every child settles, without depending on 
       <ComposerStatusStack queue={null} sessionId="owner" />
     </MemoryRouter>
   )
+  fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   expect(screen.getByText('Live task')).toBeTruthy()
   act(() => upsertSubagent('owner', { subagent_id: 'child', status: 'completed' }, false, 'subagent.complete'))
   expect(screen.queryByText('Live task')).toBeNull()

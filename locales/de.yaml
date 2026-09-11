@@ -343,6 +343,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model:                 "**Modell:** `{model}`"
     model_provider:        "**Modell:** `{model}` ({provider})"
     effort:                "**Stärke:** `{effort}`"
+    free_tier:             "Nous · kostenloser Tarif · nous/welcome · /login zum Anmelden"
     context:               "**Kontext:** {used} / {total} ({pct}%)"
     context_used:          "**Kontext:** ~{used} Tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

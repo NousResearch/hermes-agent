@@ -421,6 +421,19 @@ class GatewayNotificationsMixin:
             prompt=_hermes_home / ".update_prompt.json", response=_hermes_home / ".update_response",
         )
 
+    @staticmethod
+    def _marker_profile(data: dict) -> Optional[str]:
+        """Owning profile of a persisted restart/update marker: explicit ``profile``, else the
+        ``agent:<profile>:`` lane of its ``session_key`` (markers written before ``profile`` was
+        persisted); ``None`` = default profile."""
+        profile = str(data.get("profile") or "").strip()
+        if profile:
+            return profile
+        parts = str(data.get("session_key") or "").split(":")
+        if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
+            return parts[1]
+        return None
+
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -434,7 +447,9 @@ class GatewayNotificationsMixin:
                 if not (platform_str and chat_id):
                     continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
+                # lane); a bare self.adapters lookup is the default bot under multiplex.
+                adapter = self._authorization_adapter(platform, self._marker_profile(pending))
                 if not adapter:
                     return None
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
@@ -627,7 +642,7 @@ class GatewayNotificationsMixin:
             exit_code = self._update_exit_code(paths)
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
+            adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
@@ -671,7 +686,10 @@ class GatewayNotificationsMixin:
             if not platform_str or not chat_id:
                 return None
             platform = Platform(platform_str)
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
+            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
+            transport = resolve_delivery_transport(
+                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
             if transport is None:
                 logger.debug("Restart notification skipped: no live transport for %s", platform_str)
                 return None
@@ -742,6 +760,26 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, home.chat_id, exc)
             return False
 
+    def _free_tier_startup_line(self) -> Optional[str]:
+        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
+
+        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
+        try:
+            # Persisted state only. The free-tier check reads auth.json; it runs FIRST so the resolver
+            # is only consulted when a free-tier identity already exists and its own free-tier rung
+            # (which may mint on a fresh install, NS-829) answers from that identity without a network
+            # call. No token refresh at boot either way.
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.anon_auth import guest_carries_inference
+            if not guest_carries_inference():
+                return None
+            if resolve_provider("auto") != "nous":
+                return None
+        except Exception as exc:
+            logger.debug("Free tier startup line skipped: %s", exc)
+            return None
+        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
+
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
@@ -753,6 +791,9 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        free_tier_line = self._free_tier_startup_line()
+        if free_tier_line:
+            message = f"{message}\n{free_tier_line}"
         for platform, platform_cfg, home, transport in self._home_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -782,26 +823,48 @@ class GatewayNotificationsMixin:
         error = getattr(self, "_session_db_init_error", None)
         if not error:
             return
-        from hermes_constants import get_default_hermes_root
+        # Re-check the live store before warning: a startup `database is locked` routinely clears while
+        # the adapters are still connecting, and a borrowed store handle comes back once its owner
+        # releases it. The cache's opener clears ``_session_db_init_error`` on recovery, so a stale
+        # startup failure must not be broadcast as current (#108031).
+        if getattr(self, "_session_db_handle_cache", None) is not None:
+            self._open_session_db_for_active_scope()
+            error = self._session_db_init_error
+            if not error:
+                logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
+                return
+        from hermes_constants import get_default_hermes_root, profile_cli_selector
         from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
-        if classify_persistence_error(error) == "corrupt":
-            # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+        cause = classify_persistence_error(error)
+        # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
+        # active_profile, which may be a different database (#105887).
+        profile_arg = profile_cli_selector()
+        if cause == "corrupt":
             db_path = _default_db_path()
             backups_dir = get_default_hermes_root() / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
-                "1. Run `hermes doctor --fix`\n"
+                f"1. Run `hermes {profile_arg}doctor --fix`\n"
                 "2. Stop the gateway, then recover with:\n"
-                f"   hermes sessions recover --source {db_path} "
+                f"   hermes {profile_arg}sessions recover --source {db_path} "
                 "--inspect-only\n"
-                "   (if it reports recoverable) hermes sessions recover "
+                f"   (if it reports recoverable) hermes {profile_arg}sessions recover "
                 f"--source {db_path} --output recovered-state.db\n"
                 "   — recovery snapshots the damaged file first; do NOT run "
                 "`sqlite3 ... \".recover\"` against the live state.db, a "
                 "vulnerable sqlite3 CLI can corrupt it further\n"
                 f"3. Restore from a backup in {backups_dir}/\n"
-                "Run `hermes doctor` for sanitized diagnostics."
+                f"Run `hermes {profile_arg}doctor` for sanitized diagnostics."
+            )
+        elif cause == "fts_index":
+            # Index-scoped corruption: the message tables are not damaged, so the recover /
+            # restore advice above would be destructive on a healthy file (#97794).
+            message = (
+                "⚠️ Session database reported a corruption error confined to the search index "
+                "(FTS5); the message tables are not damaged. Messages may not be persisted until "
+                f"it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run "
+                "recovery tools or restore a backup unless `hermes doctor` confirms damage."
             )
         else:
             message = (
@@ -1416,6 +1479,15 @@ class GatewayNotificationsMixin:
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
+        # API delivery does not start a model turn, so there is nothing to coalesce.
+        # Keep each unit's stable identity with its row across partial delivery/retry.
+        if group and group[0].get("origin_session_id"):
+            outcomes = []
+            for evt in group:
+                text = _format_gateway_process_notification(evt)
+                if text:
+                    outcomes.append(await self._deliver_completion_notification(text, evt))
+            return False if False in outcomes else True
         deliverable: list[tuple[dict, str]] = []
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)

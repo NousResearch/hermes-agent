@@ -699,6 +699,16 @@
     --ui-editor-surface-background: var(--ui-bg-chrome);
   }
 
+  /* The status bar spans the rail AND the content column. Transparent, it
+     showed the body's hard stop through itself, and the seam cut whichever
+     item sat on it (the free-tier chip, in the guided window). Finder's
+     shape: the bar belongs to the opaque content column across the full
+     width, and the rail's glass ends at its top edge. Window scope has no
+     seam, so the bar stays transparent there. */
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] [data-slot='statusbar'] {
+    --ui-sidebar-surface-background: var(--ui-bg-chrome);
+  }
+
   /* Clear mode (native window opacity) fades EVERYTHING in the window
      uniformly, so when an overlay opens over a session two layers of text
      fade by the same amount and fight through the overlay's light default
@@ -1013,6 +1023,26 @@
     background-color: var(--ui-row-hover-background);
     transition: none;
   }
+}
+
+/* The guided-onboarding thread is marked with [data-thread-type='onboarding']
+   — the hook for onboarding-only transcript styling. */
+
+/* Guided chat is a conversation, not a work surface: hide per-message action
+   chrome (branch/copy/read-aloud/regenerate bar, reaction slot) and the turn-
+   duration stamp — regenerate/branch would derail the scripted flow. */
+[data-thread-type='onboarding'] [data-slot='aui_msg-actions'],
+[data-thread-type='onboarding'] [data-slot='aui_msg-reactions'],
+[data-thread-type='onboarding'] [data-slot='aui_turn-duration'] {
+  display: none;
+}
+
+/* Hermes speaks first here: no user bubble sits above the opening assistant
+   turn, so the first painted row would press against the pane chrome. The
+   utility class on the row pulls the top pad 0.5rem ABOVE the titlebar; give
+   the air back, and only in this thread. */
+[data-slot='aui_thread-content'][data-thread-type='onboarding'] {
+  padding-top: calc(var(--titlebar-height) + 1rem);
 }
 
 @keyframes arc-border {
@@ -1499,6 +1529,14 @@ body.guest-pointer-lock :is(webview, iframe) {
   font-size: inherit;
 }
 
+/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
+   `overflow-hidden` so wide code/tables don't blow the column; that same clip
+   shears the first pill's left cap. Cards opt the surface out; tables/code keep
+   their own overflow. */
+[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
+  overflow: visible;
+}
+
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
    selector ties our `my-*` utility on specificity and wins on source order, so
    paragraph spacing must be reclaimed here at higher specificity. One tight
@@ -1560,7 +1598,20 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='aui_user-message-root'] {
-  top: var(--sticky-human-top);
+  --sticky-human-offset: calc(var(--sticky-human-top) + 1px);
+  top: var(--sticky-human-offset);
+}
+
+/* Cover the gap above the floating bubble with the thread's solid surface. */
+[data-slot='aui_user-message-root']::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset-inline: 0;
+  top: calc(-1 * var(--sticky-human-offset));
+  height: calc(var(--sticky-human-offset) + 1rem);
+  pointer-events: none;
+  background: var(--ui-chat-surface-background);
 }
 
 [data-slot='aui_user-message-root'],
@@ -2969,7 +3020,8 @@ button[data-slot='aui_msg-reactions'] svg {
    Widgets on the shared shell (components/chat/widget-shell.ts →
    `--ui-widget-surface-background`) and any chat-surface card are matched on
    their class, so new ones inherit this without touching the list. */
-[data-hud-shell] [data-slot='composer-bounds']
+[data-hud-shell]
+  [data-slot='composer-bounds']
   :is(
     [data-slot='clarify-inline'],
     [data-slot='tool-block'],

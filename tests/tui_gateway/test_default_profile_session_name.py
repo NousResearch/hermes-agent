@@ -14,6 +14,24 @@ def _profile_layout(tmp_path: Path) -> tuple[Path, Path]:
     return default_home, launch_home
 
 
+def test_legacy_default_request_stays_in_isolated_launch_profile(tmp_path, monkeypatch):
+    """#88897: a named-profile backend must not route legacy requests to the root DB."""
+    from hermes_constants import profile_name_for_home
+    from tui_gateway import server
+
+    default_home, launch_home = _profile_layout(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("HERMES_DASHBOARD_ISOLATED", "1")
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+
+    assert profile_name_for_home(launch_home) == "worker"
+    assert server._profile_home("default") is None
+
+    monkeypatch.delenv("HERMES_DASHBOARD_ISOLATED")
+    assert server._profile_home("default") == default_home
+
+
 def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
     """Legacy basename values must not be resolved as missing named profiles."""
     from tui_gateway import server

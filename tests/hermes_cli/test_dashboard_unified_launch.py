@@ -29,6 +29,17 @@ def _args(**kw):
 
 class TestUnifiedDashboardRouting:
 
+    @pytest.mark.parametrize(("isolated", "expected"), [(True, "1"), (False, None)])
+    def test_launch_exports_isolated_routing_mode(self, monkeypatch, isolated, expected):
+        """The gateway can distinguish isolated and unified profile routing."""
+        monkeypatch.setenv("HERMES_DASHBOARD_ISOLATED", "stale")
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+
+        main_dashboard._route_named_profile_dashboard(
+            _args(isolated=isolated), False, "", "")
+
+        assert main_dashboard.os.environ.get("HERMES_DASHBOARD_ISOLATED") == expected
+
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -108,7 +119,5 @@ class TestInteractiveDashboardAuthSetup:
         assert exc.value.code == 1
         output = capsys.readouterr().out
         assert "configured external dashboard.public_url" in output
-
-
 
 

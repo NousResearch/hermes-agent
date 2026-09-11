@@ -1809,6 +1809,11 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
         base_url=getattr(agent, "base_url", "") or "", custom_providers=custom_providers or [],
     )
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    route_scoped = overrides.pop("extra_body_route_scoped", None)
+    if route_scoped and isinstance(overrides.get("extra_body"), dict):
+        keys_to_remove = set(route_scoped.keys()) if isinstance(route_scoped, dict) else set(route_scoped)
+        for k in keys_to_remove:
+            overrides["extra_body"].pop(k, None)
     overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)

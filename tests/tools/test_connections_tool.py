@@ -308,6 +308,27 @@ def test_wait_tolerates_transient_gateway_blips_but_not_a_dead_gateway(no_sleep)
     assert dead.polls == 3  # gave up on the third consecutive failure
 
 
+def test_wait_propagates_dark_gateway_as_unavailable():
+    client = WaitClient(flips_on=None)
+    client.on_poll = lambda _n: (_ for _ in ()).throw(
+        GatewayUnavailable("route concealed", code="NOT_FOUND", status=404)
+    )
+
+    out = _wait(client, timeout_seconds=180)
+
+    assert out == {
+        "status": "unavailable",
+        "code": "CONNECTORS_UNAVAILABLE",
+        "connectors": [],
+        "message": "Connector service is not available for this account or session.",
+        "hint": (
+            "Do not infer connection state or retry automatically. "
+            "The user can manage connections in the Nous Portal."
+        ),
+    }
+    assert client.polls == 1
+
+
 def test_wait_interrupted_mid_wait_reports_interrupted_not_an_error(no_sleep):
     from tools.interrupt import set_interrupt
 

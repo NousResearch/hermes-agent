@@ -223,6 +223,8 @@ def _wait_for_connections(
         poll_started = time.monotonic()
         try:
             items = client.list_connectors()
+        except GatewayUnavailable:
+            raise
         except Exception:
             # A transient gateway blip costs one poll, never the whole wait.
             # Three in a row means the gateway is genuinely down mid-wait —

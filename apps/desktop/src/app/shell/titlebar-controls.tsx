@@ -257,11 +257,34 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
   )
 
+  const centerClusterClass = cn(
+    titlebarToolClusterClass,
+    'left-1/2 -translate-x-1/2 top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+
+  const rightSlotClusterClass = cn(
+    titlebarToolClusterClass,
+    'right-(--titlebar-tools-right) top-(--titlebar-controls-top)'
+  )
+
   // Contributed full-context plugin pages (`extension`) own the titlebar band.
-  // Hide the app's tool clusters but keep plugin slots in the same fixed
-  // position so `titleBar.center` (e.g. kanban's board switcher) stays mounted.
+  // Hide the app's Window/App tool clusters, but give each titleBar slot its
+  // own physical region so `titleBar.center` (e.g. kanban's board switcher)
+  // is not left-anchored over the top-edge pane tabs.
   if (hidesFixedTitlebarClusters(view)) {
-    return <div className={leftClusterClass}>{titlebarSlots}</div>
+    return (
+      <>
+        <div className={leftClusterClass} data-titlebar-slot="left">
+          <Slot area="titleBar.left" />
+        </div>
+        <div className={centerClusterClass} data-titlebar-slot="center">
+          <Slot area="titleBar.center" />
+        </div>
+        <div className={rightSlotClusterClass} data-titlebar-slot="right">
+          <Slot area="titleBar.right" />
+        </div>
+      </>
+    )
   }
 
   const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)

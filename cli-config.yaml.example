@@ -1743,6 +1743,8 @@ display:
   long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
+  # Silence one platform: display.platforms.telegram.busy_ack_enabled: false.
+  # display.busy_ack_enabled: false disables acknowledgments on every platform.
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
   # iteration 21/60, terminal". When false (Telegram default), both stay

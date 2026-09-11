@@ -519,3 +519,28 @@ class TestLongRunningNotificationOwnership:
         ) is False
 
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('platform, override, global_enabled, expected', [
+    ('telegram', False, True, False), ('telegram', 'off', True, False),
+    ('discord', False, True, True), ('telegram', True, False, False),
+])
+async def test_platform_ack_gate_preserves_input(monkeypatch, platform, override, global_enabled, expected):
+    from gateway import run
+    monkeypatch.setenv('HERMES_GATEWAY_BUSY_ACK_ENABLED', str(global_enabled).lower())
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'display': {'platforms': {'telegram': {'busy_ack_enabled': override}}},
+    })
+    runner, _ = _make_runner()
+    runner._busy_input_mode = 'interrupt'
+    adapter = _make_adapter(platform)
+    event = _make_event(text='follow up', platform_val=platform)
+    key = build_session_key(event.source)
+    agent = MagicMock()
+    agent._active_children = []
+    runner._running_agents[key] = agent
+    runner.adapters[event.source.platform] = adapter
+    assert await runner._handle_active_session_busy_message(event, key)
+    agent.interrupt.assert_called_once_with('follow up')
+    assert adapter._send_with_retry.await_count == int(expected)
+    assert bool(runner._session_state(key).turn.busy_ack_ts) == expected

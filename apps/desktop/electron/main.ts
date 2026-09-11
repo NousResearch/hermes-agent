@@ -89,6 +89,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
+import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -416,7 +417,6 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { growWindowBounds } from './window-growth'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
@@ -13734,43 +13734,9 @@ const introRevealController = createIntroRevealWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
 })
 
-ipcMain.on('hermes:chat-onboarding:grow', (event, request) => {
-  if (!GUEST_ONBOARDING || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    return
-  }
-
-  // Renderer CSS pixels become native DIP here, including the user's zoom.
-  const bounds = mainWindow.getBounds()
-
-  mainWindow.setBounds(
-    growWindowBounds(request, {
-      bounds,
-      frameWidth: bounds.width - mainWindow.getContentBounds().width,
-      workArea: screen.getDisplayMatching(bounds).workArea,
-      zoom: event.sender.getZoomFactor() || 1
-    }),
-    true
-  )
-})
-
-ipcMain.on('hermes:chat-onboarding:solo-boot', event => {
-  if (!GUEST_ONBOARDING || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    return
-  }
-
-  const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea
-  const width = Math.min(600, area.width)
-  const height = Math.min(640, area.height)
-
-  mainWindow.setBounds(
-    {
-      height,
-      width,
-      x: Math.round(area.x + (area.width - width) / 2),
-      y: Math.round(area.y + (area.height - height) / 2)
-    },
-    true
-  )
+registerChatOnboardingWindow({
+  enabled: GUEST_ONBOARDING,
+  mainWindow: () => mainWindow
 })
 
 // The pet overlay: a single transparent, frameless, always-on-top window that

@@ -897,7 +897,9 @@ export function paneRootSide(paneId: string): null | TreeSide {
 
   const mainIndices = row.children.flatMap((child, i) =>
     allPaneIds(child).some(
-      id => (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+      id =>
+        id === 'workspace' ||
+        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
     )
       ? [i]
       : []

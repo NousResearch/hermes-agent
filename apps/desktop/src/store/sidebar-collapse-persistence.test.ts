@@ -123,8 +123,8 @@ describe('sidebar collapse persistence', () => {
       const main = group(['workspace'])
       const files = group(['files'], { id: 'files-zone' })
       s1.tree.declareDefaultTree(split('row', flipped ? [files, main, sidebar] : [sidebar, main, files]))
-      s1.tree.setTreeGroupMinimized(sidebar.id, true)
       s1.layout.setFileBrowserOpen(true)
+      s1.tree.setTreeGroupMinimized(sidebar.id, true)
 
       reload()
       const { layout, tree, bind } = await loadStores()

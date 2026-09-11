@@ -94,13 +94,13 @@ def _sync_client_dependency() -> bool:
 
 def _install_embedded_runtime() -> bool:
     """local_embedded: install the isolated side env (hindsight-embed + the heavy
-    hindsight-api-slim[all], pinned 0.9.2) via the pm.ensure.uv bridge — never the
+    hindsight-api-slim[all]) via PM's isolated environment operation — never the
     shared main venv (the protobuf floors conflict). The daemon later runs from the
     side env's own interpreter/binary; Hermes talks HTTP with hindsight-client."""
     from .embedded_runtime import _local_runtime_hint, ensure_sideenv, sideenv_root
 
     try:
-        root = ensure_sideenv()
+        ensure_sideenv()
     except Exception as e:
         print(f"  ⚠ Isolated runtime install failed: {e}")
         print(f"    {_local_runtime_hint(str(e)).strip()}")

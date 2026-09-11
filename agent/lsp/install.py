@@ -101,6 +101,16 @@ def _existing_binary(name: str) -> Optional[str]:
     for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
+    if any(r.get("strategy") == "pip" and r.get("bin") == name for r in INSTALL_RECIPES.values()):
+        import pm
+
+        try:
+            binary = pm.python_tool(f"lsp-{name}", name)
+        except RuntimeError as exc:
+            logger.warning("[install] cannot read Python server %s: %s", name, exc)
+        else:
+            if binary is not None:
+                return str(binary)
     suffixes = ("", *_WINDOWS_WRAPPER_SUFFIXES) if _is_windows() else ("",)
     return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
@@ -211,24 +221,14 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
 
 
 def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
-    """``pip install --target <staging>/python-packages`` then link the console script into ``lsp/bin/``."""
-    pip_target = hermes_lsp_bin_dir().parent / "python-packages"
-    pip_target.mkdir(parents=True, exist_ok=True)
+    """Provision a Python server in its own PM-managed environment."""
     try:
-        logger.info("[install] pip install --target %s %s", pip_target, pkg)
-        from hermes_cli.tools_config import _pip_install
+        import pm
 
-        proc = _pip_install(["--target", str(pip_target), "--quiet", pkg], timeout=300)
-        if proc.returncode != 0:
-            logger.warning("[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500])
-            return None
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("[install] pip install errored for %s: %s", pkg, e)
+        return str(pm.ensure_python_tool(f"lsp-{bin_name}", [pkg], bin_name, timeout=300))
+    except Exception as exc:
+        logger.warning("[install] Python server install failed for %s: %s", pkg, exc)
         return None
-    # POSIX wheels write console scripts to bin/, native Windows to Scripts/.
-    script_dirs = [pip_target / "bin"] + ([pip_target / "Scripts"] if _is_windows() else [])
-    found = _first_existing(*(d / bin_name for d in script_dirs))
-    return _link_into_bin(found) if found is not None else None
 
 
 # strategy → installer(recipe, bin_name).  ``manual`` is handled before dispatch.

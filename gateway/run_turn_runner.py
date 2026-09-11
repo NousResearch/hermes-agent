@@ -1723,7 +1723,9 @@ class TurnRunner:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
             from agent.notification_presentation import notification_turn
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                return agent.run_conversation(api_message, **kwargs)
+                return agent.run_conversation(
+                    api_message, message_timestamp_handling="gateway_prepared", **kwargs
+                )
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the

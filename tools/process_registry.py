@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
+
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes

@@ -82,7 +82,7 @@ export function FlowPanel({
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submitOnboardingCode(ctx)}
           placeholder={t.onboarding.pasteAuthCode}
           value={flow.code}
         />
@@ -146,7 +146,7 @@ function Step({ children, title }: { children: React.ReactNode; title: string })
 // Device-code display: OTP-style — each character in its own readonly cell.
 // The whole row is the copy button (no side button, no checkmark); on copy the
 // cells flash emerald for feedback. Dashes render as quiet separators.
-function DeviceCode({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
+export function DeviceCode({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
   const { t } = useI18n()
 
   return (

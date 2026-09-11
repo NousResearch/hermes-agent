@@ -1,133 +1,71 @@
-"""
-Video Generation Provider Registry
-==================================
+"""Video Generation Provider Registry.
 
-Central map of registered providers. Populated by plugins at import-time via
-``PluginContext.register_video_gen_provider()``; consumed by the
-``video_generate`` tool to dispatch each call to the active backend.
-
-Active selection
-----------------
-The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
-If unset, :func:`get_active_provider` applies fallback logic:
-
-1. If exactly one *available* provider is registered, use it.
-2. Otherwise return ``None`` (the tool surfaces a helpful error pointing
-   the user at ``hermes tools``).
-
-Mirrors ``agent/image_gen_registry.py`` so the two surfaces behave the
-same: the unconfigured fallback is filtered by ``is_available()`` so a box
-that has credentials for only one backend (e.g. DeepInfra, while the
-``fal``/``xai`` plugins also register unconditionally) auto-selects it
-instead of returning ``None``.
+Populated by plugins via ``PluginContext.register_video_gen_provider()``;
+consumed by the ``video_generate`` tool. The active provider is
+``video_gen.provider`` from ``config.yaml``; a configured-but-unregistered name
+fails closed. If unset, the single *available* registered provider is used
+(mirrors ``agent/image_gen_registry.py`` minus its legacy ``fal`` preference)
+so a box with credentials for only one backend auto-selects it; otherwise None
+and the tool points the user at ``hermes tools``.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
+from typing import Optional
 
+from agent.provider_registry import ProviderRegistry, configured_provider_name, is_available_safe
 from agent.video_gen_provider import VideoGenProvider
 
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, VideoGenProvider] = {}
-_lock = threading.Lock()
-
-
-def register_provider(provider: VideoGenProvider) -> None:
-    """Register a video generation provider.
-
-    Re-registration (same ``name``) overwrites the previous entry and logs
-    a debug message — this makes hot-reload scenarios (tests, dev loops)
-    behave predictably.
-    """
-    if not isinstance(provider, VideoGenProvider):
-        raise TypeError(
-            f"register_provider() expects a VideoGenProvider instance, "
-            f"got {type(provider).__name__}"
-        )
-    name = provider.name
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("Video gen provider .name must be a non-empty string")
-    with _lock:
-        existing = _providers.get(name)
-        _providers[name] = provider
-    if existing is not None:
-        logger.debug("Video gen provider '%s' re-registered (was %r)", name, type(existing).__name__)
-    else:
-        logger.debug("Registered video gen provider '%s' (%s)", name, type(provider).__name__)
-
-
-def list_providers() -> List[VideoGenProvider]:
-    """Return all registered providers, sorted by name."""
-    with _lock:
-        items = list(_providers.values())
-    return sorted(items, key=lambda p: p.name)
-
-
-def get_provider(name: str) -> Optional[VideoGenProvider]:
-    """Return the provider registered under *name*, or None."""
-    if not isinstance(name, str):
-        return None
-    with _lock:
-        return _providers.get(name.strip())
+_registry: ProviderRegistry[VideoGenProvider] = ProviderRegistry(
+    label="Video gen", provider_cls=VideoGenProvider, logger=logger,
+)
+_registry.export(globals())
 
 
 def get_active_provider() -> Optional[VideoGenProvider]:
-    """Resolve the currently-active provider.
-
-    Reads ``video_gen.provider`` from config.yaml; falls back per the
-    module docstring.
-    """
-    configured: Optional[str] = None
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly()
-        section = cfg.get("video_gen") if isinstance(cfg, dict) else None
-        if isinstance(section, dict):
-            raw = section.get("provider")
-            if isinstance(raw, str) and raw.strip():
-                configured = raw.strip()
-    except Exception as exc:
-        logger.debug("Could not read video_gen.provider from config: %s", exc)
-
-    with _lock:
-        snapshot = dict(_providers)
+    """Resolve the currently-active provider (see module docstring)."""
+    configured = configured_provider_name("video_gen", logger)
+    snapshot = _registry.merged()
 
     if configured:
         provider = snapshot.get(configured)
-        if provider is not None:
-            return provider
-        logger.debug(
-            "video_gen.provider='%s' configured but not registered; failing closed",
-            configured,
-        )
-        return None
+        if provider is None:
+            logger.debug(
+                "video_gen.provider='%s' configured but not registered; failing closed", configured
+            )
+        return provider
 
-    def _is_available_safe(p: VideoGenProvider) -> bool:
-        """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
-        try:
-            return bool(p.is_available())
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
-            return False
-
-    # Fallback: single *available* provider — filter by is_available() so a
-    # box with credentials for only one backend auto-selects it even when
-    # other providers (fal/xai) register unconditionally without keys.
-    # Mirrors agent/image_gen_registry.get_active_provider().
-    available = [p for p in snapshot.values() if _is_available_safe(p)]
-    if len(available) == 1:
-        return available[0]
-
-    return None
+    available = [
+        p for p in snapshot.values()
+        if is_available_safe(p, logger, "video_gen provider %s.is_available() raised %s")
+    ]
+    return available[0] if len(available) == 1 else None
 
 
-def _reset_for_tests() -> None:
-    """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Dict  # noqa: F401,E402
+from typing import List  # noqa: F401,E402
+import threading  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

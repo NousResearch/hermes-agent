@@ -114,5 +114,55 @@ def test_tsx_default_check_lint_returns_skipped(tmp_path):
     assert not exec_mock.called, "no shell linter should run for .tsx"
 
 
+def test_ts_shell_linter_skipped_when_ancestor_tsconfig_present(tmp_path):
+    """A .ts file under a dir tree containing tsconfig.json skips the per-file
+    shell tsc EVEN WHEN LSP is inactive — single-file tsc can't read the
+    project config, so its diagnostics are pure noise. This closes the
+    LSP-disabled gap (the common default).
+
+    _exec is patched to raise so any accidental shell-linter invocation fails
+    the test.
+    """
+    fops = _make_fops()
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{}}\n')
+    sub = tmp_path / "src" / "app"
+    sub.mkdir(parents=True)
+    src = sub / "thing.ts"
+    src.write_text("import { x } from '@/store'\nexport const y = x\n")
+
+    def _exec_must_not_run(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("shell tsc ran despite an ancestor tsconfig.json")
+
+    with patch.object(fops, "_lsp_local_only", return_value=True), \
+         patch.object(fops, "_lsp_will_handle", return_value=False), \
+         patch.object(fops, "_exec", side_effect=_exec_must_not_run), \
+         patch.object(fops, "_has_command", return_value=True):
+        result = fops._check_lint(str(src))
+
+    assert result.skipped is True
+    assert "tsconfig.json" in (result.message or "")
+
+
+def test_ts_shell_linter_runs_when_no_ancestor_tsconfig(tmp_path):
+    """Without any ancestor tsconfig.json (a standalone .ts file), the shell
+    tsc still runs — the ancestor-skip must not suppress lint for non-project
+    files. We assert _exec IS reached (LSP inactive)."""
+    fops = _make_fops()
+    src = tmp_path / "loose.ts"
+    src.write_text("const x: number = 'nope'\n")
+
+    exec_result = MagicMock()
+    exec_result.exit_code = 2
+    exec_result.stdout = "loose.ts(1,7): error TS2322: Type 'string' ...\n"
+
+    with patch.object(fops, "_lsp_local_only", return_value=True), \
+         patch.object(fops, "_lsp_will_handle", return_value=False), \
+         patch.object(fops, "_has_command", return_value=True), \
+         patch.object(fops, "_exec", return_value=exec_result) as exec_mock:
+        fops._check_lint(str(src))
+
+    assert exec_mock.called, "shell tsc should run when there's no project tsconfig"
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

@@ -115,6 +115,14 @@ export interface Translations {
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
+    /** NS-656 memory-pressure banner — optional, English fallback. */
+    memoryOomRestartBanner?: string;
+    memoryCriticalBanner?: string;
+    memoryElevatedBanner?: string;
+    /** NS-656 disk-usage banner — optional, English fallback. */
+    diskCriticalBanner?: string;
+    diskElevatedBanner?: string;
+    dismiss?: string;
   };
 
   // ── Status page ──
@@ -358,6 +366,20 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -543,6 +565,7 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;
@@ -820,6 +843,9 @@ export interface Translations {
     confirmArchive: string;
     confirmBlocked: string;
     confirmScheduled?: string;
+    confirmDoneMany: string;
+    confirmArchiveMany: string;
+    confirmBlockedMany: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
@@ -853,5 +879,11 @@ export interface Translations {
     saving?: string;
     commentHint?: string;
     commentHintTitle?: string;
+    // Optional in-app confirm-dialog strings for the trash/delete flow;
+    // non-English locales fall back to the English literals in the bundle.
+    trash?: {
+      confirmTitle?: string;
+      confirmManyTitle?: string;
+    };
   };
 }

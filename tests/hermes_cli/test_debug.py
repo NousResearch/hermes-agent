@@ -146,6 +146,63 @@ class TestCaptureLogSnapshot:
         assert len(kept) == 10
 
 
+class TestMissingLogNote:
+    """A missing log explains itself when the writer isn't this backend.
+
+    `hermes debug share` runs on the backend, so a desktop connected to a
+    remote/docker/SSH backend can never contribute desktop.log. Reporting a
+    bare absence sends triage after a client-side bug it cannot see.
+    """
+
+    def test_backend_written_log_reports_plain_absence(self, hermes_home):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        (hermes_home / "logs" / "agent.log").unlink()
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file not found)"
+
+    def test_client_written_log_names_its_writer_and_path(self, hermes_home):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        (hermes_home / "logs" / "desktop.log").unlink()
+
+        snap = _capture_log_snapshot("desktop", tail_lines=10)
+        assert snap.full_text is None
+        assert "not on this host" in snap.tail_text
+        assert "Hermes Desktop" in snap.tail_text
+        # The reader needs the path to collect by hand on the client machine.
+        assert str(hermes_home / "logs" / "desktop.log") in snap.tail_text
+
+    def test_present_client_log_is_captured_normally(self, hermes_home):
+        """A local backend still reads desktop.log — the note is only for a miss."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        snap = _capture_log_snapshot("desktop", tail_lines=10)
+        assert "backend spawned" in snap.tail_text
+        assert "not on this host" not in snap.tail_text
+
+    def test_empty_client_log_is_empty_not_absent(self, hermes_home):
+        """An empty file means the app ran and logged nothing — a different fact."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        (hermes_home / "logs" / "desktop.log").write_text("")
+
+        snap = _capture_log_snapshot("desktop", tail_lines=10)
+        assert snap.tail_text == "(file empty)"
+
+    def test_report_carries_the_note_for_a_remote_backend(self, hermes_home):
+        """The uploaded report — what people paste into support — must explain it."""
+        from hermes_cli.debug import collect_debug_report
+
+        (hermes_home / "logs" / "desktop.log").unlink()
+
+        report = collect_debug_report(log_lines=10, dump_text="dump\n")
+        assert "--- desktop.log" in report
+        assert "not on this host" in report
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +632,14 @@ class TestDeletePaste:
         assert req.method == "DELETE"
         assert "paste.rs/abc123" in req.full_url
 
+    def test_dpaste_url_error_explains_no_delete(self):
+        """dpaste.com pastes have no owner token, so the user must be told the
+        paste cannot be deleted and will expire on its own (#106164)."""
+        from hermes_cli.debug import delete_paste
+
+        with pytest.raises(ValueError, match="cannot be deleted.*expire on their own"):
+            delete_paste("https://dpaste.com/ABC123")
+
 
 class TestScheduleAutoDelete:
     """``_schedule_auto_delete`` used to spawn a detached Python subprocess
@@ -757,6 +822,29 @@ class TestShareIncludesAutoDelete:
         assert "PUBLIC paste service" in out
         assert "NOT redacted" in out
 
+    def test_share_output_warns_on_dpaste_fallback(self, hermes_home, capsys):
+        """With dpaste.com URLs the output must not promise 6-hour auto-delete
+        or a working `hermes debug delete` (#106164)."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 1
+        args.local = False
+        args.nous = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://dpaste.com/TEST"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "fell back to dpaste.com" in out
+        assert "CANNOT be deleted" in out
+        assert "To delete now" not in out
+        assert "paste.rs pastes will auto-delete in 6 hours" in out
+
 
 # ---------------------------------------------------------------------------
 # build_debug_share — structured core used by the dashboard endpoint
@@ -816,7 +904,6 @@ class TestBuildDebugShare:
         assert "Report" in result.urls
         assert len(result.failures) == 1
         assert "paste service hiccup" in result.failures[0]
-
 
 
 # ---------------------------------------------------------------------------

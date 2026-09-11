@@ -15,7 +15,7 @@ High-throughput LLM inference on NVIDIA GPUs.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/tensorrt-llm` |
-| Path | `optional-skills/mlops/tensorrt-llm` |
+| Path | `optional-skills/mlops\tensorrt-llm` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # TensorRT-LLM
 
-NVIDIA's open-source library for optimizing LLM inference with state-of-the-art performance on NVIDIA GPUs.
+NVIDIA's open-source library for optimizing LLM inference with high performance on NVIDIA GPUs.
 
 ## When to use TensorRT-LLM
 
@@ -197,9 +197,9 @@ outputs = llm.generate(
 
 ## References
 
-- **[Optimization Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/optimization.md)** - Quantization, batching, KV cache tuning
-- **[Multi-GPU Setup](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/multi-gpu.md)** - Tensor/pipeline parallelism, multi-node
-- **[Serving Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/tensorrt-llm/references/serving.md)** - Production deployment, monitoring, autoscaling
+- **[Optimization Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/optimization.md)** - Quantization, batching, KV cache tuning
+- **[Multi-GPU Setup](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/multi-gpu.md)** - Tensor/pipeline parallelism, multi-node
+- **[Serving Guide](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\tensorrt-llm/references/serving.md)** - Production deployment, monitoring, autoscaling
 
 ## Resources
 

@@ -17,15 +17,16 @@ def _completed(returncode=0):
     return subprocess.CompletedProcess(args=[], returncode=returncode)
 
 
+@pytest.mark.macos_only
 def test_darwin_uses_pbcopy():
-    with patch.object(clip.sys, "platform", "darwin"), \
-         patch.object(clip.subprocess, "run", return_value=_completed()) as run:
+    with patch.object(clip.subprocess, "run", return_value=_completed()) as run:
         assert clip.write_clipboard_text("hello") is True
     argv = run.call_args[0][0]
     assert argv == ["pbcopy"]
     assert run.call_args[1]["input"] == b"hello"
 
 
+@pytest.mark.linux_only
 def test_linux_falls_through_backends_until_success():
     calls = []
 
@@ -34,8 +35,7 @@ def test_linux_falls_through_backends_until_success():
         # xclip fails, xsel succeeds
         return _completed(returncode=0 if argv[0] == "xsel" else 1)
 
-    with patch.object(clip.sys, "platform", "linux"), \
-         patch.object(clip, "_is_wsl", return_value=False), \
+    with patch.object(clip, "_is_wsl", return_value=False), \
          patch.dict(clip.os.environ, {}, clear=False), \
          patch.object(clip.os.environ, "get", lambda k, d=None: None), \
          patch.object(clip.subprocess, "run", side_effect=fake_run):

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.verify.recipes import Recipe
+from tools.environments.base_output import strip_malloc_stack_logging
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
@@ -103,6 +104,9 @@ def _run_phase_command(
         output = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
         exit_code, timed_out = None, True
     duration = time.monotonic() - started
+    # macOS 27 injects MallocStackLogging; verify phase subprocesses capture
+    # directly via subprocess.run and bypass the drain loop, so strip here.
+    output = strip_malloc_stack_logging(output)
     if on_output and output:
         on_output(output)
     return PhaseResult(phase, command, exit_code, duration, _tail(output), timed_out)
@@ -179,6 +183,7 @@ def _run_start_phase(
             output = proc.stdout.read() or "" if proc.stdout is not None else ""
         except (OSError, ValueError):
             output = ""
+    output = strip_malloc_stack_logging(output)
     return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
 
 

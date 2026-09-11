@@ -10,7 +10,7 @@ import pytest
 
 import tools.terminal_tool_sudo as terminal_tool_sudo
 from tools.environments.base import BaseEnvironment
-from tools.environments.base_output import _BoundedOutputCollector
+from tools.environments.base_output import _BoundedOutputCollector, _MslStreamStripper, strip_malloc_stack_logging
 
 
 class _TestableEnv(BaseEnvironment):
@@ -509,3 +509,196 @@ class TestSanitizeTaskIdForPath:
         )
         target.mkdir(parents=True)
         assert target.is_dir()
+
+
+class TestStripMallocStackLogging:
+    """Regex coverage for the post-capture MSL strip."""
+
+    def test_bare_msl_line_is_removed(self):
+        text = "before\nMallocStackLogging: lite mode\nafter\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert out.startswith("before")
+        assert out.endswith("after\n")
+
+    def test_gutter_only_form_is_removed(self):
+        # ``read_file`` prepends an ``N|`` line-number gutter; the stripper
+        # must handle this prefix too.
+        text = "1|real line\n2|MallocStackLogging: lite mode\n3|more\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert "1|real line" in out
+        assert "3|more" in out
+        # The MSL row should leave NO orphan blank line behind.
+        assert "2|\n" not in out
+
+    def test_comm_pid_prefix_form_is_removed(self):
+        text = "ok\nlibsystem_malloc(42) MallocStackLogging: enabled\nbye\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert out.startswith("ok\n")
+        assert out.endswith("bye\n")
+
+    def test_gutter_plus_comm_pid_is_removed(self):
+        text = "1|hello\n2|libmalloc(99) MallocStackLogging: region\n3|world\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert "1|hello" in out
+        assert "3|world" in out
+
+    def test_high_line_number_gutter_within_seven_digits(self):
+        text = "1234567|real\n"
+        out = strip_malloc_stack_logging(text)
+        assert out == text
+
+    def test_multiline_msl_payload_is_stripped(self):
+        text = (
+            "header\n"
+            "MallocStackLogging: region 0x7f8b1c000000\n"
+            "MallocStackLogging:  - 0xdeadbeef  libc++abi.dylib\n"
+            "footer\n"
+        )
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert "header" in out
+        assert "footer" in out
+        # No leftover blank lines from stripped rows.
+        assert "\n\n\n" not in out
+
+    def test_msl_embedded_in_real_output(self):
+        text = "alpha\nMallocStackLogging: x\nbeta\n"
+        out = strip_malloc_stack_logging(text)
+        assert out == "alpha\nbeta\n"
+
+    def test_no_msl_is_passthrough(self):
+        text = "no\nmsl\nhere\n"
+        out = strip_malloc_stack_logging(text)
+        assert out == text
+
+    def test_empty_input(self):
+        assert strip_malloc_stack_logging("") == ""
+
+    def test_msl_glued_after_osc_escape_with_no_newline_is_removed(self):
+        # Login shells with iTerm2 shell integration print OSC-1337 escapes
+        # terminated by BEL (\x07) with no trailing newline immediately before
+        # the shell-startup MSL line. Widened anchor accepts right-after-BEL so
+        # the glued MSL text matches.
+        text = "shell-startup\x07MallocStackLogging: lite mode\nnext line\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert "\x07" in out
+        assert "next line" in out
+
+    def test_msl_glued_after_st_terminator_is_removed(self):
+        # ST (\x1b\\, the other standard OSC terminator) also accepted as the
+        # lookbehind anchor. Backward compatible — every existing match form is
+        # unaffected by the widening.
+        text = "shell-startup\x1b\\MallocStackLogging: lite mode\nnext line\n"
+        out = strip_malloc_stack_logging(text)
+        assert "MallocStackLogging" not in out
+        assert "\x1b\\" in out
+        assert "next line" in out
+
+
+class TestMslStreamStripper:
+    """Streaming stripper that runs inside ``_wait_for_process._drain()``."""
+
+    def test_clean_chunk_passes_through_unchanged(self):
+        s = _MslStreamStripper()
+        assert s.feed("hello world\n") == "hello world\n"
+
+    def test_msl_in_middle_of_chunk_is_stripped(self):
+        s = _MslStreamStripper()
+        out = s.feed("alpha\nMallocStackLogging: x\nbeta\n")
+        assert "MallocStackLogging" not in out
+        assert out.startswith("alpha\n")
+        assert out.endswith("beta\n")
+
+    def test_msl_split_across_two_chunks_is_still_stripped(self):
+        # The carry must bridge the partial trailing line across the read
+        # boundary so the regex sees a complete MSL row. The first chunk
+        # emits only the line BEFORE the MSL row (the MSL row is held in
+        # carry because it doesn't end in a newline yet). The second chunk
+        # completes the MSL row — only then does the regex match and
+        # strip it, leaving only the real output that follows.
+        s = _MslStreamStripper()
+        first = s.feed("alpha\nMallocStackLogging: li")
+        assert "MallocStackLogging" not in first  # partial MSL held in carry
+        assert first == "alpha\n"
+        second = s.feed("te mode\nbeta\n")
+        assert "MallocStackLogging" not in first + second
+        assert second == "beta\n"  # MSL row stripped; real payload after it survives
+
+    def test_partial_trailing_line_held_until_next_chunk(self):
+        s = _MslStreamStripper()
+        # No terminating newline -> the trailing partial stays in carry.
+        assert s.feed("real output, no newline") == ""
+        # Next chunk completes the line; the previous partial is prepended.
+        assert s.feed(" and more\n") == "real output, no newline and more\n"
+
+    def test_flush_emits_held_carry(self):
+        s = _MslStreamStripper()
+        s.feed("dangling line, no newline")
+        assert s.flush() == "dangling line, no newline"
+
+    def test_flush_emits_nothing_when_empty(self):
+        assert _MslStreamStripper().flush() == ""
+
+    def test_fast_path_skips_regex_on_clean_input(self):
+        # When ``MallocStackLogging`` is absent, the stripper must not
+        # allocate the regex engine. We can't directly observe the skip,
+        # but we can verify correctness with a payload large enough to
+        # prove the fast path would diverge if it ran the regex (the
+        # regex's MULTILINE+anchored behavior is fine, but ``feed`` should
+        # still pass it through verbatim).
+        big = ("clean line of output, nothing to see here\n" * 5000)
+        s = _MslStreamStripper()
+        assert s.feed(big) == big
+        assert s.flush() == ""
+
+    def test_repeated_calls_keep_state_consistent(self):
+        s = _MslStreamStripper()
+        out = "".join(
+            s.feed(chunk)
+            for chunk in [
+                "MallocStackLogging: a\n",
+                "between\n",
+                "MallocStackLogging: b\n",
+                "tail",
+            ]
+        ) + s.flush()
+        assert "MallocStackLogging" not in out
+        assert "between" in out
+        assert out.endswith("tail")
+
+
+class TestMslDoesNotEvictRealTail:
+    """Regression test for the user's 'truncation breaks every tool' failure.
+
+    Feeds a small real payload followed by a 30 KB MSL flood through the
+    stripper into the bounded collector. Without Layer 1, the flood would
+    evict the real payload's tail. With it, both sentinels survive and no
+    truncation marker is emitted.
+    """
+
+    def test_real_payload_survives_msl_flood(self):
+        real = "HEAD-SENTINEL\n" + ("real payload line\n" * 5) + "TAIL-SENTINEL\n"
+        # Simulate the streaming stripper + collector pipeline.
+        stripper = _MslStreamStripper()
+        collector = _BoundedOutputCollector(2_000)
+        collector.append(stripper.feed(real))
+        # Flood with MSL noise — much larger than the head/tail budget.
+        flood = (
+            "MallocStackLogging: region 0x7f8b1c000000\n"
+            "MallocStackLogging:  - 0xdeadbeef  libc++abi.dylib\n"
+        ) * 5_000
+        collector.append(stripper.feed(flood))
+        carried = stripper.flush()
+        if carried:
+            collector.append(carried)
+
+        rendered = collector.render()
+        assert "HEAD-SENTINEL" in rendered
+        assert "TAIL-SENTINEL" in rendered
+        assert "[OUTPUT TRUNCATED" not in rendered
+        assert "MallocStackLogging" not in rendered

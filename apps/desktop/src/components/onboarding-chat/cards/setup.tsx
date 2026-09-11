@@ -27,7 +27,7 @@ import { setAccentOverride } from '@/themes/accent-override'
 
 export function ConnectorsCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
-  const { commit, done } = useCardCommit()
+  const { commit, done } = useCardCommit('connectors')
   const picked = CONNECTORS.filter(connector => answers.connectors.includes(connector.id))
 
   const toggle = (id: string) =>
@@ -78,7 +78,7 @@ export function ConnectorsCard({ locked }: CardProps) {
 export function LookCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
   const { renderedMode } = useTheme()
-  const { commit, done } = useCardCommit()
+  const { commit, done } = useCardCommit('look')
   const accents = accentsFor(renderedMode === 'dark')
   const accent = answers.accent ?? NOUS_ACCENT
   const picked = accents.find(swatch => swatch.hex === accent.toLowerCase())
@@ -109,7 +109,7 @@ export function LookCard({ locked }: CardProps) {
 
 export function LayoutCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
-  const { commit, done } = useCardCommit()
+  const { commit, done } = useCardCommit('layout')
   // The stored answer defaults to 'basic', but the CHOICE is the point of this
   // step — nothing renders selected (and Continue stays off) until they click.
   // Store-backed: the pick's own layout apply remounts this card (the pane

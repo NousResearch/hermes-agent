@@ -345,6 +345,24 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Host-wide Running cap (Mini RAM). Unset derives from MemTotal on Linux;
+  # macOS/Windows stay unlimited unless you set this.
+  # max_in_progress: 8
+  # Per-profile Running cap. One integer applied to every assignee.
+  # max_in_progress_per_profile: 1
+  # Named pools: one in-flight budget per context, shared across all boards.
+  # A context is whatever you name — grok, spark, claude, codex, a person.
+  # Cards over the cap stay Ready (skipped_pool_capped); they are not dropped.
+  # capacity_pools:
+  #   grok:
+  #     max_in_progress: 6
+  #     members: [rooke, builder, reviewer]
+  #   spark:
+  #     max_in_progress: 1
+  #     members: [coder]
+  #   claude:
+  #     max_in_progress: 3
+  #     members: [planner]
 
 # =============================================================================
 # Terminal Tool Configuration

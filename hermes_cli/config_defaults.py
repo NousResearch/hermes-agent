@@ -1737,6 +1737,14 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Named host-wide admission pools. Each name is an operator-chosen
+        # context (a vendor, a local role, a person, a browser farm — the
+        # dispatcher does not care). Profiles in ``members`` share one
+        # in-flight budget across every board; extras stay Ready as
+        # skipped_pool_capped. Empty = off. Example:
+        #   grok: {max_in_progress: 6, members: [reviewer, researcher]}
+        #   spark: {max_in_progress: 1, members: [coder]}
+        "capacity_pools": {},
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

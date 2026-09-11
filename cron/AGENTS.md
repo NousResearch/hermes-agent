@@ -46,6 +46,10 @@ zero outside a kanban task (footprint ladder rung 3).
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
+  Host cap: `kanban.max_in_progress` (cross-board). Per-profile cap: `kanban.max_in_progress_per_profile`.
+  Named pools: `kanban.capacity_pools.<name>.{max_in_progress, members}` — one budget per
+  operator-named context (vendor, local role, person), counted across every board before
+  claim; overflow stays Ready as `skipped_pool_capped`.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
   own connection helper — do not alias it to `projects_db.connect` (a path-proximity generator did).
 

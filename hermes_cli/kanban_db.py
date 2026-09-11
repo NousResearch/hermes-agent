@@ -219,8 +219,8 @@ def notify_task_updated(
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
-    "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "respawn_guarded", "skipped_per_profile_capped", "skipped_pool_capped",
+    "skipped_unassigned", "skipped_nonspawnable",
 )
 
 
@@ -4094,6 +4094,9 @@ _PLUGIN_COMPAT_LAZY = {
     'check_respawn_guard': ('hermes_cli.kanban_db_dispatch', 'check_respawn_guard'),
     'claim_unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'claim_unseen_events_for_sub'),
     'configured_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'configured_max_in_progress'),
+    'configured_capacity_pools': ('hermes_cli.kanban_db_dispatch', 'configured_capacity_pools'),
+    'normalize_capacity_pools': ('hermes_cli.kanban_db_dispatch', 'normalize_capacity_pools'),
+    'CapacityPool': ('hermes_cli.kanban_db_dispatch', 'CapacityPool'),
     'connect': ('hermes_cli.kanban_db_connect', 'connect'),
     'connect_closing': ('hermes_cli.kanban_db_connect', 'connect_closing'),
     'count_notify_subs': ('hermes_cli.kanban_db_notify', 'count_notify_subs'),

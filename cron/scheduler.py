@@ -325,6 +325,36 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return message
 
 
+def _fire_cron_job_failed_hook(job: dict, error: str | None) -> None:
+    """Fire the ``cron_job_failed`` lifecycle hook on a failed cron run.
+
+    Gives reactive consumers (shell hooks, outbound webhooks, plugins) a
+    programmatic failure signal without polling ``jobs.json`` or wrapping
+    per-job delivery paths.  Best-effort: a hook that raises must never
+    crash the scheduler or mask the original job failure — this mirrors the
+    defensive pattern used by the ``on_session_end`` hook in
+    ``agent/turn_finalizer.py``.
+
+    Fired from the worker thread that ran the job, so blocking hook scripts
+    (``subprocess.run`` inside ``agent/shell_hooks.py``) do not freeze the
+    scheduler's event loop or the main gateway loop.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "cron_job_failed",
+            job_id=job.get("id", ""),
+            job_name=job.get("name") or job.get("id") or "",
+            profile=job.get("profile", ""),
+            error=error or "",
+            last_run_at=job.get("last_run_at") or "",
+            job=job,
+        )
+    except Exception as exc:
+        logger.warning("cron_job_failed hook failed: %s", exc)
+
+
 def _upsert_incident_for_failure(
     job: dict, error: str, *, output_file: Optional[Any] = None
 ) -> tuple[bool, Optional[str]]:
@@ -2642,6 +2672,11 @@ def _save_compose_deliver(
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
         output_file=output_file)
+    # Fire the cron_job_failed hook on failure — before delivery so a broken
+    # hook (or a blocking hook script) can never suppress or delay the failure
+    # message itself; hook failures are swallowed.
+    if not d.success:
+        _fire_cron_job_failed_hook(job, d.error)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     # Not a substring check: bare "SILENT"/"NO_REPLY" or a report quoting "[SILENT]" must
@@ -2746,6 +2781,9 @@ def _deliver_crash_failure(
     job: dict, err_text: str, *, adapters, loop,
 ) -> tuple[Optional[str], str]:
     """Failure notice for a run that raised out of run_job. Returns (delivery_error, outcome)."""
+    # Fire the lifecycle hook first: a crash out of run_job is a job failure
+    # too, and the hook must see it even when the notice itself is ack-suppressed.
+    _fire_cron_job_failed_hook(job, err_text)
     normalized_deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=True))
     # Same ack gate as the normal failure delivery: acked signatures stay silent here too.
     incident_acked, failure_incident_id = _upsert_incident_for_failure(job, err_text)

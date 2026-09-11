@@ -185,6 +185,13 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # Cron job lifecycle hooks. Fired by cron/scheduler.py from the worker
+    # thread that ran the job. Observers only: return values are ignored.
+    #
+    # cron_job_failed kwargs: job_id: str, job_name: str, profile: str,
+    #   error: str, last_run_at: str, job: dict (full job spec — schedule,
+    #   prompt, script, deliver, skills — for reactive self-healing).
+    "cron_job_failed",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

@@ -9987,6 +9987,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
                     "base_url": profile_url,
                     "api_mode": "chat_completions",
                     "reasoning_config": reasoning,
+                    "service_tier": "normal",
                 },
             }
         ]

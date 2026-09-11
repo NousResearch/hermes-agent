@@ -1557,7 +1557,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
         # An empty dict is still a real (present) reasoning config.
         "reasoning_config": reasoning_config if isinstance(reasoning_config, dict) else None,
-        "service_tier": getattr(agent, "service_tier", None),
+        "service_tier": (agent.service_tier or "normal") if hasattr(agent, "service_tier") else None,
     }
     for key, value in live.items():
         if value or isinstance(value, dict):

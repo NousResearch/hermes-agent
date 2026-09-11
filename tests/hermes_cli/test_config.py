@@ -1873,3 +1873,11 @@ class TestConfigCommandFailClosedSurface:
         assert excinfo.value.code == 1
         assert "not valid YAML" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
+
+
+class TestBedrockDefaultConfig:
+    """DEFAULT_CONFIG declares the bedrock.profile default so config.yaml can pin an AWS
+    named profile (SSO / cross-account) without AWS_PROFILE."""
+
+    def test_default_config_declares_profile(self):
+        assert DEFAULT_CONFIG["bedrock"]["profile"] == ""

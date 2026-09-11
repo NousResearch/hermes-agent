@@ -649,6 +649,7 @@ DEFAULT_CONFIG = {
     "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
+        "profile": "",  # AWS named profile for Bedrock auth (empty = AWS_PROFILE/default chain)
         "discovery": {
             "enabled": True,           # auto-discover models via ListFoundationModels
             "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]

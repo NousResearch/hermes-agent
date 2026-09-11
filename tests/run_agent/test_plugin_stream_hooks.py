@@ -332,7 +332,7 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.cfg_get", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         "agent.bedrock_adapter._get_bedrock_runtime_client",
-        lambda _region: SimpleNamespace(converse_stream=lambda **_kwargs: {"stream": []}),
+        lambda _region, _profile=None: SimpleNamespace(converse_stream=lambda **_kwargs: {"stream": []}),
     )
     monkeypatch.setattr("agent.bedrock_adapter.is_stale_connection_error", lambda _exc: False)
     monkeypatch.setattr("agent.bedrock_adapter.is_streaming_access_denied_error", lambda _exc: False)

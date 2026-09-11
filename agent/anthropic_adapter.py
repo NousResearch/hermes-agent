@@ -414,11 +414,16 @@ def build_anthropic_bedrock_client(region: str):
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
-    return sdk.AnthropicBedrock(
+    client_kwargs = dict(
         aws_region=region, timeout=_client_timeout(None),
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers=_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]),
     )
+    from agent.bedrock_adapter import resolve_bedrock_profile
+    profile = resolve_bedrock_profile()  # config.yaml bedrock.profile (SSO / cross-account)
+    if profile:
+        client_kwargs["aws_profile"] = profile
+    return sdk.AnthropicBedrock(**client_kwargs)
 
 
 def _normalize_to_mcp_wire(name: str) -> str:

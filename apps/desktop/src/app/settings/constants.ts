@@ -250,7 +250,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'dashscope'],
+  'stt.dashscope.model': ['qwen3-asr-flash'],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
   // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
@@ -335,6 +336,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'minimax',
     'mistral',
     'gemini',
+    'dashscope',
     'neutts',
     'kittentts',
     'piper'
@@ -343,6 +345,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  'tts.dashscope.model': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
+  'tts.dashscope.voice': ['Cherry', 'Serena', 'Ethan', 'Chelsie'],
+  'tts.dashscope.language_type': ['Auto', 'Chinese', 'English', 'Japanese', 'Korean'],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
@@ -365,6 +370,8 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.minimax.voice_id',
   'tts.mistral.model',
   'tts.mistral.voice_id',
+  'tts.dashscope.model',
+  'tts.dashscope.voice',
   'tts.neutts.model',
   'tts.kittentts.model',
   'tts.kittentts.voice',
@@ -727,6 +734,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.mistral.voice_id',
       'tts.gemini.model',
       'tts.gemini.voice',
+      'tts.dashscope.model',
+      'tts.dashscope.voice',
+      'tts.dashscope.language_type',
       'tts.neutts.model',
       'tts.neutts.device',
       'tts.kittentts.model',
@@ -739,6 +749,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.openai.model',
       'stt.groq.model',
       'stt.mistral.model',
+      'stt.dashscope.model',
+      'stt.dashscope.language',
+      'stt.dashscope.enable_itn',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',

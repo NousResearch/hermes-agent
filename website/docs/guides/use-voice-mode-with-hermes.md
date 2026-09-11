@@ -130,6 +130,7 @@ Add to `~/.hermes/.env`:
 # Cloud STT options (local needs no key)
 GROQ_API_KEY=***
 VOICE_TOOLS_OPENAI_KEY=***
+DASHSCOPE_API_KEY=***
 
 # Premium TTS (optional)
 ELEVENLABS_API_KEY=***
@@ -142,6 +143,7 @@ ELEVENLABS_API_KEY=***
 - `local` → best default for privacy and zero-cost use
 - `groq` → very fast cloud transcription
 - `openai` → good paid fallback
+- `dashscope` → Qwen3-ASR with strong Chinese and multilingual support
 
 #### Text-to-speech
 
@@ -150,6 +152,7 @@ ELEVENLABS_API_KEY=***
 - `elevenlabs` → best quality
 - `openai` → good middle ground
 - `mistral` → multilingual, native Opus
+- `dashscope` → Qwen3-TTS with Chinese and multilingual system voices
 
 ### If you use `hermes setup`
 
@@ -185,6 +188,28 @@ tts:
 ```
 
 This is a good conservative default for most people.
+
+To use Alibaba Cloud DashScope for both directions, store `DASHSCOPE_API_KEY` in `.env` and select it with `hermes tools`, or set the equivalent config values:
+
+```yaml
+stt:
+  provider: "dashscope"
+  dashscope:
+    model: "qwen3-asr-flash"
+    language: "zh"       # optional; blank inherits stt.language
+    enable_itn: true
+
+tts:
+  provider: "dashscope"
+  dashscope:
+    model: "qwen3-tts-flash"
+    voice: "Cherry"
+    language_type: "Chinese"
+```
+
+For a regional or workspace-specific endpoint, set `stt.dashscope.base_url` and `tts.dashscope.base_url` to its native `/api/v1` root. Do not point these fields at DashScope's `/compatible-mode/v1` chat endpoint; Hermes uses the native multimodal-generation API for voice.
+
+To let DashScope auto-detect the spoken language, leave both `stt.dashscope.language` and the global `stt.language` blank.
 
 In the TUI, `voice.submit_mode` controls what happens after transcription:
 

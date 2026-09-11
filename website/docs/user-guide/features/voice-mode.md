@@ -97,6 +97,7 @@ Add to `~/.hermes/.env`:
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
+DASHSCOPE_API_KEY=your-key             # DashScope Qwen ASR/TTS — paid (cloud)
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
@@ -192,6 +193,8 @@ voice:
 ```
 
 Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
+
+DashScope uses its native multimodal protocol, so remote desktop sessions automatically use the authenticated relay path for DashScope STT/TTS.
 
 ### Barge-in
 

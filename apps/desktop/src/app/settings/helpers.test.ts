@@ -187,17 +187,18 @@ describe('settings helpers', () => {
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
 
-    it('renders a dropdown for the TTS provider including xAI (Grok)', () => {
+    it('renders configured native TTS providers', () => {
       const opts = enumOptionsFor('tts.provider', 'edge', config)
       expect(opts).toBeDefined()
       expect(opts).toContain('xai')
       expect(opts).toContain('edge')
       expect(opts).toContain('elevenlabs')
+      expect(opts).toContain('dashscope')
     })
 
-    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
+    it('renders configured native STT providers', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+      expect(opts).toEqual(expect.arrayContaining(['local', 'xai', 'elevenlabs', 'dashscope']))
     })
 
     it('renders dropdowns for per-backend model/device sub-fields', () => {

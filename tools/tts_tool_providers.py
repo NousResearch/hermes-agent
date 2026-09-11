@@ -1,4 +1,4 @@
-"""Cloud TTS backends for ``tools.tts_tool``: Edge, ElevenLabs, xAI, MiniMax, Mistral, Gemini.
+"""Cloud TTS backends for ``tools.tts_tool``: Edge, ElevenLabs, xAI, MiniMax, Mistral, Gemini, DashScope.
 
 Each ``_generate_<provider>(text, output_path, tts_config) -> path`` writes one final-encoded
 file. Shared here: bounded upstream response reading (16 MiB cap so a hostile endpoint can't
@@ -53,6 +53,10 @@ DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
+DEFAULT_DASHSCOPE_TTS_MODEL = "qwen3-tts-flash"
+DEFAULT_DASHSCOPE_TTS_VOICE = "Cherry"
+DEFAULT_DASHSCOPE_TTS_LANGUAGE = "Auto"
+DEFAULT_DASHSCOPE_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
 TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
@@ -147,6 +151,63 @@ def _write_bytes(output_path: str, audio_bytes: bytes) -> str:
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
     return output_path
+
+
+def _dashscope_audio_download_url(value: Any) -> str:
+    """Return an encrypted download URL, upgrading DashScope's documented OSS HTTP URLs."""
+    if not isinstance(value, str):
+        raise RuntimeError("DashScope TTS returned an invalid audio URL")
+    try:
+        parsed = urlparse(value)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.username or parsed.password or not hostname:
+            raise ValueError
+        if parsed.scheme == "https":
+            return value
+        if parsed.scheme == "http" and parsed.port is None and hostname.endswith(".aliyuncs.com"):
+            return parsed._replace(scheme="https").geturl()
+    except ValueError:
+        pass
+    raise RuntimeError("DashScope TTS returned an invalid audio URL")
+
+
+def _generate_dashscope_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate Qwen speech through DashScope's native multimodal endpoint."""
+    import requests
+
+    api_key = _require_key(
+        "DASHSCOPE_API_KEY", "dashscope",
+        "Configure Alibaba Cloud DashScope in `hermes tools`.")
+    config = _section(tts_config, "dashscope")
+    base_url = str(config.get("base_url") or DEFAULT_DASHSCOPE_TTS_BASE_URL).strip().rstrip("/")
+    payload = {
+        "model": config.get("model") or DEFAULT_DASHSCOPE_TTS_MODEL,
+        "input": {
+            "text": text,
+            "voice": config.get("voice") or DEFAULT_DASHSCOPE_TTS_VOICE,
+            "language_type": config.get("language_type") or DEFAULT_DASHSCOPE_TTS_LANGUAGE,
+        },
+    }
+    response = _post_json(
+        f"{base_url}/services/aigc/multimodal-generation/generation", payload,
+        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+    body = _read_tts_response_json(response, label="DashScope TTS")
+    if response.status_code != 200:
+        detail = body.get("message") or body.get("code") or f"HTTP {response.status_code}"
+        raise RuntimeError(f"DashScope TTS API error (HTTP {response.status_code}): {detail}")
+    try:
+        audio_url = body["output"]["audio"]["url"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("DashScope TTS response did not include output.audio.url") from exc
+    audio_url = _dashscope_audio_download_url(audio_url)
+    audio_response = requests.get(audio_url, timeout=60, stream=True, allow_redirects=False)
+    if audio_response.status_code != 200:
+        _close_response(audio_response)
+        raise RuntimeError(f"DashScope TTS audio download failed (HTTP {audio_response.status_code})")
+    audio = _read_tts_response_bytes(audio_response, label="DashScope TTS audio")
+    if not audio:
+        raise RuntimeError("DashScope TTS audio download returned an empty body")
+    return _write_wav_bytes_as(audio, output_path)
 
 
 def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str], **extra: Any):

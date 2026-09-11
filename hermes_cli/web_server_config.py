@@ -100,11 +100,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "tts.provider": _select(
         "Text-to-speech provider",
-        "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
+        "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "dashscope", "neutts", "kittentts", "piper",
     ),
     # "mistral" temporarily removed — mistralai PyPI package quarantined
     # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-    "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
+    "stt.provider": _select(
+        "Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs", "dashscope",
+        category="stt",
+    ),
     "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
     "stt.groq.model": _select(
         "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
@@ -113,6 +116,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
     ),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    "stt.dashscope.model": _select("DashScope transcription model", "qwen3-asr-flash"),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
@@ -227,13 +231,14 @@ def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[
 
 
 def _config_schema_with_virtual_fields() -> Dict[str, Dict[str, Any]]:
-    """DEFAULT_CONFIG schema plus the virtual ``model_context_length`` field, inserted right
-    after ``model`` so it renders adjacent in the frontend."""
+    """DEFAULT_CONFIG schema plus virtual fields that intentionally have no seeded default."""
     ordered: Dict[str, Dict[str, Any]] = {}
     for key, entry in _build_schema_from_config(DEFAULT_CONFIG).items():
         ordered[key] = entry
         if key == "model":
             ordered["model_context_length"] = _SCHEMA_OVERRIDES["model_context_length"]
+        if key == "stt.enabled":
+            ordered["stt.provider"] = _SCHEMA_OVERRIDES["stt.provider"]
     return ordered
 
 

@@ -1,7 +1,7 @@
 """Cloud STT providers.
 
-OpenAI-SDK-shaped backends (groq, openai, deepinfra), Mistral Voxtral, REST multipart
-backends (xAI, ElevenLabs), and OpenAI audio credential resolution (config > keyless
+OpenAI-SDK-shaped backends (groq, openai, deepinfra), Mistral Voxtral, DashScope Qwen,
+REST multipart backends (xAI, ElevenLabs), and OpenAI audio credential resolution (config > keyless
 local server > env > managed Nous gateway). Facade-owned state and helpers
 (``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``,
 ``get_env_value``) are read lazily from ``tools.transcription_tools``.
@@ -9,7 +9,9 @@ local server > env > managed Nous gateway). Facade-owned state and helpers
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
 import re
 import tempfile
 from pathlib import Path
@@ -19,7 +21,7 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
+    DASHSCOPE_STT_BASE_URL, DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
     OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
@@ -188,6 +190,71 @@ def _transcribe_mistral(
         return _ok_result(transcript_text, "mistral")
     except Exception as e:
         return _cloud_failure(e, file_path, "Mistral transcription", type(e).__name__)
+
+
+def _dashscope_transcript(body: Dict[str, Any]) -> str:
+    """Text from DashScope's native multimodal response."""
+    try:
+        content = body["output"]["choices"][0]["message"]["content"]
+        if isinstance(content, str):
+            return content.strip()
+        return "".join(str(part.get("text") or "") for part in content if isinstance(part, dict)).strip()
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+_DASHSCOPE_ASR_INPUT_LIMIT_BYTES = 10 * 1024 * 1024
+
+
+def _dashscope_audio_data_url(file_path: str) -> str:
+    """Read and encode one local file for DashScope's transmitted input."""
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    if mime_type == "audio/x-wav":
+        mime_type = "audio/wav"
+    encoded = base64.b64encode(Path(file_path).read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _transcribe_dashscope(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe through DashScope's native multimodal-generation endpoint."""
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+
+    api_key = _resolve_provider_key("DASHSCOPE_API_KEY", "dashscope")
+    if not api_key:
+        return _error_result("DASHSCOPE_API_KEY not set")
+    config = _get_stt_section(_load_stt_config(), "dashscope")
+    base_url = str(config.get("base_url") or DASHSCOPE_STT_BASE_URL).strip().rstrip("/")
+    audio = _dashscope_audio_data_url(file_path)
+    if len(audio) > _DASHSCOPE_ASR_INPUT_LIMIT_BYTES:
+        return _error_result("DashScope Qwen ASR accepts encoded audio input up to 10 MB")
+    messages = []
+    if prompt:
+        messages.append({"role": "system", "content": [{"text": prompt}]})
+    messages.append({"role": "user", "content": [{"audio": audio}]})
+    asr_options: Dict[str, Any] = {}
+    language = language or _resolve_stt_language("dashscope")
+    if language:
+        asr_options["language"] = language
+    if "enable_itn" in config:
+        asr_options["enable_itn"] = bool(config["enable_itn"])
+    payload: Dict[str, Any] = {"model": model_name, "input": {"messages": messages}}
+    if asr_options:
+        payload["parameters"] = {"asr_options": asr_options}
+
+    def _post():
+        import requests
+        return requests.post(
+            f"{base_url}/services/aigc/multimodal-generation/generation",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload, timeout=120)
+
+    return _rest_provider(
+        file_path, "dashscope", "DashScope STT", _post,
+        lambda body: body.get("message") or body.get("code"), _dashscope_transcript,
+        lambda text, _body: logger.info(
+            "Transcribed %s via DashScope (%s, %d chars)", Path(file_path).name, model_name, len(text)))
 
 
 # ---- REST multipart backends (xAI, ElevenLabs) ----------------------------

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Text-to-speech tool: config resolution, built-in provider dispatch, output policy, registration.
 
-Built-ins: Edge (free default), ElevenLabs, OpenAI, DeepInfra, MiniMax, Mistral, Gemini, xAI,
+Built-ins: Edge (free default), ElevenLabs, OpenAI, DeepInfra, MiniMax, Mistral, Gemini, xAI, DashScope,
 local NeuTTS / KittenTTS / Piper; plus ``type: command`` providers under ``tts.providers.<name>``
 and plugin-registered ones. Output is Opus (.ogg) on voice-bubble platforms, MP3 elsewhere.
 Sibling ``tts_tool_*`` modules hold backends/delivery/lifecycle; they read the seams defined
@@ -51,7 +51,7 @@ from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
 from tools.tts_tool_providers import (
-    _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
+    _generate_dashscope_tts, _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
 from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
 from tools.tts_tool_plugins import (
@@ -159,7 +159,7 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper", "dashscope"})
 
 
 # --- Built-in provider dispatch ---
@@ -178,6 +178,7 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
                 "Mistral provider selected but 'mistralai' package not installed. "
                 "Run `hermes setup` to install Mistral support."),
     "gemini": (None, "Google Gemini TTS", "_generate_gemini_tts", None),
+    "dashscope": (None, "DashScope Qwen TTS", "_generate_dashscope_tts", None),
     "neutts": (lambda: _check_neutts_available(), "NeuTTS (local)", "_generate_neutts",
                "NeuTTS provider selected but neutts is not installed. "
                "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."),
@@ -286,7 +287,8 @@ def _resolve_output_base(
 
     A caller path is rejected on ``..`` traversal (bug or prompt-injection; absolute is fine) and
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
-    command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
+    command format, ``.ogg`` for native-Opus providers on Opus platforms, ``.wav`` for DashScope's
+    fixed synchronous response, else ``.mp3``."""
     if output_path:
         from tools.path_security import has_traversal_component
         if has_traversal_component(output_path):
@@ -305,7 +307,8 @@ def _resolve_output_base(
         if command_provider_config is not None:
             ext = _get_command_tts_output_format(command_provider_config)
         else:
-            ext = "ogg" if want_opus and provider in _NATIVE_OPUS_PROVIDERS else "mp3"
+            ext = "ogg" if want_opus and provider in _NATIVE_OPUS_PROVIDERS else (
+                "wav" if provider == "dashscope" else "mp3")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         file_path = Path(_default_output_dir()) / f"tts_{timestamp}.{ext}"
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -504,6 +507,7 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "xai": _xai_requirements,
     "gemini": lambda: bool(_resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")),
     "mistral": lambda: _importable(_import_mistral_client) and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
+    "dashscope": lambda: bool(_resolve_provider_key("DASHSCOPE_API_KEY", "dashscope")),
     "neutts": lambda: _check_neutts_available(),
     "kittentts": lambda: _check_kittentts_available(),
     "piper": lambda: _check_piper_available()}
@@ -530,7 +534,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific per-request character caps apply automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); longer input is split into ordered chunks without silent truncation."
+                "description": "The text to convert to speech. Provider-specific per-request character caps apply automatically (OpenAI 4096, xAI 15000, MiniMax 10000, DashScope 500, ElevenLabs 5k-40k depending on model); longer input is split into ordered chunks without silent truncation."
             },
             "output_path": {
                 "type": "string",
@@ -553,7 +557,7 @@ TTS_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional TTS provider override. Accepts built-in names "
-                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
+                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, dashscope, "
                     "neutts, kittentts, piper), user-declared command provider "
                     "names from tts.providers.<name>, or plugin-registered names. "
                     "When omitted, the configured tts.provider from config.yaml is used."

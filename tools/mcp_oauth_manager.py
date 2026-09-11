@@ -287,7 +287,7 @@ class MCPOAuthManager:
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config)
             if entry.provider is None:
-                entry.provider = self._build_provider(server_name, entry)
+                entry.provider = self._build_provider(server_name, entry, hermes_home=key[0])
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
             return entry.provider
@@ -298,7 +298,9 @@ class MCPOAuthManager:
         home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
-    def _build_provider(self, server_name: str, entry: _ProviderEntry) -> Optional[Any]:
+    def _build_provider(
+        self, server_name: str, entry: _ProviderEntry, *, hermes_home: str | Path | None = None,
+    ) -> Optional[Any]:
         """Build a ``HermesMCPOAuthProvider``; None if the SDK's OAuth support is unavailable."""
         if _HERMES_PROVIDER_CLS is None:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
@@ -308,7 +310,9 @@ class MCPOAuthManager:
         from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
         if not _OAUTH_AVAILABLE:
             return None
-        cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
+        cfg, storage = prepare_oauth_config(
+            server_name, entry.server_url, entry.oauth_config, hermes_home=hermes_home,
+        )
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
@@ -331,6 +335,14 @@ class MCPOAuthManager:
             return
         with self._entries_lock:
             self._entries.setdefault(self._key(server_name, hermes_home), entry)
+
+    @staticmethod
+    def set_entry_persistence_suspended(entry: _ProviderEntry | None, suspended: bool) -> None:
+        """Stop a detached provider from overwriting a newer reauth result."""
+        storage = getattr(getattr(entry, "provider", None), "context", None)
+        setter = getattr(getattr(storage, "storage", None), "set_persistence_suspended", None)
+        if callable(setter):
+            setter(suspended)
 
     def evict(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
         """Drop only the in-process provider, preserving persisted OAuth state."""

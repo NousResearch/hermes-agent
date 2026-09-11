@@ -121,14 +121,17 @@ class HermesProviderMixin:
         return True
 
 
-def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:
+def prepare_oauth_config(
+    server_name: str, server_url: str, oauth_config: dict | None, *, hermes_home=None,
+) -> tuple[dict, "HermesTokenStorage"]:
     """Copy the ``oauth:`` block, apply provider defaults, open its token storage. The copy
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config."""
     from tools import mcp_oauth as mo
     cfg = dict(oauth_config or {})
     mo.apply_oauth_provider_defaults(cfg, server_name=server_name, server_url=server_url)
-    return cfg, mo.HermesTokenStorage(server_name)
+    staging_home = mo.get_oauth_reauth_staging_home(server_name, hermes_home=hermes_home)
+    return cfg, mo.HermesTokenStorage(server_name, hermes_home=staging_home or hermes_home)
 
 
 def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy_hint: bool) -> dict[str, Any]:

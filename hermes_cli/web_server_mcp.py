@@ -119,41 +119,48 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth
+        from tools.mcp_oauth import (
+            HermesTokenStorage,
+            force_interactive_oauth,
+            oauth_reauth_staging,
+            oauth_reauth_transaction,
+        )
         from tools.mcp_oauth_manager import get_manager
 
         home_token = set_hermes_home_override(flow.hermes_home)
         secret_token = set_secret_scope(build_profile_secret_scope(Path(flow.hermes_home)))
         try:
-            transaction = _mcp_oauth_transaction(flow)
-            with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
+            with oauth_reauth_transaction(flow.server_name, hermes_home=flow.hermes_home), force_interactive_oauth(), dashboard_oauth_flow(flow):
                 manager = get_manager()
-                storage = HermesTokenStorage(flow.server_name)
-                backup = storage.snapshot()
-                previous_entry = None
-                try:
-                    previous_entry = manager.remove(flow.server_name, hermes_home=flow.hermes_home)
-                    tools = _probe_single_server(
-                        flow.server_name,
-                        cfg,
-                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
-                    )
-                    if not _oauth_tokens_present(flow.server_name):
-                        raise RuntimeError(
-                            "The server responded, but no OAuth token was obtained — "
-                            "this provider may require a manually-registered OAuth client."
+                storage = HermesTokenStorage(flow.server_name, hermes_home=flow.hermes_home)
+                with oauth_reauth_staging(flow.server_name, hermes_home=flow.hermes_home) as staged_storage:
+                    previous_entry = manager.evict(flow.server_name, hermes_home=flow.hermes_home)
+                    manager.set_entry_persistence_suspended(previous_entry, True)
+                    try:
+                        tools = _probe_single_server(
+                            flow.server_name,
+                            cfg,
+                            connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
                         )
-                    _save_mcp_server(flow.server_name, cfg)
-                    flow.tools = [{"name": t, "description": d} for t, d in tools]
-                    flow.mark_approved()
-                    if flow.reconnect_live:
-                        from tools.mcp_tool_loop import reconnect_mcp_server
+                        if not staged_storage.has_cached_tokens():
+                            raise RuntimeError(
+                                "The server responded, but no OAuth token was obtained — "
+                                "this provider may require a manually-registered OAuth client."
+                            )
+                        storage.restore(staged_storage.snapshot())
+                        manager.evict(flow.server_name, hermes_home=flow.hermes_home)
+                        _save_mcp_server(flow.server_name, cfg)
+                        flow.tools = [{"name": t, "description": d} for t, d in tools]
+                        flow.mark_approved()
+                        if flow.reconnect_live:
+                            from tools.mcp_tool_loop import reconnect_mcp_server
 
-                        reconnect_mcp_server(flow.server_name)
-                except Exception:
-                    storage.restore(backup, only_if_absent=True)
-                    manager.restore_entry(flow.server_name, previous_entry, hermes_home=flow.hermes_home)
-                    raise
+                            reconnect_mcp_server(flow.server_name)
+                    except Exception:
+                        manager.evict(flow.server_name, hermes_home=flow.hermes_home)
+                        manager.set_entry_persistence_suspended(previous_entry, False)
+                        manager.restore_entry(flow.server_name, previous_entry, hermes_home=flow.hermes_home)
+                        raise
         finally:
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)

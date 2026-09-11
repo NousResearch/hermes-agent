@@ -84,32 +84,35 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
 def _probe_with_rollback(
     server_name: str, cfg: dict, hermes_home: str, flow, reconnect_live: bool) -> None:
     """Run the OAuth probe; on ANY failure restore the prior token file + manager entry."""
-    from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
+    from tools.mcp_oauth import HermesTokenStorage, oauth_reauth_staging
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
-    storage = HermesTokenStorage(server_name)
-    backup = storage.snapshot()
-    previous_entry = None
-    try:
-        previous_entry = manager.remove(server_name, hermes_home=hermes_home)
-        timeout = max(float(cfg.get("connect_timeout", 0) or 0), 315)
-        tools = _probe_single_server(server_name, cfg, connect_timeout=timeout)
-        if not _oauth_tokens_present(server_name):
-            raise RuntimeError(
-                "The server responded, but no OAuth token was obtained — "
-                "this provider may require a manually-registered OAuth client.")
-        _save_mcp_server(server_name, cfg)
-        if flow is not None:
-            flow.tools = [{"name": t, "description": d} for t, d in tools]
-            flow.mark_approved()
-        if reconnect_live:
-            from tools.mcp_tool_loop import reconnect_mcp_server
-            reconnect_mcp_server(server_name)
-    except Exception:
-        storage.restore(backup, only_if_absent=True)
-        manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
-        raise
+    storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
+    with oauth_reauth_staging(server_name, hermes_home=hermes_home) as staged_storage:
+        previous_entry = manager.evict(server_name, hermes_home=hermes_home)
+        manager.set_entry_persistence_suspended(previous_entry, True)
+        try:
+            timeout = max(float(cfg.get("connect_timeout", 0) or 0), 315)
+            tools = _probe_single_server(server_name, cfg, connect_timeout=timeout)
+            if not staged_storage.has_cached_tokens():
+                raise RuntimeError(
+                    "The server responded, but no OAuth token was obtained — "
+                    "this provider may require a manually-registered OAuth client.")
+            storage.restore(staged_storage.snapshot())
+            manager.evict(server_name, hermes_home=hermes_home)
+            _save_mcp_server(server_name, cfg)
+            if flow is not None:
+                flow.tools = [{"name": t, "description": d} for t, d in tools]
+                flow.mark_approved()
+            if reconnect_live:
+                from tools.mcp_tool_loop import reconnect_mcp_server
+                reconnect_mcp_server(server_name)
+        except Exception:
+            manager.evict(server_name, hermes_home=hermes_home)
+            manager.set_entry_persistence_suspended(previous_entry, False)
+            manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
+            raise
 
 
 def _worker(
@@ -123,11 +126,11 @@ def _worker(
         from agent.secret_scope import (
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_oauth import force_interactive_oauth, oauth_reauth_transaction
         home_token = set_hermes_home_override(hermes_home)
         secret_token = set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
         try:
-            with force_interactive_oauth(), dashboard_oauth_flow(flow):
+            with oauth_reauth_transaction(server_name, hermes_home=hermes_home), force_interactive_oauth(), dashboard_oauth_flow(flow):
                 _probe_with_rollback(server_name, cfg, hermes_home, flow, reconnect_live)
         finally:
             reset_secret_scope(secret_token)

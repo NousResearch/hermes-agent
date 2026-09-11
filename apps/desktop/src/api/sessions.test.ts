@@ -11,7 +11,7 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
+const { deleteSession, searchSessions, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
   await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
@@ -172,5 +172,29 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+})
+
+// Search must honor the same source exclusions the sidebar recents slice uses
+// (`sessions.exclude_sources`): the backend has always accepted
+// `exclude_sources`, but search sent only `q`, so a term that lives inside an
+// A2A dispatch would surface a row the sidebar itself hides.
+describe('searchSessions source exclusions', () => {
+  it('sends only the query when no exclusions are configured', async () => {
+    hermesApi.mockResolvedValue({ results: [] } as never)
+
+    await searchSessions('baozun')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({ path: '/api/sessions/search?q=baozun' })
+  })
+
+  it('passes the configured exclusions so a hidden row stays hidden in search', async () => {
+    hermesApi.mockResolvedValue({ results: [] } as never)
+
+    await searchSessions('baozun', ['a2a', 'cron'])
+
+    expect((hermesApi.mock.calls[0][0] as { path: string }).path).toBe(
+      '/api/sessions/search?q=baozun&exclude_sources=a2a%2Ccron'
+    )
   })
 })

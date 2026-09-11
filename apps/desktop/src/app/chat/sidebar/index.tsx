@@ -5,6 +5,7 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -27,7 +28,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
+import { configuredExcludeSources, normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
@@ -642,6 +643,16 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
+  // Search honors the same source exclusions as the recents slice
+  // (`sessions.exclude_sources`, `a2a` by default): a hit inside an excluded
+  // source must not resurface a row the list itself hides.
+  const { data: searchConfigRecord } = useHermesConfigRecord()
+
+  const searchExcludeSources = useMemo(
+    () => configuredExcludeSources(searchConfigRecord),
+    [searchConfigRecord]
+  )
+
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
   // client-side and merged ahead of the server hits.
@@ -658,7 +669,7 @@ export function ChatSidebar({
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void searchSessions(trimmedQuery, searchExcludeSources)
         .then(res => {
           if (!cancelled) {
             setServerMatches(res.results)
@@ -676,7 +687,7 @@ export function ChatSidebar({
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, searchExcludeSources])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {

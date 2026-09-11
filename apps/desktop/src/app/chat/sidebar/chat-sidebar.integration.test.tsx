@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -24,25 +25,31 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
+// The sidebar reads the shared config record (sessions.exclude_sources, the
+// extra sources its recents list and search must hide) through React Query, so
+// every render needs a QueryClientProvider — a fresh client per render, or a
+// cached config from one test leaks into the next.
 const renderSidebar = (pathname: string, currentView: AppView) =>
   render(
-    <MemoryRouter initialEntries={[pathname]}>
-      <SidebarProvider>
-        <ChatSidebar
-          currentView={currentView}
-          onArchiveSession={noop}
-          onBranchSession={noop}
-          onDeleteSession={noop}
-          onLoadMoreSessions={noop}
-          onManageCronJob={noop}
-          onNavigate={noop}
-          onNewSessionInWorkspace={noop}
-          onNewSessionSplit={noop}
-          onResumeSession={noop}
-          onTriggerCronJob={noopAsync}
-        />
-      </SidebarProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={[pathname]}>
+        <SidebarProvider>
+          <ChatSidebar
+            currentView={currentView}
+            onArchiveSession={noop}
+            onBranchSession={noop}
+            onDeleteSession={noop}
+            onLoadMoreSessions={noop}
+            onManageCronJob={noop}
+            onNavigate={noop}
+            onNewSessionInWorkspace={noop}
+            onNewSessionSplit={noop}
+            onResumeSession={noop}
+            onTriggerCronJob={noopAsync}
+          />
+        </SidebarProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   )
 
 const currentButtons = () =>

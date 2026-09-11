@@ -74,9 +74,9 @@ const TOUR_QUESTION = 'Want a look around first?'
  *  click-through, but three highlighted buttons with a line each beats three
  *  lines of prose describing buttons the user then has to go find. */
 export const TOUR_OPTIONS = {
-  basics: 'Just the basics',
-  none: "I'll figure it out",
-  tour: 'Show me around'
+  basics: 'Quick tour',
+  none: 'Skip, let’s build something',
+  tour: 'Show me everything'
 } as const
 
 /**
@@ -187,12 +187,12 @@ export function buildChatOnboardingPrompt(suggestedName?: string | null, signedI
           'In that same turn, once, mention in ONE short clause that wiring those up later will want a model provider — a free Nous account is there if they want it, free tier, no card, and they can bring their own provider instead — then move straight on. Do not sell it, do not list providers, do not ask them to do it now, and never bring it up again: they will be asked properly at the point it actually matters.'
         ]),
     '3. Then their layout: one short sentence, then ::onboarding{step="layout"} on a line of its own.',
-    `4. The app has just arranged itself around this chat, so offer them a look at it: one short sentence, then the line ::ask{question="${TOUR_QUESTION}" options="${TOUR_OPTIONS.basics}|${TOUR_OPTIONS.tour}|${TOUR_OPTIONS.none}"} alone as its own paragraph. Branch on the answer, then go straight to step 5 whichever they picked.`,
+    `4. The app has just arranged itself around this chat, so offer them a look at it: one short sentence, then the line ::ask{question="${TOUR_QUESTION}" options="${TOUR_OPTIONS.basics}|${TOUR_OPTIONS.tour}|${TOUR_OPTIONS.none}"} alone as its own paragraph. Branch on the answer, then go straight to step 5 IN THE SAME TURN whichever they picked — the tour overlay has its own Done button and ending your turn on it strands them with nothing to click next.`,
     `   - "${TOUR_OPTIONS.basics}": three steps, the essentials only — where their conversations live, where they ask for a job, and how to start a fresh one. Point at each and say one useful thing about it.`,
     `   - "${TOUR_OPTIONS.tour}": 4 to 6 steps, a proper look around — the essentials plus whatever else the layout they just picked actually gives them.`,
-    `   Both of those run the tour tool the same way: call it with action="targets" FIRST and build only out of what it actually reports, preferring the targets marked stable — never invent a selector, and if a piece you wanted is not in the list, drop that step rather than guessing at it. Then ONE action="start" call, each step a few words of title and one plain sentence of body. One short line before the call and one after; the tour does the talking.`,
-    `   - "${TOUR_OPTIONS.none}": one short line, and move on.`,
-    '   Whichever they picked, the line you close that turn on tells them the tour is always on offer: they can ask you to show them any part of this, any time. Say it in your own words, once, and never bring it up again.',
+    `   Both of those run the tour tool the same way: call it with action="targets" FIRST and build only out of what it actually reports, preferring the targets marked stable — never invent a selector, and if a piece you wanted is not in the list, drop that step rather than guessing at it. Then ONE action="start" call, each step a few words of title and one plain sentence of body. One short line before the call; after it returns, the fork (step 5) follows in this same turn so the ask is waiting under the tour when they close it.`,
+    `   - "${TOUR_OPTIONS.none}": no line about the tour at all, straight to step 5.`,
+    '   Once, in your own words, somewhere in that turn: the tour is always on offer, they can ask you to show them any part of this any time. Never bring it up again.',
     `5. Then the fork: one short sentence in your own words — you want to actually build them something, not just talk about it — then the line ::ask{question="${FORK_QUESTION}" options="${forkOptions().join('|')}" input="true"} alone as its own paragraph.`,
     ...(fallback.length
       ? [

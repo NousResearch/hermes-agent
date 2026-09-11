@@ -8,6 +8,7 @@ on.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -82,6 +83,99 @@ def mock_pyright(monkeypatch, tmp_path):
         next(gen)
     except StopIteration:
         pass
+
+
+@pytest.fixture
+def mock_pyright_silent(monkeypatch, tmp_path):
+    """Install the silent mock as ``pyright`` (never pushes diagnostics).
+
+    The silent server accepts the open but never publishes diagnostics
+    for the pre-edit content and rejects the pull channel, so the
+    baseline snapshot has to wait out its full budget — exactly the
+    slow-server shape from the wait_timeout report.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("")
+    monkeypatch.chdir(str(repo))
+    gen = _install_mock_server(monkeypatch, "silent", "pyright")
+    next(gen)
+    yield repo
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+
+
+def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
+    """``snapshot_baseline`` must wait at most ``lsp.wait_timeout``, not
+    the hardcoded client fallback of 5s.
+
+    Regression for the report that a 2s wait_timeout was ignored by the
+    baseline path: the wait ran without a timeout and fell back to
+    ``DIAGNOSTICS_DOCUMENT_WAIT`` (5s).  The silent mock never pushes,
+    so the elapsed time directly exposes the effective wait budget.
+    """
+    repo = mock_pyright_silent
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+    )
+    try:
+        start = time.monotonic()
+        svc.snapshot_baseline(str(f))
+        elapsed = time.monotonic() - start
+
+        # The wait is deadline-based: it always runs the full budget
+        # (never less than wait_timeout) and the server never pushes,
+        # so both bounds are stable under load.
+        assert elapsed >= 1.5, f"baseline returned before the wait budget: {elapsed:.2f}s"
+        assert elapsed < 4.5, (
+            f"baseline ignored wait_timeout=2.0 and ran the 5s fallback: {elapsed:.2f}s"
+        )
+        assert svc.get_status()["broken"] == []
+        # No fresh data pre-edit -> empty (never stale) baseline.
+        assert svc._delta_baseline[os.path.abspath(str(f))] == []
+    finally:
+        svc.shutdown()
+
+
+def test_snapshot_baseline_scales_join_budget_past_8s(mock_pyright_silent):
+    """The outer join budget must scale with ``wait_timeout`` instead of
+    capping at 8s.
+
+    With wait_timeout=10.0 the inner wait takes 10s; an 8s outer cap
+    would fire first, falsely mark the server broken, and truncate the
+    snapshot.  The elapsed time must land between the inner budget and
+    the (now scaled) outer budget, with the server still healthy.
+    """
+    repo = mock_pyright_silent
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=10.0,
+        install_strategy="manual",
+    )
+    try:
+        start = time.monotonic()
+        svc.snapshot_baseline(str(f))
+        elapsed = time.monotonic() - start
+
+        assert elapsed >= 9.5, f"baseline cut short by the outer cap: {elapsed:.2f}s"
+        assert elapsed < 12.5, f"baseline overran the scaled join budget: {elapsed:.2f}s"
+        # A slow-but-alive server must not be marked broken.
+        assert svc.get_status()["broken"] == []
+    finally:
+        svc.shutdown()
 
 
 

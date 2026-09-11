@@ -125,6 +125,20 @@ def test_connector_rpc_uses_owning_profile_and_real_policy_pipeline(runtime, mon
     assert r.owner["history"] == []  # UI consent does not inject a model turn or private-data read.
 
 
+@pytest.mark.parametrize("method", ["connectors.list", "connectors.connect"])
+def test_routing_profile_cannot_change_transport_authority(runtime, method):
+    r = runtime
+    params = {"profile": "another-profile"}
+    if method == "connectors.connect":
+        params["connectors"] = ["gmail"]
+    result = r.call(method, **params)
+    assert "result" in result
+    assert r.wire[0][2]["headers"]["Authorization"] == "Bearer test-profile-bearer"
+    r.wire.clear()
+    assert r.call(method, via=Peer(), **params)["error"]["code"] == 4001
+    assert not r.wire
+
+
 @pytest.mark.parametrize("gate", ["empty", "restricted", "disabled", "config", "account", "guest_off", "flag_off"])
 def test_connector_gates_deny_without_io(runtime, monkeypatch, gate):
     r = runtime
@@ -148,7 +162,7 @@ def test_connector_gates_deny_without_io(runtime, monkeypatch, gate):
 
 
 @pytest.mark.parametrize("method,params", [
-    ("connectors.list", {"session_id": ""}), ("connectors.list", {"profile": "other"}),
+    ("connectors.list", {"session_id": ""}), ("connectors.list", {"identity": "other"}),
     ("connectors.connect", {"connectors": []}), ("connectors.connect", {"connectors": "gmail"}),
     ("connectors.connect", {"connectors": [" Gmail"]}),
     ("connectors.connect", {"connectors": ["gmail"], "reconnect": "false"}),

@@ -43,6 +43,8 @@ def _connector_rpc(rid, params, action):
     if _session_uses_compute_host(owner):
         return _connector_rpc_error(rid, 5033, "UNSUPPORTED_RUNTIME", "Connectors must be managed on the session's compute host.")
     allowed = {"session_id"} if action == "status" else {"session_id", "connectors", "reconnect"}
+    # Shared-primary routing adds this metadata; the live transport above owns authorization.
+    allowed.add("profile")
     if set(params) - allowed:
         return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "unsupported connector parameters")
     args = {"action": action}

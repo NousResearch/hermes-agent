@@ -4,8 +4,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import type * as Gateway from '@/store/gateway'
-import { setSessionOwnerHint } from '@/store/session'
+import { setSessionOwnerHint, setSessions } from '@/store/session'
+import { makeSessionInfo } from '@/test/session-info'
 
+import { ConnectorTool } from './connector-tool'
 import { assistantMessage, stubThreadEnvironment, ThreadRuntime, userMessage } from './test-utils'
 import { Thread } from './thread'
 
@@ -104,3 +106,41 @@ it.each([undefined, false, true])(
     expect(request.mock.calls.every(([, , method]) => method === 'connectors.list')).toBe(true)
   }
 )
+
+it('offers controls for a profile-owned session without a registry connection id', async () => {
+  const storedId = 'profile-only-connector'
+  setSessions([makeSessionInfo({ id: storedId, profile: 'guide-profile', title: 'Guide' })])
+  request.mockResolvedValue({ available: true, connectors: [{ connector: 'gmail', enabled: true, connected: false }] })
+
+  const view = {
+    ...PRIMARY_SESSION_VIEW,
+    $runtimeId: atom<string | null>('profile-runtime'),
+    $storedId: atom<string | null>(storedId)
+  }
+
+  render(
+    <SessionViewProvider value={view}>
+      <ConnectorTool
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+        status={{ type: 'complete' }}
+        type="tool-call"
+        args={{ action: 'status', connectors: ['gmail'] }}
+        argsText=""
+        result={{ connectors: [{ connector: 'gmail' }] }}
+        toolCallId="profile-call"
+        toolName="manage_connections"
+      />
+    </SessionViewProvider>
+  )
+
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy())
+  expect(request).toHaveBeenCalledWith(
+    null,
+    'guide-profile',
+    'connectors.list',
+    { session_id: 'profile-runtime' },
+    45000
+  )
+})

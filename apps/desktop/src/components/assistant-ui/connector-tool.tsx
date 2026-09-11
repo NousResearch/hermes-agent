@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, type ConnectorCardCopy } from '@/components/ui/connector-card'
@@ -13,7 +14,9 @@ import { useI18n } from '@/i18n'
 import { connectionRows, connectorCalls, connectorTitle, connectorToolName, recordOf } from '@/lib/connector-tools'
 import { createConnectorFlow } from '@/store/connector-flow'
 import { requestGatewayForAgent } from '@/store/gateway'
-import { getSessionOwnerHint } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
 
 export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
@@ -32,12 +35,49 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     .at(-1)
 
   const historical = latest?.type === 'tool-call' && latest.toolCallId !== props.toolCallId
-  const owner = storedId ? getSessionOwnerHint(storedId) : undefined
+
+  const [owner, setOwner] = useState<{
+    storedId: string
+    runtimeId: string
+    connectionId: null | string
+    profile: string
+  } | null>(null)
+
+  useEffect(() => {
+    if (!storedId || !runtimeId || historical) {
+      return
+    }
+
+    let cancelled = false
+    const ambientProfile = $activeGatewayProfile.get()
+    void resolveSessionOwner(storedId)
+      .then(scope => {
+        assertSessionOwnerResolved(scope, { method: 'connectors.list', sessionId: storedId })
+
+        if (!cancelled) {
+          setOwner({
+            storedId,
+            runtimeId,
+            connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+            profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+          })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOwner(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [storedId, runtimeId, historical])
   const rows = connectionRows(props.args, props.result)
   const signature = rows.map(row => row.connector).join('|')
 
   const flow = useMemo(() => {
-    if (historical || !runtimeId || !owner?.connectionId) {
+    if (historical || !runtimeId || !owner || owner.storedId !== storedId || owner.runtimeId !== runtimeId) {
       return null
     }
 
@@ -53,7 +93,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
         await window.hermesDesktop.openExternal(url)
       }
     })
-  }, [runtimeId, owner?.connectionId, owner?.profile, signature, historical])
+  }, [runtimeId, owner, storedId, signature, historical])
 
   const { t } = useI18n()
   // A result is a snapshot. Reopening a transcript only refreshes status; it

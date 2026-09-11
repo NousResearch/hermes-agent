@@ -27,6 +27,7 @@ import {
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
+import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
@@ -53,10 +54,7 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   // reply in the composer closes the card the same way a chip does.
   const messageId = useAuiState(state => state.message.id)
 
-  const answeredInComposer = useStore(view.$messages).some(
-    (message, index, all) =>
-      message.role === 'user' && !message.hidden && index > all.findIndex(candidate => candidate.id === messageId)
-  )
+  const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
 
   const committed = useStore($onboardingAnswers).committed.find(step => step.startsWith('first:'))?.slice(6) ?? null
   const picked = committed ?? (answeredInComposer ? '' : null)

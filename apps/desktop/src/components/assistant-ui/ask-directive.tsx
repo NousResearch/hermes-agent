@@ -25,6 +25,7 @@ import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { answeredAfter } from '@/lib/chat-messages/parts'
 import { cn } from '@/lib/utils'
 
 // Picked questions, module-scoped: transcript virtualization remounts
@@ -54,10 +55,7 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
   // buttons, so someone who answered in the composer came back to six live
   // chips under a question they had already dealt with. Any user message
   // after this one closes the ask.
-  const answeredInComposer = useStore(view.$messages).some(
-    (message, index, all) =>
-      message.role === 'user' && !message.hidden && index > all.findIndex(candidate => candidate.id === messageId)
-  )
+  const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
 
   const closed = picked !== null || answeredInComposer
 

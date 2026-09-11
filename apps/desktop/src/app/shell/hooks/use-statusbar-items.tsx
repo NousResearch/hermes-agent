@@ -142,9 +142,10 @@ export function useStatusbarItems({
   const freeTier = useStore($freeTierStatus)
   // The chip is a standing invitation to sign in. During the guided first
   // launch that invitation lives on the guide's own ready screen; a second
-  // one in the statusbar is a distraction from the chat they are in.
-  const gatePhase = useStore($onboardingGate).phase
-  const guideOwnsSignIn = gatePhase !== 'idle' && guidedOnboardingActive()
+  // one in the statusbar is a distraction from the chat they are in. The
+  // subscription is what makes the check reactive.
+  useStore($onboardingGate)
+  const guideOwnsSignIn = guidedOnboardingActive()
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)

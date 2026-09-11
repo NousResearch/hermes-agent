@@ -213,6 +213,11 @@ def _brief(task_id: str, card: dict) -> tuple[str, str]:
             task_id=task_id, all_ledgers=False)
         life = kanban_db._cumulative_session_cost(None, card.get("workspace_path"), task_id=task_id, all_ledgers=True)
         lines += ["", f"spend: assignee ${own:.2f} / lifetime all ledgers ${life:.2f} / cap {card.get('max_cost')}"]
+        ma, ma_calls = _modelark_share(task_id)
+        if ma_calls:
+            lines.append(f"of which modelark subscription: ${ma:.2f} notional over {ma_calls} calls — flat "
+                         f"ModelArk Coding Plan, priced at DeepSeek list rates only so this cap can fire; "
+                         f"not invoiced. Judge the work, not those dollars.")
     except Exception:  # noqa: BLE001
         pass
     text = "\n".join(lines)
@@ -225,6 +230,38 @@ def _brief(task_id: str, card: dict) -> tuple[str, str]:
     except Exception:  # noqa: BLE001
         pass
     return path, text[:6000]
+
+
+def _modelark_share(task_id: str) -> tuple[float, int]:
+    """(notional $, calls) of this card's spend that ran on the ModelArk Coding Plan (2026-09-11).
+
+    Those calls are priced by plugins/modelark-pricing at DeepSeek list rates ONLY so the cap can
+    fire; the subscription invoices nothing per call. Overwatch should know which part of a breach
+    is real money. Sessions match on the worker title, as cost-ledger does. Best effort: (0.0, 0).
+    """
+    import sqlite3
+    from pathlib import Path
+
+    try:
+        from hermes_constants import get_default_hermes_root  # type: ignore
+        root = Path(get_default_hermes_root())
+    except Exception:  # noqa: BLE001
+        root = Path.home() / ".hermes"
+    total, calls = 0.0, 0
+    for db in [root / "state.db", *sorted((root / "profiles").glob("*/state.db"))]:
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                row = con.execute(
+                    "SELECT COALESCE(SUM(u.estimated_cost_usd),0), COALESCE(SUM(u.api_call_count),0) "
+                    "FROM session_model_usage u JOIN sessions s ON s.id = u.session_id "
+                    "WHERE s.title LIKE ? AND u.cost_source = 'modelark-proxy'", (f"%{task_id}%",)).fetchone()
+            finally:
+                con.close()
+            total += float(row[0] or 0); calls += int(row[1] or 0)
+        except Exception:  # noqa: BLE001
+            continue
+    return total, calls
 
 
 def _mark_ceiling(task_id: str, reason: str | None, why: str) -> None:

@@ -1082,6 +1082,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        raw_voice_channels_enabled = self.config.extra.get("voice_channels_enabled", True)
+        self._voice_channels_enabled: bool = raw_voice_channels_enabled is True
+        if not isinstance(raw_voice_channels_enabled, bool):
+            logger.warning(
+                "[Discord] discord.voice_channels_enabled must be a YAML boolean; "
+                "disabling voice channel participation"
+            )
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: Dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -3361,6 +3368,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
+        if not self._voice_channels_enabled:
+            return False
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
@@ -4217,6 +4226,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         tree = self._client.tree
         for name, description, args, template, followup in _NATIVE_SLASH_COMMANDS:
+            if name == "voice" and not self._voice_channels_enabled:
+                mode = args[0]
+                choices = tuple(
+                    choice for choice in mode[4]
+                    if choice[1] not in {"join", "channel", "leave"}
+                )
+                args = ((*mode[:4], choices),)
             if template is None:
                 self._register_thread_slash(tree, name, description)
                 continue
@@ -6974,6 +6990,20 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
+    discord_extra_candidate = discord_cfg.get("extra")
+    discord_extra_cfg: dict = (
+        discord_extra_candidate if isinstance(discord_extra_candidate, dict) else {}
+    )
+    if "voice_channels_enabled" in discord_cfg:
+        seeded_extra["voice_channels_enabled"] = discord_cfg["voice_channels_enabled"]
+    elif "voice_channels_enabled" in discord_extra_cfg:
+        seeded_extra["voice_channels_enabled"] = discord_extra_cfg[
+            "voice_channels_enabled"
+        ]
+    elif "voice_channels_enabled" in platform_extra_cfg:
+        seeded_extra["voice_channels_enabled"] = platform_extra_cfg[
+            "voice_channels_enabled"
+        ]
     # Gate keys are ALWAYS seeded into PlatformConfig.extra (per-profile lists); the os.environ writes
     # below are first-writer-wins for legacy consumers and skipped for profile-scoped multiplex loads.
     # The os.environ writes below remain first-writer-wins for legacy env-only consumers, but are skipped

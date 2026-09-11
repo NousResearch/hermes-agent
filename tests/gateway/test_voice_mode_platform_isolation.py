@@ -129,6 +129,7 @@ class TestVoiceModeProfileIsolation:
         a = MagicMock()
         a.platform = Platform.DISCORD
         a._owner_profile = owner
+        a._voice_channels_enabled = True
         a._voice_text_channels = {111: 123}
         a._voice_sources = {}
         a._voice_input_callback = None

@@ -623,6 +623,10 @@ class GatewaySlashCommandsMixin(
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
+        voice_channel_gate = getattr(self, "_discord_voice_channel_action_allowed", None)
+        if not callable(voice_channel_gate) or not voice_channel_gate(event.source, args):
+            return "Discord voice channels are disabled."
+
         chat_id = event.source.chat_id
         # Voice state belongs to the (bot, chat) pair: resolve the adapter that received the
         # command and key the mode by its owning profile so two multiplexed bots in one chat keep
@@ -669,7 +673,11 @@ class GatewaySlashCommandsMixin(
         toggle_line = t("gateway.voice.enabled_short" if turning_on else "gateway.voice.disabled_short")
         # Bare /voice still toggles, but append an explainer so users discover the on/off/tts/status
         # subcommands (and, on Discord, live voice-channel join/leave). Toggle result shows first.
-        supports_voice_channels = adapter is not None and hasattr(adapter, "join_voice_channel")
+        supports_voice_channels = (
+            adapter is not None
+            and getattr(adapter, "_voice_channels_enabled", False) is True
+            and hasattr(adapter, "join_voice_channel")
+        )
         channels = t("gateway.voice.help_channels") if supports_voice_channels else ""
         return t("gateway.voice.help", toggle=toggle_line, channels=channels)
 

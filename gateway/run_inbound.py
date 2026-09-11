@@ -755,6 +755,15 @@ class GatewayInboundMixin:
         if _denied is not None:
             return True, _denied, command, canonical
 
+        # Voice channel policy belongs to the receiving Discord adapter/profile. Deny participation
+        # before observers or interceptors run; voice messages and TTS modes remain available.
+        voice_channel_gate = getattr(self, "_discord_voice_channel_action_allowed", None)
+        if canonical == "voice" and (
+            not callable(voice_channel_gate)
+            or not voice_channel_gate(source, event.get_command_args())
+        ):
+            return True, "Discord voice channels are disabled.", command, canonical
+
         _handled, _result, new_command = await self._hm_command_hooks(
             event, source, _quick_key, command, canonical
         )

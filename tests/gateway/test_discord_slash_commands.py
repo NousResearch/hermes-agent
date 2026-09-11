@@ -203,6 +203,50 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
     )
 
 
+def _registered_voice_choice_values(adapter):
+    original_proxy = adapter._slash_proxy
+    with patch.object(adapter, "_slash_proxy", wraps=original_proxy) as proxy:
+        with patch("hermes_cli.commands.COMMAND_REGISTRY", []):
+            adapter._register_slash_commands()
+
+    voice_args = next(call.args[1] for call in proxy.call_args_list if call.args[0] == "voice")
+    return {value for _label, value in voice_args[0][4]}
+
+
+@pytest.mark.parametrize(
+    ("yaml_value", "channel_actions_available"),
+    [
+        (None, True),
+        ("true", True),
+        ("false", False),
+        ('"false"', False),
+        ("null", False),
+        ("1", False),
+        ("[]", False),
+    ],
+)
+def test_discord_voice_channel_config_controls_native_actions(
+    monkeypatch, tmp_path, yaml_value, channel_actions_available
+):
+    from gateway.config import Platform, load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    setting = "" if yaml_value is None else f"  voice_channels_enabled: {yaml_value}\n"
+    (hermes_home / "config.yaml").write_text(f"discord:\n{setting}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+    configured = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+    configured._client = SimpleNamespace(tree=FakeTree())
+    choices = _registered_voice_choice_values(configured)
+
+    assert {"on", "tts", "off", "status"} <= choices
+    channel_actions = {"join", "channel", "leave"}
+    assert channel_actions.issubset(choices) is channel_actions_available
+    assert channel_actions.isdisjoint(choices) is not channel_actions_available
+
+
 @pytest.mark.asyncio
 async def test_plugin_command_name_conflict_skipped(adapter):
     """A plugin command that collides with a built-in must not override it."""

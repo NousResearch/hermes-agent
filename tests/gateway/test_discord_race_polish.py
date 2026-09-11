@@ -15,6 +15,7 @@ def _make_adapter():
     adapter = object.__new__(DiscordAdapter)
     adapter._platform = Platform.DISCORD
     adapter.config = PlatformConfig(enabled=True, token="t")
+    adapter._voice_channels_enabled = True
     adapter._ready_event = asyncio.Event()
     adapter._allowed_user_ids = set()
     adapter._allowed_role_ids = set()

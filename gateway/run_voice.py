@@ -30,6 +30,19 @@ _VOICE_MODES = {"off", "voice_only", "all"}
 
 
 class GatewayVoiceMixin:
+    def _discord_voice_channel_action_allowed(self, source: SessionSource, args: str) -> bool:
+        """Allow message voice modes while gating Discord channel participation."""
+        action = (args or "").strip().lower().split(maxsplit=1)[0:1]
+        if not action or action[0] not in {"join", "channel", "leave"}:
+            return True
+        if source.platform != Platform.DISCORD:
+            return True
+        # The receiving adapter is stamped onto every live inbound source. Read that provenance
+        # directly so command handlers can enforce policy before any adapter/profile lookup.
+        adapter_ref = getattr(source, "_transport_adapter_ref", None)
+        source_adapter = adapter_ref() if callable(adapter_ref) else None
+        return getattr(source_adapter, "_voice_channels_enabled", False) is True
+
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
         share a key and one ``/voice`` flips the other's); default keeps ``<platform>:<chat>``.
@@ -136,6 +149,8 @@ class GatewayVoiceMixin:
         return raw.guild.id if getattr(raw, "guild", None) else None  # regular message
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
+        if not self._discord_voice_channel_action_allowed(event.source, "join"):
+            return "Discord voice channels are disabled."
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
@@ -177,6 +192,8 @@ class GatewayVoiceMixin:
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
+        if not self._discord_voice_channel_action_allowed(event.source, "leave"):
+            return "Discord voice channels are disabled."
         adapter = self._adapter_for_source(event.source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and hasattr(adapter, "leave_voice_channel")

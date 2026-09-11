@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useMemo } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { caretOffsetInEditor, composerPlainText, placeCaretAtOffset, renderComposerContents } from '../rich-editor'
 import { type ComposerSnapshot, createComposerUndoHistory } from '../undo-history'
@@ -84,11 +84,35 @@ export function useComposerUndo({ editorRef, syncDraftFromEditor }: UseComposerU
   // conversation's text is worse than having no history at all.
   const resetUndoHistory = useCallback(() => history.reset(), [history])
 
-  // Electron's Edit menu ships `{ role: 'undo' }`, whose accelerator the macOS
-  // menu bar consumes before the web contents sees the keystroke (the same
-  // hazard main.ts documents for ⌘W). It fires the native editing command,
-  // which knows nothing about our stack. Claim it at the document level while
-  // the composer holds focus, so the menu item and the keystroke agree.
+  // One physical ⌘Z can arrive as both keydown (composer handler) and
+  // `beforeinput historyUndo` (Edit menu / main-process IPC). Apply a single
+  // stack step for that turn so burst undo cannot collapse twice.
+  const lastHistoryActionAt = useRef({ redo: 0, undo: 0 })
+
+  const runHistoryAction = useCallback(
+    (action: 'redo' | 'undo') => {
+      const now = performance.now()
+
+      if (now - lastHistoryActionAt.current[action] < 32) {
+        return false
+      }
+
+      const ran = action === 'undo' ? undo() : redo()
+
+      if (ran) {
+        lastHistoryActionAt.current[action] = now
+      }
+
+      return ran
+    },
+    [redo, undo]
+  )
+
+  // Electron's Edit menu used to ship `{ role: 'undo' }`, whose accelerator the
+  // macOS menu bar consumes before the web contents sees the keystroke (the
+  // same hazard main.ts documents for ⌘W). Main now forwards ⌘Z via IPC and
+  // the menu click shares that channel; this capture still claims a native
+  // `historyUndo` aimed at the focused composer so menu and keystroke agree.
   useEffect(() => {
     const onBeforeInput = (event: Event) => {
       const inputType = (event as InputEvent).inputType
@@ -104,16 +128,22 @@ export function useComposerUndo({ editorRef, syncDraftFromEditor }: UseComposerU
       event.preventDefault()
 
       if (inputType === 'historyUndo') {
-        undo()
+        runHistoryAction('undo')
       } else {
-        redo()
+        runHistoryAction('redo')
       }
     }
 
     document.addEventListener('beforeinput', onBeforeInput, true)
 
     return () => document.removeEventListener('beforeinput', onBeforeInput, true)
-  }, [editorRef, redo, undo])
+  }, [editorRef, runHistoryAction])
 
-  return { recordUndoPoint, redo, resetUndoHistory, undo, withUndoPoint }
+  return {
+    recordUndoPoint,
+    redo: () => runHistoryAction('redo'),
+    resetUndoHistory,
+    undo: () => runHistoryAction('undo'),
+    withUndoPoint
+  }
 }

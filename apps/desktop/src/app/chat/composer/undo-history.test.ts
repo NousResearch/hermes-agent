@@ -8,7 +8,12 @@ import {
   renderComposerContents,
   RICH_INPUT_SLOT
 } from './rich-editor'
-import { createComposerUndoHistory, isRedoShortcut, isUndoShortcut } from './undo-history'
+import {
+  createComposerUndoHistory,
+  isCoalescableTypingInput,
+  isRedoShortcut,
+  isUndoShortcut
+} from './undo-history'
 
 const key = (over: Partial<KeyboardEvent> = {}) =>
   ({ altKey: false, ctrlKey: false, key: 'z', metaKey: false, shiftKey: false, ...over }) as KeyboardEvent
@@ -43,6 +48,19 @@ describe('undo/redo shortcut recognition', () => {
     for (const chord of chords) {
       expect(isUndoShortcut(chord) && isRedoShortcut(chord)).toBe(false)
     }
+  })
+})
+
+describe('isCoalescableTypingInput', () => {
+  it('coalesces ordinary inserts and deletes, not paste/drop/history', () => {
+    expect(isCoalescableTypingInput('insertText')).toBe(true)
+    expect(isCoalescableTypingInput('insertReplacementText')).toBe(true)
+    expect(isCoalescableTypingInput('deleteContentBackward')).toBe(true)
+    expect(isCoalescableTypingInput('deleteContentForward')).toBe(true)
+    expect(isCoalescableTypingInput('insertFromPaste')).toBe(false)
+    expect(isCoalescableTypingInput('insertFromDrop')).toBe(false)
+    expect(isCoalescableTypingInput('historyUndo')).toBe(false)
+    expect(isCoalescableTypingInput('historyRedo')).toBe(false)
   })
 })
 
@@ -95,6 +113,17 @@ describe('composer undo history', () => {
     // One burst → one entry, back to the state before the burst started.
     expect(history.undo(snap('hel'))?.text).toBe('')
     expect(history.undo(snap(''))).toBeNull()
+  })
+
+  it('coalesces insertReplacementText into the same typing burst', () => {
+    let now = 1_000
+    const history = createComposerUndoHistory(200, () => now)
+
+    history.record(snap(''), { coalesce: isCoalescableTypingInput('insertText') })
+    now += 40
+    history.record(snap('teh'), { coalesce: isCoalescableTypingInput('insertReplacementText') })
+
+    expect(history.undo(snap('the'))?.text).toBe('')
   })
 
   it('starts a new entry once the typing pause exceeds the coalesce window', () => {

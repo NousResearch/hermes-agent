@@ -356,7 +356,11 @@ class GatewayAgentCacheMixin:
         return persistent.run_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
-        """Invalidate any in-flight run token for ``session_key``."""
+        """Invalidate any in-flight run token for ``session_key``.
+
+        Settles a pending one-shot model override first: the displaced turn's finalizer is
+        generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
+        self._restore_pending_one_turn_model_override(session_key)
         generation = self._begin_session_run_generation(session_key)
         if reason:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)

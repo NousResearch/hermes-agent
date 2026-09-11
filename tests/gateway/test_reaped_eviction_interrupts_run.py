@@ -7,13 +7,13 @@ import pytest
 from gateway.run import (
     GatewayRunner,
     _AGENT_PENDING_SENTINEL,
+    _INTERRUPT_REASON_EVICTED,
     _is_control_interrupt_message,
 )
 from gateway.run_inbound import GatewayInboundMixin
 
 
 KEY = "agent:main:telegram:dm:106963"
-EVICTION_REASON = "Session ended while the turn was running"
 
 
 class _RecordingAgent:
@@ -79,13 +79,12 @@ def test_eviction_interrupts_before_release_and_drops_cached_agent(entrypoint: s
 
     assert isinstance(gateway, GatewayInboundMixin)
     assert agent.interrupted
-    assert events[0] == ("interrupt", EVICTION_REASON, True)
+    assert events[0] == ("interrupt", _INTERRUPT_REASON_EVICTED, True)
     release_events = [event for event in events if event[0] == "release"]
-    assert release_events == [("release", True)]
-    assert events.index(events[0]) < events.index(release_events[0])
+    assert release_events == [("release", True)]  # the interrupt was requested BEFORE the slot release
     assert gateway._peek_session_state(KEY).turn.agent is None
     assert KEY not in gateway._agent_cache
-    assert _is_control_interrupt_message(EVICTION_REASON)
+    assert _is_control_interrupt_message(_INTERRUPT_REASON_EVICTED)
 
 
 @pytest.mark.parametrize("agent", (None, _AGENT_PENDING_SENTINEL, _RaisingAgent()))
@@ -118,57 +117,29 @@ def test_stale_finalizer_cannot_release_replacement_generation() -> None:
     assert gateway._peek_session_state(KEY).turn.agent is replacement
 
 
-def test_moa_one_shot_restoration_generation_owned() -> None:
+def test_one_shot_override_settles_on_stop_and_stale_finalizer_is_a_noop() -> None:
+    """/model --once (and /moa, which shares the snapshot) mid-turn: a /stop, /new or eviction
+    settles the override BEFORE bumping the generation, and the displaced turn's finalizer then
+    finds nothing to restore — so the one-shot model neither leaks nor clobbers a successor."""
     events: list[tuple] = []
     gateway, state = _build_gateway(object(), events)
-    state.persistent.run_generation = 1
-    state.conversation.model_override = {"provider": "custom", "model": "test-model"}
-
-    # Simulate /moa command handling
-    class _MockEvent:
-        _moa_disable_after_turn = True
-        _moa_restore_override = {"provider": "custom", "model": "test-model"}
-        _moa_run_generation = None
-
-    event = _MockEvent()
-    # Turn claims generation 2
-    claimed_gen = 2
-    state.persistent.run_generation = claimed_gen
-    event._moa_run_generation = claimed_gen
-    state.conversation.model_override = {"provider": "moa", "model": "moa-model"}
-
-    # 1. Stale generation finalizer (e.g. gen 1) must NOT restore or clear MoA
-    gateway._restore_moa_one_shot(event, KEY, run_generation=1)
-    assert event._moa_disable_after_turn is True
-    assert state.conversation.model_override == {"provider": "moa", "model": "moa-model"}
-
-    # 2. Owning generation finalizer (gen 2) restores prior override
-    gateway._restore_moa_one_shot(event, KEY, run_generation=claimed_gen)
-    assert event._moa_disable_after_turn is False
-    assert state.conversation.model_override == {"provider": "custom", "model": "test-model"}
-
-
-def test_model_once_snapshot_preserved_from_stale_finalizer() -> None:
-    events: list[tuple] = []
-    gateway, state = _build_gateway(object(), events)
-    state.persistent.run_generation = 1
+    prior = {"model": "original-model", "provider": "test"}
     state.conversation.model_override = {"model": "once-model", "provider": "test"}
-    state.conversation.one_turn_restore = {
-        "had_override": True,
-        "override": {"model": "original-model", "provider": "test"},
-        "run_generation": 2,
-    }
+    state.conversation.one_turn_restore = {"had_override": True, "override": dict(prior)}
+    owning_gen = gateway._begin_session_run_generation(KEY)
+    state.conversation.one_turn_restore["run_generation"] = owning_gen
 
-    # Stale finalizer for generation 1 must NOT clear one_turn_restore or restore override
-    state.persistent.run_generation = 2
-    gateway._restore_pending_one_turn_model_override(KEY, run_generation=1)
-    assert state.conversation.one_turn_restore is not None
-    assert state.conversation.model_override["model"] == "once-model"
-
-    # Owning generation 2 restores snapshot and clears one_turn_restore
-    gateway._restore_pending_one_turn_model_override(KEY, run_generation=2)
+    gateway._invalidate_session_run_generation(KEY, reason="user_stop")  # settlement point
+    assert state.conversation.model_override == prior
     assert state.conversation.one_turn_restore is None
-    assert state.conversation.model_override["model"] == "original-model"
+
+    # The successor claims its own --once; the displaced finalizer (owning_gen) must not touch it.
+    state.conversation.model_override = {"model": "successor-once", "provider": "test"}
+    state.conversation.one_turn_restore = {"had_override": False, "override": None,
+                                           "run_generation": state.persistent.run_generation}
+    gateway._restore_pending_one_turn_model_override(KEY, run_generation=owning_gen)
+    assert state.conversation.model_override == {"model": "successor-once", "provider": "test"}
+    assert state.conversation.one_turn_restore is not None
 
 
 @pytest.mark.asyncio

@@ -914,14 +914,14 @@ class GatewayInboundMixin:
         try:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
-            event._moa_restore_override = _moa_state.conversation.model_override
-            event._moa_run_generation = None
+            # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
+            if not _moa_state.conversation.one_turn_restore:
+                _moa_state.conversation.one_turn_restore = self._snapshot_session_model_override(_quick_key)
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
             }
             self._evict_cached_agent(_quick_key)
-            event._moa_disable_after_turn = True
         except Exception:
             return True, "Failed to prepare MoA turn."
         return False, None
@@ -1272,12 +1272,10 @@ class GatewayInboundMixin:
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
-        if getattr(event, "_moa_disable_after_turn", False):
-            event._moa_run_generation = _run_generation
-        if (
-            _claim_state.conversation.one_turn_restore
-            and _claim_state.conversation.one_turn_restore.get("run_generation") is None
-        ):
+        # A pending one-shot snapshot (/moa, /model --once) belongs to the turn that claims the slot:
+        # only its finalizer may restore it. Stop/reset/eviction settle it before bumping the
+        # generation (``_invalidate_session_run_generation``), so a displaced turn never leaks it.
+        if _claim_state.conversation.one_turn_restore:
             _claim_state.conversation.one_turn_restore["run_generation"] = _run_generation
 
         try:
@@ -1305,9 +1303,8 @@ class GatewayInboundMixin:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # MoA one-shot restore must run on EVERY exit path (success, exception, interrupt):
-            # the restore data lives on the per-turn event and would leak permanently otherwise.
-            self._restore_moa_one_shot(event, _quick_key, _run_generation)
+            # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
+            # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass.
@@ -1321,41 +1318,22 @@ class GatewayInboundMixin:
             # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
 
-    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str, run_generation: int | None = None) -> None:
-        """Revert a ``/moa <prompt>`` one-shot model override after its turn (called from the
-        message-handling ``finally``). ``_moa_restore_override`` holds the prior per-session
-        override (``None`` = clear the MoA override outright)."""
-        if not getattr(event, "_moa_disable_after_turn", False):
-            return
-        owner_generation = getattr(event, "_moa_run_generation", run_generation)
-        if run_generation is not None and owner_generation is not None and owner_generation != run_generation:
-            return
-        state = self._peek_session_state(quick_key)
-        if state is None:
-            return
-        if run_generation is not None and state.persistent.run_generation != run_generation:
-            return
-        event._moa_disable_after_turn = False
-        with suppress(Exception):
-            state.conversation.model_override = getattr(event, "_moa_restore_override", None)
-            self._evict_cached_agent(quick_key)
-
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
-        """Restore a per-session model override after ``/model --once`` runs."""
+        """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
+
+        With ``run_generation`` (the turn finalizer) the restore happens only while that generation
+        is still current; a stop/reset/eviction has already settled the snapshot itself (see
+        ``_invalidate_session_run_generation``), so the displaced finalizer finds nothing to do.
+        Without it (the settlement paths) the restore is unconditional."""
         if not session_key:
             return
         try:
             _otr_state = self._peek_session_state(session_key)
-            if _otr_state is None:
+            if _otr_state is None or not _otr_state.conversation.one_turn_restore:
+                return
+            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
                 return
             snapshot = _otr_state.conversation.one_turn_restore
-            if not snapshot:
-                return
-            snapshot_gen = snapshot.get("run_generation")
-            if run_generation is not None and snapshot_gen is not None and snapshot_gen != run_generation:
-                return
-            if run_generation is not None and _otr_state.persistent.run_generation != run_generation:
-                return
             _otr_state.conversation.one_turn_restore = None
             self._restore_session_model_override(session_key, snapshot)
         except Exception:

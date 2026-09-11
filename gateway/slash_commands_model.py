@@ -269,10 +269,9 @@ class GatewayModelCommandsMixin:
         if one_turn:
             if not hasattr(self, "_pending_one_turn_model_restores"):
                 self._pending_one_turn_model_restores = {}
-            snapshot = ctx.restore_snapshot or {"had_override": False, "override": None}
-            snapshot = dict(snapshot)
-            snapshot["run_generation"] = None
-            self._pending_one_turn_model_restores[ctx.session_key] = snapshot
+            self._pending_one_turn_model_restores[ctx.session_key] = dict(
+                ctx.restore_snapshot or {"had_override": False, "override": None}
+            )
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are

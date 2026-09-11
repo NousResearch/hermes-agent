@@ -844,8 +844,9 @@ def _kanban_attachment_roots() -> List[Path]:
 
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
+    from gateway.media_policy import media_delivery_allow_dirs
     operator_roots = (
-        root for chunk in os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "").split(os.pathsep)
+        root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
     return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
@@ -854,10 +855,10 @@ def _media_delivery_allowed_roots() -> List[Path]:
 
 def _media_delivery_recency_seconds() -> float:
     """Recency window (seconds) for trusting fresh files; 0 = pure-allowlist mode."""
-    raw = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_ENV, "1").strip().lower()
-    if raw in ("0", "false", "no", "off", ""):
+    from gateway.media_policy import media_delivery_trust_recent, media_delivery_trust_recent_seconds
+    if not media_delivery_trust_recent():
         return 0.0
-    custom = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV, "").strip()
+    custom = media_delivery_trust_recent_seconds().strip()
     default = float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
@@ -1125,7 +1126,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         if resolved_root is not None and _path_is_within(resolved, resolved_root):
             return str(resolved)
     # Non-strict (default): anything not denylisted (/etc, /proc, ~/.ssh, Hermes-root secrets).
-    if os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower() not in _TRUTHY:
+    from gateway.media_policy import media_delivery_strict
+    if not media_delivery_strict():
         return None if _path_under_denied_prefix(resolved) else str(resolved)
     # Strict: recency trust for fresh files (pandoc -o /tmp/x.pdf); denylist still applies.
     window = _media_delivery_recency_seconds()

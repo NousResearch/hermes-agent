@@ -60,7 +60,7 @@ function renderSubmitHook({
   const onSubmit = vi.fn(async () => true)
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
-  const queueCurrentDraft = vi.fn(() => true)
+  const queueCurrentDraft = vi.fn(async () => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
   const clearDraft = vi.fn(() => {

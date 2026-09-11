@@ -211,4 +211,16 @@ def validate_tool_calls(
 
     # Reset retry counter on successful JSON validation
     agent._invalid_json_retries = 0
+
+    # Semantic repair: fix common argument mistakes (path absolutization, type
+    # mismatches, missing params inferable from context) AFTER syntactic validation
+    # passes. Cache-safe — mutates only tool-call arg dicts, never system prompt.
+    try:
+        from agent.tool_call_repair import repair_tool_call_arguments
+        _semantic_repairs = repair_tool_call_arguments(agent, tool_calls, messages)
+        if _semantic_repairs > 0:
+            agent._buffer_vprint(f"🔧 Semantic tool-call repair: {_semantic_repairs} fix(es) applied")
+    except Exception as _repair_exc:
+        logger.debug("Semantic tool-call repair failed (non-fatal): %s", _repair_exc)
+
     return _verdict("ok")

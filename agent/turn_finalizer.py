@@ -606,6 +606,31 @@ def finalize_turn(
         interrupted=interrupted, messages=messages,
     )
 
+    # Smarter Memory Nudge: when a memory review fires, also distill implicit user
+    # preferences from recent session patterns. Lightweight — piggybacks on the
+    # existing background review cycle rather than adding a separate trigger.
+    if _should_review_memory and not interrupted:
+        try:
+            from agent.tool_call_repair import score_message_correction_weight
+            _recent_user_msgs = [
+                m for m in messages[-20:]
+                if isinstance(m, dict) and m.get("role") == "user"
+            ]
+            _correction_signals = sum(
+                1 for m in _recent_user_msgs
+                if score_message_correction_weight(flatten_message_text(m.get("content"))) > 1.5
+            )
+            if _correction_signals >= 2:
+                logger.info(
+                    "Smarter memory nudge: %d correction signals in recent turns — "
+                    "background review will prioritize preference distillation",
+                    _correction_signals,
+                )
+                # Tag the snapshot so the background review knows to focus on corrections
+                agent._pending_preference_distill = True
+        except Exception as _nudge_exc:
+            logger.debug("Smarter memory nudge check failed (non-fatal): %s", _nudge_exc)
+
     # Background memory/skill review runs AFTER delivery so it never competes with the
     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
     # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review

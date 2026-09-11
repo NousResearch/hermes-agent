@@ -74,11 +74,14 @@ def resolve_relay_scope_cwds(
                 "Unable to read the configured Relay session cwd", exc_info=True
             )
 
-    if not session_cwd and platform == "cli" and backend in {"", "local"}:
+    if not session_cwd and platform in {"", "cli"} and backend in {"", "local"}:
         try:
             from agent.runtime_cwd import resolve_agent_cwd
 
-            session_cwd = _clean_cwd(str(resolve_agent_cwd()))
+            resolved = resolve_agent_cwd()
+            session_cwd = _clean_cwd(
+                str(resolved if resolved.is_absolute() else resolved.resolve())
+            )
         except Exception:
             logger.debug("Unable to resolve the local Relay session cwd", exc_info=True)
 

@@ -813,8 +813,9 @@ class ConversationLease:
     host: RelayHost
     session: RelaySession | None
     parent_session_id: str = ""
-    turn_cwd: str = ""
     released: bool = False
+    # Keep new fields after the pre-existing positional constructor fields.
+    turn_cwd: str = ""
 
     def live_runtime(self) -> RelayRuntime | None:
         """Return the real Relay host when this lease owns an open session."""

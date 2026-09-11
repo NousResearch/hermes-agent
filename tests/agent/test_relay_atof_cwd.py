@@ -67,7 +67,6 @@ mode = "overwrite"
             provider="openai",
             model="test-model",
             session_id=session_id,
-            platform="cli",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

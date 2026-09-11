@@ -24,6 +24,7 @@ Antes da configuração, aqui está o que a maioria das pessoas quer saber: como
 | **Controles interativos** | Aprovação de comandos perigosos e seleção via `/model` podem usar reações do Matrix. Reações de aprovação podem ser limitadas ao usuário que solicitou a ação. |
 | **Thinking e atividade de ferramentas** | O Matrix usa painéis editáveis de thinking/atividade de ferramentas em threads quando o progresso do gateway está habilitado, para que atualizações não inundem a timeline principal da sala. |
 | **Salas compartilhadas com vários usuários** | Por padrão, o Hermes isola o histórico de sessão por usuário dentro da sala. Duas pessoas conversando na mesma sala não compartilham uma transcrição, a menos que você desative isso explicitamente. |
+| **LaTeX math** | `$...$` (inline) e `$$...$$` (display) nas respostas são enviados como markup Element `data-mx-maths`, para que clientes com **Settings → Labs → Render LaTeX maths in messages** tipografem com KaTeX. Dólares sem par (`$5 or $10`) ficam literais, e o `body` em plain-text mantém o TeX bruto para outros clientes. |
 
 :::tip
 O bot entra automaticamente em salas quando convidado. Basta convidar o usuário Matrix do bot para qualquer sala e ele entrará e começará a responder.

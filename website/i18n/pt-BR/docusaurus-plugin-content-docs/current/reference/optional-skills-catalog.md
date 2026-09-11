@@ -59,6 +59,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Descrição |
 |-------|-------------|
+| [**archify**](/docs/user-guide/skills/optional/creative/creative-archify) | Diagramas HTML interativos validados, mantidos upstream. |
 | [**ascii-art**](/docs/user-guide/skills/optional/creative/creative-ascii-art) | Arte ASCII: pyfiglet, cowsay, boxes, image-to-ascii. |
 | [**audiocraft-audio-generation**](/docs/user-guide/skills/optional/creative/creative-audiocraft-audio-generation) | AudioCraft: MusicGen texto-para-música, AudioGen texto-para-som. |
 | [**baoyu-article-illustrator**](/docs/user-guide/skills/optional/creative/creative-baoyu-article-illustrator) | Ilustrações de artigos: consistência de tipo × estilo × paleta. |
@@ -223,6 +224,7 @@ hermes skills uninstall <skill-name>
 | [**decision-questionnaire**](/docs/user-guide/skills/optional/productivity/productivity-decision-questionnaire) | Transforma uma decisão sem resposta em um doc de questionário. |
 | [**here-now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publica sites em &#123;slug&#125;.here.now e armazena arquivos em Drives. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Flashcards por repetição espaçada: criar, revisar, quiz, exportar. |
+| [**property-listings**](/docs/user-guide/skills/optional/productivity/productivity-property-listings) | Apresenta anúncios de imóveis e aluguel como cards de desktop. |
 | [**shop**](/docs/user-guide/skills/optional/productivity/productivity-shop) | Busca em catálogo de loja, checkout, rastreamento de pedidos, devoluções. |
 | [**shopify**](/docs/user-guide/skills/optional/productivity/productivity-shopify) | APIs GraphQL Admin & Storefront do Shopify via curl. Produtos, pedidos, clientes, estoque, metafields. |
 | [**siyuan**](/docs/user-guide/skills/optional/productivity/productivity-siyuan) | API do SiYuan Note para buscar, ler, criar e gerenciar blocos e documentos em uma base de conhecimento auto-hospedada via curl. |
@@ -245,6 +247,7 @@ hermes skills uninstall <skill-name>
 | [**pinecone-research**](/docs/user-guide/skills/optional/research/research-pinecone-research) | RAG de agente e memória de longo prazo com Pinecone. |
 | [**qmd**](/docs/user-guide/skills/optional/research/research-qmd) | Busca bases de conhecimento pessoais, notas, documentos e transcrições de reuniões localmente usando qmd — um motor de recuperação híbrido com BM25, busca vetorial e reranking por LLM. Suporta integração via CLI e MCP. |
 | [**research-paper-writing**](/docs/user-guide/skills/optional/research/research-research-paper-writing) | Escreve papers de ML para NeurIPS/ICML/ICLR: design→submit. |
+| [**rss-feeds**](/docs/user-guide/skills/optional/research/research-rss-feeds) | Lê feeds RSS, Atom, JSON; descobre feeds por trás de uma página. |
 | [**scrapling**](/docs/user-guide/skills/optional/research/research-scrapling) | Web scraping com Scrapling - fetching HTTP, automação de navegador furtiva, bypass do Cloudflare e crawling spider via CLI e Python. |
 | [**searxng-search**](/docs/user-guide/skills/optional/research/research-searxng-search) | Meta-busca gratuita via SearXNG — agrega resultados de mais de 70 motores de busca. Auto-hospedado ou use uma instância pública. Sem necessidade de chave de API. Recai automaticamente quando o toolset de busca web não está disponível. |
 
@@ -267,6 +270,11 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**openhue**](/docs/user-guide/skills/optional/smart-home/smart-home-openhue) | Controla luzes, cenas e rooms Philips Hue via CLI OpenHue. |
 
+## social-media
+
+| Skill | Descrição |
+|-------|-------------|
+| [**reddit-reading**](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) | Lê Reddit: subreddits, busca, threads, usuários. Sem browser. |
 
 ## software-development
 

@@ -15,7 +15,7 @@ Skills instaladas também são expostas como slash commands dinâmicos em ambas 
 
 ## Permissões e split admin/usuário {#permissions-and-adminuser-split}
 
-Toda plataforma de mensagens que suporta allowlist por usuário (Telegram, Discord, Slack, Matrix, Mattermost, Signal, …) também suporta split de slash commands em dois níveis: **admins** recebem todo comando registrado, **usuários regulares** só recebem os nomes que você listar em `user_allowed_commands` (mais o piso sempre permitido `/help` e `/whoami`). Configure `allow_admin_from` e `user_allowed_commands` (e os equivalentes por grupo `group_allow_admin_from` / `group_user_allowed_commands`) dentro do bloco `extra:` da plataforma em `~/.hermes/gateway-config.yaml`.
+Toda plataforma de mensagens que suporta allowlist por usuário (Telegram, Discord, Slack, Matrix, Mattermost, Signal, …) também suporta split de slash commands em dois níveis: **admins** recebem todo comando registrado, **usuários regulares** só recebem os nomes que você listar em `user_allowed_commands` (mais o piso sempre permitido `/help` e `/whoami`). Configure `allow_admin_from` e `user_allowed_commands` (e os equivalentes por grupo `group_allow_admin_from` / `group_user_allowed_commands`) dentro do bloco `extra:` da plataforma em `~/.hermes/config.yaml`.
 
 Veja a documentação por plataforma para exemplos — a estrutura é idêntica entre plataformas:
 
@@ -133,6 +133,7 @@ Digite `/` no CLI para abrir o menu de autocomplete. Comandos built-in são case
 | `/usage` | Mostra uso de tokens, breakdown de custo, duração da sessão e — quando disponível do provider ativo — seção **Account limits** com quota/credits/plano restantes puxados live da API do provider. |
 | `/topup` | Mostra seu saldo Nous e gerencia billing no portal (substitui os antigos `/credits` e `/billing`). |
 | `/subscription` (alias: `/upgrade`) | **Só CLI.** Veja seu plano Nous e mude no browser. |
+| `/login` | Entre com uma conta Nous. Roda fora do turn: o link de consentimento e o código chegam na sessão, e o sign-in conclui quando você aprova no navegador. Veja [Nous free tier](/user-guide/free-tier). |
 | `/insights` | Mostra insights de uso e analytics (últimos 30 dias) |
 | `/update` | Atualiza o Hermes Agent para a versão mais recente. |
 | `/platforms` (alias: `/gateway`) | Mostra status de plataformas gateway/mensagens (visão resumo só CLI). |
@@ -258,6 +259,7 @@ O gateway de mensagens suporta os seguintes comandos built-in dentro de chats Te
 | `/sessions [all] [search <query>]` | Lista sessões anteriores deste chat; a sessão ativa aparece com marcador `(current)`. `/sessions search <query>` filtra por match de título/id (mais recentemente ativas primeiro); `/sessions all` lista across origins (só admin — não-admins recebem um aviso e a lista com escopo do chat). |
 | `/usage` | Mostra uso de tokens, breakdown de custo estimado (input/output), estado da context window, duração da sessão e — quando disponível do provider ativo — seção **Account limits** com quota/credits restantes da API do provider. |
 | `/topup` | Mostra saldo Nous e gerencia billing no portal. |
+| `/login` | Entre com uma conta Nous. **Somente DMs pareados** — em grupo, canal ou plataforma com formato de broadcast o Hermes recusa. No Slack use `/hermes login`. Veja [Nous free tier](/user-guide/free-tier). |
 | `/whoami` | Mostra nível de acesso a slash commands (admin / user). |
 | `/insights [days]` | Mostra analytics de uso. |
 | `/reasoning [level\|show\|hide\|full\|clamp] [--global]` | Muda reasoning effort (níveis até `max` / `ultra`) ou alterna display de reasoning (`full` / `clamp` incluídos). `--global` persiste em config. |
@@ -311,7 +313,7 @@ O gateway de mensagens suporta os seguintes comandos built-in dentro de chats Te
 - `/verbose` é **só CLI por padrão**, mas pode ser habilitado para plataformas de mensagens com `display.tool_progress_command: true` em `config.yaml`. Quando habilitado, cicla o modo `display.tool_progress` e salva em config.
 - `/focus` e `/verbose` compartilham um caminho de supressão (`display.tool_progress`), então nunca se contradizem: `/focus on` fixa tool progress em `off` e guarda seu modo em `display.focus_saved_tool_progress`; `/focus off` restaura; ciclar `/verbose` com focus on traz o modo de volta e limpa o badge focus. Focus view é só display — nunca muda histórico de conversa, system prompt ou qualquer coisa enviada ao model, então zero impacto em prompt-cache.
 - `/sethome`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform` e `/commands` são comandos **só mensagens**.
-- `/status`, `/egress`, `/version`, `/whoami`, `/bg`, `/btw`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/fast`, `/approvals`, `/busy`, `/footer`, `/curator`, `/kanban`, `/topup`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions` e `/yolo` funcionam **tanto** no CLI quanto no gateway de mensagens.
+- `/status`, `/egress`, `/version`, `/whoami`, `/bg`, `/btw`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/fast`, `/approvals`, `/busy`, `/footer`, `/curator`, `/kanban`, `/topup`, `/login`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions` e `/yolo` funcionam **tanto** no CLI quanto no gateway de mensagens.
 - `/voice join`, `/voice channel` e `/voice leave` só fazem sentido no Discord.
 - No TUI, `/sessions` mostra sessões live no processo TUI atual. Use `/resume [name]` ou `hermes --tui --resume <id-or-title>` para transcripts salvos ou fechados.
 

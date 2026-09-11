@@ -110,7 +110,7 @@ loops:
   self_paced_ceiling_seconds: 900  # self-paced max backoff
 ```
 
-O judge de `--until` roteia pela tarefa auxiliar `goal_judge`, então os overrides de `auxiliary.goal_judge.*` (provider, model, max_tokens) também se aplicam às condições do loop.
+O judge de `--until` roteia pela tarefa auxiliar `goal_judge`, então os overrides de roteamento de `auxiliary.goal_judge.*` (provider, model) também se aplicam às condições do loop.
 
 ## `/loop` vs `/goal` vs cron {#loop-vs-goal-vs-cron}
 

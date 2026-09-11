@@ -397,6 +397,7 @@ O plugin autentica com `X-API-Key` e usa rotas `/search` / `/memories` do servid
 | `user_id` | `hermes-user` | Identificador de usuário |
 | `agent_id` | `hermes` | Identificador de agent |
 | `rerank` | `false` | Rerank de resultados de busca por relevância (somente platform mode) |
+| `sync_max_chars` | `450` | Limite de caracteres por mensagem aplicado antes de cada turn ser enviado para extração de fatos, cortado no último limite de frase. O padrão cabe em embedders de 512 tokens (Ollama `bge-small-zh-v1.5`, `all-minilm`); aumente (ex.: `6000`) para embedders de 8k tokens como `text-embedding-3-small`, `jina-embeddings-v3` ou `bge-m3` |
 
 **Provedores suportados no OSS:**
 

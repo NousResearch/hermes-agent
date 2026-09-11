@@ -497,6 +497,7 @@ O adapter valida assinaturas webhook entrantes com o método apropriado para cad
 
 - **GitHub**: header `X-Hub-Signature-256` — digest hex HMAC-SHA256 prefixado com `sha256=`
 - **GitLab**: header `X-Gitlab-Token` — correspondência plain do secret
+- **Standard Webhooks**: headers `webhook-id`, `webhook-timestamp` e `webhook-signature` — o conteúdo assinado é `{id}.{timestamp}.{raw_body}` com assinatura `v1,<base64-hmac-sha256>`
 - **Generic (V2, recommended)**: headers `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` — digest hex HMAC-SHA256 de `<timestamp>.<body>`. O timestamp (Unix seconds) deve estar dentro de ±300 segundos do relógio do servidor, o que impede replay de requisições capturadas depois.
 - **Generic (V1, legacy)**: header `X-Webhook-Signature` — digest hex HMAC-SHA256 raw do body apenas. Ainda aceito por retrocompatibilidade, mas sem proteção replay (requisição capturada replay indefinidamente); o gateway loga aviso de depreciação uma vez por rota. Migre senders para V2.
 
@@ -523,7 +524,7 @@ Requisições acima do limite recebem resposta `429 Too Many Requests`.
 
 ### Idempotency
 
-Delivery IDs (de `X-GitHub-Delivery`, `X-Request-ID`, ou fallback timestamp) são cacheados por **1 hora**. Entregas duplicadas (ex.: retries webhook) são puladas silenciosamente com resposta `200`, evitando execuções duplicadas do agente.
+Delivery IDs (de `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, ou fallback timestamp) são cacheados por **1 hora**. Entregas duplicadas (ex.: retries webhook) são puladas silenciosamente com resposta `200`, evitando execuções duplicadas do agente.
 
 ### Body size limits
 
@@ -582,7 +583,7 @@ Este é o mesmo modelo de confiança que se aplica a tudo que o agente lê: pág
 
 ### Duplicate responses
 
-- O cache de idempotency deve evitar isso — verifique se a fonte webhook envia header de delivery ID (`X-GitHub-Delivery` ou `X-Request-ID`)
+- O cache de idempotency deve evitar isso — verifique se a fonte webhook envia header de delivery ID (`X-GitHub-Delivery`, `svix-id`, `webhook-id`, ou `X-Request-ID`)
 - Delivery IDs são cacheados por 1 hora
 
 ### `gh` CLI errors (GitHub comment delivery)

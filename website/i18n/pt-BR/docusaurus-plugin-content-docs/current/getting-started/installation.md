@@ -163,6 +163,26 @@ O mesmo padrão funciona no Arch (o instalador usa pacman com a mesma lógica de
 
 Para mais diagnósticos, rode `hermes doctor` — ele diz exatamente o que está faltando e como corrigir.
 
+### Diretórios home com symlink e storage externo {#symlinked-home-directories-and-external-storage}
+
+O Hermes suporta um `HERMES_HOME` com symlink e subdiretórios home com symlink,
+incluindo `hooks`, `skills`, `sessions` e `logs`. Durante a inicialização do home,
+links de diretório existentes são preservados, e permissões em diretórios linkados
+(e descendentes como `logs/curator`) ficam a cargo do dono.
+
+Se o alvo de um link estiver ausente, inacessível ou não for um diretório, a inicialização
+para com um erro de storage nomeando o path e o alvo do link. O Hermes **não**
+substitui o link nem cria o alvo ausente: fazer isso poderia gravar dados no
+disco local enquanto um volume externo ou NAS está desmontado. Verifique o link
+reportado, restaure o mount ou corrija o alvo, e confirme permissões de acesso
+antes de tentar de novo. Para um alvo de dotfiles deliberadamente novo, crie-o você mesmo só
+depois de confirmar que o storage pretendido está disponível.
+
+`hermes doctor` reporta essas falhas como problemas de storage, não YAML inválido.
+Mantenha seu `config.yaml` existente; rodar `hermes setup` não é o reparo para um
+diretório indisponível. Isto é uma checagem de disponibilidade de diretório, não um monitor de mount:
+um diretório existente não estabelece que o volume pretendido está montado.
+
 ## Detecção automática do método de instalação
 
 O Hermes detecta sozinho se foi instalado via `pip`, instalador git, Homebrew ou NixOS, e o `hermes update` imprime o comando de update correspondente. Não há env var para setar — a detecção se baseia no layout da instalação (site-packages do Python, `~/.hermes/hermes-agent/`, prefixo Homebrew ou path do store Nix). O `hermes doctor` também mostra o método detectado no resumo do ambiente.

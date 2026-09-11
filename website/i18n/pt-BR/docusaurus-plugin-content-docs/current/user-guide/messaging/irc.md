@@ -15,9 +15,9 @@ O IRC é texto puro: não há suporte a voz, imagem, arquivo, thread, reação, 
 
 ## Configure o Hermes {#configure-hermes}
 
-Você pode configurar o IRC de duas formas — variáveis de ambiente (para uma configuração rápida só com env) ou o bloco `gateway` em `~/.hermes/gateway-config.yaml`.
+Você pode configurar o IRC de duas formas — variáveis de ambiente (para uma configuração rápida só com env) ou o bloco `gateway` em `~/.hermes/config.yaml`.
 
-### Opção A — gateway-config.yaml {#option-a--gateway-configyaml}
+### Opção A — config.yaml {#option-a--configyaml}
 
 ```yaml
 gateway:

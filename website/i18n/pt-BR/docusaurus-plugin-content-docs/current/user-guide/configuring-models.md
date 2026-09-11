@@ -75,7 +75,7 @@ Clique **Show auxiliary** para revelar os 11 task slots:
 
 ![Painel auxiliary expandido](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-Toda tarefa auxiliar default para `auto` — o Hermes tenta seu model principal para aquele job também. Se essa rota estiver indisponível ou bater falha estilo capacity, `auto` segue qualquer `auxiliary.<task>.fallback_chain` específico da tarefa, depois a cadeia principal `fallback_providers` / `fallback_model`, depois a cadeia built-in de discovery auxiliary do Hermes. Override uma tarefa específica quando quiser model mais barato ou rápido para side-job.
+Toda tarefa auxiliar default para `auto` — o Hermes tenta seu model principal para aquele job também. Se essa rota estiver indisponível ou bater falha estilo capacity, `auto` segue qualquer `auxiliary.<task>.fallback_chain` específico da tarefa, depois a cadeia principal `fallback_providers` / `fallback_model`. Nunca adivinha um provider que você não configurou: com um provider principal selecionado e nenhum fallback declarado, a side task é pulada com um aviso em vez de ser cobrada em outra conta na qual você acontece de estar logado. (A cadeia built-in de discovery do Hermes só roda quando nenhum provider principal está selecionado.) Override uma tarefa específica quando quiser model mais barato ou rápido para side-job.
 
 ### Padrões comuns de override {#common-override-patterns}
 
@@ -165,7 +165,7 @@ auxiliary:
         model: inclusionai/ring-2.6-1t:free
 ```
 
-Quando `fallback_chain` está ausente, `auto` usa a cadeia top-level `fallback_providers` antes da cadeia built-in de discovery auxiliary.
+Quando `fallback_chain` está ausente, `auto` usa a cadeia top-level `fallback_providers`. Se ela também estiver ausente e o provider principal não puder servir a chamada, a tarefa é pulada com um aviso — o Hermes não cai para outros providers logados.
 
 ## Opções de request por provider {#per-provider-request-options}
 
@@ -237,6 +237,19 @@ omitido, o Hermes mantém sua detecção normal de capability de provider e mode
 :::note Formato legacy
 Configs antigos usavam lista top-level `custom_providers:` (com `base_url` em vez de `api`). Ainda funciona e é auto-migrado para dict `providers:` no `hermes update` (config v12).
 :::
+
+### Nous Portal: qual wire carrega Claude {#nous-portal-which-wire-carries-claude}
+
+O Nous Portal serve seus models `anthropic/*` em duas rotas: OpenAI-compatible `/v1/chat/completions` e o wire nativo Anthropic Messages `/v1/messages`. `nous.anthropic_wire` escolhe uma:
+
+```yaml
+nous:
+  anthropic_wire: chat     # default. "native" = the Anthropic Messages wire; "auto" = decide per session
+```
+
+`chat` é o default por enquanto. O wire nativo é o melhor transporte (thinking blocks assinados passam inalterados, escopos nativos de `cache_control`), mas no path OpenRouter-served do Portal ele atualmente reescreve o prompt cache do turno anterior em 14–20% das chamadas consecutivas em tool loops concorrentes, o que é 15–20% da conta de cache-write de um fan-out; a rota chat mediu 0 no mesmo teste. Defina `native` para optar de volta (por exemplo quando o fix no lado do portal tiver shipped). Só models `anthropic/*` são afetados; todo o resto no Nous já usa chat/completions.
+
+`auto` é para quando o Portal serve o mesmo model de mais de um upstream. Uma sessão começa em chat, o Hermes lê qual upstream respondeu a primeira chamada, e troca aquela sessão para native só quando o upstream é um onde native é conhecido como limpo (a troca acontece entre chamadas, então nenhuma resposta in-flight e nenhum cache quente é perdido). Hoje nenhum upstream está liberado, então `auto` se comporta exatamente como `chat`; existe para que o flip possa ser feito a partir de uma medição em vez de uma mudança de config.
 
 ## Quando entra em vigor? {#when-does-it-take-effect}
 

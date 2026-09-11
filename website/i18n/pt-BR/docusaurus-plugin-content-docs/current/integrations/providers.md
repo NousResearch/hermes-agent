@@ -29,6 +29,7 @@ Você precisa de pelo menos uma forma de se conectar a um LLM. Use `hermes model
 | **Arcee AI** | `ARCEEAI_API_KEY` em `~/.hermes/.env` (provedor: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` em `~/.hermes/.env` (provedor: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` em `~/.hermes/.env` (provedor: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
+| **Actual Computer** | `ACTUAL_API_KEY` em `~/.hermes/.env` para o relay hospedado; defina `model.base_url` em `config.yaml` para um daemon local (sem necessidade de chave no loopback). Provedor: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` em `~/.hermes/.env` (provedor: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` em `~/.hermes/.env` (provedor: `minimax-cn`) |
 | **xAI (Grok) — API Responses** | `XAI_API_KEY` em `~/.hermes/.env` (provedor: `xai`) |
@@ -91,6 +92,21 @@ Ainda não tem uma assinatura? Adquira uma em [portal.nousresearch.com/manage-su
 O provedor OpenAI Codex se autentica via código de dispositivo (abra uma URL, digite um código). O Hermes armazena as credenciais resultantes em seu próprio repositório de autenticação em `~/.hermes/auth.json` e pode importar credenciais existentes da CLI do Codex a partir de `~/.codex/auth.json`, quando presentes. Nenhuma instalação da CLI do Codex é necessária.
 
 Se uma renovação de token falhar com um erro terminal (HTTP 4xx, `invalid_grant`, concessão revogada, etc.), o Hermes marca o token de refresh como morto e para de reproduzi-lo, para que você não veja uma enxurrada de falhas de autenticação idênticas. A próxima requisição exibe uma mensagem tipada de reautenticação. Execute `hermes auth add openai-codex` (ou `hermes model` → **ChatGPT or Codex Subscription**) para iniciar um novo login por código de dispositivo; a quarentena é liberada na próxima troca bem-sucedida.
+
+O login de dispositivo pode falhar com `[SSL: UNEXPECTED_EOF_WHILE_READING]` ou timeout no handshake TLS no Python/OpenSSL 3.5+ quando um middlebox rejeita grupos pós-quânticos como X25519MLKEM768 (o curl pode ainda funcionar). O Hermes não altera a política TLS padrão. Aponte `OPENSSL_CONF` para uma configuração que restrinja `Groups` a curvas clássicas antes de executar `hermes model`, ou diagnostique com TLS 1.2:
+
+```ini
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = x25519:secp256r1:secp384r1:x448
+```
 :::
 
 :::warning
@@ -116,6 +132,8 @@ Se você está tentando trocar para um provedor que ainda não configurou (por e
 ### Anthropic (Nativa) {#anthropic-native}
 
 Use modelos Claude diretamente através da API da Anthropic — sem necessidade de proxy pelo OpenRouter. Suporta três métodos de autenticação:
+
+Quando nenhuma credencial explícita de ambiente é selecionada, concessões OAuth pertencentes ao Hermes no pool de credenciais têm precedência sobre um login emprestado do Claude Code. O login emprestado continua sendo o fallback quando nenhuma concessão OAuth própria está disponível. A recuperação de autenticação auxiliar atualiza a credencial usada pela requisição com falha, e não um login de ambiente não relacionado; caso contrário, rotacionar um login emprestado pode invalidar o token de refresh do proprietário.
 
 :::caution Requer créditos de "uso extra" do Claude Max
 Ao se autenticar via `hermes model` → Anthropic OAuth (ou via `hermes auth add anthropic --type oauth`), o Hermes roteia como o Claude Code contra sua conta Anthropic. **Isso só funciona se você estiver em um plano Claude Max e tiver comprado créditos de uso extra.** A cota base do plano Max (o uso incluído no Claude Code por padrão) não é consumida pelo Hermes — apenas os créditos extras/excedentes que você adicionou além dela são consumidos. Assinantes do Claude Pro não podem usar esse caminho.
@@ -320,7 +338,7 @@ Nenhuma configuração é necessária — o cache é ativado automaticamente qua
 
 O xAI também oferece um endpoint dedicado de TTS (`/v1/tts`). Selecione **xAI TTS** em `hermes tools` → Voice & TTS, ou veja a página [Voz e TTS](../user-guide/features/tts.md#text-to-speech) para a configuração.
 
-**Migração de modelos xAI retirados (15 de maio de 2026):** o xAI está retirando `grok-4*`, `grok-3`, `grok-code-fast-1` e `grok-imagine-image-pro` em 15/05/2026. Tanto `hermes doctor` quanto a inicialização de `hermes chat` detectam qualquer configuração ainda apontando para uma referência retirada e imprimem a substituição recomendada. Use `hermes migrate xai` para uma reescrita de configuração em uma única etapa — modo dry-run por padrão, adicione `--apply` para gravar as alterações (um backup `config.yaml.bak-pre-migrate-xai-*` com timestamp é criado automaticamente).
+**Migração de modelos xAI retirados (15 de maio de 2026):** o xAI está retirando `grok-4*`, `grok-3`, `grok-code-fast-1` e `grok-imagine-image-pro` em 15/05/2026. Tanto `hermes doctor` quanto a inicialização de `hermes chat` detectam qualquer configuração ainda apontando para uma referência retirada e imprimem a substituição recomendada. Use `hermes migrate xai` para uma reescrita de configuração em uma única etapa — modo dry-run por padrão, adicione `--apply` para gravar as alterações (uma cópia com timestamp da configuração anterior vai para `backups/config/` primeiro).
 
 ```bash
 hermes migrate xai          # visualiza as substituições

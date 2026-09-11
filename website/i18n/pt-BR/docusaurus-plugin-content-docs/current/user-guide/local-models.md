@@ -64,8 +64,14 @@ de ponta a ponta e não expõe nenhum controle:
   overflow na RAM do sistema na ordem que menos prejudica (pesos de experts
   primeiro, nunca o cache de atenção), trocando um pouco de velocidade para proteger a
   garantia de contexto.
-- **A compressão de conversa só entra em ação no máximo
-  da janela do modelo** — o crescimento sempre vem primeiro.
+- **O fit de memória inclui a configuração de launch**, não só o arquivo do modelo:
+  estado de contexto, buffers de runtime, o vision projector e buffers MTP todos
+  contam. Para multi-token prediction (MTP), o Hermes usa batches menores quando
+  batches maiores derramariam na mesma janela de contexto. MTP permanece habilitado.
+  O mesmo cálculo roda quando uma janela crescida é restaurada após restart.
+- **A compressão de conversa segue uma checagem de crescimento.** Se uma janela maior
+  não cabe, a geração está lenta demais, ou o máximo nativo foi atingido,
+  o Hermes comprime em vez de reivindicar uma janela que o servidor não recebeu.
 - Modelos ociosos são descarregados após 15 minutos para liberar memória da GPU; eles
   recarregam automaticamente na próxima mensagem.
 

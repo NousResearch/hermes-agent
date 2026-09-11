@@ -132,7 +132,7 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-github"]
 ```
 
-Isso cria um toolset `mcp-github` que você pode referenciar em `--toolsets` ou em configurações de plataforma.
+Isso cria um toolset `mcp-github` que você pode referenciar em `--toolsets` ou em configurações de plataforma. O nome nu do servidor (`github`) funciona como alias. Se um servidor tiver o mesmo nome de um toolset built-in (`homeassistant`, `browser`), esse nome resolve para as ferramentas built-in **mais** as ferramentas `mcp__<server>__*` do servidor; nenhum lado sombreia o outro.
 
 ### Toolsets de plugins {#plugin-toolsets}
 

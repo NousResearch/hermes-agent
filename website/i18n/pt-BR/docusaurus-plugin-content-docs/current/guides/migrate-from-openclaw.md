@@ -92,15 +92,9 @@ Os conflitos de skills são tratados por `--skill-conflict`: `skip` mantém a sk
 | Sandbox Docker | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |
 | Imagem Docker | `agents.defaults.sandbox.docker.image` | `terminal.docker_image` | Cópia direta |
 
-### Políticas de reinício de sessão {#session-reset-policies}
+### Tempo de vida da sessão {#session-lifetime}
 
-| Caminho de config no OpenClaw | Caminho de config no Hermes | Notas |
-|---------------------|-------------------|-------|
-| `session.reset.mode` | `session_reset.mode` | "daily", "idle", ou ambos |
-| `session.reset.atHour` | `session_reset.at_hour` | Hora (0–23) para o reinício diário |
-| `session.reset.idleMinutes` | `session_reset.idle_minutes` | Minutos de inatividade |
-
-Nota: o OpenClaw também tem `session.resetTriggers` (um array de strings simples como `["daily", "idle"]`). Se o `session.reset` estruturado não estiver presente, a migração recorre a inferir a partir de `resetTriggers`.
+Timers de reinício por ociosidade e diários não são importados: as conversas do Hermes persistem até um `/new` ou `/reset` explícito. Configurações avançadas de sessão (links de identidade, vínculos de thread, manutenção, escopo e política de envio) permanecem arquivadas para referência.
 
 ### Servidores MCP {#mcp-servers}
 
@@ -229,7 +223,7 @@ A migração resolve os três formatos. Para templates de ambiente e objetos Sec
 
 5. **Teste as mensagens** — se você migrou tokens de plataforma, reinicie o gateway: `systemctl --user restart hermes-gateway`
 
-6. **Verifique as políticas de sessão** — execute `hermes config show` e confirme que o valor de `session_reset` corresponde às suas expectativas.
+6. **Verifique os arquivos arquivados de sessão** — revise as configurações avançadas arquivadas; timers de reinício por ociosidade e diários intencionalmente não são importados.
 
 7. **Repareie o WhatsApp** — o WhatsApp usa pareamento por código QR (Baileys), não migração de token. Execute `hermes whatsapp` para parear.
 

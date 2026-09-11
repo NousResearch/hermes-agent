@@ -98,7 +98,7 @@ Isso faz login, define a Nous como provider e liga o Tool Gateway num único com
 :::info Modos de setup
 Numa instalação nova, o `hermes setup` oferece três modos:
 
-- **Quick Setup (Nous Portal)** — login OAuth gratuito, sem API keys; configura um modelo e as tools do Tool Gateway. O caminho rápido recomendado.
+- **Quick Setup (Nous Portal)** — login OAuth, sem API keys para gerenciar; configura um modelo e as tools do Tool Gateway, cobradas na sua [assinatura do Nous Portal](/integrations/nous-portal). O caminho rápido recomendado.
 - **Full Setup** — percorre cada provider, tool e opção na mão (você traz as próprias chaves).
 - **Blank Slate** — tudo começa **desligado**, exceto o mínimo para rodar um agente: **provider e modelo, o toolset File Operations e o toolset Terminal**. Sem web, browser, execução de código, visão, memória, delegação, cron, skills, plugins ou servidores MCP — e compression, checkpoints, smart routing e captura de memória ficam desabilitados. Depois que a baseline mínima é aplicada, você escolhe um de dois caminhos: **começar com tudo desligado** (terminar agora com o agente mínimo) ou **percorrer todas as configurações** (optar por tools, skills, plugins, MCP e messaging). Escolha isto quando quiser um agente mínimo, totalmente controlado, e pretendia habilitar só o que precisa.
 

@@ -125,7 +125,7 @@ Uma barra de status persistente fica acima da área de input, atualizando em tem
 | Elemento | Descrição |
 |---------|-------------|
 | Nome do modelo | Modelo atual (truncado se tiver mais de 26 caracteres) |
-| Contagem de tokens | Tokens de contexto usados / janela máxima de contexto |
+| Contagem de tokens | Tokens de contexto usados / janela máxima de contexto; `~` marca uma estimativa |
 | Barra de contexto | Indicador visual de preenchimento com limites codificados por cor |
 | Custo | Custo estimado da sessão (ou `n/a` para modelos com preço desconhecido/zero) |
 | 🗜️ N | **Contagem de compressão de contexto** — quantas vezes a sessão em execução foi comprimida automaticamente. Aparece depois que a primeira compressão ocorre. |
@@ -133,6 +133,8 @@ Uma barra de status persistente fica acima da área de input, atualizando em tem
 | Duração | Tempo decorrido da sessão |
 | Título da sessão | Depois que a sessão tem um título, ele aparece como um badge dourado preso à borda direita. Títulos longos truncam antes de deslocar os campos essenciais de modelo e contexto. |
 | ⚠ YOLO | **Aviso do modo YOLO** — exibido sempre que `HERMES_YOLO_MODE` está ativo (seja `hermes --yolo` na inicialização ou `/yolo` alternado no meio da sessão). Espelha o aviso da linha do banner para você não esquecer que está no modo de aprovação automática. |
+
+Um `~` antes de uma contagem ou porcentagem de contexto significa que inclui uma estimativa local. Isso também se aplica a `/status` e `/context` do gateway, ao TUI e ao medidor de contexto do Desktop. Uma leitura de usage do provider inalterada não tem `~`; um âncora do provider mais mensagens novas sem preço tem. `/context` reporta a fonte selecionada. Breakdowns de categoria, free-space, skill e toolset são sempre estimativas locais, mesmo quando a ocupação geral vem do usage do provider. Esses labels de display não mudam decisões de compaction nem fazem pedidos extras ao provider.
 
 A barra se adapta à largura do terminal — layout completo com ≥ 76 colunas, compacto entre 52–75, mínimo (modelo + duração, mais o badge YOLO quando ativo) abaixo de 52.
 
@@ -165,6 +167,8 @@ Ao retomar uma sessão anterior (`hermes -c` ou `hermes --resume <id>`), um pain
 | `Ctrl+G` | Abrir o buffer de input atual no `$EDITOR` (vim/nvim/nano/VS Code/etc.). Salve e saia para enviar o texto editado como o próximo prompt — ideal para prompts longos com vários parágrafos. |
 | `Ctrl+X Ctrl+E` | Atalho alternativo estilo Emacs para o editor externo (mesmo comportamento de `Ctrl+G`). |
 | `Ctrl+C` | Interromper o agente (pressione duas vezes em até 2s para forçar a saída) |
+| `Ctrl+T` / `F6` | Abre o monitor live de subagentes em tela cheia sem perder o rascunho do composer. O dock live aparece automaticamente acima da barra de status; setas selecionam um worker, `Enter` mostra o log recente, `s` faz steer e `x` pede stop com confirmação. Veja [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents). |
+| `F7` | Alterna o dock live de subagentes entre a prévia multi-row e uma linha de resumo única sem mover o foco do composer. |
 | `Ctrl+D` | Sair |
 | `Ctrl+Z` | Suspender o Hermes em background (somente Unix). Execute `fg` no shell para retomar. |
 | `Tab` | Aceitar sugestão automática (texto fantasma) ou autocompletar slash commands |
@@ -294,6 +298,8 @@ display:
 
 :::info
 Colar texto multilinha é suportado — use qualquer uma das teclas de nova linha acima, ou simplesmente cole o conteúdo diretamente.
+
+Em terminais usando o protocolo de teclado Kitty, `Alt+Enter` no teclado numérico também insere uma nova linha, inclusive ao lado de um paste colapsado. Teclas de navegação modificadas do keypad seguem seus equivalentes não-keypad.
 :::
 
 ### Compatibilidade com Shift+Enter
@@ -324,7 +330,7 @@ A chave de config `display.busy_input_mode` controla o que acontece quando você
 
 | Modo | Comportamento |
 |------|----------|
-| `"interrupt"` (padrão) | A sua mensagem interrompe a operação atual e é processada imediatamente |
+| `"interrupt"` (padrão) | Sua mensagem redireciona o turno ativo. A geração do modelo reinicia com reasoning exibido e trabalho concluído preservados. Um comando de terminal em foreground em execução é movido para background (não é morto — você recebe uma notificação de conclusão) para que sua mensagem seja lida imediatamente; outras ferramentas em execução terminam primeiro |
 | `"queue"` | A sua mensagem é enfileirada silenciosamente e enviada como o próximo turno depois que o agente terminar |
 | `"steer"` | A sua mensagem é injetada na execução atual via `/steer`, chegando ao agente após a próxima chamada de ferramenta — sem interrupção, sem novo turno |
 
@@ -334,7 +340,7 @@ display:
   busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
 ```
 
-O modo `"queue"` é útil quando você quer preparar mensagens de follow-up sem cancelar acidentalmente trabalho em andamento. O modo `"steer"` é útil quando você quer redirecionar o agente no meio de uma tarefa sem interromper — por exemplo, "na verdade, também verifique os testes" enquanto ele ainda está editando código. Valores desconhecidos voltam para `"interrupt"`.
+O modo `"queue"` prepara um turno de follow-up separado. `"steer"` sempre espera a próxima fronteira de tool-result. O modo padrão `"interrupt"` responde mais cedo durante a geração do modelo evitando cancelar uma ferramenta em execução; um comando longo de `terminal` em foreground (um build, um poller) é entregue ao background para o agente ver sua mensagem na hora em vez de depois que o comando sai. Use `/stop` quando quiser cancelar o turno e o trabalho em foreground. Valores desconhecidos voltam para `"interrupt"`.
 
 `"steer"` tem dois fallbacks automáticos: se o agente ainda não iniciou, ou se imagens estão anexadas, a mensagem volta para o comportamento de `"queue"` para que nada se perca.
 

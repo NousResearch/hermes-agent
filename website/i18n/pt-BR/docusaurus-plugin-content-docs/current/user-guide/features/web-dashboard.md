@@ -585,7 +585,7 @@ mesmo auth gate que o resto de `/api/`.
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspeciona / faz prune do store `/rollback` |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Cria / remove shell hook (consent-gated) |
 | `GET /api/system/stats` | Stats do host — OS, CPU, memória, disco, uptime |
-| `GET /api/hermes/update/check` | Reporta disponibilidade de update (commits behind, install method) sem aplicar. Para installs git/pip que estão behind, também retorna lista `commits` (`sha`, `summary`, `author`, `at`) do que mudou. `?force=1` quebra cache de 6h |
+| `GET /api/hermes/update/check` | Reporta disponibilidade de update (commits behind, install method) sem aplicar. Para installs git que estão behind, também retorna lista `commits` (`sha`, `summary`, `author`, `at`) do que mudou. `?force=1` quebra cache de 24h (a verificação passa pela API do GitHub, nunca `git fetch`) |
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Status skill-curator + pause/resume + run |
 | `GET /api/portal` | Auth Nous Portal + roteamento Tool Gateway (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnóstico (backgrounded) |

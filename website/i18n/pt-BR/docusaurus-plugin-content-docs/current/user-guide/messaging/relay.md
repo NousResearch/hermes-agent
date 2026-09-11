@@ -96,12 +96,33 @@ do container.
 
 ## Configuração {#configuration}
 
-O Relay é ativado quando uma URL de relay do connector está configurada — não existe
-uma feature flag separada. Implantações que não a definem não são afetadas.
+O Relay é ativado quando uma URL de relay do connector está configurada. Para manter um perfil fora
+do relay mesmo quando o deployment injeta uma URL, desabilite a plataforma em
+`config.yaml`:
+
+```yaml
+platforms:
+  relay:
+    enabled: false
+```
+
+- **Desabilitar explicitamente vence.** Com `enabled: false` o gateway não resolve
+  um token de identidade, não provisiona nem reescreve credenciais `GATEWAY_RELAY_*`, não registra
+  o adapter de relay nem envia a política de relevância — mesmo com `gateway.relay_url`
+  ou `GATEWAY_RELAY_URL` definidos. Adapters de mensagens nativos conectam como se nenhuma URL de relay
+  estivesse presente, e a entrega de cron trata nenhuma plataforma como fronted por relay.
+- **Omitir `enabled` mantém a ativação baseada em URL.** `enabled: true` ainda precisa
+  de uma URL de connector. Um `enabled: false` em `gateway.json` é consultivo, como para toda
+  outra plataforma; coloque o opt-out em `config.yaml` (usuário ou gerenciado).
+
+O veredito vem dos mesmos arquivos e merge que o loader do gateway usa (bloco top-level
+ou `gateway.platforms`, overlay gerenciado) e é aplicado no momento da ativação.
+Reinicie o gateway depois de mudar; um socket de relay aberto não é derrubado.
+`hermes gateway enroll` permanece disponível enquanto o relay em runtime está desabilitado.
 
 | Configuração | Onde | Significado |
 |---------|-------|---------|
-| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | URL do WebSocket de relay do connector. A presença habilita a plataforma relay. |
+| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | URL do WebSocket de relay do connector. Habilita o relay a menos que seja explicitamente desabilitado na configuração da plataforma. |
 | `gateway.relay_url` | `config.yaml` | O mesmo de acima, na forma de arquivo de config (env tem precedência). |
 | `GATEWAY_RELAY_ID` | env | O id desta instância de gateway (gravado pelo `enroll`). |
 | `GATEWAY_RELAY_SECRET` | env | Segredo por gateway que autentica o upgrade do WebSocket (gravado pelo `enroll`). |

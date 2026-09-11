@@ -75,9 +75,11 @@ O modo Browser Use usa a [Browser Use CLI 3.0](https://github.com/browser-use/br
 
 **Este é o modo de navegador padrão**: quando `browser.backend` está indefinido e a CLI `browser-use` é executável (instalada, ou disponível via `uvx`), o agente recebe a única ferramenta `browser_exec`. Se a CLI não puder rodar, o Hermes recua automaticamente para as ferramentas de navegador built-in.
 
-O modo é um **driver** que se compõe com o backend de navegador configurado: ele dirige seu Chrome local, um navegador na nuvem de assinatura Nous, Browserbase, Firecrawl, ou navegadores na nuvem do Browser Use — qualquer fonte de navegador selecionada em `hermes tools` → Browser Automation. A única exceção é o Camofox, que não tem endpoint CDP para o harness se anexar; setups Camofox automaticamente mantêm as ferramentas de navegador built-in.
+O modo é um **driver** que se compõe com o backend de navegador configurado: ele dirige o Chromium headless do próprio Hermes, um navegador na nuvem de assinatura Nous, Browserbase, Firecrawl, ou navegadores na nuvem do Browser Use — qualquer fonte de navegador selecionada em `hermes tools` → Browser Automation. A única exceção é o Camofox, que não tem endpoint CDP para o harness se anexar; setups Camofox automaticamente mantêm as ferramentas de navegador built-in.
 
-**Sessões concorrentes:** `browser_exec` aceita um argumento `session=<name>` que isola o trabalho de navegador por nome em todo backend. Cada nome recebe seu próprio daemon do harness (seu próprio socket IPC, log e estado), e em backends na nuvem seu próprio navegador — então subagentes paralelos ou chats simultâneos não mais pisam numa conexão compartilhada única. Omitir `session` usa o daemon default compartilhado, o que serve para navegação uma-de-cada-vez.
+**Navegação local usa o Chromium empacotado, não o seu próprio Chrome.** Sem provedor cloud ou endpoint `/browser connect` configurado, o Hermes lança o mesmo Chromium que as ferramentas built-in usam (instalado via `hermes tools` → Browser Automation, dirigido via agent-browser) e aponta a Browser Use CLI para ele. Seu Chrome instalado nunca é tocado, então não há toggle de remote-debugging em `chrome://inspect` para habilitar nem popup "Allow remote debugging?" — e funciona em hosts headless sem Chrome algum. O navegador é compartilhado com o ciclo de vida do stack built-in: é fechado após `browser.inactivity_timeout`, na saída, e pelo orphan sweep. Para dirigir um navegador no qual você está logado, use `/browser connect` ou o [toggle de perfil real](#real-profile-browsing-use-your-own-logins).
+
+**Sessões concorrentes:** `browser_exec` aceita um argumento `session=<name>` que isola o trabalho de navegador por nome em todo backend. Cada nome recebe seu próprio daemon do harness (seu próprio socket IPC, log e estado) e seu próprio navegador (um Chromium empacotado separado localmente, um navegador cloud separado em backends na nuvem) — então subagentes paralelos ou chats simultâneos não mais pisam numa conexão compartilhada única. Omitir `session` usa o daemon default compartilhado, o que serve para navegação uma-de-cada-vez.
 
 Para optar por sair e forçar as ferramentas de navegador built-in, use `/browser use off`, ou:
 
@@ -223,8 +225,13 @@ aberto — falha rápido com mensagem "fully quit the browser and retry" em vez 
 pendurar ou produzir sessão deslogada. Navegação com perfil real no Windows
 portanto exige o browser **totalmente fechado**, incluindo qualquer instância background/tray
 (o "continue running background apps when closed" do Chrome mantém um
-`chrome.exe` vivo depois que você fecha a janela). macOS e Linux podem copiar o
-perfil enquanto o browser está rodando.
+`chrome.exe` vivo depois que você fecha a janela). macOS e Linux geralmente podem copiar o
+perfil enquanto o browser está rodando. Em toda plataforma, cada backup de database de autenticação
+tem um orçamento de retry de cinco segundos. Se o database de origem ou snapshot
+permanecer locked, o Hermes para o launch e pede para você fechar o browser e tentar de novo.
+Ele preserva dados WAL commitados via SQLite em vez de cair para uma cópia
+crua de arquivo, que poderia perder logins recentes em silêncio. Databases ilegíveis ou corrompidos
+também param o launch.
 
 Defina `browser.real_profile_autoclose: true` para o Hermes **oferecer fechar o
 browser por você** quando ele está segurando o perfil. Mesmo com isso on, o Hermes nunca

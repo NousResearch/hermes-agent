@@ -12,7 +12,7 @@ O Hermes tem quatro sistemas de hooks que executam código customizado em pontos
 |--------|---------------|---------|----------|
 | **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
 | **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
-| **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
+| **[Shell hooks](#shell-hooks)** | `hooks:` block in profile `config.yaml` pointing at shell scripts | CLI + Gateway + Desktop/TUI/dashboard chat | Drop-in scripts for blocking, auto-formatting, context injection |
 | **[Outbound webhooks](#outbound-webhooks)** | `hooks.outbound:` list in `~/.hermes/config.yaml` | CLI + Gateway | Push signed lifecycle events to external HTTP endpoints — CI, dashboards, other agents |
 
 Erros de callback de hook são isolados e logados em vez de derrubar o agente. Hooks não são todos passivos: hooks directive/control podem mudar o fluxo, transforms podem substituir conteúdo, e um hook shell `pre_tool_call` pode bloquear ou fail closed.
@@ -457,7 +457,7 @@ Os campos de payload abaixo são os campos exatos específicos do evento forneci
 | `transform_api_error_classification` | Transform | Em cada tentativa falha de provider, no topo do classifier built-in; todos os callbacks rodam, depois o primeiro dict com `reason` válido vence (run-all-then-pick-first), e resultados válidos skipados logam warning de runtime. Só plugins Python. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` e `error_body` podem conter data raw de provider/usuário. |
 | `on_session_start` | Observer | Primeiro turno de sessão nova; retorno ignorado. | `session_id`, `model`, `platform` | Só identificadores e metadados de roteamento. |
 | `on_session_end` | Observer | Canonicamente em cada finalização de turno; exits CLI/TUI têm shapes legado reduzidos adicionais. Retorno ignorado. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; paths de exit podem adicionar `reason`/`api_request_id` e omitir campos. | IDs, model/platform e outcome; payload canônico não tem body de mensagem. |
-| `on_session_finalize` | Observer | Teardown CLI/TUI/gateway via `finalize_session`; shutdown ou expiry do gateway pode finalizar sem reset. Retorno ignorado. | Surface-dependent `session_id`, `platform`, opcionalmente `reason`, `old_session_id`, `new_session_id` | Identificadores de sessão e roteamento. |
+| `on_session_finalize` | Observer | Teardown CLI/TUI/gateway via `finalize_session`; shutdown do gateway pode finalizar sem reset. Retorno ignorado. | Surface-dependent `session_id`, `platform`, opcionalmente `reason`, `old_session_id`, `new_session_id` | Identificadores de sessão e roteamento. |
 | `on_session_reset` | Observer | Boundary de sessão CLI/TUI e gateway após a sessão de substituição existir; retorno ignorado. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: aqueles mais `reason`, `old_session_id`, `new_session_id` | Identificadores de sessão e roteamento. |
 | `on_skill_lifecycle` | Observer | Após mudança autoritativa de estado de skill-usage; retorno ignorado. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Expõe o nome local da skill e proveniência. |
 | `subagent_start` | Observer | Filho construído e prestes a rodar; retorno ignorado. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Goal do filho pode conter conteúdo de usuário/projeto. |
@@ -676,7 +676,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
 
-**Dispara:** Em `run_agent.py`, dentro de `run_conversation()`, após compressão de contexto mas antes do loop `while` principal. Dispara uma vez por chamada `run_conversation()` (ou seja, uma vez por turno de usuário), não uma vez por chamada API dentro do loop de ferramentas.
+**Dispara:** Em `agent/turn_context.py` (preparação de turno para `run_conversation()` em `agent/conversation_loop.py`), após compressão de contexto mas antes do loop `while` principal. Dispara uma vez por chamada `run_conversation()` (ou seja, uma vez por turno de usuário), não uma vez por chamada API dentro do loop de ferramentas.
 
 **Valor de retorno:** Se o callback retornar um dict com chave `"context"`, ou string não vazia simples, o texto é anexado à mensagem de usuário do turno atual. Retorne `None` para sem injeção.
 
@@ -758,7 +758,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Dispara:** Em `run_agent.py`, dentro de `run_conversation()`, após o loop de ferramentas sair com resposta final. Guardado por `if final_response and not interrupted` — então **não** dispara quando o usuário interrompe mid-turn ou o agente atinge o limite de iterações sem produzir resposta.
+**Dispara:** Em `agent/turn_finalizer.py` (`finalize_turn()`, chamado por `run_conversation()` em `agent/conversation_loop.py`), após o loop de ferramentas sair com resposta final. Guardado por `if final_response and not interrupted` — então **não** dispara quando o usuário interrompe mid-turn ou o agente atinge o limite de iterações sem produzir resposta.
 
 **Valor de retorno:** Ignorado.
 
@@ -899,7 +899,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
-**Dispara:** Em `run_agent.py`, dentro de `run_conversation()`, durante o primeiro turno de nova sessão — especificamente após o system prompt ser construído mas antes do loop de ferramentas iniciar. O check é `if not conversation_history` (sem mensagens anteriores = nova sessão).
+**Dispara:** Em `agent/conversation_loop.py`, dentro de `run_conversation()`, durante o primeiro turno de nova sessão — especificamente após o system prompt ser construído mas antes do loop de ferramentas iniciar. O check é `if not conversation_history` (sem mensagens anteriores = nova sessão).
 
 **Valor de retorno:** Ignorado.
 
@@ -944,7 +944,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `platform` | `str` | Where the session is running |
 
 **Dispara:** Em dois lugares:
-1. **`run_agent.py`** — no fim de toda chamada `run_conversation()`, após todo cleanup. Sempre dispara, mesmo se o turno deu erro.
+1. **`agent/turn_finalizer.py`** — no fim de toda chamada `run_conversation()` (`agent/conversation_loop.py`), após todo cleanup. Sempre dispara, mesmo se o turno deu erro.
 2. **`cli.py`** — no handler atexit do CLI, mas **só** se o agente estava mid-turn (`_agent_running=True`) quando o exit ocorreu. Isso captura Ctrl+C e `/exit` durante processamento. Neste caso, `completed=False` e `interrupted=True`.
 
 **Valor de retorno:** Ignorado.
@@ -994,7 +994,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-Dispara quando o CLI ou gateway **desmonta** uma sessão ativa — por exemplo, quando o usuário roda `/new`, o gateway fez GC de sessão idle, ou o CLI saiu com agente ativo. Use para flush de estado ligado ao session ID saindo. Num reset de gateway, a sessão de substituição já existe antes deste callback rodar.
+Dispara quando o CLI ou gateway **desmonta** uma sessão ativa — por exemplo, quando o usuário roda `/new` ou o CLI sai com agente ativo. Eviction só de recurso do cache idle não finaliza a conversa durável. Use para flush de estado ligado ao session ID saindo. Num reset de gateway, a sessão de substituição já existe antes deste callback rodar.
 
 **Assinatura do callback:**
 
@@ -1007,7 +1007,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
 | `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
 
-**Dispara:** Em teardown CLI/TUI e em paths de reset, shutdown ou idle-expiry do gateway. Shutdown e expiry do gateway podem finalizar sem um `on_session_reset` correspondente.
+**Dispara:** Em teardown CLI/TUI e em paths de reset ou shutdown do gateway. Shutdown do gateway pode finalizar sem um `on_session_reset` correspondente.
 
 **Valor de retorno:** Ignorado.
 
@@ -1579,7 +1579,9 @@ Cinco observers adicionais (RFC #58548) estendem a família kanban. Todos são o
 
 ## Hooks de Shell {#shell-hooks}
 
-Declare shell-script hooks no seu `~/.hermes/config.yaml` e o Hermes os executará como subprocessos sempre que o evento plugin-hook correspondente disparar — em sessões CLI e gateway. Não é necessário escrever plugin Python.
+Declare shell-script hooks no `config.yaml` do seu perfil e o Hermes os executará como subprocessos sempre que o evento plugin-hook correspondente disparar — em sessões CLI, gateway, Desktop, TUI e chat do dashboard. Não é necessário escrever plugin Python.
+
+Desktop, TUI e chat do dashboard registram hooks ao construir um agente, usando a configuração do perfil daquela sessão e a allowlist de consentimento. Trocar de perfil não reutiliza hooks de outro perfil. Requisitos existentes de consentimento de hook e comportamento de safe-mode ainda se aplicam; hooks não aprovados são pulados em vez de aprovados em silêncio.
 
 Use shell hooks quando quiser um script drop-in de arquivo único (Bash, Python, qualquer coisa com shebang) para:
 

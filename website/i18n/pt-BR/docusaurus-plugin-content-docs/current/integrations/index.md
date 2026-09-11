@@ -42,7 +42,7 @@ Exemplo de setup rápido:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | keenable | exa | parallel | xai
+  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | perplexity | keenable | exa | parallel | xai
 ```
 
 Se `web.backend` não estiver definido, o backend é detectado automaticamente a partir de qualquer chave de API disponível. Firecrawl self-hosted também é suportado via `FIRECRAWL_API_URL`.

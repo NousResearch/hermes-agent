@@ -88,6 +88,8 @@ O Vertex exige o prefixo de fornecedor `google/` nos IDs de modelo. O seletor do
 
 | Modelo | ID |
 |-------|----|
+| Gemini 3.8 Flash | `google/gemini-3.8-flash` |
+| Gemini 3.7 Flash | `google/gemini-3.7-flash` |
 | Gemini 3.1 Pro Preview | `google/gemini-3.1-pro-preview` |
 | Gemini 3 Pro Preview | `google/gemini-3-pro-preview` |
 | Gemini 3 Flash Preview | `google/gemini-3-flash-preview` |

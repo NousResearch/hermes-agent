@@ -160,7 +160,7 @@ Trocar o modo altera onde os scripts rodam e qual interpretador os executa, não
 | Recurso | Limite | Notas |
 |----------|-------|-------|
 | **Timeout** | 5 minutos (300s) | Script é morto com SIGTERM, depois SIGKILL após 5s de grace |
-| **Stdout** | 50 KB | Saída truncada com aviso `[output truncated at 50KB]` |
+| **Stdout** | 50 KB | Exibido head-and-tail inline; a saída completa é salva em `~/.hermes/cache/exec/` e o caminho é incluído no resultado |
 | **Stderr** | 10 KB | Incluído na saída em exit não-zero para debug |
 | **Chamadas de ferramenta** | 50 por execução | Erro retornado quando o limite é atingido |
 
@@ -173,6 +173,29 @@ code_execution:
   timeout: 300       # Máx. segundos por script (padrão: 300)
   max_tool_calls: 50 # Máx. chamadas de ferramenta por execução (padrão: 50)
 ```
+
+## Estado entre chamadas (o session kernel) {#state-between-calls-the-session-kernel}
+
+No backend de terminal local, `execute_code` não inicia um interpretador novo a cada chamada. Cada sessão possui um kernel Python persistente, então variáveis, imports e dados carregados de uma chamada ficam disponíveis na próxima. O agente pode carregar um dataset uma vez e consultá-lo em vários turnos em vez de relê-lo toda vez. Subagentes ganham o próprio kernel; kernels nunca são compartilhados entre sessões.
+
+O que encerra um kernel:
+
+- **Timeout ou interrupt.** Uma célula que atinge o timeout (ou é interrompida) mata o processo do kernel e o estado é perdido de propósito; o resultado diz isso e a próxima chamada inicia um kernel novo.
+- **`reset=true`.** O agente pode passar `reset: true` para descartar o estado do kernel e começar limpo. Esta também é a forma de pegar mudanças de ambiente: o ambiente de um kernel congela no spawn, então uma variável de passthrough recém-allowlisted fica invisível até o kernel ser resetado.
+- **Idle timeout e eviction.** Kernels morrem com a sessão, após `code_execution.kernel_idle_timeout` segundos ociosos (padrão 1800), ou quando há mais de `code_execution.max_session_kernels` (padrão 4) vivos e o mais antigo é evicted.
+
+O envelope de segurança é o mesmo de um script one-shot: limpeza de ambiente, a whitelist de ferramentas e o orçamento de ferramentas por chamada se aplicam a cada célula, e a autoridade de tool-call (aprovações, sessão, allow-list) é rebound em cada célula.
+
+```yaml
+# ~/.hermes/config.yaml
+code_execution:
+  kernel_idle_timeout: 1800   # seconds a kernel may sit idle before it is reaped
+  max_session_kernels: 4      # kernels kept alive at once; oldest is evicted past this
+```
+
+**Backends remotos** (Docker, SSH, Modal) rodam um session kernel remoto com o mesmo contrato. Se o kernel não puder ser spawned no backend, o Hermes cai para rodar cada chamada como script standalone e diz isso no resultado.
+
+**Saída grande.** Stdout acima de 50 KB é mostrado head-and-tail inline, e o texto completo é salvo em `~/.hermes/cache/exec/` com o caminho incluído no resultado, para o agente poder paginar com `read_file` em vez de reexecutar o script.
 
 ## Como chamadas de ferramenta funcionam dentro de scripts {#how-tool-calls-work-inside-scripts}
 

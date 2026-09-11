@@ -25,10 +25,11 @@ Ambas são configuradas por uma única seleção de backend. Providers são esco
 | **Exa** | `EXA_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · 1 000 searches/mo com chave |
 | **Parallel** | `PARALLEL_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · pago com chave |
 | **Tavily** | `TAVILY_API_KEY` (opcional) | ✔ | ✔ | ✔ Opt-in keyless quando selecionado |
+| **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (snippets relevantes à query) | Pago (pricing da Search API por request) |
 | **Keenable** | `KEENABLE_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · pago com chave |
 | **xAI (Grok)** | `XAI_API_KEY` ou `hermes auth add xai-oauth` | ✔ | — | Pago (SuperGrok ou por token) |
 
-Brave Search, DDGS e xAI são **search-only** — combine qualquer um com Firecrawl/Tavily/Keenable/Exa/Parallel quando também precisar de `web_extract`. DDGS usa o pacote Python [`ddgs`](https://pypi.org/project/ddgs/) por baixo; se ainda não estiver instalado, rode `pip install ddgs` (ou deixe o Hermes lazy-install na primeira uso). xAI roda a ferramenta server-side `web_search` do Grok na Responses API — resultados são gerados por LLM em vez de index-backed, então títulos, descrições e escolha de URL são toda saída do modelo (veja a [ressalva de trust model](#xai-grok) abaixo).
+Brave Search, DDGS e xAI são **search-only** — combine qualquer um com Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel quando também precisar de `web_extract`. DDGS usa o pacote Python [`ddgs`](https://pypi.org/project/ddgs/) por baixo; se ainda não estiver instalado, rode `pip install ddgs` (ou deixe o Hermes lazy-install na primeira uso). xAI roda a ferramenta server-side `web_search` do Grok na Responses API — resultados são gerados por LLM em vez de index-backed, então títulos, descrições e escolha de URL são toda saída do modelo (veja a [ressalva de trust model](#xai-grok) abaixo).
 
 **Split por capacidade:** você pode usar providers diferentes para search e extract independentemente — por exemplo SearXNG (grátis) para search e Firecrawl para extract. Veja [Configuração por capacidade](#per-capability-configuration) abaixo.
 
@@ -287,7 +288,7 @@ SearXNG cuida do search; você precisa de um provider separado para `web_extract
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"   # or tavily, keenable, exa, parallel
+  extract_backend: "firecrawl"   # or tavily, perplexity, keenable, exa, parallel
 ```
 
 Com essa config, o Hermes usa SearXNG para todas as consultas de search e Firecrawl para extração de URL — combinando search grátis com extração de alta qualidade.
@@ -305,6 +306,19 @@ TAVILY_API_KEY=tvly-your-key-here
 ```
 
 Obtenha uma chave em [app.tavily.com](https://app.tavily.com/home). Veja [Tavily keyless](https://docs.tavily.com/documentation/keyless).
+
+---
+
+### Perplexity {#perplexity}
+
+A [Search API da Perplexity](https://docs.perplexity.ai/docs/search/quickstart) retorna resultados ranqueados e com carimbo de data do próprio índice da Perplexity (`web_search`). Para `web_extract` usa a mesma rota de *snippets* relevantes à query do CLI oficial `pplx`: você recebe as passagens de cada página que importam, com elisões marcadas `…`, em vez de um dump verbatim da página inteira — escolha Firecrawl / Exa / Parallel como `web.extract_backend` quando precisar da página toda. Só com chave; não há tier anônimo.
+
+```bash
+# ~/.hermes/.env
+PERPLEXITY_API_KEY=pplx-your-key-here
+```
+
+Obtenha uma chave em [perplexity.ai/account/api](https://www.perplexity.ai/account/api). Defina `PERPLEXITY_BASE_URL` para rotear por um proxy.
 
 ---
 
@@ -390,7 +404,7 @@ Defina um provider para todas as capacidades web:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | keenable | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | perplexity | keenable | exa | parallel | xai
 ```
 
 ### Configuração por capacidade {#per-capability-configuration}
@@ -420,6 +434,7 @@ Se nenhum backend **jamais** foi selecionado (nenhuma chave `web.backend` / por 
 | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` | firecrawl |
 | `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
+| `PERPLEXITY_API_KEY` | perplexity |
 | `EXA_API_KEY` | exa |
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |
@@ -474,7 +489,7 @@ SearXNG não pode extrair conteúdo de URL. Defina `web.extract_backend` para um
 ```yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"  # or tavily / keenable / exa / parallel
+  extract_backend: "firecrawl"  # or tavily / perplexity / keenable / exa / parallel
 ```
 
 ### SearXNG retorna 0 resultados

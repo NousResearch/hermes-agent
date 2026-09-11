@@ -87,6 +87,7 @@ Se uma skill estiver ausente desta lista mas presente no repositório, o catálo
 | Skill | Descrição | Caminho |
 |-------|-------------|------|
 | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | API REST do Airtable via curl. CRUD de registros, filtros, upserts. | `productivity/airtable` |
+| [`collective-wisdom-install`](/docs/user-guide/skills/bundled/productivity/productivity-collective-wisdom-install) | Instala uma skill compartilhada de equipe com consentimento explícito. | `productivity/collective-wisdom-install` |
 | [`box`](/docs/user-guide/skills/bundled/productivity/productivity-box) | Box gerencia arquivos na nuvem, compartilhamento, busca e metadata. | `productivity/box` |
 | [`document-to-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items) | Extrai obrigações, prazos e tarefas citadas de documentos. | `productivity/document-to-action-items` |
 | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx) | Cria, lê, edita e usa templates de arquivos Word .docx. | `productivity/docx` |

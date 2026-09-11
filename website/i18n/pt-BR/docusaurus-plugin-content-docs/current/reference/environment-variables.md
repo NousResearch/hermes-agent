@@ -43,6 +43,8 @@ O Hermes lê variáveis de ambiente do ambiente do processo e, para segredos ger
 | `ARCEE_BASE_URL` | Sobrescreve a URL base da Arcee (padrão: `https://api.arcee.ai/api/v1`) |
 | `GMI_API_KEY` | Chave de API da GMI Cloud ([gmicloud.ai](https://www.gmicloud.ai/)) |
 | `GMI_BASE_URL` | Sobrescreve a URL base da GMI Cloud (padrão: `https://api.gmi-serving.com/v1`) |
+| `ACTUAL_API_KEY` | Chave de inferência Actual Computer (`ac_...`, [actual.inc/user/keys](https://actual.inc/user/keys)). Não necessária para o daemon local. |
+| `ACTUAL_BASE_URL` | Fallback legado para a URL base do Actual. Configure `model.provider: actual` e `model.base_url` no `config.yaml` em vez disso; a URL do YAML tem precedência. Padrão: `https://api.actual.inc/v1`. |
 | `MINIMAX_API_KEY` | Chave de API MiniMax — endpoint global ([minimax.io](https://www.minimax.io)). **Não usada pelo `minimax-oauth`** (o caminho OAuth usa login por navegador em vez disso). |
 | `MINIMAX_BASE_URL` | Sobrescreve a URL base do MiniMax (padrão: `https://api.minimax.io/anthropic` — o Hermes usa o endpoint compatível com Anthropic Messages da MiniMax). **Não usada pelo `minimax-oauth`**. |
 | `MINIMAX_CN_API_KEY` | Chave de API MiniMax — endpoint China ([minimaxi.com](https://www.minimaxi.com)). **Não usada pelo `minimax-oauth`** (o caminho OAuth usa login por navegador em vez disso). |
@@ -148,6 +150,8 @@ Para autenticação nativa da Anthropic, o Hermes prefere os próprios arquivos 
 | `FIRECRAWL_API_URL` | Endpoint customizado da API Firecrawl para instâncias auto-hospedadas (opcional) |
 | `TAVILY_API_KEY` | Chave de API Tavily opcional para limites maiores de busca/extração. Depois de selecionar Tavily como backend web, o acesso sem chave funciona sem ela ([app.tavily.com](https://app.tavily.com/home), [docs keyless](https://docs.tavily.com/documentation/keyless)) |
 | `TAVILY_BASE_URL` | Sobrescreve o endpoint da API Tavily. Útil para proxies corporativos e backends de busca compatíveis com Tavily auto-hospedados. Mesmo padrão que `GROQ_BASE_URL`. |
+| `PERPLEXITY_API_KEY` | Chave de API Perplexity Search para o backend web `perplexity` — resultados de busca ranqueados mais snippets de páginas relevantes à query para extract ([perplexity.ai/account/api](https://www.perplexity.ai/account/api)) |
+| `PERPLEXITY_BASE_URL` | Sobrescreve o endpoint da API Perplexity (padrão `https://api.perplexity.ai`) para proxies (opcional) |
 | `SEARXNG_URL` | URL da instância SearXNG para busca web gratuita auto-hospedada — sem necessidade de chave de API ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `EXA_API_KEY` | Chave de API Exa para busca web e conteúdos nativos de IA ([exa.ai](https://exa.ai/)) |
 | `BRAVE_SEARCH_API_KEY` | Token de assinatura da API Brave Search para busca web (camada gratuita disponível) ([brave.com/search/api](https://brave.com/search/api/)) |
@@ -283,6 +287,7 @@ Para backends de sandbox em nuvem, a persistência é orientada ao sistema de ar
 | `TELEGRAM_REQUIRE_MENTION` | Exige um gatilho explícito antes de responder em grupos do Telegram. Equivalente a `telegram.require_mention` no `config.yaml`. |
 | `TELEGRAM_MENTION_PATTERNS` | Array JSON, lista separada por nova linha, ou lista separada por vírgula de padrões regex de palavra de ativação aceitos quando o filtro de menção de grupo do Telegram está ativado. Equivalente a `telegram.mention_patterns`. |
 | `TELEGRAM_EXCLUSIVE_BOT_MENTIONS` | Quando ativado, menções explícitas a `@...bot` em grupos do Telegram roteiam apenas para os nomes de usuário de bot mencionados antes que fallbacks de resposta ou palavra de ativação sejam executados. Padrão: `true`. Equivalente a `telegram.exclusive_bot_mentions`. |
+| `TELEGRAM_BOTS_REQUIRE_MENTION` | Quando ativado, uma mensagem enviada por outro bot precisa mencionar explicitamente `@thisbot` para disparar uma resposta — só uma quote-reply é ignorada, o que impede dois bots de responderem um ao outro para sempre. Respostas de humanos não são afetadas. Padrão: `false`. Equivalente a `telegram.bots_require_mention`. |
 | `TELEGRAM_REPLY_TO_MODE` | Comportamento de referência de resposta: `off`, `first` (padrão), ou `all`. Segue o mesmo padrão do Discord. |
 | `TELEGRAM_IGNORED_THREADS` | IDs de tópico/thread do fórum do Telegram separados por vírgula onde o bot nunca responde |
 | `TELEGRAM_PROXY` | URL de proxy para conexões do Telegram — sobrescreve `HTTPS_PROXY`. Suporta `http://`, `https://`, `socks5://` |
@@ -584,6 +589,7 @@ Usado pelo plugin de plataforma LINE incluído (`plugins/platforms/line/`). Veja
 | `LINE_BUTTON_LABEL` | Rótulo do botão de postback (padrão: `Get answer`). |
 | `LINE_DELIVERED_TEXT` | Resposta quando um postback já entregue é tocado novamente (padrão: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Resposta quando um botão de postback órfão por `/stop` é tocado (padrão: `Run was interrupted before completion.`). |
+| `LINE_EXPIRED_TEXT` | Resposta quando um botão de postback cuja resposta em cache sumiu (expirou / perdida com o estado do processo) é tocado (padrão: `That request has expired — send your message again.`). |
 
 ### ntfy (notificações push) {#ntfy-push-notifications}
 
@@ -816,8 +822,6 @@ Remova a definição da variável ou remova-a do `.env` para restaurar escritas 
 
 | Variável | Descrição |
 |----------|-------------|
-| `SESSION_IDLE_MINUTES` | Reinicia sessões após N minutos de inatividade (padrão: 1440) |
-| `SESSION_RESET_HOUR` | Hora de reinício diário em formato 24h (padrão: 4 = 4h da manhã) |
 | `HERMES_SESSION_ID` | **Exportada automaticamente em todo subprocesso de ferramenta** que o Hermes gera (`terminal`, `execute_code`, shell persistente, backends Docker/Singularity, execuções de subagente delegado). Definida pelo agente como o ID de sessão atual; scripts de usuário chamados a partir de ferramentas podem lê-la para correlacionar sua saída, telemetria, ou efeitos colaterais com a sessão do Hermes de origem. **Você não deve definir isso manualmente** — sobrescrevê-la a partir de um shell pai só tem efeito fora de uma execução de agente, e é sobrescrita no momento em que o agente inicia uma sessão. |
 | `AI_AGENT` | **Definida como `hermes-agent` pelos entry points da CLI e do gateway** (só quando ainda não foi definida por um harness externo), e exportada para todo shell da ferramenta terminal — inclusive backends remotos (Docker, SSH, Modal, Daytona, Singularity, Vercel). O padrão emergente cross-agent para atribuição de child-process — tooling genérico (ex.: detecção de agente do huggingface_hub) lê isso para saber que está rodando sob um agente de IA. O valor casa com o id do Hermes no registry público de agent-harness. Não defina manualmente. |
 | `HERMES_AGENT` | **Definida como `true` pelos entry points da CLI e do gateway** e exportada para todo shell da ferramenta terminal para child processes detectarem que estão rodando especificamente dentro do Hermes. Não defina manualmente. |

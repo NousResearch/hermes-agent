@@ -16,10 +16,14 @@ Acompanha a [issue #7816](https://github.com/NousResearch/hermes-agent/issues/78
 
 ## Como ele funciona {#how-it-runs}
 
-O curator é acionado por uma verificação de inatividade, não por um daemon de cron. No início de uma sessão de CLI, e em um tick recorrente dentro da thread de cron-ticker do gateway, o Hermes verifica se:
+O curator é acionado por uma verificação de inatividade, não por um job de cron. No início de uma sessão de CLI, durante o housekeeping do gateway, e no timer de manutenção do Desktop/`hermes serve`, o Hermes verifica se:
 
 1. Passou tempo suficiente desde a última execução do curator (`interval_hours`, padrão de **7 dias**), e
 2. O agente esteve ocioso por tempo suficiente (`min_idle_hours`, padrão de **2 horas**).
+
+Desktop e outros backends `hermes serve` compartilham o timer de manutenção horário já existente (primeira consulta após 90 segundos), independentemente de jobs de cron. Eles medem inatividade a partir do startup do processo e da atividade de chat mais recente no mesmo perfil, retendo esse timestamp de atividade depois que uma sessão fecha ou é reaped, e pulam o curator enquanto um turn naquele perfil estiver em execução. Uma janela conectada mas inativa não bloqueia a manutenção. Esse timer também consulta Skill Sync pessoal e de organização, sujeito aos próprios gates de opt-in dessas features. Um messaging gateway em execução para o mesmo perfil assume essas tarefas no lugar.
+
+O timer atende ao perfil do seu backend. Manutenção em voo roda em uma worker thread; fechar o backend não interrompe essa passagem de forma cooperativa. Iniciar vários processos serve independentes para o mesmo perfil ainda pode competir na verificação de intervalo do curator.
 
 Se ambas forem verdadeiras, ele dispara um fork em segundo plano do `AIAgent` — o mesmo padrão usado pelos lembretes de autoaperfeiçoamento de memória/skills. O fork roda em seu próprio cache de prompt e nunca toca na conversa ativa.
 

@@ -10,6 +10,35 @@ A ferramenta `delegate_task` cria instâncias filhas de AIAgent com contexto iso
 
 Chamadas de modelo de nível superior rodam em segundo plano automaticamente. O Hermes retorna um identificador imediatamente para a conversa continuar e publica o resultado depois como uma nova mensagem. Um subagente orquestrador aguarda seus próprios workers para sintetizar os resultados antes de retornar.
 
+## Entrega de conclusão {#completion-delivery}
+
+Gateways de messaging só reconhecem conclusões em background depois que o adapter de fato
+agenda o evento ou o insere na fila da sessão. Handlers ausentes, rotas de sessão
+incompatíveis e filas cheias deixam a conclusão pendente para retry; essas recusas
+de admissão não consomem o orçamento durável de tentativas de entrega. Uma admissão
+bem-sucedida suprime entrega repetida no gateway em execução, mas não prova que um
+turno de modelo ou reply de saída foi concluído. Entrega após crash/restart permanece
+at-least-once, sujeita ao limite de idade de replay existente; falhas reais de
+transporte mantêm a política limitada de retry.
+
+Uma rota indisponível do API server fica pendente sem avisos repetidos de rota
+ausente. Rotas de messaging malformadas ainda produzem diagnósticos. No API server,
+uma conclusão de delegação async adiciona apenas uma linha durável de entrega na
+timeline: o cliente é dono do próximo turno de modelo. Definir notificações de
+processo em background como `off` ainda drena eventos de pattern-watch em silêncio.
+
+## Lifetime de processos em background {#background-process-lifetime}
+
+Processos de terminal em background pertencem ao agente que os inicia. Fechar um filho
+durante o teardown da delegação encerra seus processos restantes, incluindo trabalho
+iniciado em turnos anteriores, sem parar processos do pai ou de irmãos. Compartilhar
+um ambiente de terminal não transfere a propriedade do processo.
+
+Um filho deve esperar seus builds, testes e outros comandos de background limitados
+antes de devolver o resumo final. Inicie um CI watcher ou server na sessão pai se
+ele precisar continuar depois que o filho terminar; devolver um process ID não
+transfere a propriedade para o pai.
+
 ## Tarefa única {#single-task}
 
 ```python
@@ -21,7 +50,7 @@ delegate_task(
 
 ## Lote paralelo {#parallel-batch}
 
-Até 3 subagentes concorrentes por padrão (configurável, sem teto rígido):
+Até 10 subagentes concorrentes por padrão (configurável, sem teto rígido):
 
 ```python
 delegate_task(tasks=[
@@ -30,6 +59,35 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "context": "Project root: /home/user/project"}
 ])
 ```
+
+## Output estruturado (`output_schema`) {#structured-output-output_schema}
+
+Cada tarefa pode carregar um `output_schema` opcional, um objeto JSON Schema contra o
+qual a resposta final do filho deve validar. O filho vê o schema de antemão como
+contrato de output; quando a resposta volta o pai a valida e, em falha, envia ao
+filho exatamente um turno limitado de correção com os erros de validação verbatim
+(o schema não é colado de novo). O resultado da tarefa então ganha `schema_valid`
+(true/false) e, em falha, `schema_errors`.
+
+```python
+delegate_task(
+    tasks=[{
+        "goal": "Check which of these three endpoints return 200",
+        "context": "https://a.example, https://b.example, https://c.example",
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "healthy": {"type": "array", "items": {"type": "string"}},
+                "failing": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["healthy", "failing"]
+        }
+    }]
+)
+```
+
+Mantenha schemas generosos: exija só os campos que você realmente vai ler. Tarefas
+sem `output_schema` não são afetadas.
 
 ## Como funciona o contexto do subagente {#how-subagent-context-works}
 
@@ -117,12 +175,35 @@ delegate_task(
 
 ## Detalhes do modo em lote {#batch-mode-details}
 
-Quando um agente de nível superior fornece um array `tasks`, o Hermes retorna um identificador de segundo plano, executa os subagentes em paralelo e publica um resultado consolidado depois que todos os filhos terminam. Um subagente orquestrador aguarda seu lote no turno atual para sintetizar os resultados.
+Quando um agente de nível superior fornece um array `tasks`, o Hermes retorna um identificador de segundo plano e executa os subagentes em paralelo. Por padrão a chamada devolve **uma** mensagem consolidada depois que todas as tarefas terminam. Resultados são entregues só entre os turnos do pai: o pai deve terminar qualquer coisa que não dependa dos filhos e então encerrar o turno em vez de fazer poll de transcripts, artifacts ou CI enquanto espera.
 
-- **Concorrência máxima:** 3 tarefas por padrão (configurável via `delegation.max_concurrent_children` ou a variável de ambiente `DELEGATION_MAX_CONCURRENT_CHILDREN`; mínimo 1, sem teto rígido). Lotes maiores que o limite retornam erro de ferramenta em vez de serem truncados silenciosamente.
+### Conclusões independentes (opt-in) {#independent-completions-opt-in}
+
+Defina `delegation.independent_completions: true` para que os resultados cheguem **por unidade de conclusão** conforme cada uma termina. O campo `group` voltado ao modelo e a orientação de agrupamento só são anunciados quando esta opção está habilitada. Inicie uma nova sessão depois de mudá-la para o schema da ferramenta refletir a configuração sem alterar o prefixo em cache de uma conversa existente. Chamadas antigas contendo `group` continuam aceitas; com a opção desligada, a chamada inteira ainda retorna junta.
+
+Quando conclusões independentes estão habilitadas:
+
+- Omita `group` quando cada resultado for útil de agir separadamente. Cada tarefa reporta assim que termina.
+- Use a mesma string `group` quando quiser revisar outputs juntos: comparação, síntese ou uma decisão coordenada. O grupo devolve **uma** mensagem consolidada depois que todas as suas tarefas terminam. Mesmo tarefas executáveis de forma independente podem ficar no mesmo grupo quando seus resultados informam a mesma decisão.
+- Grupos diferentes reportam de forma independente; tarefas agrupadas e não agrupadas podem compartilhar uma chamada.
+
+Isto fica desligado por padrão porque cada unidade é um turno novo para o orquestrador: uma chamada de 15 tarefas vira até 15 wake-ups, o que fragmentava campanhas longas. Agrupar controla **entrega de resultado, não ordem de execução**: todas as tarefas ainda rodam em paralelo. Se a tarefa B precisa do output da A para fazer o trabalho, despache A primeiro e depois despache B com aquele output depois que A retornar.
+
+```json
+{"tasks": [
+  {"goal": "Review PR #101 ..."},
+  {"goal": "Review PR #102 ..."},
+  {"goal": "Benchmark approach A ...", "group": "bench"},
+  {"goal": "Benchmark approach B ...", "group": "bench"}
+]}
+```
+
+O handle de despacho lista cada unidade (`units[].delegation_id`, `group`, `task_indexes`); ids de unidade são o id da chamada com sufixo `-1`, `-2`, …, e todas as unidades de uma chamada compartilham um único slot de `delegation.max_concurrent_children`, então agrupar nunca muda a contabilidade de capacidade (o pool de workers cresce até o número de unidades vivas para nenhuma unidade esperar atrás de um pool cheio). Um subagente orquestrador aguarda o lote inteiro no turno atual para sintetizar os resultados.
+
+- **Concorrência máxima:** 10 tarefas por padrão (configurável via `delegation.max_concurrent_children` ou a variável de ambiente `DELEGATION_MAX_CONCURRENT_CHILDREN`; mínimo 1, sem teto rígido). Lotes maiores que o limite retornam erro de ferramenta em vez de serem truncados silenciosamente.
 - **Pool de threads:** usa `ThreadPoolExecutor` com o limite de concorrência configurado como máximo de workers
-- **Exibição de progresso:** no modo CLI, uma visualização em árvore mostra chamadas de ferramentas de cada subagente em tempo real com linhas de conclusão por tarefa. No gateway, o progresso é agrupado e repassado ao callback de progresso do pai
-- **Ordem dos resultados:** resultados são ordenados pelo índice da tarefa para corresponder à ordem de entrada, independentemente da ordem de conclusão
+- **Exibição de progresso:** no modo CLI, uma visualização em árvore mostra chamadas de ferramentas de cada subagente em tempo real com linhas de conclusão por tarefa. No gateway, o progresso é agrupado e repassado ao callback de progresso do pai. Avisos de conclusão no CLI e TUI usam títulos task-first como `Subagent Task Completed: Review changes`; grupos multi-tarefa usam o nome do grupo e a contagem de tarefas. Trabalho sem sucesso ou incompleto recebe um label de status correspondente. Estes avisos compactos não substituem os resultados completos entregues ao agente pai.
+- **Ordem dos resultados:** Dentro de uma unidade, resultados são ordenados pelo índice da tarefa para corresponder à ordem de entrada, independentemente da ordem de conclusão; labels `TASK i/N` indexam a chamada inteira
 - **Cancelamento:** mensagens de acompanhamento não cancelam um lote em segundo plano de nível superior. `/stop` ou fechar/redefinir a sessão proprietária cancela seus filhos ativos. Filhos orquestradores síncronos ainda seguem o estado de interrupção do pai
 
 Delegação síncrona de tarefa única a partir de um orquestrador roda diretamente, sem overhead do pool de threads.
@@ -151,6 +232,16 @@ notificações de processo do filho (cada uma carrega uma linha de atribuição 
 delegation:
   surface_child_process_notifications: true   # default: false
 ```
+
+### Entregando um processo ao pai {#handing-a-process-to-the-parent}
+
+Os processos em background de um subagente também são **mortos quando o subagente termina**, então um CI watcher ou build que um filho inicia com `notify=true` nunca reporta a ninguém. O resultado `terminal` do filho diz isso (`notify_on_complete: false` mais uma `subagent_note`), e o filho tem três opções honestas antes de terminar:
+
+- **wait** — `process_manage(action="wait", session_id=...)` e reportar o resultado ele mesmo;
+- **kill** — `process_manage(action="kill", ...)`;
+- **hand off** — `process_manage(action="handoff", session_id=..., data="<uma frase: para que serve>")`. O runtime transfere a propriedade para o pai sob o lock do registry (até 3 por filho; só um processo em execução que o filho possui é aceito, qualquer outra coisa é erro de ferramenta). O aviso de conclusão do pai então chega no chat pai com `Handed off to you by a subagent… Purpose: …`, e o pai pode fazer poll/log/kill como se fosse dele.
+
+Um processo que termina enquanto o filho ainda está rodando não precisa de handoff: o filho o lê (`poll`/`wait`/`log`) e reporta. Se o filho nunca o ler, o exit code e a cauda do output são anexados ao resultado como `unread_completions` e mostrados ao pai. O que ainda estiver rodando e não tiver sido morto nem entregue é nomeado no resultado (`orphaned_processes`) e no aviso de delegação do pai como terminado, para o pai ouvir do runtime, nunca da prosa do filho, que "o watcher está rodando" não é mais verdade. Para CI watchers o padrão melhor ainda é: o filho devolve o fato (número do PR, SHA) e o pai lança o próprio watcher.
 
 ## Substituição de modelo {#model-override}
 
@@ -200,6 +291,8 @@ O que acontece:
 
 O fluxo canônico: seu agente principal abre um PR, você digita `/review`, e um segundo par de olhos investiga enquanto você continua trabalhando; a review aterrisa de volta no chat endereçada ao agente que criou o PR.
 
+O despacho imprime só “Review started. Results will return here.” O viewer live de subagente identifica o worker como **Review: your focus** (ou **Review recent work** para `/review` puro), com um label curto de uma linha; o reviewer ainda recebe suas instruções completas. No CLI clássico, o dock acima do composer mostra tempo decorrido e atividade mais recente; **Ctrl+T** (ou **F6**) abre o roster com model, transcript, steering e controles de stop. O mesmo label de review aparece nos viewers de subagente do TUI e Desktop.
+
 ### Model de review {#review-model}
 
 Por padrão o reviewer roda no seu model principal. Para fixar um model dedicado de review, defina `auxiliary.review` em `config.yaml`:
@@ -230,15 +323,15 @@ Ambos os papéis mantêm `execute_code` (chamada programática de ferramentas) p
 
 ## Máximo de iterações {#max-iterations}
 
-Cada subagente tem um limite de iterações (padrão: 50) que controla quantos turnos de chamada de ferramentas pode fazer:
+Cada subagente tem um limite de iterações (padrão: 250) que controla quantos turnos de chamada de ferramentas pode fazer. O limite é definido globalmente em `config.yaml` e se aplica a todo filho; não é um parâmetro por chamada de `delegate_task`:
 
-```python
-delegate_task(
-    goal="Quick file check",
-    context="Check if /etc/nginx/nginx.conf exists and print its first 10 lines",
-    max_iterations=10  # Simple task, don't need many turns
-)
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  max_iterations: 60   # lower it for fleets of simple tasks, raise it for long investigations
 ```
+
+Um filho que esgota o orçamento retorna com `exit_reason: max_iterations` e `truncated: true`, para o pai distinguir uma parada por orçamento de uma tarefa concluída.
 
 ## Timeout do filho {#child-timeout}
 
@@ -317,7 +410,23 @@ A TUI inclui uma sobreposição `/agents` (alias `/tasks`) que transforma fan-ou
 - Controles de kill e pause — cancele um subagente específico no meio do voo sem interromper os irmãos
 - Revisão pós-hoc: percorra o histórico turno a turno de cada subagente mesmo depois que retornou ao pai
 
-A CLI clássica apenas imprime `/agents` como um resumo em texto; a TUI é onde a sobreposição brilha. Veja [TUI — Comandos slash](/user-guide/tui#slash-commands).
+### Atividade ao vivo acima do composer {#live-activity-above-the-composer}
+
+O CLI clássico, TUI e Desktop mostram automaticamente subagentes ao vivo acima do composer. Você pode continuar escrevendo enquanto observa a contagem ao vivo, nomes de tarefas, tempo decorrido e atividade mais recente. O dock do terminal limita linhas visíveis conforme a altura da tela e mostra quantos workers adicionais estão ocultos; o Desktop pré-visualiza até três workers.
+
+| Superfície | Expandir e inspecionar | Controlar um worker selecionado |
+|---|---|---|
+| CLI clássico | **Ctrl+T** (ou **F6**) abre o roster live em tela cheia; setas selecionam, **Enter** abre a cauda do transcript, **PgUp/PgDn** rolam | **s** abre um input separado de steering; **x**, depois **y** pede stop |
+| TUI | **Ctrl+T** ou `/agents` abre a árvore em altura total; **Enter/t** abre a cauda live do transcript; **d** abre detalhe rico (Enter em archived/replay ainda abre detalhe) | **e** abre steering; **x** para o worker selecionado; **X** para a subtree dele |
+| Desktop | Expanda **Subagents** acima do composer, depois selecione um worker para inspecionar atividade e detalhes | **Steer** enfileira orientação; **Stop** pede interrupção daquele worker |
+
+Fechar o monitor do terminal volta ao draft existente do composer. Steering usa o próprio input e reconhece **queued**, não entrega: o filho consome a orientação num checkpoint. Stop não interrompe irmãos não relacionados.
+
+Pressione **F7** no composer do CLI clássico ou TUI para alternar o dock entre a prévia multi-linha e uma única linha sombreada de resumo. O resumo mantém a contagem ao vivo e dicas de expandir/restaurar, adicionando atividade quando o espaço permite. Digitar e enviar continuam disponíveis; abrir e fechar o monitor preserva seu draft e o ponto de inserção. Isto é uma escolha local de apresentação, não uma mudança salva de config.
+
+A cauda live do transcript é um trecho recente limitado, não um browser ilimitado de conversa. Um filho que sai do registry live deixa o dock; mensagens de conclusão e as views de histórico do TUI/Desktop permanecem o lugar para revisar trabalho terminado. A atividade mais recente é uma observação, não uma estimativa de porcentagem completa.
+
+Os comandos `/agents` e `/tasks` do CLI clássico ainda imprimem um resumo em texto; **Ctrl+T** (ou **F6**) é o monitor interativo imediato, inclusive enquanto o pai está ocupado. Veja [TUI — Comandos slash](/user-guide/tui#slash-commands).
 
 Na CLI clássica e em toda plataforma de gateway (Telegram, Discord, Slack, ...),
 `/agents` também lista **delegações em segundo plano com atividade ao vivo por filho**,
@@ -356,7 +465,7 @@ Ações de controle rodam sincronamente in-turn (nunca em background), são esco
 
 ### Do TUI / gateway (voltado à sessão) {#from-the-tui--gateway-session-facing}
 
-`steer_subagent(subagent_id, text)` em `tools/delegate_tool.py` é o espelho do lado de redirecionamento de `interrupt_subagent()`: enfileira texto em um filho vivo pelo mesmo mecanismo que [`/steer`](/reference/slash-commands) — o texto é anexado ao último resultado de ferramenta do filho no próximo limite de iteração, a chamada de ferramenta em andamento nunca é cortada, e o filho o vê como uma mensagem de usuário fora de banda. Hosts programáticos acessam via RPC de gateway `subagent.steer` com escopo de sessão, ao lado de `subagent.interrupt`:
+`steer_subagent(subagent_id, text)` em `tools/delegate_tool_registry.py` é o espelho do lado de redirecionamento de `interrupt_subagent()`: enfileira texto em um filho vivo pelo mesmo mecanismo que [`/steer`](/reference/slash-commands) — o texto é anexado ao último resultado de ferramenta do filho no próximo limite de iteração, a chamada de ferramenta em andamento nunca é cortada, e o filho o vê como uma mensagem de usuário fora de banda. Hosts programáticos acessam via RPC de gateway `subagent.steer` com escopo de sessão, ao lado de `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -478,7 +587,7 @@ compartilhado — nunca um erro.
 | **Raciocínio** | Loop completo de raciocínio LLM | Apenas execução de código Python |
 | **Contexto** | Conversa isolada nova | Sem conversa, apenas script |
 | **Acesso a ferramentas** | Todas as ferramentas não bloqueadas com raciocínio | 7 ferramentas via RPC, sem raciocínio |
-| **Paralelismo** | 3 subagentes concorrentes por padrão (configurável) | Script único |
+| **Paralelismo** | 10 subagentes concorrentes por padrão (configurável) | Script único |
 | **Melhor para** | Tarefas complexas que precisam de julgamento | Pipelines mecânicos multi-etapa |
 | **Custo de tokens** | Maior (loop LLM completo) | Menor (só stdout retornado) |
 | **Interação com usuário** | Nenhuma (subagentes não podem clarificar) | Nenhuma |
@@ -490,8 +599,9 @@ compartilhado — nunca um erro.
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 50                        # Max turns per child (default: 50)
-  # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  max_iterations: 250                       # Max turns per child (default: 250)
+  # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
@@ -519,6 +629,8 @@ delegation:
 ```
 
 Quando `base_url` aponta para um endpoint compatível com Anthropic — por exemplo um caminho terminando em `/anthropic`, uma rota Claude do Azure Foundry ou um proxy MiniMax `/anthropic` — `api_mode` é auto-detectado como `anthropic_messages` para o subagente usar o formato wire correto sem você configurar nada. Defina `api_mode` explicitamente quando a detecção automática estiver errada (raro).
+
+Subagentes compactam no mesmo gatilho de ratio do pai (`compression.threshold`, 0.50 × window por padrão). `delegation.compression_threshold_tokens` (padrão `0`, desligado) adiciona um teto absoluto opcional no *gatilho* de compactação do filho, aplicado como o menor entre ele e o limiar de ratio; nunca toca o payload do request nem o pai. Uma contagem de tokens de pelo menos 16000 o habilita; `true` ou `"200k"` são erros de config avisados e ignorados. Fica desligado por padrão porque um replay de uma run de 1.393 agentes colocou caps de 200K–400K a 5% um do outro em custo uma vez que os prefixos de cache estão intactos, e toda compactação é uma chance de perder detalhe.
 
 `delegation.request_overrides` funciona nos **três** ramos de resolução — `base_url` direto, `provider` nomeado e herança pura — então sempre tem efeito. Chaves de nível superior são kwargs da API (ex.: `service_tier`); um sub-dict `extra_body` é mesclado no `extra_body` da requisição. Valores explícitos fazem merge **por cima** de overrides derivados do runtime ou do pai: chaves top-level explícitas vencem, e `extra_body` é deep-merged um nível, então a personalidade de request do próprio provedor (ex.: `thinking: {type: disabled}`) sobrevive a menos que sua chave a redefina. Veja [Configuração → Delegação](../configuration.md#delegation) para detalhes.
 

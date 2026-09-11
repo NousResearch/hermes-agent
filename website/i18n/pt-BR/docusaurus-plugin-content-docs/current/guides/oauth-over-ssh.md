@@ -44,6 +44,8 @@ Se seu provedor não estiver na tabela, você não precisa de um túnel.
 
 ## Servidores MCP {#mcp-servers}
 
+**Desktop Skills → MCP:** o app nativo recebe o callback no seu computador e o retransmite para a conexão e profile selecionados, de modo que este fluxo não precisa de um túnel de callback SSH nem de `dashboard.public_url`. Os tokens ficam no profile do backend proprietário. Sair da aba MCP ou alterar seu escopo cancela o login pendente. Se o Desktop pedir para atualizar o backend, atualize-o antes de tentar novamente; ele não faz fallback para um callback HTTP remoto. Os fluxos de trabalho de terminal abaixo permanecem inalterados.
+
 Servidores MCP remotos (Linear, Sentry, Atlassian, Asana, Figma, etc.) usam o mesmo fluxo de redirecionamento loopback. O Hermes escolhe automaticamente uma porta livre por servidor e imprime a URL de autorização quando o fluxo OAuth é iniciado — seja na inicialização (quando um novo servidor aparece em `mcp_servers:`) ou quando você executa `hermes mcp login <server>`.
 
 Você tem duas formas de concluir isso a partir de uma máquina remota:

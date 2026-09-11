@@ -174,7 +174,7 @@ Em vez de coletar manualmente IDs de usuário para listas de permissão, habilit
 Use `/verbose` para controlar quanta atividade de ferramentas você vê. Em plataformas de mensageria, menos geralmente é mais — mantenha em "new" para ver apenas novas chamadas de ferramentas. Na CLI, "all" oferece uma visão satisfatória em tempo real de tudo o que o agente faz.
 
 :::tip
-Por padrão, sessões de mensageria nunca reiniciam automaticamente — o contexto permanece até você usar `/reset` ou a compressão ser acionada. Se você quiser que as sessões reiniciem automaticamente (após tempo ocioso ou diariamente em um horário fixo), opte por isso através da seção `session_reset` em `~/.hermes/config.yaml`.
+Sessões de mensageria persistem até um `/new` ou `/reset` explícito. A compressão de contexto gerencia conversas longas sem reinício por ociosidade ou diário.
 :::
 
 ## Segurança {#security}

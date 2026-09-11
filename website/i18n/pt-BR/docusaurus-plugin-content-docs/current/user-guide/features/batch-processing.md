@@ -68,7 +68,6 @@ Entradas podem opcionalmente incluir:
 | `--resume` | `false` | Retomar do checkpoint |
 | `--verbose` | `false` | Habilitar logging verbose |
 | `--max_samples` | all | Processar apenas os primeiros N samples do dataset |
-| `--max_tokens` | model default | Máximo de tokens por resposta do model |
 
 ### Roteamento de provider (OpenRouter) {#provider-routing-openrouter}
 

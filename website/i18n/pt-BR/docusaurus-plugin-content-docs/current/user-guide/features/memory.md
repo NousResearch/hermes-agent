@@ -297,6 +297,11 @@ display:
 > escritas nos seus stores de memória/skill, não são afetadas por esta configuração. Defina
 > por plataforma via `display.platforms.<platform>.memory_notifications`.
 
+Batches de skill bem-sucedidos nomeiam cada operação aplicada nos modos `on` e `verbose`,
+incluindo escritas/remoções de arquivos de suporte e exclusão de skill. Escritas staged
+aguardando aprovação e batches rolled-back não são reportados como mudanças concluídas.
+Resumos de batch usam os resultados aplicados em vez de assumir que as escritas pedidas rodaram.
+
 ## Rodando a revisão em um modelo mais barato (`auxiliary.background_review`) {#running-the-review-on-a-cheaper-model-auxiliarybackground_review}
 
 A revisão roda no seu **modelo principal de chat** por padrão, replayando a
@@ -321,6 +326,14 @@ idêntica e captura de skill quase idêntica à revisão no modelo principal.
 
 Deixe em `auto` (ou defina para seu modelo principal) e nada muda — a
 revisão continua no modelo principal com replay completo do cache quente.
+
+### Reasoning da revisão no mesmo modelo {#same-model-review-reasoning}
+
+Uma revisão usando o mesmo modelo do pai **sempre herda o reasoning effort do pai**. Definir `auxiliary.background_review.reasoning_effort` não sobrescreve isso, seja a rota `auto` ou selecione explicitamente o provider/modelo do pai.
+
+Settings de reasoning, o system prompt, o snapshot completo da conversa e as definições de ferramenta permanecem byte-idênticos ao pai no nascimento do fork para a revisão poder reutilizar o prefixo do prompt-cache. Mudar só o nível de thinking da revisão quebraria essa paridade. Não há switch de effort independente para revisões no mesmo modelo.
+
+Para reduzir o trabalho de revisão sem mudar o effort da conversa principal, ajuste `memory.nudge_interval` / `skills.creation_nudge_interval`, desabilite revisões automáticas como descrito abaixo, ou roteie revisões para um modelo diferente. Uma rota de modelo diferente usa um digest e não compartilha o prefixo quente do pai; o bug separado de task-effort está rastreado em [#94825](https://github.com/NousResearch/hermes-agent/issues/94825). Esses controles de frequência e roteamento não desacoplam o reasoning same-model.
 
 ### Desabilitando revisões automáticas (`enabled`) {#disabling-automatic-reviews-enabled}
 

@@ -39,6 +39,11 @@ fallback_providers:
 
 Cada entrada exige `provider` e `model`. Entradas sem qualquer um dos campos são ignoradas.
 
+Entradas de fallback Gemini aceitam `gemini`, `google`, `google-gemini` e
+`google-ai-studio`. No endpoint nativo da API do Google, todas usam o client nativo Gemini,
+incluindo a tradução de `generationConfig.thinkingConfig`. Uma base URL custom
+OpenAI-compatible continua usando o client compatible em vez disso.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, lista) é o formato de config atual e suporta múltiplos fallbacks tentados em ordem. `fallback_model` (singular) é a chave legada de fallback único — o Hermes ainda a honra por back-compat, mas `hermes fallback` grava a chave atual `fallback_providers` e migra config legada na escrita. Quando ambos estão definidos, `fallback_providers` tem prioridade.
 :::
@@ -115,8 +120,8 @@ O fallback ativa automaticamente quando o modelo primário falha com:
 
 Quando disparado, o Hermes:
 
-1. Resolve credenciais para o provider de fallback
-2. Constrói um novo client de API
+1. Resolve credenciais para o provider de fallback (incluindo named custom providers usando `key_cmd`)
+2. Constrói um novo client de API, preservando uma fonte dinâmica de credencial através de rebuilds de timeout e request-client
 3. Troca modelo, provider e client in-place
 4. Reseta o contador de retry e continua a conversa
 
@@ -129,7 +134,9 @@ Prompt caches são keyed ao modelo (e na maioria dos providers, à conta) servin
 :::info Por turno, não por sessão
 Fallback é **turn-scoped**: cada nova mensagem do usuário começa com o modelo primário restaurado. Se o primário falha no meio do turno, o fallback ativa só naquele turno. Na próxima mensagem, o Hermes tenta o primário de novo. Dentro de um único turno, o fallback ativa no máximo uma vez — se o fallback também falhar, o error handling normal assume (retries, depois mensagem de erro). Isso previne loops de failover em cascata dentro de um turno enquanto dá ao modelo primário uma chance nova a cada turno.
 
-O retry por turno é **reset-aware**: quando as credenciais do primário reportam um horário de reset de rate limit que ainda não passou (janelas de assinatura como os blocos de 5 horas do Claude Pro/Max ou limites semanais do Codex reportam isso em horas ou dias), o Hermes pula o retry fadado e permanece no fallback até o reset passar — evitando duas trocas de provider inúteis (e duas invalidações de prompt cache) por turno. No momento em que o horário de reset passa, o próximo turno volta ao primário automaticamente. 429s transitórios sem horário de reset mantêm o comportamento existente: um cooldown curto, depois retry a cada turno.
+O retry por turno é **reset-aware**: quando as credenciais do primário reportam um horário de reset de rate limit que ainda não passou (janelas de assinatura como os blocos de 5 horas do Claude Pro/Max ou limites semanais do Codex reportam isso em horas ou dias), o Hermes pula o retry fadado e permanece no fallback até o reset passar — evitando duas trocas de provider inúteis (e duas invalidações de prompt cache) por turno. A expiração torna o primário elegível para um retry posterior; não agenda um retry nem garante recovery. 429s transitórios sem horário de reset usam um cooldown exponencial.
+
+Quando uma troca arma esse cooldown, o aviso de fallback inclui a duração aproximada restante, por exemplo: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Trocas que não são de rate-limit e trocas a partir de um fallback cross-provider já ativo não anunciam um novo cooldown do primário.
 :::
 
 ### Exemplos {#examples}
@@ -178,7 +185,7 @@ fallback_providers:
 |---------|-------------------|
 | Sessões CLI | ✔ |
 | Gateway de messaging (Telegram, Discord, etc.) | ✔ |
-| Delegação de subagentes | ✔ (subagentes herdam a chain de fallback do pai) |
+| Delegação de subagentes | ✔ (`delegation.fallback_providers` quando definido; caso contrário só filhos unpinned herdam a chain do pai; `[]` desabilita) |
 | Cron jobs | ✔ (agentes cron herdam fallback providers configurados) |
 | Tarefas auxiliares em `provider: auto` | ✔ (tenta fallback por tarefa, depois a chain de fallback principal antes da descoberta aux built-in) |
 
@@ -207,12 +214,14 @@ O Hermes usa modelos leves separados para tarefas auxiliares. Cada tarefa tem su
 
 ### Chain de auto-detecção {#auto-detection-chain}
 
-Quando o provider de uma tarefa está em `"auto"` (o padrão), o Hermes primeiro tenta o provider principal + modelo principal para aquela tarefa auxiliar. Se essa rota estiver indisponível ou falhar depois com erro estilo capacity, o Hermes agora honra a política de fallback configurada pelo usuário antes de usar a chain de descoberta built-in:
+Quando o provider de uma tarefa está em `"auto"` (o padrão), o Hermes primeiro tenta o provider principal + modelo principal para aquela tarefa auxiliar. Se essa rota estiver indisponível ou falhar depois com erro estilo capacity, o Hermes segue sua política de fallback configurada e então para:
 
 ```text
 Main provider + main model → auxiliary.<task>.fallback_chain →
-fallback_providers / fallback_model → built-in auxiliary discovery chain
+fallback_providers / fallback_model → skip the task (warn)
 ```
+
+Uma falha de billing ou quota quarentena só o endpoint custom que falhou para o cooldown de health auxiliar, não toda rota registrada como `custom`. Um endpoint local saudável com base URL diferente permanece elegível para fallback e roteamento auto subsequente. Aliases para o mesmo endpoint custom compartilham o estado de health. Providers built-in mantêm suas checagens de health de conta compartilhada.
 
 A chain específica da tarefa é mais precisa e vence quando presente. A chain top-level `fallback_providers` é a mesma política que o agente principal usa, então regras de fallback free-only ou same-provider se aplicam a tarefas auxiliares em `auto` também.
 
@@ -230,7 +239,7 @@ Main provider (if vision-capable) → OpenRouter → Nous Portal →
 Codex OAuth → Anthropic → Custom endpoint → give up
 ```
 
-Essas chains built-in são fallback de conveniência para usuários que não declararam política de fallback específica da tarefa ou principal.
+Essas chains built-in rodam **somente quando nenhum provider principal está selecionado** (`model.provider: auto` ou unset). Depois que você escolheu um provider principal, uma rota principal indisponível sem `fallback_chain` / `fallback_providers` pula a tarefa auxiliar com um aviso em vez de adivinhar outro provider no qual você acontece de estar logado — uma sessão xAI ou Codex expirada nunca deve cobrar seu saldo Nous Portal ou OpenRouter pelas costas. Declare um fallback se quiser um.
 
 ### Configurando providers auxiliares {#configuring-auxiliary-providers}
 
@@ -260,7 +269,7 @@ auxiliary:
     model: ""
 ```
 
-Toda tarefa acima segue o mesmo padrão **provider / model / base_url**. Cada tarefa também pode declarar sua própria `fallback_chain`; se omitida, `provider: auto` usa a chain top-level `fallback_providers` antes da chain de descoberta auxiliar built-in do Hermes.
+Toda tarefa acima segue o mesmo padrão **provider / model / base_url**. Cada tarefa também pode declarar sua própria `fallback_chain`; se omitida, `provider: auto` usa a chain top-level `fallback_providers` (a chain de descoberta built-in se aplica só quando nenhum provider principal está selecionado).
 
 A compressão de contexto é configurada sob `auxiliary.compression`:
 
@@ -431,5 +440,5 @@ Veja [Tarefas Agendadas (Cron)](/user-guide/features/cron) para detalhes complet
 | Classificação de aprovação | Em camadas (veja acima) | `auxiliary.approval` |
 | Geração de título | Em camadas (veja acima) | `auxiliary.title_generation` |
 | Triage specifier | Em camadas (veja acima) | `auxiliary.triage_specifier` |
-| Delegação | Herda a chain `fallback_providers` do pai; override opcional de provider/model | `delegation.provider` / `delegation.model` |
+| Delegação | Usa `delegation.fallback_providers` quando declarado; caso contrário só filhos unpinned herdam a chain do pai | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
 | Cron jobs | Herdam a chain `fallback_providers` configurada; override opcional de provider por job | `provider` / `model` por job |

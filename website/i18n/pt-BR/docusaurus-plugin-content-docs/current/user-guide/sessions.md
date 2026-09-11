@@ -614,6 +614,14 @@ o id mais um comando `hermes --resume <id>` pronto para colar.
 `--resume @claude` / `--resume @codex` mostram o mesmo picker e te colocam
 direto na conversa importada.
 
+**Hermes Desktop** tem o mesmo importer na command palette (**Import
+session**). Lista os logs na máquina em que o
+backend conectado roda — não no computador que roda o app — mostra um
+preview read-only, e **Continue in Hermes** copia a conversa para o
+perfil selecionado. Navegar nunca grava no seu session store, importar nunca
+toca o arquivo de origem, e importar o mesmo log duas vezes abre a cópia
+existente em vez de fazer outra.
+
 O que vem junto: a conversa user/assistant ordenada, com atividade de
 ferramenta condensada em notas curtas `[ran tool: …]` dentro dos turnos do assistant.
 System prompts, contexto injetado, traces de reasoning e output bruto de ferramenta ficam
@@ -734,19 +742,14 @@ group_sessions_per_user: false
 
 Isso reverte groups/channels para uma única sessão compartilhada por sala, o que preserva contexto conversacional compartilhado mas também compartilha custos de token, estado de interrupt e crescimento de contexto.
 
-### Session Reset Policies {#session-reset-policies}
+### Continuidade de sessão {#session-continuity}
 
-**Por padrão sessões de gateway nunca fazem auto-reset** (`mode: none`). Você pode optar
-por resets automáticos via a seção `session_reset` em `config.yaml`:
-
-- **none** — nunca auto-reset (padrão; contexto gerenciado por `/reset` e compressão)
-- **idle** — reset após N minutos de inatividade
-- **daily** — reset em uma hora específica a cada dia
-- **both** — reset no que vier primeiro (idle ou daily)
-
-Antes de um auto-reset de sessão, o agente recebe um turn para salvar memórias ou skills importantes da conversa.
-
-Sessões com **processos de background ativos** nunca fazem auto-reset, independente da policy.
+Conversas de gateway não resetam após inatividade nem em um limite diário. Use `/new`
+ou `/reset` para uma conversa nova explícita; a compressão de contexto continua automática.
+Configurações legadas `session_reset`, overrides de reset-policy e variáveis de ambiente de reset-timer
+são ignoradas. Agentes em cache podem ser liberados para recuperar recursos sem
+substituir a conversa durável. Limites de freshness de restart-recovery restringem a
+continuação automática, não o histórico carregado quando você envia uma mensagem.
 
 ### Continuity After Crashes and Restarts {#continuity-after-crashes-and-restarts}
 
@@ -763,9 +766,8 @@ vale através de crashes, restarts e updates do gateway:
   conversa que você realmente estava tendo.
 - Recovery **respeita fronteiras de `/new`**: se o evento mais recente de um chat
   é um reset intencional, recovery começa fresh em vez de alcançar atrás
-  do reset para ressuscitar uma sessão mais antiga. Sessões recuperadas também mantêm seu
-  idle time real, então uma policy opt-in de idle/daily reset aplica-se corretamente a
-  elas em vez de tratar toda sessão recuperada como brand new.
+  do reset para ressuscitar uma sessão mais antiga. Tempo decorrido sozinho nunca impede
+  a recovery de uma conversa durável.
 
 
 ## Storage Locations {#storage-locations}
@@ -814,7 +816,7 @@ Tabelas principais em `state.db`:
 
 ### Automatic Cleanup {#automatic-cleanup}
 
-- Sessões de gateway fazem auto-reset com base na reset policy configurada
+- Conversas de gateway persistem através de inatividade; use `/new` ou `/reset` para uma fronteira explícita
 - Antes do reset, o agente salva memórias e skills da sessão que expira
 - Auto-pruning (**on por padrão** desde #54189): quando `sessions.auto_prune` é `true`, sessões encerradas inativas por `sessions.retention_days` (padrão 90) são podadas no startup CLI/gateway/cron
 - Após uma poda que de fato removeu rows, `state.db` é `VACUUM`ed para recuperar espaço em disco só quando **ambos** os gates passam: pelo menos `sessions.min_vacuum_interval_days` (padrão 30) passaram desde o último `VACUUM` bem-sucedido, **e** mais de 25% das páginas do arquivo são recuperáveis (`PRAGMA freelist_count / page_count`). Um database denso nunca paga um rewrite completo para recuperar poucos MB (SQLite não encolhe o arquivo em DELETE simples)
@@ -896,5 +898,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-O banco cresce lentamente (típico: 10-15 MB para centenas de sessões) e o histórico de sessão alimenta recall de `session_search` em conversas passadas, então auto-prune vem desabilitado. Habilite se você executa uma carga pesada de gateway/cron onde `state.db` afeta significativamente a performance (modo de falha observado: state.db de 384 MB com ~1000 sessões desacelerando inserts FTS5 e listagem `/resume`). Use `hermes sessions prune` para limpeza pontual sem ligar o sweep automático.
+Auto-prune está **ligado por padrão**: sessões encerradas inativas por `sessions.retention_days` (padrão 90) são removidas no startup, e sessões ativas nunca são tocadas (veja [Automatic Cleanup](#automatic-cleanup) acima). O histórico de sessão alimenta recall de `session_search` em conversas passadas, então se quiser guardar toda sessão encerrada para sempre, defina `sessions.auto_prune: false` em `config.yaml`, ou aumente `retention_days`. Com auto-prune off, `hermes sessions prune` continua disponível para limpeza pontual (modo de falha observado sem nenhum pruning: um `state.db` de 384 MB com ~1000 sessões desacelerando inserts FTS5 e listagem `/resume`).
 :::

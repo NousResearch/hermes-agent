@@ -231,9 +231,30 @@ process(action="write", session_id="proc_abc123", data="y")  # Envia input
 
 Modo PTY (`pty=true`) habilita ferramentas CLI interativas como Codex e Claude Code.
 
+Comandos em background concluídos retêm o exit status e a saída capturada no
+perfil ativo. Retome a conversa que lançou o comando (ou sua
+continuação comprimida), depois use o `session_id` original com
+`process(action="log")` para a saída e `process(action="poll")` para o exit status.
+Conversas não relacionadas e pedidos sem uma sessão dona vinculada não podem ler
+recibos retidos, mesmo com um handle de processo exato. `process(action="list")`
+também inclui resultados retidos para a tarefa ou conversa atual.
+
+O Hermes guarda os **64 resultados concluídos** mais novos, por até **7 dias após
+a conclusão**, em `logs/process-results/` no Hermes home do perfil. Cada
+recibo contém no máximo a **cauda de saída de 200.000 caracteres** rolante existente,
+com as regras de redaction de segredo do terminal sempre aplicadas, mesmo quando a redaction
+de saída ao vivo está desabilitada. Recibos expiram em leituras ou escritas
+subsequentes de resultado. A recuperação não reexecuta comandos nem replaya notificações
+de conclusão. Isso preserva trabalho que terminou enquanto o pai estava vivo;
+não mantém filhos inacabados vivos após timeout ou crash.
+
 ## Suporte a sudo {#sudo-support}
 
-Se um comando precisar de sudo, você será solicitado pela senha (cacheada para a sessão). Ou defina `SUDO_PASSWORD` em `~/.hermes/.env`.
+Em uma sessão pai interativa, comandos sudo suportados usam o prompt de senha mascarado (cacheado para a sessão). Isso inclui caminhos absolutos literais ou quoted do executável e prefixos `env` com opções e assignments ordinários, como `env -u UNUSED /usr/bin/sudo id`. Sudo sem senha não precisa de prompt. Você também pode configurar `SUDO_PASSWORD` no arquivo `.env` do perfil na máquina do agente.
+
+Payloads de shell como `bash -c 'sudo id'`, strings split de `env -S`, caminhos dinâmicos de executável e opções `env` não reconhecidas não são interpretados pelo rewriter de senha. Invoque sudo diretamente quando precisar do prompt interativo. Este tratamento não muda as regras de aprovação nem a guarda contra senhas sudo fornecidas pelo agente.
+
+Subagentes delegados não podem abrir um prompt de senha: o trabalho concorrente deles não tem um canal serializado de senha humana. Rode o comando na sessão pai em vez disso, ou provisione `SUDO_PASSWORD` localmente. Sessões de messaging/headless não têm um canal seguro de resposta de senha; nunca envie senhas no chat.
 
 :::warning
 Em plataformas de mensagens, se o sudo falhar, a saída inclui uma dica para adicionar `SUDO_PASSWORD` em `~/.hermes/.env`.

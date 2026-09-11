@@ -360,9 +360,16 @@ Cada sessão armazena:
 - histórico atual da conversa
 - evento de cancelamento
 
-O `AIAgent` subjacente continua usando os caminhos normais de
-persistência/log do Hermes, mas as operações `list/load/resume/fork` do ACP
-ficam restritas ao processo do servidor ACP atualmente em execução.
+Conversas são persistidas no banco de sessões do Hermes e podem ser listadas, carregadas,
+retomadas ou forked depois que o servidor ACP reinicia. Abrir uma sessão nova sem um
+prompt a mantém só em memória: probes de model-discovery não criam rows de histórico
+vazias. Um fork não vazio é persistido imediatamente, e metadata de sessão existente ainda
+pode ser atualizada mesmo quando o histórico atual está vazio.
+
+Rows vazias existentes de versões antigas não são deletadas automaticamente. Uma row ACP
+aberta não prova que o client desconectou. Depois de fechar as sessões relevantes do editor,
+inspecione rows indesejadas com `hermes sessions show <id>` e remova só
+sessões indesejadas confirmadas com `hermes sessions delete <id>`.
 
 ## Comportamento do diretório de trabalho {#working-directory-behavior}
 

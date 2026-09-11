@@ -8,6 +8,10 @@ description: "Configure o Hermes Agent como bot do Telegram"
 
 O Hermes Agent se integra ao Telegram como um bot conversacional completo. Depois de conectado, você pode conversar com seu agente em qualquer dispositivo, enviar mensagens de voz que são transcritas automaticamente, receber resultados de tarefas agendadas e usar o agente em chats de grupo. A integração é construída sobre [python-telegram-bot](https://python-telegram-bot.org/) e suporta texto, voz, imagens e anexos de arquivos.
 
+## Configuração rápida (dashboard e app desktop) {#quick-setup-dashboard-and-desktop-app}
+
+A página **Messaging → Telegram** no [dashboard](../features/web-dashboard.md) e no [app desktop](../desktop.md) tem um botão **Create with QR**. Escaneie o código (ou abra o link) no Telegram; o Hermes cria o bot para você, detecta seu ID de usuário do Telegram, grava `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_USERS` no `.env` do perfil e reinicia o gateway. Se preferir criar o bot você mesmo, siga os passos manuais abaixo.
+
 ## Passo 1: Crie um bot via BotFather {#step-1-create-a-bot-via-botfather}
 
 Todo bot do Telegram precisa de um token de API emitido pelo [@BotFather](https://t.me/BotFather), a ferramenta oficial de gerenciamento de bots do Telegram.
@@ -577,6 +581,23 @@ telegram:
 
 Com esta configuração, uma mensagem de grupo como `@research_bot @ops_bot summarize this` é processada apenas por `research_bot` e `ops_bot`. Outros bots Hermes no grupo permanecem silenciosos, mesmo se a mensagem for resposta a uma de suas mensagens anteriores ou corresponder a uma palavra de ativação compartilhada.
 
+Dois bots Hermes que respondem às citações um do outro ainda podem entrar em loop eterno com `TELEGRAM_ALLOW_BOTS=all`, porque uma resposta ao bot sempre passa pelo gate `require_mention`. Definir `telegram.bots_require_mention: true` (env `TELEGRAM_BOTS_REQUIRE_MENTION`) fecha esse caminho: uma mensagem de outro bot só dispara resposta quando `@menciona` explicitamente este bot, enquanto respostas humanas continuam funcionando sem mudança.
+
+Um guarda de loop bot-a-bot também mede todo chat onde mensagens de bot são admitidas (`TELEGRAM_ALLOW_BOTS` em `mentions` ou `all`). Assim que 20 mensagens de bot caem em um chat em 5 minutos, mensagens de bot seguintes naquele chat são descartadas por 10 minutos e um aviso é logado; mensagens humanas nunca são contadas nem descartadas. As configurações ficam em `config.yaml`:
+
+```yaml
+gateway:
+  bot_loop_guard:
+    enabled: true        # false turns the guard off
+    max_events: 20       # bot messages per chat per window
+    window_seconds: 300
+    cooldown_seconds: 600
+```
+
+Um bot legítimo de alto volume postando mais de 20 mensagens em um chat em 5 minutos também dispara o guarda; aumente `max_events` para aquele gateway.
+
+Texto de conversa em grupo e legendas de mídia mantêm toda menção quando a mensagem nomeia outros participantes também (`@research_bot , @ops_bot are you both listening?` chega a `research_bot` literalmente); quando este bot é o único endereçado, o próprio handle ainda é removido para respostas curtas como `@hermes_bot 2` continuarem funcionando. Turnos de grupo também carregam o username Telegram do próprio bot no contexto por canal para o modelo distinguir quais menções retidas são para ele. Slash commands ainda usam a limpeza normal de gatilho de comando.
+
 Defina `exclusive_bot_mentions: false` apenas para grupos legados onde menções explícitas não devem substituir gatilhos de resposta e palavra de ativação.
 
 Para operar vários perfis, execute o comando gateway uma vez por perfil. Por exemplo:
@@ -733,7 +754,7 @@ afetados.
 
 Tópicos com um campo `skill` carregam automaticamente essa skill quando uma nova sessão inicia no tópico. Isso funciona exatamente como digitar `/skill-name` no início de uma conversa — o conteúdo da skill é injetado na primeira mensagem, e mensagens subsequentes o veem no histórico da conversa.
 
-Por exemplo, um tópico com `skill: arxiv` terá a skill arxiv pré-carregada sempre que sua sessão for resetada (por timeout de inatividade, reset diário ou `/reset` manual).
+Por exemplo, um tópico com `skill: arxiv` terá a skill arxiv pré-carregada sempre que sua sessão for resetada (após um `/new` ou `/reset` explícito).
 
 :::tip
 Tópicos criados fora da config (ex.: chamando manualmente a API do Telegram) são descobertos automaticamente quando uma mensagem de serviço `forum_topic_created` chega. Você também pode adicionar tópicos à config enquanto o gateway está rodando — eles serão capturados no próximo cache miss.
@@ -1219,8 +1240,8 @@ Isso cobre a camada de transporte de fallback personalizada que o Hermes usa par
 O bot pode adicionar reações emoji a mensagens como feedback visual de processamento:
 
 - 👀 quando o bot começa a processar sua mensagem
-- ✅ quando a resposta é entregue com sucesso
-- ❌ se ocorrer um erro durante o processamento
+- 👍 quando a resposta é entregue com sucesso
+- 👎 se ocorrer um erro durante o processamento
 
 Reações estão **desativadas por padrão**. Ative em `config.yaml`:
 
@@ -1236,7 +1257,7 @@ TELEGRAM_REACTIONS=true
 ```
 
 :::note
-Diferente do Discord (onde reações são aditivas), a Bot API do Telegram substitui todas as reações do bot em uma única chamada. A transição de 👀 para ✅/❌ acontece atomicamente — você não verá ambas ao mesmo tempo.
+Diferente do Discord (onde reações são aditivas), a Bot API do Telegram substitui todas as reações do bot em uma única chamada. A transição de 👀 para 👍/👎 acontece atomicamente — você não verá ambas ao mesmo tempo.
 :::
 
 :::tip

@@ -76,6 +76,8 @@ O Hermes detecta esse endpoint e cria seu adaptador nativo do Gemini. Internamen
 - resultados de ferramentas → partes `functionResponse` do Gemini
 - respostas em streaming → blocos de stream no formato OpenAI para o loop do Hermes
 
+Arrays de tipos de parâmetros de ferramentas, como `"type": ["number", "null"]`, são traduzidos para o tipo escalar do Gemini mais a forma `nullable`. Uniões de múltiplos tipos mantêm todas as alternativas por meio de `anyOf`, incluindo propriedades aninhadas e itens de array. Isso acontece automaticamente; nenhuma alteração de configuração de servidor MCP ou de provider é necessária.
+
 :::note Assinaturas de pensamento do Gemini 3
 Para o uso de ferramentas do Gemini 3, o Hermes preserva os valores de `thoughtSignature` anexados às partes de chamada de função e os reproduz no próximo turno de ferramenta. Isso cobre o caminho crítico de validação para fluxos de trabalho de agente com várias etapas.
 
@@ -104,6 +106,7 @@ O seletor do `hermes model` mostra os modelos do Gemini mantidos no registro de 
 
 | Modelo | ID | Notas |
 |-------|----|-------|
+| Gemini 3.8 Flash | `gemini-3.8-flash` | Modelo Flash mais capaz para tarefas agênticas de longo horizonte e código |
 | Gemini 3.7 Flash | `gemini-3.7-flash` | Equilíbrio padrão recomendado entre velocidade, capacidade e compreensão multimodal |
 | Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Modelo mais capaz em raciocínio, matemática e código |
 | Gemini 3.5 Flash Lite | `gemini-3.5-flash-lite` | Opção mais rápida e de menor custo para tarefas leves |

@@ -46,6 +46,28 @@ Para lanes de profile Hermes, o `_default_spawn` do dispatcher roda `hermes -p <
 
 Para lanes não-Hermes (registradas via plugin), o plugin fornece seu próprio callable `spawn_fn` que recebe `task`, `workspace` e `board` e retorna um pid opcional para detecção de crash.
 
+### Escopo de processo descendente {#descendant-process-scope}
+
+Uma atribuição de tarefa pertence ao worker do dispatcher, não a todo programa que ele inicia.
+Helpers de subprocesso do Hermes carregam uma cerca non-owner para shells, kernels de execução,
+entregas de cron, hooks, language servers e servidores MCP stdio ordinários. Filhos posteriores
+permanecem cercados mesmo quando um script remove o task ID herdado: mutações de CLI e
+ferramenta são rejeitadas, em vez de tratar aquele script como orquestrador.
+Roteamento de board/database e paths de workspace são retidos. Descendentes podem ler um
+board existente sem rodar migrations de schema; o dono deve inicializá-lo.
+
+O dispatcher concede explicitamente a um worker recém-atribuído o próprio escopo. O endpoint MCP
+gerenciado Hermes-tools pode igualmente agir pelo worker supervisor, enquanto os
+filhos de shell ordinários do executor permanecem cercados. Workers só podem fazer handoffs de ciclo de vida
+e anexar arquivos à tarefa atribuída; `unblock` permanece só do orquestrador.
+Comentários cross-task e criação de tarefas de follow-up mantêm o comportamento existente.
+
+Autores de integração ao spawnar código devem usar
+`agent.delegation_context.delegated_child_subprocess_env` no spawn real, depois de
+mesclar overrides de ambiente. Isso preserva a política de credencial/perfil do chamador.
+Isto é escopo cooperativo de runtime, **não confinamento de OS**: não impede
+código arbitrário de apagar deliberadamente metadata de linhagem ou abrir SQLite diretamente.
+
 ### 3. Um terminador de ciclo de vida {#3-a-lifecycle-terminator}
 
 Todo claim deve terminar em exatamente um de:

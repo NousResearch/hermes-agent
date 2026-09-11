@@ -20,6 +20,16 @@ Isso puxa o código mais recente de `main`, atualiza dependências e pergunta se
 O `hermes update` detecta automaticamente opções novas de configuração e pergunta se você quer adicioná-las. Se pulou esse prompt, rode `hermes config check` para ver o que falta e depois `hermes config migrate` para adicionar de forma interativa.
 :::
 
+### Avisos passivos de update {#passive-update-notices}
+
+Instalações pinadas ou não interativas podem desativar checagens passivas de versão e banner do CLI:
+
+```bash
+hermes config set updates.check false
+```
+
+Isso suprime tanto avisos de update em cache quanto requests de rede de checagem passiva. O padrão é `true`. `hermes update --check` e `hermes update` explícitos ainda funcionam; esta configuração não controla o updater do aplicativo Desktop.
+
 ### O que acontece durante um update
 
 Quando você roda `hermes update`, estes passos ocorrem:
@@ -31,6 +41,12 @@ Quando você roda `hermes update`, estes passos ocorrem:
 5. **Migração de config** — detecta opções novas de config desde a sua versão e pergunta se você quer setá-las
 6. **Rebuild do Desktop (stage-and-swap)** — se o app Hermes Desktop foi buildado a partir deste checkout, ele é rebuildado para a GUI acompanhar o código novo. O rebuild empacota num diretório temporário de staging ao lado de `apps/desktop/release/`, verifica o app staged e só então renomeia por cima do build anterior. Um rebuild que falha em qualquer ponto — download corrompido do Electron, dependência ausente, disco cheio — deixa o app anterior intacto e lançável; o update reporta `⚠ Update partially complete` e `hermes desktop` retenta o rebuild.
 7. **Auto-restart do gateway** — gateways em execução são atualizados depois que o update completa para o código novo valer na hora. Gateways gerenciados por serviço (systemd no Linux, launchd no macOS) são reiniciados pelo service manager. Gateways manuais são relançados automaticamente quando o Hermes consegue mapear o PID em execução de volta a um profile. Backends `hermes serve` / `hermes dashboard` lançados manualmente (por exemplo um serve network-bound alimentando um Desktop remoto) são tratados do mesmo jeito: cada backend grava seu bind address no spawn ledger do install no startup, então o update o para antes do code swap e relança depois no **mesmo host e porta** — um Desktop remoto apontado para aquele endpoint reconecta em vez de ficar stranded. Backends owned por um Desktop app rodando são deixados para o respawn do próprio app.
+
+### Arquivos do updater ausentes no Windows {#missing-windows-updater-files}
+
+Se o script do updater mantido estiver ausente (por exemplo após quarentena de antivírus), o forwarder legado de update falha em vez de reportar um hand-off bem-sucedido. Repare a instalação e revise o relatório de quarentena do software de segurança antes de tentar de novo; não desative a proteção antivírus. Antes de reportar sucesso, o updater mantido checa o import do CLI, o header do executável Windows, o header ASAR e a entry main empacotada, HTML do renderer legível com uma entry de módulo local, arquivos iniciais de módulo, e o build stamp atual. Estas são checagens mínimas de artefato, não uma auditoria completa de dependências nem um teste de launch do aplicativo/backend. Python ausente é reportado antes de esperar o shutdown do Desktop; reparo de dependências ainda pode rodar como parte do update. Checagens do Electron mantêm pré-requisitos de handoff antes de parar backends quando aquele layout está presente; layouts legítimos de updater flat legado continuam suportados, então nem todo arquivo de updater ausente é detectado antes do shutdown do backend.
+
+No Windows, um Desktop reaberto durante o packaging é parado de novo imediatamente antes do build staged ser promovido. Esta limpeza é restrita a executáveis dentro da árvore de release do Desktop daquele checkout; instalações não relacionadas não são paradas. Um lock restante ainda faz a promoção staged falhar em vez de contornar o erro de rename.
 
 ### Atualizando contra um branch não default: `--branch`
 
@@ -95,6 +111,26 @@ O mesmo inventário é embutido no receipt de cada update real (`~/.hermes/logs/
 ### Receipts de update e a checagem de versão da frota {#update-receipts-and-the-fleet-version-check}
 
 Toda execução de `hermes update` escreve um receipt machine-readable em `~/.hermes/logs/update_receipts/` (últimos 20 mantidos, `latest.json` sempre aponta para o mais recente): o plano de frota pré-update, cada passo tomado, qualquer coisa pulada e o porquê, o resultado do restart do gateway, e a matriz final de versões da frota. Depois da fase de restart o updater compara o código em execução de cada gateway live com o checkout recém-atualizado e imprime uma matriz por profile — um gateway ainda servindo código pré-update é reportado alto com o comando exato de restart, e o update sai com exit não-zero para que automação nunca trate uma frota de versões mistas como saudável. Tanto `--plan` quanto a checagem de frota perguntam a cada gateway rodando diretamente pelo control socket local (`gateway.sock` no diretório de dados do profile, named pipe no Windows) quando disponível, então versão e informação de supervisor vêm do próprio gateway; gateways de versões mais antigas ainda são descobertos pelos state files como antes.
+
+### Restarts de gateway interrompidos {#interrupted-gateway-restarts}
+
+Se um update anterior puxou código mas não terminou de reiniciar a frota, o próximo
+`hermes update` retenta mesmo quando o checkout já está atual. Um scan de processo
+vazio não prova recuperação: units systemd com falha e jobs launchd instalados podem
+não ter PID vivo. O marcador de restart pendente é retido se a descoberta do
+supervisor falhar, um restart falhar, ou um serviço solicitado não puder ser verificado
+como ativo. O update sai com exit não-zero e reporta os serviços afetados; recupere-os
+com os comandos impressos e retente `hermes update`.
+
+Um receipt histórico com falha não prova por si só que os gateways ainda estão stale.
+Avisos de startup e de status do gateway, assim como o catch-up de update, checam a
+frota live antes de agir sobre obrigações de restart só do receipt. Todo profile de
+gateway registrado precisa ter um sucessor live no checkout atual; um gateway atual
+não relacionado não pode substituir um runtime ausente, down, de versão desconhecida ou
+que não seja gateway. Um restart manual de gateway pode, portanto, resolver o aviso sem
+reescrever um update falho como bem-sucedido. Um marcador pendente separado permanece
+autoritativo porque pode pertencer a um update interrompido mais novo cujo inventário
+nunca chegou ao receipt.
 
 ### Backup completo pré-update: `--backup`
 

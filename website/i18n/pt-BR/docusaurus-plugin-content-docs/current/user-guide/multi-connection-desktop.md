@@ -81,6 +81,30 @@ cron ficam escopados àquele gateway; o window backend gerenciado pelo app ainda
 pelos controles de connection-mode acima. **Primary** é o fallback do registry e
 não troca o workspace atual.
 
+## Organizando grupos de sessão {#organizing-session-groups}
+
+No menu de view da sidebar Sessions, escolha **Gateway & profile** enquanto visualiza
+todos os profiles. Cada gateway ganha sua própria seção colapsável, com
+subseções de profile contendo suas sessões. Dois gateways com um profile `default`
+permanecem separados. Headers de gateway começam com o nome salvo da conexão; headers
+de profile mostram o nome do profile.
+
+Use o menu de uma seção de gateway ou profile para **Rename group**, **Reset name**,
+**Move up** ou **Move down**. Renomear muda só o label da sidebar, não o gateway ou
+profile. Gateways reordenam como seções completas, e profiles reordenam dentro do
+próprio gateway. Arraste o ícone à esquerda da seção para reordenar, ou foque esse
+handle e use Space, setas e depois Space para posicionar. Nomes, ordem e seções
+colapsadas são lembrados neste desktop. Colapsar um gateway preserva os estados
+individuais de colapso dos profiles. A ação de nova sessão de cada profile mira
+aquele profile no gateway dono.
+
+O painel Hermes Cloud também lista **Saved Cloud gateways** quando a discovery do
+portal está desconectada. **Use gateway** seleciona uma conexão salva existente sem
+mudar o gateway padrão; **Active in this window** identifica o atual. Adicionar uma
+nova instância usa o nome amigável Cloud dela, enquanto nomes customizados de
+conexão existentes são preservados. Conexões salvas ainda precisam de autenticação
+válida do gateway; gerencie o sign-in pelos controles da conexão registrada.
+
 ## Adicionando uma conexão, passo a passo {#adding-a-connection-step-by-step}
 
 1. Abra **Settings → Gateways** e role até o registry de conexões (ou
@@ -156,6 +180,13 @@ O roster união é o que as superfícies multi-gateway (e o roster built-in do
 Cada par `(connection, profile)` ganha o próprio backend e socket, pooled
 com o mesmo idle-reaping dos backends locais por profile — agentes em background
 continuam o streaming enquanto você olha para outro gateway.
+
+Botões de aprovação roteiam de volta ao backend dono da sessão, não a qualquer
+profile que estiver selecionado no momento. Para um profile secundário local, o
+Desktop pode usar o socket que entregou o pedido mesmo quando o binding de sessão
+em cache estiver ausente. A propriedade salva da sessão ainda tem precedência, e
+apagar ou renomear aquele profile local limpa esta rota temporária em vez de
+reconectar um backend obsoleto.
 
 ### Alternar e escopo {#switching-and-scoping}
 

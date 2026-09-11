@@ -559,6 +559,25 @@ reuso futuro. Na prática isso cobre:
 - Quando encontrou erros ou becos sem saída e achou o caminho que funciona
 - Quando o usuário corrigiu sua abordagem
 
+### Como é uma entrada de skill {#what-a-skill-entry-looks-like}
+
+Uma skill é o conjunto de instruções para fazer uma classe de tarefa da forma mais eficiente e correta,
+segundo suas especificações: o procedimento em ordem, os comandos e chamadas de ferramenta que
+funcionam, como você quer que o resultado fique e as armadilhas que custam tempo. Seja escrita
+em um turno em foreground, pela revisão em background ou pela passagem de consolidação do curator,
+ela captura **lições, não logs**: uma armadilha é uma regra generalizável mais uma cláusula de
+*por quê* (o mecanismo), ligada ao passo que afeta, dita uma vez. Narração de incidente, números de PR ou
+issue, datas e chat citado não são conteúdo de skill; a regra precisa se sustentar
+sem a história por trás. Regras always-on ficam no próprio `SKILL.md`; `references/`
+guarda um conjunto pequeno de arquivos nomeados por tópico (uma tabela de decisão, uma receita, quirks de provider),
+estendidos no lugar em vez de acumulados um arquivo por sessão. Skills também não
+reafirmam o que já é carregado a cada turno (`AGENTS.md` do repo, schemas de ferramenta).
+
+`skill_manage` roda um linter consultivo em `create` e em escritas em `references/` e
+devolve os achados no resultado da ferramenta. Duas regras existem especificamente para esta forma:
+`incident-log-shape` (um corpo denso em números de PR/issue) e `references-sprawl` (mais
+de 60 arquivos de referência). Elas avisam; nunca bloqueiam uma escrita.
+
 ### Ações {#actions}
 
 | Action | Use for | Key params |
@@ -853,6 +872,10 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 Isso usa o identificador de origem armazenado mais o hash atual do bundle upstream para detectar drift.
 
+As verificações pulam pedidos de rede para instalações ausentes ou que não são diretório (`orphaned`) e caminhos gravados inseguros ou irresolvíveis (`invalid_install`). Entradas de diretório ausente podem ser removidas com `hermes skills uninstall <name>`; caminhos inválidos exigem inspecionar e reparar o `skills/.hub/lock.json` do perfil ativo antes de tentar de novo. Nenhuma entrada é removida automaticamente.
+
+Instalações válidas continuam usando o fetch síncrono e os timeouts de transporte existentes do adapter de origem. Não há prazo total estrito para uma verificação de update: uma origem inacessível ou lenta para uma instalação existente ainda pode atrasar entradas posteriores.
+
 Skills que você editou localmente (o conteúdo on-disk não corresponde mais ao hash gravado no install) são **puladas** por `hermes skills update` para que suas mudanças nunca sejam sobrescritas em silêncio. Passe `--force` para substituí-las pela versão upstream mesmo assim.
 
 :::tip Limites de rate do GitHub
@@ -952,7 +975,7 @@ hermes skills install owner/repo/skills/my-workflow
 
 #### Níveis de confiança para taps {#trust-levels-for-taps}
 
-Taps novos recebem confiança `community` por padrão. Skills instaladas deles passam pelo scan de segurança padrão e mostram o painel de aviso de terceiros na primeira instalação. Se sua org ou uma fonte amplamente confiável deve ter confiança maior, adicione o repo a `TRUSTED_REPOS` em `tools/skills_hub.py` (requer PR no core Hermes).
+Taps novos recebem confiança `community` por padrão. Skills instaladas deles passam pelo scan de segurança padrão e mostram o painel de aviso de terceiros na primeira instalação. Se sua org ou uma fonte amplamente confiável deve ter confiança maior, adicione o repo a `TRUSTED_REPOS` em `tools/skills_guard.py` (requer PR no core Hermes).
 
 #### Gerenciamento de taps {#tap-management}
 
@@ -980,6 +1003,8 @@ Em cada sync, o Hermes recomputa o hash da sua cópia local e compara com o orig
 
 - **Inalterada** → seguro puxar mudanças upstream, copiar a nova versão bundled, registrar o novo origin hash.
 - **Alterada** → tratada como **user-modified** e ignorada para sempre, para suas edições nunca serem sobrescritas.
+
+Caches de runtime gerados dentro de uma skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, e um `.pyc` ao lado do seu `.py`) não fazem parte do hash, então rodar um script auxiliar da skill nunca a marca como user-modified nem a esconde de `hermes skills list-modified` / `diff`.
 
 A proteção é boa, mas tem uma aresta. Se você editar uma skill bundled e depois quiser abandonar suas mudanças e voltar à versão bundled apenas copiando de `~/.hermes/hermes-agent/skills/`, o manifest ainda guarda o origin hash *antigo* de quando o último sync bem-sucedido rodou. O conteúdo fresh copy-paste (hash bundled atual) não corresponderá a esse origin hash obsoleto, então o sync continua marcando como user-modified.
 

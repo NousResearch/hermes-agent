@@ -480,7 +480,34 @@ pertence (para fan-outs concorrentes ou aninhados permanecerem distinguíveis); 
 redação forçada de secrets antes de sair do processo. Eventos por ferramenta do filho
 (`subagent.tool`, ticks de progresso) são intencionalmente **não** encaminhados — são
 ruído de UI de alto volume; use os arquivos de transcrição live por filho para
-play-by-play.
+play-by-play. Estes eventos estão disponíveis enquanto o stream do pai estiver aberto;
+uma conclusão detached tardia não reabre o stream SSE de um run terminado nem muda
+seu status terminal.
+
+#### Resultados detached e histórico de sessão {#detached-results-and-session-history}
+
+Delegação em background exige uma continuação que lê o histórico de sessão no
+servidor: um `X-Hermes-Session-Id` explícito em Chat Completions, um request nativo
+`/api/sessions/{id}/chat`, ou um request de Runs usando histórico de sessão.
+Chat Completions sem header, cadeias de Responses e requests de Runs com
+`previous_response_id` ou histórico fornecido pelo caller executam a delegação de
+forma síncrona, devolvendo o resultado no turno original. Meramente derivar um
+session ID do conteúdo do request não habilita entrega detached.
+
+Para requests retomáveis, a conclusão é persistida uma vez por unidade de
+delegação. Fica disponível via `GET /api/sessions/{id}/messages` e no histórico
+de sessão do próximo turno real do cliente. Retries não inserem o mesmo resultado
+de novo; avisos provisórios de falha de tarefa têm identidades separadas. A
+entrega espera enquanto um turno do cliente possui o lease da sessão e segue
+continuações de compressão. Chat Completions ecoa o session ID explícito que você
+forneceu nas responses JSON e de streaming; continue enviando esse ID mesmo após
+compressão.
+
+Uma conclusão **nunca inicia um turno de modelo não solicitado** nem contorna uma
+confirmação humana pendente. O cliente é dono do próximo turno. Clientes que
+continuam usando seus próprios snapshots de histórico devem usar delegação
+síncrona em vez de esperar que uma linha de entrega no servidor seja mesclada
+nesses snapshots.
 
 Buffers de eventos não consumidos expiram após cinco minutos para um cliente detached não
 crescer memória indefinidamente. Isso expira só estado de transporte: um run que ainda
@@ -696,6 +723,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 Quando CORS está habilitado:
 - **Respostas preflight** incluem `Access-Control-Max-Age: 600` (cache de 10 minutos)
 - **Responses de streaming SSE** incluem headers CORS para clientes EventSource de browser funcionarem corretamente
+- **`X-Hermes-Session-Id`** é header de requisição permitido, para browsers em um origin allowlisted poderem pedir continuação de sessão.
 - **`Idempotency-Key`** é header de requisição permitido — clientes podem enviá-lo para deduplicação (responses são cacheadas por chave por 5 minutos)
 
 A maioria dos frontends documentados como Open WebUI conecta server-to-server e não precisa de CORS.

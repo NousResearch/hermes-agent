@@ -81,7 +81,7 @@ Cria um novo perfil.
 |-------------------|-------------|
 | `<name>` | Nome do novo perfil. Deve ser um nome de diretório válido (alfanumérico, hífens, underscores). |
 | `--clone` | Copia `config.yaml`, `.env`, `SOUL.md` e skills do perfil atual. |
-| `--clone-all` | Copia tudo (config, memórias, skills, cron, plugins) do perfil atual. Exclui histórico por perfil: sessões, `state.db`, backups, state-snapshots, checkpoints. |
+| `--clone-all` | Copia tudo (config, memórias, skills, plugins) do perfil atual. Exclui histórico por perfil: sessões, `state.db`, backups, state-snapshots, checkpoints — e jobs de cron, que permanecem vinculados ao perfil de origem (um clone que os herdasse dispararia cada job duas vezes). |
 | `--clone-from <profile>` | Clona config/skills/SOUL de um perfil específico em vez do atual. Implica `--clone`, exceto se combinado com `--clone-all`. |
 | `--no-alias` | Pula a criação do script wrapper. |
 | `--description "<text>"` | Descrição de uma ou duas frases sobre para que este perfil é bom. Usada pelo orquestrador do kanban para rotear tarefas com base na função em vez de apenas o nome do perfil. Pule e adicione depois via `hermes profile describe`. Persistida em `<profile_dir>/profile.yaml`. |

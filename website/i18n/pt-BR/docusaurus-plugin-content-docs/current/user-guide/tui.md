@@ -100,6 +100,8 @@ O diretório deve conter `dist/entry.js`.
 
 Os atalhos correspondem exatamente aos da [CLI clássica](cli.md#keybindings). As únicas diferenças de comportamento:
 
+- **`Ctrl+T`** expande o dock automático de subagente ao vivo para o roster `/agents` em altura total. Selecione um worker e pressione **Enter** (ou **`t`**) para o transcript ao vivo, **`d`** para detalhes ricos, **`e`** para steer, ou **`x`** para pará-lo. O dock ajusta a contagem de linhas à altura do terminal e preserva o rascunho do composer. Veja [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
+- **`F7`** alterna o dock ao vivo entre a prévia padrão e uma linha de resumo. Isso não abre o monitor nem move o foco do composer; a escolha dura neste processo TUI sem alterar a config.
 - **Arrastar com o mouse** destaca texto com fundo de seleção uniforme.
 - **`Cmd+V` / `Ctrl+V`** primeiro tenta paste de texto normal, depois faz fallback para leituras OSC52/clipboard nativas e, por fim, anexo de imagem quando a área de transferência ou o payload colado resolve para uma imagem.
 - **`/terminal-setup`** instala bindings locais de terminal para VS Code / Cursor / Windsurf para melhor paridade de `Cmd+Enter` e undo/redo no macOS.

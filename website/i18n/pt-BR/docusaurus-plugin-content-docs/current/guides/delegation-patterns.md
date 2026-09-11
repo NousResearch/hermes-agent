@@ -200,14 +200,14 @@ Subagentes herdam os toolsets habilitados do agente pai. `delegate_task` não ac
 
 ## Restrições {#constraints}
 
-- **3 tarefas paralelas por padrão**: os lotes têm como padrão 3 subagentes concorrentes (configurável via `delegation.max_concurrent_children` em config.yaml, sem teto rígido, apenas um piso de 1)
+- **10 tarefas paralelas por padrão**: os lotes têm como padrão 10 subagentes concorrentes (configurável via `delegation.max_concurrent_children` em config.yaml, sem teto rígido, apenas um piso de 1)
 - **Delegação aninhada é opt-in**: subagentes leaf (padrão) não podem chamar `delegate_task`, `clarify`, `memory` ou `execute_code`. Subagentes orquestradores (`role="orchestrator"`) mantêm `delegate_task` para delegação adicional, mas apenas quando `delegation.max_spawn_depth` é elevado acima do padrão de 1 (piso 1, sem teto); os outros três permanecem bloqueados. Desabilite globalmente via `delegation.orchestrator_enabled: false`.
 
 ### Ajustando Concorrência e Profundidade {#tuning-concurrency-and-depth}
 
 | Config | Padrão | Intervalo | Efeito |
 |--------|---------|-------|--------|
-| `max_concurrent_children` | 3 | >=1 | Tamanho do lote paralelo por chamada de `delegate_task` |
+| `max_concurrent_children` | 10 | >=1 | Tamanho do lote paralelo por chamada de `delegate_task` |
 | `max_spawn_depth` | 1 | >=1 | Quantos níveis de delegação podem gerar mais delegações |
 
 Exemplo: executando 30 workers paralelos com subagentes aninhados:
@@ -220,7 +220,7 @@ delegation:
 
 - **Terminais separados** — cada subagente recebe sua própria sessão de terminal com diretório de trabalho e estado separados
 - **Sem histórico de conversa** — subagentes veem apenas o `goal` e o `context` que o agente pai passa ao chamar `delegate_task`
-- **50 iterações por padrão** — defina `max_iterations` mais baixo para tarefas simples para economizar custo
+- **250 iterações por padrão** — defina `delegation.max_iterations` mais baixo em `config.yaml` para frotas de tarefas simples para economizar custo
 - **Não duradoura** — a delegação de nível superior é executada em segundo plano e publica seu resultado depois, mas continua vinculada à sessão proprietária e ao processo do Hermes. O fechamento da sessão, `/stop`, `/new` ou um reinício de processo podem cancelar ou deixar órfão o trabalho em andamento. Use `cronjob` ou `terminal(background=True, notify_on_complete=True)` para trabalho que precisa sobreviver a esses limites.
 
 ---

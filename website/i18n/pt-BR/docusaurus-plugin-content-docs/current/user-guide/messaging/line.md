@@ -175,6 +175,7 @@ Jobs cron com `deliver: line` roteiam para `LINE_HOME_CHANNEL`. O adaptador incl
 | `LINE_BUTTON_LABEL` | no | "Get answer" | Rótulo do botão |
 | `LINE_DELIVERED_TEXT` | no | "Already replied ✅" | Resposta quando um botão já entregue é tocado de novo |
 | `LINE_INTERRUPTED_TEXT` | no | "Run was interrupted before completion." | Resposta quando um botão órfão de `/stop` é tocado |
+| `LINE_EXPIRED_TEXT` | no | "That request has expired — send your message again." | Resposta quando um botão cuja resposta em cache sumiu é tocado |
 
 ---
 

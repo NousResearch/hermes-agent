@@ -31,6 +31,8 @@ import { pathToFileURL } from 'node:url'
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /** Plain-text provider reply for renderer control-token E2E coverage. */
+  textReply?: string
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -655,7 +657,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
 
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+            streamTextResponse(res, model, options.textReply ?? MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
@@ -668,9 +670,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             if (holdThisCompletion) {
               heldCompletionCount++
               resolveHeldStreamStarted?.()
-              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, options.textReply ?? MOCK_REPLY))
             } else {
-              nonStreamingTextResponse(res, model, MOCK_REPLY)
+              nonStreamingTextResponse(res, model, options.textReply ?? MOCK_REPLY)
             }
           }
         })

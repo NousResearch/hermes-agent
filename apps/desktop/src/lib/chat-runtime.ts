@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { assistantDisplayParts } from '@/lib/chat-messages/display'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -463,10 +464,12 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
     } as ThreadMessage
   }
 
+  const displayParts = assistantDisplayParts(message)
+
   return {
     id: message.id,
     role,
-    content: message.parts as Extract<ThreadMessage, { role: 'assistant' }>['content'],
+    content: displayParts as Extract<ThreadMessage, { role: 'assistant' }>['content'],
     createdAt,
     status: message.error
       ? { type: 'incomplete', reason: 'error', error: message.error }
@@ -480,6 +483,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
       custom: {
+        ...(displayParts !== message.parts && !displayParts.length ? { silent: true } : {}),
         ...(message.interim ? { interim: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),

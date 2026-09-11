@@ -635,6 +635,7 @@ export interface SessionInfo {
 }
 
 export type TimelineDisplayMetadata =
+  | { user_originated: boolean; event_kind?: string; task_count?: number }
   | { model: string; provider?: string }
   | {
       delegation_id: string

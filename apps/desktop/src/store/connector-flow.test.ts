@@ -9,6 +9,7 @@ const listed = (connected: boolean) => ({
 
 function flowWith(responses: { list: () => unknown; connect?: () => unknown }, onWaiting = vi.fn()) {
   const open = vi.fn(async () => {})
+
   const request = vi.fn(async (method: string) => {
     if (method === 'connectors.list') {
       return responses.list()
@@ -32,6 +33,7 @@ describe('the moment the browser has the sign-in', () => {
   it('reports waiting once the link is open, before the poll settles', async () => {
     let connected = false
     const order: string[] = []
+
     const { flow, onWaiting, open } = flowWith(
       {
         list: () => listed(connected),
@@ -85,11 +87,13 @@ describe('the moment the browser has the sign-in', () => {
     let clock = 0
     const open = vi.fn(async () => {})
     const onWaiting = vi.fn()
+
     const request = vi.fn(async (method: string) =>
       method === 'connectors.list'
         ? listed(false)
         : { results: [{ connector: 'gmail', status: 'initiated', connect_url: 'https://auth.test/x' }] }
     )
+
     const flow = createConnectorFlow('session', [{ connector: 'gmail' }], {
       request: request as never,
       open,

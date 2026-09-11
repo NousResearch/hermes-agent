@@ -353,6 +353,21 @@ class MCPServerRunMixin:
         return not self._shutdown_event.is_set()
 
     async def _on_permanent_error(self, root: BaseException, budget: "_RetryBudget") -> bool:
+        # Streamable-HTTP servers (e.g. Composio) return 401 when their server-side transport session
+        # is GC'd after an idle window (~3 min) — the credentials are still valid.  The tell is that
+        # the failing request already carried an MCP-Session-ID header: a first-auth rejection never
+        # includes a session ID.  Treat this as a transport reconnect, not a credential failure, so
+        # the connection revives without consuming the one-time permanent-grace budget.  See #106094.
+        if _errors._is_http_session_expired_401(root):
+            logger.warning(
+                "MCP server '%s': 401 on a request with MCP-Session-ID — server GC'd the transport "
+                "session (not a credential error); triggering transport reconnect "
+                "(state: connected → reconnecting): %s: %s",
+                self.name, type(root).__name__, root)
+            self.mark_suspect(f"HTTP session expired (401 with MCP-Session-ID): {root}")
+            self._reconnect_retries, budget.backoff = 0, 1.0
+            await asyncio.sleep(_jittered(1.0))
+            return not self._shutdown_event.is_set()
         # Auth failure on a PROVEN session is often a raced-teardown OAuth lock, not revoked
         # credentials: grant ONE suspect+reconnect cycle first.
         if _errors._is_auth_error(root) and self._session_proven and not self._permanent_grace_used:

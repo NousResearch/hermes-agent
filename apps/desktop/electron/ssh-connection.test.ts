@@ -1067,3 +1067,23 @@ test('stopTunnelChild waits for process exit', async () => {
   await stopping
   assert.equal(stopped, true)
 })
+
+test('exec wraps POSIX payloads in sh -c so a fish login shell never parses them', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 0, stdout: 'Linux\n' } : { code: 0, stdout: 'OK\n' }
+  )
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('help="$(true)"; echo "${X:-y}"')
+  const cmd = spawnFn.calls[1].at(-1)
+  assert.match(cmd, /^sh -c '/)
+  assert.match(cmd, /help="\$\(true\)"/)
+})
+
+test('exec leaves Windows PowerShell payloads unwrapped', async () => {
+  const spawnFn = scriptedSpawn((args: any) =>
+    args.at(-1) === 'uname -s' ? { code: 1, stderr: 'uname: command not found' } : { code: 0 }
+  )
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  await conn.exec('powershell.exe -NoProfile -Command "echo hi"')
+  assert.equal(spawnFn.calls[1].at(-1), 'powershell.exe -NoProfile -Command "echo hi"')
+})

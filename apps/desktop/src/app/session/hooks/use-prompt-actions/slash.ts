@@ -678,6 +678,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
+            // Compression rotated the conversation onto a new stored-session
+            // row (title/pin projection live there now). Re-fetch the sidebar
+            // so the projected tip replaces the stale pre-compression row —
+            // without this the old row lingers in the pin keep-set next to an
+            // unpinned duplicate until some unrelated refresh happens to run.
+            void refreshSessions().catch(() => undefined)
+
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same
             // shape session.resume returns (_history_to_messages), so
@@ -759,6 +766,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // immediate "method not found" error.
             if (isMissingRpcMethod(err)) {
               await runExec(ctx)
+
+              // The legacy slash-worker path rotates the session too, so the
+              // sidebar needs the same post-compress re-fetch as the RPC path.
+              void refreshSessions().catch(() => undefined)
 
               return
             }

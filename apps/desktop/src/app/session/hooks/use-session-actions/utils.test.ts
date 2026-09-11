@@ -8,9 +8,11 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $sessions,
   setCurrentBranch,
   setCurrentCwd,
   setSelectedStoredSessionId,
+  setSessions,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
 import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
@@ -34,7 +36,8 @@ import {
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  upsertResolvedSession
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -264,6 +267,159 @@ describe('sessionMatchesStoredId', () => {
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'a')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'live', _lineage_root_id: 'root' }), 'root')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'b')).toBe(false)
+  })
+})
+
+describe('upsertResolvedSession lineage preservation', () => {
+  beforeEach(() => {
+    setSessions(() => [])
+  })
+
+  afterEach(() => {
+    setSessions(() => [])
+  })
+
+  const projectedTip = {
+    id: 'tip',
+    _lineage_root_id: 'root',
+    _lineage_ids: ['root', 'tip'],
+    pinned: true,
+    profile: 'default'
+  } as unknown as SessionInfo
+
+  const rawTip = { id: 'tip', pinned: false, profile: 'default' } as unknown as SessionInfo
+
+  it('a raw by-id payload does not strip lineage fields or the pin from an already-projected row', () => {
+    setSessions(() => [projectedTip])
+
+    upsertResolvedSession(rawTip, 'tip')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]._lineage_root_id).toBe('root')
+    expect(rows[0]._lineage_ids).toEqual(['root', 'tip'])
+    expect(rows[0].pinned).toBe(true)
+  })
+
+  it('present values still overwrite (a genuine unpin propagates)', () => {
+    setSessions(() => [projectedTip])
+
+    upsertResolvedSession({ ...rawTip, pinned: false, _lineage_root_id: 'root' } as unknown as SessionInfo, 'tip')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].pinned).toBe(false)
+  })
+
+  it('evicts previous rows by lineage key even when the incoming row is raw', () => {
+    // `root_old` is a DISTINCT row whose lineage key matches: it must be
+    // evicted through the lineage branch, not the stored-id branch.
+    setSessions(() => [
+      projectedTip,
+      { id: 'root_old', _lineage_root_id: 'root', pinned: true, title: 'stale' } as unknown as SessionInfo,
+      { id: 'other', title: 'x' } as unknown as SessionInfo
+    ])
+
+    upsertResolvedSession(rawTip, 'tip')
+
+    const rows = $sessions.get()
+    expect(rows.map(r => r.id).sort()).toEqual(['other', 'tip'])
+  })
+
+  it('a projected payload still evicts the stale ancestor by lineage key', () => {
+    setSessions(() => [{ id: 'root_old', _lineage_root_id: 'root', pinned: true } as unknown as SessionInfo])
+
+    upsertResolvedSession(projectedTip, 'tip')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('tip')
+  })
+
+  it('an ancestor payload neither evicts nor downgrades the live tip row', () => {
+    // A by-id GET on a pre-compression id describes a conversation the cache
+    // already represents by its live tip. Ingesting the raw ancestor row
+    // would evict the projected tip (sessionMatchesStoredId spans the chain)
+    // and downgrade it to raw shape.
+    const tipRow = {
+      id: 'lin_tip',
+      _lineage_root_id: 'lin_root',
+      _lineage_ids: ['lin_root', 'lin_tip'],
+      pinned: true,
+      profile: 'default'
+    } as unknown as SessionInfo
+
+    setSessions(() => [tipRow])
+    upsertResolvedSession({ id: 'lin_root', pinned: true, profile: 'default' } as unknown as SessionInfo, 'lin_root')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('lin_tip')
+    expect(rows[0].pinned).toBe(true)
+  })
+
+  it('an intermediate ancestor payload is not appended as a duplicate row', () => {
+    const tipRow = {
+      id: 'lin_tip',
+      _lineage_root_id: 'lin_root',
+      _lineage_ids: ['lin_root', 'lin_mid', 'lin_tip'],
+      pinned: true,
+      profile: 'default'
+    } as unknown as SessionInfo
+
+    setSessions(() => [tipRow])
+    upsertResolvedSession({ id: 'lin_mid', pinned: true, profile: 'default' } as unknown as SessionInfo, 'lin_mid')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('lin_tip')
+  })
+
+  it('a raw payload with no lineage-linked cached row still ingests (cold arrival unchanged)', () => {
+    setSessions(() => [{ id: 'other', title: 'x' } as unknown as SessionInfo])
+
+    upsertResolvedSession({ id: 'unrelated', profile: 'default' } as unknown as SessionInfo, 'unrelated')
+
+    const rows = $sessions.get()
+    expect(rows.map(r => r.id).sort()).toEqual(['other', 'unrelated'])
+  })
+
+  it('explicit null lineage fields count as absent (FastAPI null serialization)', () => {
+    const tipRow = {
+      id: 'lin_tip',
+      _lineage_root_id: 'lin_root',
+      _lineage_ids: ['lin_root', 'lin_tip'],
+      pinned: true,
+      profile: 'default'
+    } as unknown as SessionInfo
+
+    setSessions(() => [tipRow])
+    upsertResolvedSession({
+      id: 'lin_root',
+      _lineage_root_id: null,
+      pinned: false,
+      profile: 'default'
+    } as unknown as SessionInfo, 'lin_root')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe('lin_tip')
+    expect(rows[0]._lineage_root_id).toBe('lin_root')
+    expect(rows[0].pinned).toBe(true)
+  })
+
+  it('a cached row with explicit nulls is raw-shape: fresh payload values win over stale cached ones', () => {
+    // A cached row seeded from a JSON producer carrying explicit nulls must
+    // NOT classify as projected — otherwise rawShape preservation lets the
+    // stale cached pin overwrite the payload's fresh value.
+    setSessions(() => [{ id: 's1', _lineage_root_id: null, pinned: false, profile: 'default' } as unknown as SessionInfo])
+
+    upsertResolvedSession({ id: 's1', pinned: true, profile: 'default' } as unknown as SessionInfo, 's1')
+
+    const rows = $sessions.get()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].pinned).toBe(true)
+    expect(rows[0]._lineage_root_id).toBeUndefined()
   })
 })
 

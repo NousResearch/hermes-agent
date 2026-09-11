@@ -1391,19 +1391,101 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
   setSessions(prepend)
 }
 
-function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
-  const lineage = session._lineage_root_id ?? session.id
+export function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
+  setSessions(prev => {
+    // Normalize nullish → undefined once: JSON producers (FastAPI incl.) may
+    // serialize an unset optional field as explicit null, and every
+    // raw-shape / preservation decision below keys on absence, not nullness.
+    const payloadRoot = session._lineage_root_id ?? undefined
+    const payloadIds = session._lineage_ids ?? undefined
+    const payloadPinned = session.pinned ?? undefined
 
-  setSessions(prev => [
-    session,
-    ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
-        return false
+    // Merge, don't clobber: a raw-shape payload (single-session GET on a
+    // backend predating detail projection, or any non-projecting source)
+    // omits the lineage fields the sidebar's dedupe and Pinned section key
+    // on. When the cached row already carries that projection, an incoming
+    // raw payload must not strip it — one detail GET used to downgrade the
+    // tip back to raw shape and silently drop the conversation out of
+    // Pinned. A payload WITH lineage fields is projected shape: its values
+    // are authoritative and win outright.
+    const cached = prev.find(row => row.id === session.id)
+    // The cached row gets the SAME nullish normalization as the payload: a
+    // null-vs-undefined asymmetry would classify a raw cached row as
+    // projected (rawShape) and let stale cached values overwrite fresh
+    // payload values.
+    const cachedRoot = cached?._lineage_root_id ?? undefined
+    const cachedIds = cached?._lineage_ids ?? undefined
+    const cachedPinned = cached?.pinned ?? undefined
+    // NOTE (review #105508): every branch below treats a `null` lineage field as
+    // ABSENT — never as a signal to clear the chain — so a raw-shape payload
+    // that omits lineage preserves the cached chain. That is safe only because
+    // compression lineage is APPEND-ONLY: a later chain is always a superset of
+    // an earlier one, never a detachment, so the cached chain is never wrong to
+    // keep. If the backend ever sends an explicit null to MEAN "no lineage",
+    // the preserve-cached fallbacks below would wrongly retain a stale chain —
+    // revisit this block if that invariant changes.
+    const rawShape = payloadRoot === undefined && cachedRoot !== undefined
+
+    const merged: SessionInfo = {
+      ...session,
+      _lineage_root_id: payloadRoot,
+      _lineage_ids: payloadIds,
+      pinned: payloadPinned,
+      ...(payloadRoot === undefined && cachedRoot !== undefined
+        ? { _lineage_root_id: cachedRoot }
+        : {}),
+      ...(payloadIds === undefined && cachedIds !== undefined
+        ? { _lineage_ids: cachedIds }
+        : {}),
+      // A raw tip flag (0/1 on the tip row alone) is not the lineage-wide
+      // pin the projection computes — the projection exists because raw tip
+      // flags are meaningless. Only the projected shape's pin wins.
+      ...(rawShape && cachedPinned !== undefined ? { pinned: cachedPinned } : {}),
+      ...(payloadPinned === undefined && !rawShape && cachedPinned !== undefined
+        ? { pinned: cachedPinned }
+        : {})
+    }
+
+    // Evict by the MERGED row's lineage key, not the incoming payload's: a
+    // raw payload restores the cached root, and stale ancestors must be
+    // evicted against that root, not against the bare tip id.
+    const lineage = merged._lineage_root_id ?? merged.id
+
+    // Ancestor payloads: a by-id GET on a pre-compression id (or any middle
+    // segment) describes a conversation the cache already represents by its
+    // live tip — including a warm deep-link, where the UI resolves the
+    // stored id to the cached tip via sessionMatchesStoredId. Ingesting the
+    // raw ancestor would EVICT that projected tip (the match spans the whole
+    // chain) and replace it with a raw, unstamped ancestor — the exact
+    // downgrade this function exists to prevent. The backend deliberately
+    // serves ancestors raw-shape (tip-only projection), so rawShape recovery
+    // cannot fire either: the only safe action is to leave the cache alone.
+    // A cold deep-link (nothing cached) still ingests normally, and a
+    // projected payload is never suppressed — only raw-shape-eligible ones
+    // reach this guard.
+    if (payloadRoot === undefined && !rawShape) {
+      const linksAncestor = prev.some(
+        existing =>
+          existing.id !== session.id &&
+          (existing._lineage_root_id === session.id || Boolean(existing._lineage_ids?.includes(session.id)))
+      )
+
+      if (linksAncestor) {
+        return prev
       }
+    }
 
-      return (existing._lineage_root_id ?? existing.id) !== lineage
-    })
-  ])
+    return [
+      merged,
+      ...prev.filter(existing => {
+        if (sessionMatchesStoredId(existing, storedSessionId)) {
+          return false
+        }
+
+        return (existing._lineage_root_id ?? existing.id) !== lineage
+      })
+    ]
+  })
 }
 
 // Every session row reachable through the profile-scoped project tree —

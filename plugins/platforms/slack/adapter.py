@@ -869,7 +869,7 @@ class SlackAdapter(BasePlatformAdapter):
     # Bounded-cache caps (instance assignment in tests overrides per adapter).
     _USER_NAME_CACHE_MAX = _CHANNEL_NAME_CACHE_MAX = _DM_CONVERSATION_CACHE_MAX = 5000
     _PROCESSED_MESSAGE_TS_MAX = _BOT_TS_MAX = _MENTIONED_THREADS_MAX = 5000
-    _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = _THREAD_REHYDRATION_CHECKED_MAX = 5000
+    _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = 5000
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
@@ -944,12 +944,8 @@ class SlackAdapter(BasePlatformAdapter):
         # long retry loops used to spam threads with dozens of out-of-order status messages.
         self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
-        # Threads already rehydration-checked this process (first reply after a restart injects
-        # missed messages exactly once); message IDs with reaction lifecycle (bounded: an exception
-        # between add and finalize would leak entries).
-        # Persistent sessions survive gateway restarts, but messages that arrived while the gateway was DOWN
-        # never reached the session. Keys follow the thread session-key scoping. See #63530.
-        self._thread_rehydration_checked: set = set()
+        # Message IDs with reaction lifecycle (bounded: an exception between add and finalize
+        # would leak entries).
         self._reacting_message_ids: set = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
@@ -3998,9 +3994,10 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply: bool, is_mentioned: bool, is_dm: bool,
     ) -> Tuple[Optional[str], List[str], List[str]]:
         """``(channel_context, root_media_urls, root_media_types)`` for a thread reply. No session:
-        full thread + root images once, set watermark. Session + @mention: delta past watermark
-        (cache bypassed). Session, first plain reply this process: restart rehydration; later
-        replies only advance the watermark. Context goes into the NEW turn only (prompt caching)."""
+        full thread + root images once, set watermark. Active sessions fetch the delta past the
+        watermark for every routed reply, including plain-language wakes, because app and peer-bot
+        messages may not have become agent turns. Context goes into the NEW turn only (prompt
+        caching)."""
         # - Active thread + explicit @mention: refresh with only the delta since the last hydrate/refresh
         #   (#23918), bypassing the TTL cache. The delta is injected as part of the NEW turn (via
         #   ``channel_context``) — prior conversation history is never rewritten, so prompt caching is
@@ -4037,25 +4034,15 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_root_media_urls, thread_root_media_types,
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
-        elif is_mentioned:
-            await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
         else:
-            # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
-            # restarts, but thread replies posted while the gateway was down never reached the session. On
-            # the FIRST ordinary reply per thread in this process, fetch the delta past the persisted
-            # watermark and inject anything missed as part of this new turn. Checked at most once per thread
-            # per process; a non-empty watermark plus an empty delta costs one cached conversations.replies
-            # call.
-            rehydration_key = self._thread_rehydration_key(
-                channel_id, event_thread_ts, user_id, team_id)
-            if rehydration_key in self._thread_rehydration_checked:
-                self._set_thread_watermark(watermark_ts=ts, **watermark_args)
-                return channel_context, thread_root_media_urls, thread_root_media_types
+            # A routed human reply can follow app/peer-bot messages that were deliberately not
+            # admitted as turns. Always recover the bounded delta before advancing the watermark;
+            # otherwise the next turn silently loses completion or incident evidence. This also
+            # covers the restart gap (#63530 / #33215) without a once-per-process shortcut.
             watermark_ts = self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
         self._set_thread_watermark(watermark_ts=ts, **watermark_args)
-        self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
     @staticmethod
@@ -5758,25 +5745,6 @@ class SlackAdapter(BasePlatformAdapter):
         return SessionSource(
             platform=Platform.SLACK, chat_id=channel_id, chat_type=chat_type, user_id=user_id,
             thread_id=thread_ts, scope_id=team_id or None)
-
-    def _thread_rehydration_key(
-        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
-        """Per-process key for the once-per-thread rehydration check; per-user when
-        ``thread_sessions_per_user`` is on, like the session key."""
-        key = f"{team_id}:{channel_id}:{thread_ts}"
-        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
-        return f"{key}:{user_id}" if getattr(store_cfg, "thread_sessions_per_user", False) else key
-
-    def _mark_thread_rehydration_checked(
-        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> None:
-        """Record that this thread's restart-rehydration check has run."""
-        self._thread_rehydration_checked.add(
-            self._thread_rehydration_key(channel_id, thread_ts, user_id, team_id))
-        # Evict oldest thread_ts first, never in set order: dropping an ACTIVE
-        # thread's key would re-run rehydration and re-inject the missed delta.
-        self._evict_oldest_by_ts(
-            self._thread_rehydration_checked, self._THREAD_REHYDRATION_CHECKED_MAX,
-            lambda e: e.split(":")[2] if e.count(":") >= 2 else "")
 
     def _thread_watermark_io(
         self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any

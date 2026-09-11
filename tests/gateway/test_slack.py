@@ -3182,9 +3182,6 @@ class TestThreadReplyHandling:
         mock_session_store.set_session_metadata = MagicMock(
             side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
         )
-        adapter_with_session_store._mark_thread_rehydration_checked(
-            "C123", "123.000", "U_USER", "T_TEAM"
-        )
         adapter_with_session_store._app.client.conversations_replies = AsyncMock(
             return_value={
                 "messages": [
@@ -4567,24 +4564,6 @@ class TestTrackingStructureBounds:
         # Newest entry survives; oldest was evicted.
         assert ("T1", "U49") in adapter._user_name_cache
         assert ("T1", "U0") not in adapter._user_name_cache
-
-
-    def test_rehydration_checked_evicts_oldest_thread_first(self, adapter):
-        """Regression shape for #51019: the ACTIVE (newest) thread key must
-        survive eviction pressure so its rehydration check does not re-run."""
-        adapter._THREAD_REHYDRATION_CHECKED_MAX = 4
-        for ts in [
-            "1000.000002",
-            "999.999999",
-            "1000.000004",
-            "1000.000001",
-            "1000.000003",
-        ]:
-            adapter._mark_thread_rehydration_checked("C1", ts, "U1", "T1")
-        assert adapter._thread_rehydration_checked == {
-            "T1:C1:1000.000003",
-            "T1:C1:1000.000004",
-        }
 
 
     @pytest.mark.asyncio

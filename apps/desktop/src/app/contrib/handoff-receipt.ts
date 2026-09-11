@@ -6,6 +6,14 @@ import type { HandoffReceipt } from './handoff-leg'
 // Nothing is submitted until the next save verifies durable persistence.
 const unsavedReceipts = new Map<string, HandoffReceipt>()
 
+export function markFirstBuildSession(storedId: string): void {
+  writeKey('hermes.onboarding.first-build.v1', storedId)
+}
+
+export function isFirstBuildSession(storedId: string | null | undefined): boolean {
+  return !!storedId && readKey('hermes.onboarding.first-build.v1') === storedId
+}
+
 /** A navigation/submit receipt, never a copy of either profile's memory. */
 export function handoffReceiptKey(connection: null | string, guideStoredId: string): string {
   return `hermes.onboarding.handoff.v1.connection.${encodeURIComponent(connection ?? 'ambient')}.profile.default.guide.${encodeURIComponent(guideStoredId)}`

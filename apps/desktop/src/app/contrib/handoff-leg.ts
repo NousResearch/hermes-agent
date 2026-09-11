@@ -6,6 +6,7 @@ import type { ClientSessionState } from '@/app/types'
 import type { HandoffPlan } from '@/components/onboarding-chat/setup-profile'
 import type { SessionMessage } from '@/types/hermes'
 
+import { markFirstBuildSession } from './handoff-receipt'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 export const BUILD_PROFILE = 'default'
@@ -76,6 +77,7 @@ export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recover
     const identity = await deps.create()
     receipt = { ...task, ...identity, status: 'created' }
     deps.save(receipt)
+    markFirstBuildSession(receipt.storedId)
   } else {
     const snapshot = await deps.request<HandoffSnapshot>(receipt.owner, 'session.resume', {
       session_id: receipt.storedId,

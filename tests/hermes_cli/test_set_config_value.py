@@ -118,6 +118,13 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_kanban_notify_in_gateway_is_recognized(self, _isolated_hermes_home, capsys):
+        """The notifier's gateway gate must be accepted by config set."""
+        set_config_value("kanban.notify_in_gateway", "false")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "notify_in_gateway: false" in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

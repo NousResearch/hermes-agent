@@ -1218,6 +1218,31 @@ ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requ
 
 ---
 
+### AIHubMix — Multi-Provider Aggregator
+
+[AIHubMix](https://aihubmix.com) fronts models from many vendors behind a single
+OpenAI-compatible endpoint and a single API key. Create the key in the AIHubMix
+dashboard, then check its model list for the exact IDs available to your
+account.
+
+```yaml
+model:
+  default: gpt-5.6-sol
+  provider: custom
+  base_url: https://aihubmix.com/v1
+  api_key: your-aihubmix-key
+```
+
+A community model-provider plugin,
+[hermes-provider-aihubmix](https://github.com/AIhubmix/hermes-provider-aihubmix),
+registers it as a named `aihubmix` provider instead, so `--provider aihubmix`
+works and the `/model` picker is filtered to entries that advertise tool
+calling. Install it into `~/.hermes/plugins/model-providers/` as its README
+describes; it changes no core files. See
+[Model Provider Plugins](/developer-guide/model-provider-plugin).
+
+---
+
 ### Other Compatible Providers
 
 Any service with an OpenAI-compatible API works. Some popular options:
@@ -1230,6 +1255,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
+| [AIHubMix](https://aihubmix.com) | `https://aihubmix.com/v1` | Multi-vendor aggregator, one OpenAI-compatible key |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |

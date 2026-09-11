@@ -18,6 +18,7 @@ import pytest
 import agent.redact as redact_module
 from hermes_cli._scan_venv_blockers import (
     _classify_local_preview_args,
+    _classify_pool_backend_args,
     _is_pausable_gateway,
     _probe_fail_json,
     _redact_sensitive_cmdline,
@@ -123,6 +124,19 @@ def test_classify_local_preview_args_rejects_arbitrary_python_process() -> None:
     assert _classify_local_preview_args(["python.exe", "important-script.py"]) == {}
 
 
+def test_classify_pool_backend_args_accepts_profile_scoped_serve() -> None:
+    assert _classify_pool_backend_args(
+        [r"C:\Hermes\venv\Scripts\python.exe", "-m", "hermes_cli.main", "--profile", "writer", "serve"]
+    ) == {"kind": "pool-backend", "safeToStop": True, "label": "serve"}
+
+
+def test_classify_pool_backend_args_rejects_gateway_and_arbitrary_python() -> None:
+    assert _classify_pool_backend_args(
+        [r"C:\Hermes\venv\Scripts\python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    ) == {}
+    assert _classify_pool_backend_args(["python.exe", "important-script.py"]) == {}
+
+
 def test_classify_local_preview_args_rejects_module_flags_passed_to_a_script() -> None:
     assert _classify_local_preview_args(
         ["python.exe", "important-script.py", "-m", "http.server", "8765"]
@@ -169,6 +183,47 @@ def test_terminate_safe_preview_revalidates_identity_and_exact_argv() -> None:
     assert error is None
     assert parent.terminated is True
     assert child.terminated is True
+
+
+def test_terminate_safe_preview_accepts_leftover_serve_backend() -> None:
+    class FakeProcess:
+        def __init__(self, pid: int, *, created: float, args: list[str]) -> None:
+            self.pid = pid
+            self._created = created
+            self._args = args
+            self.terminated = False
+            self._children: list[FakeProcess] = []
+
+        def create_time(self) -> float:
+            return self._created
+
+        def cmdline(self) -> list[str]:
+            return self._args
+
+        def children(self, *, recursive: bool) -> list[FakeProcess]:
+            return self._children
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            pass
+
+    parent = FakeProcess(
+        100,
+        created=1722798000.25,
+        args=["python.exe", "-m", "hermes_cli.main", "--profile", "writer", "serve"],
+    )
+    fake_psutil = types.SimpleNamespace(
+        Process=lambda pid: parent,
+        wait_procs=lambda processes, timeout: (processes, []),
+    )
+
+    stopped, error = _terminate_safe_preview(100, 1722798000.25, psutil_module=fake_psutil)
+
+    assert stopped is True
+    assert error is None
+    assert parent.terminated is True
 
 
 def test_terminate_safe_preview_refuses_reused_pid() -> None:

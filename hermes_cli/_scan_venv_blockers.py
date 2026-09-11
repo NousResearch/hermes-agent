@@ -101,6 +101,38 @@ def _classify_local_preview_args(args: object) -> dict[str, object]:
     return metadata
 
 
+def _classify_pool_backend_args(args: object) -> dict[str, object]:
+    """Return safe-stop metadata for a Desktop ``hermes serve`` / dashboard argv.
+
+    Token-based via ``_hermes_holder_subcommand`` — never substring matching.
+    Gateway holders stay on the pausable-gateway exemption, not this path.
+    """
+    if not isinstance(args, (list, tuple)) or not all(isinstance(arg, str) for arg in args):
+        return {}
+    try:
+        from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
+
+        purpose = _hermes_holder_subcommand(" ".join(args))
+    except Exception:
+        return {}
+    if purpose not in ("serve", "dashboard"):
+        return {}
+    return {"kind": "pool-backend", "safeToStop": True, "label": purpose}
+
+
+def _pool_backend_metadata(pid: int, name: str) -> dict[str, object]:
+    try:
+        import psutil  # noqa: PLC0415
+
+        process = psutil.Process(pid)
+        metadata = _classify_pool_backend_args(process.cmdline())
+        if metadata:
+            metadata["createTime"] = process.create_time()
+        return metadata
+    except Exception:
+        return {}
+
+
 def _local_preview_metadata(pid: int, name: str) -> dict[str, object]:
     if name.lower() not in _PYTHON_PROCESS_NAMES:
         return {}
@@ -132,7 +164,8 @@ def _terminate_safe_preview(
         process = psutil_module.Process(pid)  # type: ignore[attr-defined]
         if abs(process.create_time() - expected_create_time) > 0.001:
             return False, "process identity changed"
-        if not _classify_local_preview_args(process.cmdline()):
+        args = process.cmdline()
+        if not _classify_local_preview_args(args) and not _classify_pool_backend_args(args):
             return False, "process is no longer a local preview"
         targets = [*reversed(process.children(recursive=True)), process]
         for target in targets:
@@ -279,6 +312,8 @@ def main() -> None:
         # managed-runtime interpreter paths would otherwise swallow the `gateway run` argv).
         process = {"pid": pid, "name": name, "cmdline": _redact_sensitive_cmdline(cmdline)[:120]}
         process.update(_local_preview_metadata(pid, name))
+        if process.get("kind") != "local-preview":
+            process.update(_pool_backend_metadata(pid, name))
         processes.append(process)
 
     # pausable_gateways / deferred_backends / deferred_backend_evidence are diagnostic only.

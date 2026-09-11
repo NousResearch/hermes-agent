@@ -617,6 +617,18 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 
 
 
+def test_worktree_task_without_any_anchor_is_rejected_at_create(kanban_home):
+    """A worktree card with no path, no project and no board default_workdir must
+    fail at creation (creator sees the error) instead of ``gave_up`` at spawn."""
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError, match="worktree needs a repo"):
+            kb.create_task(conn, title="orphan", workspace_kind="worktree")
+        # Nothing was written.
+        assert conn.execute("SELECT COUNT(*) FROM tasks WHERE title = 'orphan'").fetchone()[0] == 0
+        # Scratch tasks are untouched by the rule.
+        assert kb.create_task(conn, title="scratch ok", workspace_kind="scratch")
+
+
 def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_home, tmp_path):
     repo = tmp_path / "repo"
     _init_git_repo(repo)

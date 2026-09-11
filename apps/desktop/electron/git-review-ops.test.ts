@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { SIMPLE_GIT_UNSAFE_BINARY_WARN, gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -38,6 +38,10 @@ test('gitFor accepts an internally resolved git binary path containing spaces', 
   assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
 })
 
+test('gitFor accepts internally resolved git paths with restricted non-space characters', () => {
+  assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Git(x86)\\cmd\\git.exe'))
+})
+
 test('gitFor runs git through a spaced binary path', async () => {
   if (process.platform !== 'win32') {
     return
@@ -58,36 +62,28 @@ test('gitFor runs git through a spaced binary path', async () => {
   assert.equal(status.not_added.includes('changed.txt'), true)
 })
 
-test('gitFor with a spaced Windows git path does not emit the simple-git custom-binary warning', async () => {
-  if (process.platform !== 'win32') {
-    return
-  }
-
-  const gitBin = path.join(process.env.ProgramFiles || String.raw`C:\Program Files`, 'Git', 'cmd', 'git.exe')
-
-  if (!fs.existsSync(gitBin)) {
-    return
-  }
-
-  const customBinaryWarnings: string[] = []
+test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+  const unrelatedWarnings: unknown[][] = []
   const originalWarn = console.warn
 
-  console.warn = (...args: unknown[]) => {
-    const first = String(args[0] ?? '')
-
-    if (first.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
-      customBinaryWarnings.push(first)
-    }
+  const recordingWarn = (...args: unknown[]) => {
+    unrelatedWarnings.push(args)
   }
 
+  console.warn = recordingWarn
+
   try {
-    const repo = makeRepo()
-    await gitFor(repo, gitBin).status()
+    for (let i = 0; i < 5; i += 1) {
+      gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe')
+    }
+
+    assert.equal(console.warn, recordingWarn)
+    console.warn('unrelated warning')
   } finally {
     console.warn = originalWarn
   }
 
-  assert.equal(customBinaryWarnings.length, 0)
+  assert.deepEqual(unrelatedWarnings, [['unrelated warning']])
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

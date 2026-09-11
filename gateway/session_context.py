@@ -132,6 +132,8 @@ def set_session_vars(
     cannot grant wake authority."""
     global _session_context_engaged
     _session_context_engaged = True
+    if cron_session is _UNSET:
+        cron_session = ""
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,

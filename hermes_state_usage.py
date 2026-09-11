@@ -17,6 +17,10 @@ logger = logging.getLogger("hermes_state")
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
 
+def _utc_usage_day() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+
+
 def _token_update_sql(delta: bool) -> str:
     """``UPDATE sessions`` for one usage report: *delta* adds to the stored counters (CLI
     per-call path), otherwise sets them (gateway cumulative path). Cost/route columns
@@ -124,6 +128,7 @@ class SessionUsageMixin:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        kwargs["usage_day"] = _utc_usage_day()
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
@@ -233,7 +238,11 @@ class SessionUsageMixin:
         for session_id, kwargs in batch:
             key = None
             if not kwargs.get("absolute"):
-                key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
+                key = (
+                    session_id,
+                    kwargs.get("usage_day"),
+                    *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS),
+                )
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
                 for f in self._TOKEN_DELTA_SUM_FIELDS:
@@ -293,10 +302,12 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        usage_day: Optional[str]=None,
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals)."""
+        usage_day = usage_day or _utc_usage_day()
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows.
@@ -365,10 +376,9 @@ class SessionUsageMixin:
                     for key, value in daily_values.items()
                 }
             if any(daily_values.values()):
-                day = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
                 conn.execute(
                     _DAILY_USAGE_UPSERT_SQL,
-                    (session_id, day, *(daily_values[key] for key in (
+                    (session_id, usage_day, *(daily_values[key] for key in (
                         "api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
                         "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
                     ))),

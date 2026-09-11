@@ -539,6 +539,7 @@ describe('touchSecondaryGateways', () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
       descriptorFor(connectionId, profile)
     )
+
     const touchBackend = vi.fn(async () => ({ ok: true }))
 
     installDesktop({ getConnectionFor, touchBackend })
@@ -562,5 +563,162 @@ describe('touchSecondaryGateways', () => {
 
     expect(touchBackend).toHaveBeenCalledTimes(1)
     expect(touchBackend).not.toHaveBeenCalledWith(expect.stringContaining('office'))
+  })
+})
+
+describe('secondary stalled-dial budget', () => {
+  it('parks a scope after repeated stalled dials instead of redialing forever, and a user action re-arms it (#103375)', async () => {
+    vi.useFakeTimers()
+
+    const slotTimeout = () =>
+      new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)')
+
+    const getConnectionFor = vi.fn().mockResolvedValueOnce(descriptorFor('homelab', 'bot-a')).mockRejectedValue(slotTimeout())
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    expect(gatewayMocks.instances).toHaveLength(1)
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // A focus/online nudge starts the automatic loop; every dial loses its
+    // pool-slot wait.
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    // The nudge dial + a bounded number of stalled redials, then silence.
+    const dialsAfterParking = getConnectionFor.mock.calls.length
+    expect(dialsAfterParking).toBeGreaterThan(1)
+    expect(dialsAfterParking).toBeLessThanOrEqual(4)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterParking)
+
+    // Parked ≠ evicted: an explicit open on the scope dials again.
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterParking + 1)
+  })
+
+  it('does not let an interleaved fast failure refill the stall budget', async () => {
+    vi.useFakeTimers()
+
+    const stalled = new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)')
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValueOnce(stalled)
+      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+      .mockRejectedValueOnce(stalled)
+      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+      .mockRejectedValue(stalled)
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    // 3 stalled dials spread across 5 attempts still park the scope.
+    expect(getConnectionFor.mock.calls.length).toBeLessThanOrEqual(6)
+  })
+
+  it('re-arms a parked scope on the wake/online/focus nudge', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(new Error('Local backend start for "bot-a" timed out while waiting for a free slot.'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    const parkedDials = getConnectionFor.mock.calls.length
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
+  })
+
+  it('keeps the unbounded backoff for fast transport failures (a restarting gateway must come back on its own)', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(new Error('ECONNREFUSED'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    // Still dialing after ~400s of refusals: never parked.
+    expect(getConnectionFor.mock.calls.length).toBeGreaterThan(10)
+  })
+
+  it('re-arms a parked ACTIVE scope from the explicit recovery path (Reconnect / request retry)', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(new Error('Local backend start for "bot-a" timed out while waiting for a free slot.'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    const parkedDials = getConnectionFor.mock.calls.length
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+
+    const reopened = await ensureActiveGatewayOpen()
+
+    expect(reopened).not.toBeNull()
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
   })
 })

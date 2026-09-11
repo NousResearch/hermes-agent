@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import datetime as _dt
+import hashlib
 import json
 import os
 import threading
@@ -165,7 +166,7 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
 # ---------------------------------------------------------------------------------------------- report
 
 _report_lock = threading.Lock()
-_SourceFingerprint = Tuple[str, str, Tuple[Tuple[str, int, int], ...]]
+_SourceFingerprint = Tuple[str, str, Tuple[Tuple[str, int, int, str], ...]]
 _ReportCacheKey = Tuple[bool, Tuple[_SourceFingerprint, ...]]
 _report_cache: Dict[_ReportCacheKey, Dict[str, List[Hit]]] = {}
 
@@ -197,12 +198,13 @@ def _scan_root(manifest) -> Optional[Path]:
 
 def _source_fingerprint(manifest, root: Optional[Path]) -> _SourceFingerprint:
     """Cheaply identify the Python source set scanned for one plugin."""
-    files: List[Tuple[str, int, int]] = []
+    files: List[Tuple[str, int, int, str]] = []
     if root is not None:
         for path in _iter_py(root):
             try:
                 stat = path.stat()
-                files.append((str(path.relative_to(root)), stat.st_size, stat.st_mtime_ns))
+                digest = hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
+                files.append((str(path.relative_to(root)), stat.st_size, stat.st_mtime_ns, digest))
             except OSError:
                 continue
     return (str(getattr(manifest, "name", "")), str(getattr(manifest, "path", "")),
@@ -227,9 +229,13 @@ def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]
     fingerprints = tuple(sorted((_source_fingerprint(m, root) for m, root in scan_targets),
                                 key=lambda item: (item[0], item[1])))
     key = (removal_in_effect(), fingerprints)
+    cached = None
     with _report_lock:
         if not force and key in _report_cache:
-            return _report_cache[key]
+            cached = _report_cache[key]
+    if cached is not None:
+        _write_report_file(cached)
+        return cached
     manifest = load_manifest()
     out: Dict[str, List[Hit]] = {}
     for m, root in scan_targets:

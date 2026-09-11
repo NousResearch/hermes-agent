@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,7 +64,10 @@ def test_compat_report_reuses_unchanged_scan_and_invalidates_for_source_change(t
     monkeypatch.setattr(pc, "_write_report_file", lambda r: None)
     plugin = tmp_path / "plugin"; plugin.mkdir()
     source = plugin / "__init__.py"
-    source.write_text("from tools.web_tools import prefers_gateway\n")
+    old_source = "from tools.web_tools import prefers_gateway\n"
+    fixed_source = "from tools.web_tools import web_search     \n"
+    assert len(old_source) == len(fixed_source)
+    source.write_text(old_source)
     manifest = _manifest("plugin", plugin)
     real_scan_plugin = pc.scan_plugin
     scans = 0
@@ -78,7 +82,9 @@ def test_compat_report_reuses_unchanged_scan_and_invalidates_for_source_change(t
     second = pc.compat_report([manifest])
     assert first == second and scans == 1
 
-    source.write_text("from tools.tool_backend_helpers import prefers_gateway\n# fixed\n")
+    original_mtime_ns = source.stat().st_mtime_ns
+    source.write_text(fixed_source)
+    os.utime(source, ns=(original_mtime_ns, original_mtime_ns))
     assert pc.compat_report([manifest]) == {}
     assert scans == 2
 
@@ -168,6 +174,10 @@ def test_discovery_refreshes_report_file(tmp_path, monkeypatch):
     data = json.loads((tmp_path / "r.json").read_text())
     assert list(data["plugins"]) == ["oldpaths"] and data["in_effect"] is False
     mgr._refresh_plugin_compat_report([real])
+    assert scans == 1
+    (tmp_path / "r.json").unlink()
+    mgr._refresh_plugin_compat_report([real])
+    assert (tmp_path / "r.json").exists()
     assert scans == 1
     (plugin / "__init__.py").write_text("from tools.tool_backend_helpers import prefers_gateway\ndef register(ctx):\n    pass\n")
     mgr._refresh_plugin_compat_report([real])

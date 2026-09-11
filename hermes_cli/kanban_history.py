@@ -188,10 +188,20 @@ def _lease_available(conn):
 
 
 def _take_lease(conn):
-    """Claim the transaction-scoped capability. No-op outside a transaction."""
+    """Claim the transaction-scoped capability. No-op outside a transaction.
+
+    Reentrant by returning False when a lease is already held. write_txn can now
+    nest via savepoints, and the inner block runs inside the OUTER transaction.
+    If the inner call both took and released, the outer would lose its capability
+    for every remaining statement and its own guarded writes would abort. Only the
+    outermost taker releases; rollback still discards the row with the
+    transaction, so the fail-closed direction is unchanged.
+    """
     if not conn.in_transaction or not _lease_available(conn):
         return False
-    conn.execute('INSERT OR IGNORE INTO authority_writer_lease (singleton) VALUES (1)')
+    if conn.execute("SELECT 1 FROM authority_writer_lease").fetchone():
+        return False
+    conn.execute("INSERT INTO authority_writer_lease (singleton) VALUES (1)")
     return True
 
 
@@ -494,9 +504,18 @@ completion_blocked_hallucination created decomposed dependency_wait edited gave_
 heartbeat linked promoted promoted_manual reclaim_deferred reclaimed respawn_guarded
 scheduled spawned specified stale suspected_hallucinated_references timed_out
 tip_scratch_workspace unblocked unlinked crashed rate_limited protocol_violation
-spawn_failed status reprioritized history_bound claim_renewed deleted'''.split())
+spawn_failed status reprioritized history_bound claim_renewed deleted
+changes_requested descendant_invalidated imported pr_acceptance reconciled
+review_reopened review_requested'''.split())
 TASK_STATES = frozenset('triage todo ready running review blocked done archived deleted scheduled'.split())
-RUN_STATES = frozenset('running done blocked crashed timed_out failed released reclaimed completed spawn_failed gave_up stale rate_limited scheduled'.split())
+# ``todo``: invalidate_descendants_for_parent_reopen closes a descendant's run
+# with status='todo'. Unusual for a RUN, but the validator records what the
+# system does; refusing it would fail an enrolled board closed on a first-party
+# write. Derived by enumerating every literal written to task_runs.status, not
+# by listing the ones that came to mind.
+RUN_STATES = frozenset(
+    "running done blocked crashed timed_out failed released reclaimed completed spawn_failed gave_up stale rate_limited scheduled todo".split()
+)
 
 
 def capture(conn, task_id, kind, source_event_id, run_id=None):

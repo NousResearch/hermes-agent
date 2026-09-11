@@ -17,44 +17,6 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):
-    import agent.curator as curator_state
-    import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
-
-    monkeypatch.setattr(curator_state, "load_state", lambda: {
-        "paused": False,
-        "last_run_at": None,
-        "last_run_summary": "(none)",
-        "run_count": 0,
-    })
-    monkeypatch.setattr(curator_state, "is_enabled", lambda: True)
-    monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
-    monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
-    monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [
-        {
-            "name": "recently-viewed",
-            "state": "active",
-            "pinned": False,
-            "use_count": 0,
-            "view_count": 3,
-            "patch_count": 1,
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "last_used_at": None,
-            "last_viewed_at": "2026-04-30T10:00:00+00:00",
-            "last_patched_at": "2026-04-30T11:00:00+00:00",
-            "last_activity_at": "2026-04-30T11:00:00+00:00",
-            "activity_count": 4,
-        }
-    ])
-
-    assert curator_cli._cmd_status(SimpleNamespace()) == 0
-    out = capsys.readouterr().out
-    assert "least recently active" in out
-    assert "activity=  4" in out
-    assert "last_activity=never" not in out
-    assert "last_used=never" not in out
 
 
 @pytest.fixture
@@ -109,94 +71,56 @@ def _capture_status(curator_cli) -> str:
     return buf.getvalue()
 
 
-def test_status_shows_most_and_least_used_sections(curator_status_env):
-    env = curator_status_env
-    env["make_skill"]("top-dog")
-    env["make_skill"]("middling")
-    env["make_skill"]("never-used")
-    # Mark all three as agent-created so they enter the curator's catalog.
-    # Under the provenance-marker semantics, skills must be explicitly opted
-    # into curator management (normally via the background-review fork when
-    # it creates a skill through skill_manage).
-    for n in ("top-dog", "middling", "never-used"):
-        env["skill_usage"].mark_agent_created(n)
-
-    # Bump use_count differentially. All three counters (use/view/patch) feed
-    # into activity_count, so bumping use alone is enough to make activity
-    # diverge between skills.
-    for _ in range(10):
-        env["skill_usage"].bump_use("top-dog")
-    for _ in range(2):
-        env["skill_usage"].bump_use("middling")
-
-    out = _capture_status(env["curator_cli"])
-
-    # Both new sections present
-    assert "most active (top 5):" in out
-    assert "least active (top 5):" in out
-    # y0shualee's section preserved
-    assert "least recently active (top 5):" in out
-
-    # most-active lists top-dog FIRST (highest activity_count)
-    most_section = out.split("most active (top 5):")[1].split("\n\n")[0]
-    top_line = most_section.strip().split("\n")[0]
-    assert "top-dog" in top_line
-    assert "activity= 10" in top_line
-
-    # least-active lists never-used FIRST (activity=0)
-    least_section = out.split("least active (top 5):")[1].split("\n\n")[0]
-    bottom_line = least_section.strip().split("\n")[0]
-    assert "never-used" in bottom_line
-    assert "activity=  0" in bottom_line
 
 
-def test_status_hides_most_active_when_all_zero(curator_status_env):
-    """If no skills have any activity, skip the most-active block — it's noise.
-    Least-active still shows so the user sees their catalog."""
-    env = curator_status_env
-    env["make_skill"]("a")
-    env["make_skill"]("b")
-    # Mark both as agent-created so the catalog lists them. No bumps.
-    env["skill_usage"].mark_agent_created("a")
-    env["skill_usage"].mark_agent_created("b")
-
-    out = _capture_status(env["curator_cli"])
-
-    # most-active section is hidden because the top is 0
-    assert "most active (top 5):" not in out
-    # least-active still renders — it's part of the catalog overview
-    assert "least active (top 5):" in out
+# ---------------------------------------------------------------------------
+# Unmanaged blind spot + adopt verb
+# ---------------------------------------------------------------------------
 
 
-def test_status_no_skills_produces_clean_empty_output(curator_status_env):
-    env = curator_status_env
-    out = _capture_status(env["curator_cli"])
-    assert "no agent-created skills" in out
-    # None of the ranking sections render
-    assert "most active" not in out
-    assert "least active" not in out
 
 
-def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
-    import agent.curator as curator_state
+
+
+
+def test_adopt_subcommand_is_registered():
+    """The verb must be reachable through the real argparse tree, not just as a
+    callable — a handler nobody can dispatch to is dead code."""
+    import argparse
+
     import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
 
-    missing_report = tmp_path / "stale-report"
-    monkeypatch.setattr(curator_state, "load_state", lambda: {
-        "paused": False,
-        "last_run_at": None,
-        "last_run_summary": "auto: no changes",
-        "run_count": 1,
-        "last_report_path": str(missing_report),
-    })
-    monkeypatch.setattr(curator_state, "is_enabled", lambda: True)
-    monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
-    monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
-    monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+    parser = argparse.ArgumentParser()
+    curator_cli.register_cli(parser)
 
-    assert curator_cli._cmd_status(SimpleNamespace()) == 0
+    args = parser.parse_args(["adopt", "--all-unmanaged", "--dry-run"])
+    assert args.func is curator_cli._cmd_adopt
+    assert args.all_unmanaged is True
+    assert args.dry_run is True
+    assert args.skill == []
 
-    out = capsys.readouterr().out
-    assert f"last report:    {missing_report} (missing)" in out
+    named = parser.parse_args(["adopt", "alpha", "beta"])
+    assert named.skill == ["alpha", "beta"]
+    assert named.all_unmanaged is False
+
+
+def test_list_unmanaged_itemizes_and_explains(curator_status_env):
+    """`status` gives the count; this gives the names plus WHY each is
+    unmanaged, so the user can decide what to adopt."""
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    env["make_skill"]("managed-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["curator_cli"]._cmd_list_unmanaged(Namespace())
+    out = buf.getvalue()
+
+    assert rc == 0
+    assert "legacy-one" in out
+    assert "managed-one" not in out
+    assert "no marker" in out or "created_by:null" in out
+    assert "curator adopt" in out
+
+

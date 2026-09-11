@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 
 interface DeepLinkHighlightOptions {
   param: string
@@ -7,6 +7,20 @@ interface DeepLinkHighlightOptions {
   elementId: (target: string) => string
   onResolve?: (target: string) => void
   block?: ScrollLogicalPosition
+}
+
+// react-router's useSearchParams throws with no router context. Inside Settings
+// (every original caller) there always is one, so behavior is unchanged; when a
+// consumer is embedded OUTSIDE the router (e.g. McpTab in a plugin dialog) there
+// is none, and this degrades to an inert [empty params, no-op setter] instead of
+// crashing. Router presence is stable for a mounted instance's lifetime, so the
+// try/catch never changes the hook count between renders (rules-of-hooks safe).
+function useOptionalSearchParams(): ReturnType<typeof useSearchParams> {
+  try {
+    return useSearchParams()
+  } catch {
+    return [new URLSearchParams(), () => undefined]
+  }
 }
 
 // Deep-link from the command palette (?<param>=<id>): once the target row is
@@ -20,7 +34,7 @@ export function useDeepLinkHighlight({
   onResolve,
   block = 'center'
 }: DeepLinkHighlightOptions): null | string {
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useOptionalSearchParams()
   const target = searchParams.get(param)
 
   useEffect(() => {
@@ -47,6 +61,12 @@ export function useDeepLinkHighlight({
 
       if (element) {
         element.scrollIntoView({ behavior: 'smooth', block })
+
+        if (!element.hasAttribute('tabindex')) {
+          element.tabIndex = -1
+        }
+
+        element.focus({ preventScroll: true })
         element.classList.add('setting-field-highlight')
         window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
 

@@ -4,6 +4,7 @@ import { memo, useState } from 'react'
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
 import { hasLeadGap } from '../domain/blockLayout.js'
+import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
@@ -27,16 +28,39 @@ import { TodoPanel } from './todoPanel.js'
 // Collapse threshold for long system messages (system prompt etc.)
 const SYSTEM_COLLAPSE_CHARS = 400
 
+// `display.timestamps` label — same HH:MM shape the classic CLI's default
+// `display.timestamp_format` ("%H:%M") produces on its message labels, so
+// one config key reads identically across surfaces (#41531).
+export const fmtMsgTimestamp = (createdAt: number | undefined): null | string => {
+  if (typeof createdAt !== 'number' || !Number.isFinite(createdAt) || createdAt <= 0) {
+    return null
+  }
+
+  const date = new Date(createdAt * 1000)
+
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+
+  return `[${hh}:${mm}]`
+}
+
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
+  liveDetails = false,
   msg,
   prev,
+  reasoningActive = false,
   sections,
   t,
+  timestamps = false,
   tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
@@ -75,12 +99,15 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
-    return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
+    return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
       <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
+          preferExpandedThinking={liveDetails}
           reasoning={thinking}
+          reasoningActive={reasoningActive}
+          reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
@@ -117,6 +144,23 @@ export const MessageLine = memo(function MessageLine({
             {preview}
           </Text>
         )}
+      </Box>
+    )
+  }
+
+  // Timeline events (model switches, delegation completions) render as
+  // dim ◈ markers with no gutter — not as opaque user messages.
+  if (msg.kind === 'event') {
+    const eventGutterWidth = transcriptGutterWidth('system', t.brand.prompt)
+
+    return (
+      <Box marginBottom={1} marginTop={leadGap ? 1 : 0}>
+        <NoSelect flexShrink={0} fromLeftEdge width={eventGutterWidth}>
+          <Text> </Text>
+        </NoSelect>
+        <Text color={t.color.muted} dimColor>
+          ◈ {msg.text}
+        </Text>
       </Box>
     )
   }
@@ -186,6 +230,27 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
+    // A skill, `@ref`, or attachment token the user put in the message keeps
+    // the accent it wore in the composer, instead of flattening back into the
+    // body text.
+    if (msg.role === 'user') {
+      const segments = splitComposerHighlights(msg.text)
+
+      return (
+        <Text {...(body ? { color: body } : {})}>
+          {segments.map((segment, i) =>
+            segment.ref ? (
+              <Text color={t.color.accent} key={i}>
+                {segment.text}
+              </Text>
+            ) : (
+              segment.text
+            )
+          )}
+        </Text>
+      )
+    }
+
     return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
   })()
 
@@ -193,6 +258,12 @@ export const MessageLine = memo(function MessageLine({
   // segments) keep a blank line on both sides so the patch doesn't butt up
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
+
+  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
+  // assistant rows only — event/trail/system chrome stays unstamped, matching
+  // the classic CLI which stamps its user/assistant labels (#41531).
+  const stamp =
+    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
 
   return (
     <Box
@@ -205,7 +276,9 @@ export const MessageLine = memo(function MessageLine({
           <ToolTrail
             commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
+            preferExpandedThinking={liveDetails}
             reasoning={thinking}
+            reasoningActive={reasoningActive}
             reasoningTokens={msg.thinkingTokens}
             sections={sections}
             t={t}
@@ -226,6 +299,17 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
+      {stamp && (
+        <Box>
+          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+            <Text> </Text>
+          </NoSelect>
+          <Text color={t.color.muted} dim>
+            {stamp}
+          </Text>
+        </Box>
+      )}
+
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
@@ -242,18 +326,34 @@ export const MessageLine = memo(function MessageLine({
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
 
+// A MoA reference block (msg.isMoaReference) is the user-facing
+// mixture-of-agents process the user opted into, not private model
+// reasoning — it must stay visible even when every other trail section is
+// hidden (#64657).
+export const shouldShowThinkingTrail = (
+  msg: Msg,
+  thinkingMode: DetailsMode,
+  toolsMode: DetailsMode,
+  activityMode: DetailsMode
+): boolean =>
+  Boolean(msg.isMoaReference) || thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden'
+
 interface MessageLineProps {
   cols: number
   compact?: boolean
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  liveDetails?: boolean
   msg: Msg
   // The block rendered directly above this one. Drives the group-boundary
   // lead gap (see domain/blockLayout.ts::hasLeadGap). Undefined at the top of
   // the transcript or when spacing is irrelevant.
   prev?: Msg
+  reasoningActive?: boolean
   sections?: SectionVisibility
   t: Theme
+  /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
+  timestamps?: boolean
   tools?: ActiveTool[]
 }

@@ -1,6 +1,6 @@
 ---
 name: unreal-mcp
-description: "Use when the user wants to do anything in Unreal Engine through Epic's official editor-embedded MCP server (catalog entry: unreal-engine) — build/light/populate scenes, place and transform actors, author Blueprints, animate with Sequencer, create material instances, frame cameras, take screenshots, render, import assets, run PIE test sessions and automation tests, or automate the editor end-to-end from plain-English prompts with no Unreal knowledge required. Covers the tool-search discovery walk (list_toolsets/describe_toolset/call_tool), serial game-thread call discipline, ProgrammaticToolset batching, the Blueprint graph DSL loop, scene-craft numbers (physical light units, exposure, scale conventions), complete build recipes, save/undo hygiene, and extending the tool surface with custom Python toolsets."
+description: Automate Unreal Engine editor scenes, actors, and renders.
 version: 1.0.0
 requires: Unreal Editor 5.8+ with the Unreal MCP plugin enabled and its server running
 author: Hermes Agent
@@ -10,7 +10,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [unreal, unreal-engine, ue5, 3d, mcp, scenes, cinematics, lighting, gamedev]
-    related_skills: [blender-mcp]
+    related_skills: []
 ---
 
 # Unreal Engine MCP Skill
@@ -33,7 +33,7 @@ editor. Works for single actions ("make the sun golden hour") and for
 complete multi-step projects ("build me a moody forest clearing with a
 campfire and render a shot of it").
 
-Don't use for: DCC-style mesh modeling/sculpting (use `blender-mcp` and
+Don't use for: DCC-style mesh modeling/sculpting (model in Blender and
 import the result), or for editing Unreal C++ project source (that's normal
 code work — use the terminal; this skill is about the live editor).
 

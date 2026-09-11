@@ -44,7 +44,7 @@ PRs to fix them will _not_ be accepted, and any code that keeps compatibility wi
 
 - installs via the AUR (we might upstream patches if it helps out &lt;3)
 - macOS on x86 (Intel) processors
-- installs via `pypi` (e.g. `uv tool install hermes-agent`, `pip install hermse-agent`, etc.)
+- installs via `pypi` (e.g. `uv tool install hermes-agent`, `pip install hermes-agent`, etc.)
 - installs via `brew` (`brew install hermes-agent`)
 
 If you are using an unsupported distribution method, please read the [the installation guide](./installation.md) to learn how to switch to a supported one.

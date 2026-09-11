@@ -27,6 +27,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_dispatch import _set_worker_pid as _kbd_set_worker_pid
 
 
 class AuthorityClaimSurfaceTests(unittest.TestCase):
@@ -94,8 +95,8 @@ class AuthorityClaimSurfaceTests(unittest.TestCase):
         # hand: a raw UPDATE of those columns inside write_txn is an unjournaled
         # transition and the audit rightly refuses it. Attach a live pid through
         # the supported path so the worker is genuinely local and alive.
-        kb._set_worker_pid(self.conn, enrolled, os.getpid())
-        kb._set_worker_pid(self.conn, plain, os.getpid())
+        _kbd_set_worker_pid(self.conn, enrolled, os.getpid())
+        _kbd_set_worker_pid(self.conn, plain, os.getpid())
         time.sleep(2.2)
         kb.release_stale_claims(self.conn)
         after_e = kb.get_task(self.conn, enrolled)
@@ -219,7 +220,7 @@ class BearerPublicationSweepTests(unittest.TestCase):
         task = kb.claim_task(self.conn, task_id, ttl_seconds=1)
         self.assertIsNotNone(task)
         bearer = task.claim_lock
-        kb._set_worker_pid(self.conn, task_id, self._live_worker_pid())
+        _kbd_set_worker_pid(self.conn, task_id, self._live_worker_pid())
         time.sleep(2.2)
         kb.release_stale_claims(self.conn)          # the EXTENSION path (F1)
         kb.reclaim_task(self.conn, task_id, reason="sweep test")

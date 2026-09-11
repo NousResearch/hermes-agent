@@ -11,6 +11,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
 
@@ -423,6 +424,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         };
 
         ws.onclose = (ev) => {
+          if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+            return;
+          }
           wsRef.current = null;
           activeCommandRef.current = false;
           pendingCommandRef.current = null;

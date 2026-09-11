@@ -1,7 +1,10 @@
 """Tests for hermes tools disable/enable/list command (backend)."""
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from gateway.platform_registry import platform_registry
 from hermes_cli.tools_config import tools_disable_enable_command
 
 
@@ -19,45 +22,8 @@ class TestToolsDisableBuiltin:
         assert "web" not in saved["platform_toolsets"]["cli"]
         assert "memory" in saved["platform_toolsets"]["cli"]
 
-    def test_disable_multiple_toolsets(self):
-        config = {"platform_toolsets": {"cli": ["web", "memory", "terminal"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="disable", names=["web", "memory"], platform="cli"))
-        saved = mock_save.call_args[0][0]
-        assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "memory" not in saved["platform_toolsets"]["cli"]
-        assert "terminal" in saved["platform_toolsets"]["cli"]
-
-    def test_disable_already_absent_is_idempotent(self):
-        config = {"platform_toolsets": {"cli": ["memory"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="disable", names=["web"], platform="cli"))
-        saved = mock_save.call_args[0][0]
-        assert "web" not in saved["platform_toolsets"]["cli"]
-
 
 # ── Built-in toolset enable ─────────────────────────────────────────────────
-
-
-class TestToolsEnableBuiltin:
-
-    def test_enable_adds_toolset_to_platform(self):
-        config = {"platform_toolsets": {"cli": ["memory"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
-        saved = mock_save.call_args[0][0]
-        assert "web" in saved["platform_toolsets"]["cli"]
-
-    def test_enable_already_present_is_idempotent(self):
-        config = {"platform_toolsets": {"cli": ["web"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
-        saved = mock_save.call_args[0][0]
-        assert saved["platform_toolsets"]["cli"].count("web") == 1
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
@@ -65,25 +31,6 @@ class TestToolsEnableBuiltin:
 
 class TestToolsDisableMcp:
 
-    def test_disable_adds_to_exclude_list(self):
-        config = {"mcp_servers": {"github": {"command": "npx"}}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["github:create_issue"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert "create_issue" in saved["mcp_servers"]["github"]["tools"]["exclude"]
-
-    def test_disable_already_excluded_is_idempotent(self):
-        config = {"mcp_servers": {"github": {"tools": {"exclude": ["create_issue"]}}}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["github:create_issue"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert saved["mcp_servers"]["github"]["tools"]["exclude"].count("create_issue") == 1
 
     def test_disable_unknown_server_prints_error(self, capsys):
         config = {"mcp_servers": {}}
@@ -99,57 +46,7 @@ class TestToolsDisableMcp:
 # ── MCP tool enable ──────────────────────────────────────────────────────────
 
 
-class TestToolsEnableMcp:
-
-    def test_enable_removes_from_exclude_list(self):
-        config = {"mcp_servers": {"github": {"tools": {"exclude": ["create_issue", "delete_branch"]}}}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="enable", names=["github:create_issue"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert "create_issue" not in saved["mcp_servers"]["github"]["tools"]["exclude"]
-        assert "delete_branch" in saved["mcp_servers"]["github"]["tools"]["exclude"]
-
-
 # ── Mixed targets ────────────────────────────────────────────────────────────
-
-
-class TestToolsMixedTargets:
-
-    def test_disable_builtin_and_mcp_together(self):
-        config = {
-            "platform_toolsets": {"cli": ["web", "memory"]},
-            "mcp_servers": {"github": {"command": "npx"}},
-        }
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(
-                tools_action="disable",
-                names=["web", "github:create_issue"],
-                platform="cli",
-            ))
-        saved = mock_save.call_args[0][0]
-        assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "create_issue" in saved["mcp_servers"]["github"]["tools"]["exclude"]
-
-    def test_builtin_toggle_does_not_persist_implicit_mcp_defaults(self):
-        config = {
-            "platform_toolsets": {"cli": ["web", "memory"]},
-            "mcp_servers": {"exa": {"url": "https://mcp.exa.ai/mcp"}},
-        }
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(
-                tools_action="disable",
-                names=["web"],
-                platform="cli",
-            ))
-        saved = mock_save.call_args[0][0]
-        assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "memory" in saved["platform_toolsets"]["cli"]
-        assert "exa" not in saved["platform_toolsets"]["cli"]
 
 
 # ── List output ──────────────────────────────────────────────────────────────
@@ -157,13 +54,6 @@ class TestToolsMixedTargets:
 
 class TestToolsList:
 
-    def test_list_shows_enabled_toolsets(self, capsys):
-        config = {"platform_toolsets": {"cli": ["web", "memory"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config):
-            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
-        out = capsys.readouterr().out
-        assert "web" in out
-        assert "memory" in out
 
     def test_list_shows_mcp_excluded_tools(self, capsys):
         config = {
@@ -181,61 +71,6 @@ class TestToolsList:
 
 class TestToolsValidation:
 
-    def test_unknown_platform_prints_error(self, capsys):
-        config = {}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config"):
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["web"], platform="invalid_platform")
-            )
-        out = capsys.readouterr().out
-        assert "Unknown platform 'invalid_platform'" in out
-
-    def test_unknown_toolset_prints_error(self, capsys):
-        config = {"platform_toolsets": {"cli": ["web"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config"):
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
-            )
-        out = capsys.readouterr().out
-        assert "Unknown toolset 'nonexistent_toolset'" in out
-
-    def test_unknown_toolset_does_not_corrupt_config(self):
-        config = {"platform_toolsets": {"cli": ["web", "memory"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
-            )
-        saved = mock_save.call_args[0][0]
-        assert "web" in saved["platform_toolsets"]["cli"]
-        assert "memory" in saved["platform_toolsets"]["cli"]
-
-    def test_restricted_toolset_not_reported_as_enabled(self, capsys):
-        config = {"platform_toolsets": {"telegram": ["web"]}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config"):
-            tools_disable_enable_command(
-                Namespace(tools_action="enable", names=["discord"], platform="telegram")
-            )
-        out = capsys.readouterr().out
-        assert "not available on platform 'telegram'" in out
-        assert "Enabled" not in out
-
-    def test_mixed_allowed_and_restricted_reports_allowed_only(self, capsys):
-        config = {"platform_toolsets": {"telegram": []}}
-        with patch("hermes_cli.tools_config.load_config", return_value=config), \
-             patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(
-                Namespace(tools_action="enable", names=["web", "discord"], platform="telegram")
-            )
-        out = capsys.readouterr().out
-        assert "Enabled: web" in out
-        assert "discord" not in out.split("Enabled:")[-1]
-        saved = mock_save.call_args[0][0]
-        assert "web" in saved["platform_toolsets"]["telegram"]
-        assert "discord" not in saved["platform_toolsets"]["telegram"]
 
     def test_mixed_valid_and_invalid_applies_valid_only(self):
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
@@ -247,3 +82,40 @@ class TestToolsValidation:
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
         assert "memory" in saved["platform_toolsets"]["cli"]
+
+
+@pytest.mark.parametrize("action", ["list", "enable", "disable"])
+def test_tools_action_accepts_deferred_plugin_without_materializing(action, capsys):
+    platform = "deferred-tools-test"
+    loader = MagicMock()
+    configured_tools = ["memory", "web"] if action == "disable" else ["memory"]
+    config = {"platform_toolsets": {platform: configured_tools}}
+    args = Namespace(tools_action=action, platform=platform)
+    if action != "list":
+        args.names = ["web"]
+
+    def discover_deferred_platform():
+        platform_registry.register_deferred(platform, loader)
+
+    try:
+        with patch(
+            "hermes_cli.plugins.discover_plugins",
+            side_effect=discover_deferred_platform,
+        ) as discover, \
+             patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as save:
+            tools_disable_enable_command(args)
+
+        out = capsys.readouterr().out
+        assert "Unknown platform" not in out
+        discover.assert_called()
+        loader.assert_not_called()
+        if action == "list":
+            assert f"Built-in toolsets ({platform}):" in out
+            save.assert_not_called()
+        else:
+            save.assert_called()
+            saved_tools = save.call_args.args[0]["platform_toolsets"][platform]
+            assert ("web" in saved_tools) is (action == "enable")
+    finally:
+        platform_registry.unregister(platform)

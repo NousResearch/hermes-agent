@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_dispatch import _record_task_failure
 
 
 @pytest.fixture
@@ -167,7 +168,7 @@ def test_two_processes_exactly_one_claim(conn):
     from pathlib import Path
     cap, task = enrolled(conn)
     path = conn.execute('PRAGMA database_list').fetchone()[2]
-    probe = Path(__file__).resolve().parents[2] / '.phase3-evidence' / 'claim_probe.py'
+    probe = Path(__file__).resolve().parent / 'claim_probe.py'
     children = [subprocess.Popen([sys.executable, '-B', str(probe), path, task, 'claim'],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
     results = [p.communicate(timeout=40) for p in children]
@@ -185,7 +186,7 @@ def test_abrupt_process_exit_commit_boundary(conn, mode):
     cap, task = enrolled(conn)
     before = history(conn, cap)
     path = conn.execute('PRAGMA database_list').fetchone()[2]
-    probe = Path(__file__).resolve().parents[2] / '.phase3-evidence' / 'claim_probe.py'
+    probe = Path(__file__).resolve().parent / 'claim_probe.py'
     child = subprocess.run([sys.executable, '-B', str(probe), path, task, mode],
                            capture_output=True, text=True, timeout=40)
     assert child.returncode == 23, child.stderr
@@ -268,9 +269,13 @@ def test_actual_lifecycle_transitions(conn, monkeypatch, action, kind, status):
     elif action == 'block':
         assert kb.block_task(conn, task, reason='human review')
     elif action == 'spawn_failure':
-        assert not kb._record_spawn_failure(conn, task, 'test failure', failure_limit=3)
+        assert not _record_task_failure(
+            conn, task, 'test failure', outcome='spawn_failed',
+            failure_limit=3, release_claim=True, end_run=True)
     elif action == 'spawn_give_up':
-        assert kb._record_spawn_failure(conn, task, 'test failure', failure_limit=1)
+        assert _record_task_failure(
+            conn, task, 'test failure', outcome='spawn_failed',
+            failure_limit=1, release_claim=True, end_run=True)
     elif action == 'stale':
         monkeypatch.setattr(kb.time, 'time', lambda: claimed.claim_expires + 1)
         assert kb.release_stale_claims(conn) == 1

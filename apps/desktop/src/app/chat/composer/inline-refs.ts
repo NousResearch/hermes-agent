@@ -4,7 +4,13 @@ import { contextPath } from '@/lib/chat-runtime'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
-import { composerPlainText, normalizeComposerEditorDom, placeCaretEnd, refChipElement } from './rich-editor'
+import {
+  composerPlainText,
+  normalizeComposerEditorDom,
+  placeCaretEnd,
+  refChipElement,
+  RICH_INPUT_SLOT
+} from './rich-editor'
 
 /** A chip to insert: a raw `@kind:value` string, or a typed value + display label. */
 export type InlineRefInput = string | { kind: string; label?: string; value: string }
@@ -92,7 +98,12 @@ function plainTextInRange(editor: HTMLDivElement, range: Range, edge: 'after' | 
     slice.setStart(range.endContainer, range.endOffset)
   }
 
+  // Carry the editor's slot marker: composerPlainText appends a trailing "\n"
+  // to any other block element, so a bare <div> made `beforeText` always look
+  // like it ended in whitespace and the separating space was never inserted —
+  // a chip dropped after a word came out glued to it (`review@file:...`).
   const container = document.createElement('div')
+  container.dataset.slot = RICH_INPUT_SLOT
   container.appendChild(slice.cloneContents())
 
   return composerPlainText(container)
@@ -123,19 +134,30 @@ function buildRefFragment(
   return fragment
 }
 
-export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
+export function insertInlineRefsIntoEditor(
+  editor: HTMLDivElement,
+  refs: readonly InlineRefInput[],
+  { interactive = true }: { interactive?: boolean } = {}
+) {
   const parsed = refs.map(parseInlineRef).filter((ref): ref is NonNullable<typeof ref> => ref !== null)
+  const hasEmptySentinel = editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR'
 
   if (!parsed.length) {
     return null
   }
 
-  editor.focus({ preventScroll: true })
+  if (hasEmptySentinel) {
+    editor.replaceChildren()
+  }
 
-  const selection = window.getSelection()
+  if (interactive) {
+    editor.focus({ preventScroll: true })
+  }
+
+  const selection = interactive ? window.getSelection() : null
 
   const range =
-    selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
+    !hasEmptySentinel && selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
       ? selection.getRangeAt(0)
       : null
 
@@ -161,7 +183,10 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
         needsBeforeSpace: current.length > 0 && !/\s$/.test(current)
       })
     )
-    placeCaretEnd(editor)
+
+    if (interactive) {
+      placeCaretEnd(editor)
+    }
   }
 
   normalizeComposerEditorDom(editor)

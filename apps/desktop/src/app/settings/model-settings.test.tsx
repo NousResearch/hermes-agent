@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -27,10 +28,12 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
-  getAuxiliaryModels: () => getAuxiliaryModels(),
-  getMoaModels: () => getMoaModels(),
+  getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
+  getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
+  getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
+  getApiRequestProfile: () => 'default',
+  getMoaModels: (profile?: null | string) => getMoaModels(profile),
+  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -70,7 +73,7 @@ beforeEach(() => {
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   getMoaModels.mockResolvedValue(null)
-  setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
@@ -83,16 +86,44 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings() {
+async function renderModelSettings(scopeProfile?: string) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
-    <QueryClientProvider client={client}>
-      <ModelSettings />
-    </QueryClientProvider>
+    // The aux-task deep-link highlight reads useSearchParams, so the page
+    // needs a router context in tests (the app provides HashRouter at root).
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ModelSettings scopeProfile={scopeProfile} />
+      </QueryClientProvider>
+    </MemoryRouter>
   )
 }
+
+describe('ModelSettings profile scope', () => {
+  // #90549: the API helpers treat `null` as "deliberately target the
+  // primary/default profile". A page following the active profile must pass
+  // `undefined`, or every read repaints the primary's model and the user's
+  // change looks reverted.
+  it('follows the active profile (undefined, never null) when unscoped', async () => {
+    await renderModelSettings()
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith(undefined))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, undefined)
+    expect(getAuxiliaryModels).toHaveBeenCalledWith(undefined)
+    expect(getMoaModels).toHaveBeenCalledWith(undefined)
+  })
+
+  it('reads through the explicit scope override when one is set', async () => {
+    await renderModelSettings('research')
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('research'))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
+    expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
+    expect(getMoaModels).toHaveBeenCalledWith('research')
+  })
+})
 
 describe('ModelSettings', () => {
   it('loads the current main model and lists configured providers only', async () => {
@@ -207,6 +238,54 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
   })
 
+  it('preserves a user-defined provider endpoint when applying the main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true
+        },
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'local-ollama',
+      model: 'qwen3:latest',
+      gateway_tools: []
+    })
+
+    await renderModelSettings()
+
+    const providerSelect = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(providerSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'main',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
@@ -264,8 +343,44 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'local-ollama', model: 'qwen3:latest' })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'local-ollama', model: 'qwen3:latest' },
+      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'auxiliary',
+        task: 'vision',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
+      ok: true,
       provider: 'openrouter',
       model: 'anthropic/claude-opus-4.7',
       gateway_tools: [],
@@ -294,6 +409,36 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'ollama-cloud', model: 'glm-5.3-flash' },
+      tasks: [
+        {
+          task: 'title_generation',
+          provider: 'openai',
+          model: 'llama3.2:3b',
+          base_url: 'http://byron.local:11434/v1',
+          local_endpoint: true
+        },
+        {
+          task: 'vision',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          base_url: 'https://api.example.com/v1',
+          local_endpoint: false
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    // The public custom endpoint still bills a provider, so the banner stays —
+    // but it names only that one task, not the free LAN pin.
+    expect(await screen.findByText(/1 auxiliary task \(/)).toBeTruthy()
+    // The row shows where the pinned task actually points.
+    expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
+  })
 })
 
 describe('ModelSettings MoA preset editor', () => {
@@ -309,7 +454,7 @@ describe('ModelSettings MoA preset editor', () => {
         aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
         reference_temperature: 0,
         aggregator_temperature: 0,
-        max_tokens: 4096,
+
         enabled: true
       }
     },
@@ -320,7 +465,7 @@ describe('ModelSettings MoA preset editor', () => {
     aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
     reference_temperature: 0,
     aggregator_temperature: 0,
-    max_tokens: 4096,
+
     enabled: true
   })
 
@@ -429,5 +574,93 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({ enabled: false })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('saves a disabled reference model without removing it (per-slot enabled toggle)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Disable reference 1' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({
+              reference_models: [
+                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
+                expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' })
+              ]
+            })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('ModelSettings code-skew 503', () => {
+  const skewError = new Error(
+    'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'
+  )
+
+  afterEach(() => {
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('unwraps the stale-backend 503 instead of dumping IPC JSON', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+
+    await waitFor(() => {
+      expect(screen.getByText(/running old code after an update/i)).toBeTruthy()
+    })
+    expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy()
+    expect(screen.queryByText(/hermes:api/)).toBeNull()
+    expect(screen.queryByText(/systemctl/)).toBeNull()
+  })
+
+  it('recycles the Desktop-owned backend and reloads the catalog', async () => {
+    const recycleBackend = vi.fn().mockResolvedValue({ ok: true })
+
+    ;(window as unknown as { hermesDesktop: { recycleBackend: typeof recycleBackend } }).hermesDesktop = {
+      recycleBackend
+    }
+
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }))
+
+    await waitFor(() => expect(recycleBackend).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
   })
 })

@@ -66,6 +66,26 @@ npm test         # single run
 npm run test:watch
 ```
 
+## Live agents
+
+The dock above the composer appears automatically while children are running. It shows
+actual live-child counts, task names, elapsed time, and the latest activity. Its row budget
+shrinks on short terminals; finished work remains in the existing `/agents` / `/replay` history
+rather than permanently occupying composer space. Async completion units are not counted
+as extra agents.
+
+- **Ctrl+T** expands the roster without clearing your draft; **Esc** returns.
+- **↑/↓** selects an agent, **Enter** opens its details (tools, output, files, usage).
+- **t** opens its bounded live transcript tail; **g/G** moves to top/bottom.
+- **e** opens a separate steering form. **Enter** queues guidance and **Esc** returns.
+  “Queued” means accepted for the next tool boundary, not confirmed delivery.
+- **x** requests that the selected child stop; **X** requests a subtree stop.
+- Existing sort/filter, spawn-pause, timeline, and replay controls remain available.
+
+The roster hydrates from the session-scoped `subagent.list` RPC alongside streamed events.
+Only an open tail view polls `subagent.tail`; steering uses the existing `subagent.steer` RPC.
+No model tool schema or prompt-caching behavior changes.
+
 ## App model
 
 `src/app.tsx` is the center of the UI. Heavy logic is split into `src/app/`:
@@ -96,7 +116,7 @@ npm run test:watch
 - `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
 - `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
 - `commands/core.ts` — general TUI commands
-- `commands/billing.ts` — `/billing`: manage Nous terminal billing — buy credits, auto-reload, limits
+- `commands/billing.ts` — `/billing`: manage Nous remote spending — buy credits, auto-reload, limits
 - `commands/credits.ts` — `/credits`
 - `commands/session.ts` — session and agent commands
 - `commands/ops.ts` — operations commands
@@ -225,17 +245,17 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 
 ### Core (`core.ts`)
 `/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
-`/compact`, `/copy`, `/paste`, `/details` (alias `/detail`),
+`/density`, `/copy`, `/paste`, `/details` (alias `/detail`),
 `/statusbar` (alias `/sb`), `/queue` (alias `/q`), `/logs`, `/history`,
 `/save`, `/undo`, `/retry`, `/steer`, `/mouse` (alias `/scroll`),
 `/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`
 
 ### Billing (`billing.ts`)
-`/billing` — manage Nous terminal billing — buy credits, auto-reload, limits
+`/billing` — manage Nous remote spending — buy credits, auto-reload, limits
 
 ### Session (`session.ts`)
 `/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
-`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/bg`, `/btw`, `/image`, `/personality`,
 `/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
 `/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 
@@ -366,7 +386,7 @@ ui-tui/
         types.ts                    SlashCommand interface and SlashRunCtx execution context
         registry.ts                 SLASH_COMMANDS assembly and findSlashCommand lookup
         commands/
-          billing.ts                /billing — manage Nous terminal billing
+          billing.ts                /billing — manage Nous remote spending
           core.ts                   general TUI commands
           credits.ts                /credits
           debug.ts                  /heapdump, /mem

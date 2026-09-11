@@ -18,10 +18,32 @@ import {
   createBoundedMessageStore,
   appendMediaFailureNote,
   extractBridgeEvent,
+  inboundReadReceiptKeys,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- inbound read receipts ------------------------------------------------
+{
+  const groupKey = {
+    id: 'incoming-group-1',
+    remoteJid: '120363001234567890@g.us',
+    participant: '15550001111@s.whatsapp.net',
+    fromMe: false,
+  };
+
+  assert.deepEqual(inboundReadReceiptKeys({ key: groupKey, enabled: false }), []);
+  assert.deepEqual(
+    inboundReadReceiptKeys({ key: { ...groupKey, fromMe: true }, enabled: true }),
+    [],
+  );
+  const receiptKeys = inboundReadReceiptKeys({ key: groupKey, enabled: true });
+  assert.equal(receiptKeys.length, 1);
+  assert.equal(receiptKeys[0], groupKey);
+  assert.equal(receiptKeys[0].participant, groupKey.participant);
+  console.log('  ✓ inbound read receipts preserve the original group message key');
+}
 
 // -- quoted outbound text -------------------------------------------------
 {
@@ -96,6 +118,12 @@ import {
   assert.equal(event.quotedParticipant, '15559998888@s.whatsapp.net');
   assert.equal(event.quotedRemoteJid, '15551234567@s.whatsapp.net');
   assert.equal(event.quotedText, 'approve deploy?');
+  assert.deepEqual(event.readReceiptKey, {
+    id: 'incoming-1',
+    remoteJid: '15551234567@s.whatsapp.net',
+    participant: '15550001111@s.whatsapp.net',
+    fromMe: false,
+  });
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.body, 'approved');
   console.log('  ✓ inbound quoted metadata includes quoted text');
@@ -381,6 +409,102 @@ import {
   assert.equal(event.body, 'see attached\n[document could not be downloaded]');
   assert.equal(event.mediaUrls.length, 0);
   console.log('  ✓ captioned failed download keeps caption and appends note');
+}
+
+// -- quoted message envelopes --------------------------------------------
+{
+  // WhatsApp wraps disappearing (ephemeral), view-once and re-shared
+  // document messages in envelope types. The quote extractor must see
+  // through them, or a reply to such a message keeps its quoted ID but
+  // loses the quoted text entirely (#106066).
+  for (const [fixture, quotedMessage] of [
+    ['plain conversation', { conversation: 'Example appointment at 11:40' }],
+    ['ephemeral-wrapped', {
+      ephemeralMessage: { message: { conversation: 'Example appointment at 11:40' } },
+    }],
+    ['view-once wrapped', {
+      viewOnceMessageV2: { message: { conversation: 'Example appointment at 11:40' } },
+    }],
+    ['document-with-caption envelope', {
+      documentWithCaptionMessage: {
+        message: { documentMessage: { caption: 'the signed contract', fileName: 'contract.pdf' } },
+      },
+    }],
+    ['extended text inside ephemeral', {
+      ephemeralMessage: {
+        message: { extendedTextMessage: { text: 'Example appointment at 11:40' } },
+      },
+    }],
+  ]) {
+    const event = await extractBridgeEvent({
+      msg: {
+        key: { id: `reply-${fixture}`, remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+        messageTimestamp: 123,
+        message: {
+          extendedTextMessage: {
+            text: 'confirmed',
+            contextInfo: {
+              stanzaId: 'original-id',
+              participant: '15559998888@s.whatsapp.net',
+              quotedMessage,
+            },
+          },
+        },
+      },
+      chatId: '15551234567@s.whatsapp.net',
+      senderId: '15550001111@s.whatsapp.net',
+      senderNumber: '15550001111',
+      botIds: ['15559998888@s.whatsapp.net'],
+      downloadMedia: async () => Buffer.from(''),
+    });
+    assert.equal(event.quotedMessageId, 'original-id', fixture);
+    assert.equal(event.hasQuotedMessage, true, fixture);
+    if (fixture === 'document-with-caption envelope') {
+      assert.equal(event.quotedText, 'the signed contract', fixture);
+    } else {
+      assert.equal(event.quotedText, 'Example appointment at 11:40', fixture);
+    }
+  }
+  console.log('  ✓ quoted message text survives ephemeral/view-once/document envelopes');
+}
+
+{
+  // Nested envelopes (ephemeral wrapping viewOnce wrapping the payload) and
+  // the second envelope position: quoted text must resolve there as well.
+  const quotedMessage = {
+    ephemeralMessage: {
+      message: {
+        viewOnceMessageV2: {
+          message: { extendedTextMessage: { text: 'Example appointment at 11:40' } },
+        },
+      },
+    },
+  };
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'reply-nested', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        ephemeralMessage: {
+          message: {
+            extendedTextMessage: {
+              text: 'confirmed',
+              contextInfo: { stanzaId: 'original-id', participant: '15559998888@s.whatsapp.net', quotedMessage },
+            },
+          },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888@s.whatsapp.net'],
+    downloadMedia: async () => Buffer.from(''),
+  });
+  assert.equal(event.quotedMessageId, 'original-id');
+  assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.quotedText, 'Example appointment at 11:40');
+  console.log('  ✓ nested envelopes: quote text resolves through both layers');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

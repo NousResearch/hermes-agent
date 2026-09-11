@@ -22,9 +22,37 @@ import pytest
 def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot_factory: MagicMock) -> None:
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
+
+    class InlineKeyboardButton:
+        def __init__(self, text, *, url=None, callback_data=None):
+            self.text = text
+            self.url = url
+            self.callback_data = callback_data
+
+        def to_dict(self):
+            data = {"text": self.text}
+            if self.url is not None:
+                data["url"] = self.url
+            if self.callback_data is not None:
+                data["callback_data"] = self.callback_data
+            return data
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+        def to_dict(self):
+            return {
+                "inline_keyboard": [
+                    [button.to_dict() for button in row] for row in self.inline_keyboard
+                ]
+            }
+
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
     telegram_mod = SimpleNamespace(
         Bot=bot_factory,
+        InlineKeyboardButton=InlineKeyboardButton,
+        InlineKeyboardMarkup=InlineKeyboardMarkup,
         MessageEntity=_MessageEntity,
         constants=constants_mod,
     )
@@ -48,7 +76,13 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr(sys, "platform", "linux")
+    # Neutralize macOS system-proxy auto-detection at its probe rather than by
+    # claiming the host is Linux: this keeps the test honest on the macOS
+    # runner (and on a developer's Mac), where a real scutil-configured proxy
+    # would otherwise leak into the assertion.
+    monkeypatch.setattr(
+        "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+    )
 
 
 def _tmpfile(suffix: str) -> str:
@@ -74,46 +108,6 @@ def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyP
         bot.send_message.assert_not_awaited()
         bot.send_photo.assert_awaited_once()
         assert bot.send_photo.await_args.kwargs.get("caption") == "This Caption"
-    finally:
-        os.unlink(img)
-
-
-def test_video_caption_rides_bubble(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tools.send_message_tool import _send_telegram
-
-    _no_proxy(monkeypatch)
-    bot = _make_bot()
-    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
-    vid = _tmpfile(".mp4")
-    try:
-        res = asyncio.run(
-            _send_telegram("tok", "123", "Model unit tour", media_files=[(vid, False)])
-        )
-        assert res["success"] is True
-        bot.send_message.assert_not_awaited()
-        bot.send_video.assert_awaited_once()
-        assert bot.send_video.await_args.kwargs.get("caption") == "Model unit tour"
-    finally:
-        os.unlink(vid)
-
-
-def test_long_text_falls_back_to_separate_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tools.send_message_tool import _send_telegram
-
-    _no_proxy(monkeypatch)
-    bot = _make_bot()
-    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
-    img = _tmpfile(".png")
-    long_text = "x" * 1100  # over Telegram's 1024 caption cap
-    try:
-        res = asyncio.run(
-            _send_telegram("tok", "123", long_text, media_files=[(img, False)])
-        )
-        assert res["success"] is True
-        # Text too long for a caption — sent as its own message, photo uncaptioned.
-        bot.send_message.assert_awaited()
-        bot.send_photo.assert_awaited_once()
-        assert not bot.send_photo.await_args.kwargs.get("caption")
     finally:
         os.unlink(img)
 

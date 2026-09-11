@@ -2,6 +2,8 @@
 import sqlite3
 import pytest
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli.kanban_db_dispatch import _set_worker_pid as _kbd_set_worker_pid
 from tests.hermes_cli.test_kanban_authority_history import conn, enrolled, history
 from tests.hermes_cli.test_kanban_history_pass2 import rows
 
@@ -86,11 +88,11 @@ def test_real_runtime_lifecycle_matrix(conn, monkeypatch, action, kind, terminal
         conn.execute('UPDATE tasks SET started_at=1, max_runtime_seconds=1, claim_expires=1 WHERE id=?', (task,))
         conn.execute('UPDATE task_runs SET started_at=1, claim_expires=1 WHERE id=?', (run,))
         kb._append_event(conn, task, 'heartbeat', run_id=run)
-    kb._set_worker_pid(conn, task, 987654321)
+    _kbd_set_worker_pid(conn, task, 987654321)
     monkeypatch.setattr(kb, '_pid_alive', lambda pid: action == 'extend')
     monkeypatch.setattr(kb, '_terminate_reclaimed_worker', lambda *a, **kw: {
         'termination_attempted': True, 'host_local': True, 'terminated': action != 'defer'})
-    monkeypatch.setattr(kb, '_classify_worker_exit', lambda pid: {
+    monkeypatch.setattr(kbd, '_classify_worker_exit', lambda pid: {
         'crash': ('nonzero_exit', 1), 'rate': ('rate_limited', kb.KANBAN_RATE_LIMIT_EXIT_CODE),
         'protocol': ('clean_exit', 0)}[action])
     signals = []

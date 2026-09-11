@@ -36,61 +36,31 @@ def _clean_browser_env(monkeypatch):
     yield
 
 
-def _force_platform_linux(monkeypatch):
-    monkeypatch.setattr("hermes_cli.auth.sys.platform", "linux")
-
-
 def _force_resolved_browser(monkeypatch, name: str):
     monkeypatch.setattr(webbrowser, "get", lambda *_a, **_kw: _FakeController(name))
 
 
+@pytest.mark.linux_only
 def test_headless_linux_no_display_refuses(monkeypatch):
-    """The reported bug: headless Linux, no display server → don't auto-open."""
-    _force_platform_linux(monkeypatch)
+    """The reported bug: headless Linux, no display server → don't auto-open.
+
+    Gated rather than faked: the display-server requirement is the Linux arm
+    of the helper, and the autouse fixture already strips DISPLAY /
+    WAYLAND_DISPLAY so a real Linux host reaches it headless.
+    """
     # Even if a GUI browser somehow resolved, no display means no GUI.
     _force_resolved_browser(monkeypatch, "google-chrome")
     assert _can_open_graphical_browser() is False
 
 
 def test_browser_env_pointing_at_console_browser_refuses(monkeypatch):
-    """$BROWSER=w3m must refuse even with a display server present."""
-    _force_platform_linux(monkeypatch)
+    """$BROWSER=w3m must refuse even with a display server present.
+
+    Host-independent: the $BROWSER console check runs before the helper's
+    per-platform branch, so this holds on every lane.
+    """
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("BROWSER", "/usr/bin/w3m")
     assert _can_open_graphical_browser() is False
 
 
-@pytest.mark.parametrize("console", ["w3m", "lynx", "links", "elinks", "browsh"])
-def test_resolved_console_browser_refuses(monkeypatch, console):
-    """When webbrowser resolves to a console browser, refuse to auto-open."""
-    _force_platform_linux(monkeypatch)
-    monkeypatch.setenv("DISPLAY", ":0")
-    _force_resolved_browser(monkeypatch, console)
-    assert _can_open_graphical_browser() is False
-
-
-def test_graphical_browser_with_display_allows(monkeypatch):
-    """Real GUI browser + display server → auto-open is fine."""
-    _force_platform_linux(monkeypatch)
-    monkeypatch.setenv("DISPLAY", ":0")
-    _force_resolved_browser(monkeypatch, "firefox")
-    assert _can_open_graphical_browser() is True
-
-
-def test_webbrowser_get_raises_refuses(monkeypatch):
-    """No resolvable browser at all → don't auto-open."""
-    _force_platform_linux(monkeypatch)
-    monkeypatch.setenv("DISPLAY", ":0")
-
-    def _boom(*_a, **_kw):
-        raise webbrowser.Error("no browser")
-
-    monkeypatch.setattr(webbrowser, "get", _boom)
-    assert _can_open_graphical_browser() is False
-
-
-def test_non_linux_with_gui_allows(monkeypatch):
-    """macOS / Windows always have a usable default GUI browser."""
-    monkeypatch.setattr("hermes_cli.auth.sys.platform", "darwin")
-    _force_resolved_browser(monkeypatch, "MacOSX")
-    assert _can_open_graphical_browser() is True

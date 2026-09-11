@@ -58,7 +58,11 @@ def test_zip_nonstandard_database_accepted(tmp_path, monkeypatch, prefix, locati
     history.refuse_authority_copy(tmp_path / 'incoming')
     expected = source.read_bytes()
     target = tmp_path / 'target'
+    # run_import resolves the root through get_hermes_home() (upstream moved it
+    # off get_default_hermes_root so a profile restore cannot silently retarget
+    # the live root). Patch both seams so the import lands in the fixture target.
     monkeypatch.setattr(backup, 'get_default_hermes_root', lambda: target)
+    monkeypatch.setattr(backup, 'get_hermes_home', lambda: target)
     archive = tmp_path / 'fixture.zip'
     with zipfile.ZipFile(archive, 'w') as zf:
         zf.writestr(prefix + 'config.yaml', 'fixture: true\n')
@@ -86,7 +90,11 @@ def test_zip_standard_database_refused_before_overlay(tmp_path, monkeypatch, pre
     target = tmp_path / 'target'
     target.mkdir()
     (target / 'config.yaml').write_bytes(b'original: true\n')
+    # run_import resolves the root through get_hermes_home() (upstream moved it
+    # off get_default_hermes_root so a profile restore cannot silently retarget
+    # the live root). Patch both seams so the import lands in the fixture target.
     monkeypatch.setattr(backup, 'get_default_hermes_root', lambda: target)
+    monkeypatch.setattr(backup, 'get_hermes_home', lambda: target)
     archive = tmp_path / 'fixture.zip'
     with zipfile.ZipFile(archive, 'w') as zf:
         zf.writestr(prefix + 'config.yaml', 'replacement: true\n')
@@ -101,6 +109,13 @@ def test_zip_authority_in_wal_refused(tmp_path, monkeypatch, prefix):
     source = tmp_path / 'fixture.db'
     archive = tmp_path / 'fixture.zip'
     with kb.connect_closing(source) as db:
+        if db.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
+            # hermes_state refuses WAL on SQLite versions affected by the
+            # wal-reset corruption bug and uses journal_mode=DELETE instead.
+            # This fixture needs enrollment to live in the -wal sidecar, so the
+            # precondition cannot be established here. A check that cannot run
+            # must not return a verdict: skip rather than fail.
+            pytest.skip('journal_mode is not WAL on this SQLite build')
         db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         base = source.read_bytes()
         kb.enroll_authority_history(db)
@@ -112,7 +127,11 @@ def test_zip_authority_in_wal_refused(tmp_path, monkeypatch, prefix):
             zf.write(source, prefix + 'profiles/outer/kanban/named/kanban.db')
             zf.write(wal, prefix + 'profiles/outer/kanban/named/kanban.db-wal')
     target = tmp_path / 'target'
+    # run_import resolves the root through get_hermes_home() (upstream moved it
+    # off get_default_hermes_root so a profile restore cannot silently retarget
+    # the live root). Patch both seams so the import lands in the fixture target.
     monkeypatch.setattr(backup, 'get_default_hermes_root', lambda: target)
+    monkeypatch.setattr(backup, 'get_hermes_home', lambda: target)
     with pytest.raises(history.AuthorityHistoryError, match='authority'):
         backup.run_import(SimpleNamespace(zipfile=str(archive), force=True))
     assert not target.exists()
@@ -123,7 +142,11 @@ def test_zip_traversal_stays_blocked(tmp_path, monkeypatch, capsys):
     outside = tmp_path / 'outside' / 'kanban.db'
     outside.parent.mkdir()
     outside.write_bytes(b'outside fixture sentinel')
+    # run_import resolves the root through get_hermes_home() (upstream moved it
+    # off get_default_hermes_root so a profile restore cannot silently retarget
+    # the live root). Patch both seams so the import lands in the fixture target.
     monkeypatch.setattr(backup, 'get_default_hermes_root', lambda: target)
+    monkeypatch.setattr(backup, 'get_hermes_home', lambda: target)
     archive = tmp_path / 'fixture.zip'
     with zipfile.ZipFile(archive, 'w') as zf:
         zf.writestr('config.yaml', 'fixture: true\n')

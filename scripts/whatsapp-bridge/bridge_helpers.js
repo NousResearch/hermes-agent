@@ -18,12 +18,28 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function unwrapMessageEnvelopes(content) {
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
+}
+
 export function getMessageContent(msg) {
-  const content = msg?.message || {};
-  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  const raw = msg?.message || {};
+  const content = unwrapMessageEnvelopes(raw);
+  // A peeled envelope returns its inner message immediately: the payload
+  // shape (template/buttons/list/etc.) applies to unenveloped messages.
+  if (content !== raw) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;
@@ -190,16 +206,17 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
 }
 
 function textFromQuotedMessage(quotedMessage) {
-  if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  const content = unwrapMessageEnvelopes(quotedMessage);
+  if (!content) return '';
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  if (content.documentMessage?.fileName) return `[Document: ${content.documentMessage.fileName}]`;
+  if (content.locationMessage) return formatLocationText(content.locationMessage, false);
+  if (content.contactMessage) return formatContactText(content.contactMessage);
+  if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
   return '';
 }
 
@@ -483,6 +500,12 @@ export async function extractBridgeEvent({
     quotedText,
     hasQuotedMessage,
     botIds,
+    readReceiptKey: {
+      remoteJid: msg.key.remoteJid || chatId,
+      id: msg.key.id,
+      participant: msg.key.participant || senderId,
+      fromMe: Boolean(msg.key.fromMe),
+    },
     timestamp: msg.messageTimestamp,
   };
 }
@@ -492,6 +515,12 @@ export function inferMediaType(ext) {
   if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
   if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
   return 'document';
+}
+
+export function inboundReadReceiptKeys({ key, enabled }) {
+  if (!enabled || !key || key.fromMe || !key.id || !key.remoteJid) return [];
+  // Preserve participant for group messages: Baileys needs the original key.
+  return [key];
 }
 
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
@@ -554,4 +583,61 @@ export function pollCreationMessageFromPayload(payload) {
     selectableOptionsCount,
   };
   return message;
+}
+
+/**
+ * Reconnect scheduling guard. startSocket() awaits network I/O before it
+ * creates a socket or registers event handlers, so a bare
+ * `setTimeout(startSocket, ...)` has two unrecoverable failure modes: a
+ * rejection is unhandled (crashes the process on modern Node), and a hang
+ * leaves the bridge permanently disconnected with nothing left to retry.
+ * Every (re)connect must go through the scheduler this returns.
+ */
+export function createReconnectScheduler(startFn, {
+  retryDelayMs = 5000,
+  log = console.log,
+  setTimeoutFn = setTimeout,
+} = {}) {
+  function scheduleReconnect(delayMs) {
+    setTimeoutFn(() => {
+      Promise.resolve()
+        .then(startFn)
+        .catch((err) => {
+          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
+          scheduleReconnect(retryDelayMs);
+        });
+    }, delayMs);
+  }
+  return scheduleReconnect;
+}
+
+/**
+ * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
+ * raw.githubusercontent.com with no AbortSignal; a stalled connection can
+ * pend forever and wedge the reconnect path (the scheduler above cannot
+ * retry past an await that never settles). Bound the fetch and fall back to
+ * the last known-good version, or the Baileys default before first success.
+ */
+export function createVersionResolver(fetchVersionFn, {
+  timeoutMs = 15000,
+  log = console.log,
+} = {}) {
+  let cachedVersion = null;
+  return async function resolveVersion() {
+    let timer = null;
+    try {
+      const { version } = await Promise.race([
+        fetchVersionFn(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
+        }),
+      ]);
+      cachedVersion = version;
+    } catch (err) {
+      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return cachedVersion;
+  };
 }

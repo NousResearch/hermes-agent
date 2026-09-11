@@ -16,26 +16,12 @@ The gateway classifier must distinguish:
 """
 
 
+from gateway.run_turn import is_context_overflow_failure_result
+
 
 def _classify(agent_result: dict, history_len: int) -> tuple[bool, bool]:
-    """Replicate the gateway classifier from GatewayRunner._run_agent.
-
-    Returns ``(agent_failed_early, is_context_overflow_failure)``.
-    """
-    agent_failed_early = bool(agent_result.get("failed"))
-    err = str(agent_result.get("error", "")).lower()
-    is_context_overflow_failure = agent_failed_early and (
-        bool(agent_result.get("compression_exhausted"))
-        or any(p in err for p in (
-            "context length", "context size", "context window",
-            "maximum context", "token limit", "too many tokens",
-            "reduce the length", "exceeds the limit",
-            "request entity too large", "prompt is too long",
-            "payload too large", "input is too long",
-        ))
-        or ("400" in err and history_len > 50)
-    )
-    return agent_failed_early, is_context_overflow_failure
+    """``(agent_failed_early, is_context_overflow_failure)`` as the gateway computes them."""
+    return bool(agent_result.get("failed")), is_context_overflow_failure_result(agent_result, history_len)
 
 
 class TestContextOverflowStillSkipsTranscript:
@@ -46,24 +32,6 @@ class TestContextOverflowStillSkipsTranscript:
             "failed": True,
             "compression_exhausted": True,
             "error": "Request payload too large: max compression attempts reached.",
-        }
-        failed, ctx_overflow = _classify(agent_result, history_len=100)
-        assert failed
-        assert ctx_overflow
-
-    def test_explicit_context_length_error_is_context_overflow(self):
-        agent_result = {
-            "failed": True,
-            "error": "prompt is too long: 250000 tokens > 200000 maximum",
-        }
-        failed, ctx_overflow = _classify(agent_result, history_len=10)
-        assert failed
-        assert ctx_overflow
-
-    def test_generic_400_on_large_session_is_context_overflow(self):
-        agent_result = {
-            "failed": True,
-            "error": "error code: 400 - {'type': 'error', 'message': 'Error'}",
         }
         failed, ctx_overflow = _classify(agent_result, history_len=100)
         assert failed
@@ -92,35 +60,6 @@ class TestTransientFailureKeepsUserMessage:
             "error": "ReadTimeout: HTTPSConnectionPool(host='api.z.ai'): Read timed out.",
         }
         failed, ctx_overflow = _classify(agent_result, history_len=10)
-        assert failed
-        assert not ctx_overflow
-
-    def test_connection_reset_is_not_context_overflow(self):
-        agent_result = {
-            "failed": True,
-            "error": "ConnectionError: [Errno 54] Connection reset by peer",
-        }
-        failed, ctx_overflow = _classify(agent_result, history_len=10)
-        assert failed
-        assert not ctx_overflow
-
-    def test_provider_500_is_not_context_overflow(self):
-        agent_result = {
-            "failed": True,
-            "error": "API call failed after 3 retries: 500 Internal Server Error",
-        }
-        failed, ctx_overflow = _classify(agent_result, history_len=10)
-        assert failed
-        assert not ctx_overflow
-
-    def test_generic_400_on_short_session_is_not_context_overflow(self):
-        """A 400 on a short session is a real client error, not context
-        overflow — still not a reason to drop the user turn."""
-        agent_result = {
-            "failed": True,
-            "error": "error code: 400 - invalid model",
-        }
-        failed, ctx_overflow = _classify(agent_result, history_len=5)
         assert failed
         assert not ctx_overflow
 

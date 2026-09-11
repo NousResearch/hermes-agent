@@ -16,28 +16,26 @@ class TestSessionSourceProfileField:
         restored = SessionSource.from_dict(s.to_dict())
         assert restored.profile == "coder"
 
-    def test_profile_absent_not_serialized(self):
-        s = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm")
-        assert "profile" not in s.to_dict()
-
-    def test_source_profile_drives_session_key_namespace(self):
-        s = SessionSource(platform=Platform.TELEGRAM, chat_id="99", chat_type="dm")
-        # build_session_key takes profile explicitly; the adapter passes
-        # source.profile through. Verify the namespace follows it.
-        assert build_session_key(s, profile="coder") == "agent:coder:telegram:dm:99"
-
 
 class TestWebhookProfileResolution:
     """_resolve_request_profile validates the /p/<profile>/ prefix."""
 
-    def _adapter(self, multiplex: bool, served=("default", "coder")):
+    def _adapter(
+        self,
+        multiplex: bool,
+        served=("default", "coder"),
+        allowlist=None,
+    ):
         from gateway.platforms.webhook import WebhookAdapter, _PROFILE_REJECTED
 
         class _FakeReq:
             def __init__(self, profile):
                 self.match_info = {"profile": profile} if profile is not None else {}
 
-        cfg = GatewayConfig(multiplex_profiles=multiplex)
+        cfg = GatewayConfig(
+            multiplex_profiles=multiplex,
+            multiplex_profile_allowlist=allowlist,
+        )
 
         class _Runner:
             config = cfg
@@ -51,23 +49,20 @@ class TestWebhookProfileResolution:
         adapter, Req, _REJ, _ = self._adapter(multiplex=True)
         assert adapter._resolve_request_profile(Req(None)) is None
 
-    def test_prefix_ignored_when_multiplex_off(self):
-        adapter, Req, _REJ, _ = self._adapter(multiplex=False)
-        # Even a bogus profile is ignored (not 404'd) when multiplexing is off.
-        assert adapter._resolve_request_profile(Req("anything")) is None
-
-    def test_known_profile_accepted(self, monkeypatch):
-        adapter, Req, _REJ, served = self._adapter(multiplex=True)
+    def test_unserved_prefix_is_rejected(self, monkeypatch):
+        adapter, Req, rejected, served = self._adapter(
+            multiplex=True,
+            served=("default", "worker"),
+            allowlist=["worker"],
+        )
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [(n, None) for n in served],
+            lambda multiplex, profile_allowlist=None: [
+                (name, f"/profiles/{name}") for name in served
+            ],
         )
-        assert adapter._resolve_request_profile(Req("coder")) == "coder"
 
-    def test_unknown_profile_rejected(self, monkeypatch):
-        adapter, Req, REJ, served = self._adapter(multiplex=True)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [(n, None) for n in served],
-        )
-        assert adapter._resolve_request_profile(Req("ghost")) is REJ
+        assert adapter._resolve_request_profile(Req("worker")) == "worker"
+        assert adapter._resolve_request_profile(Req("restricted")) is rejected
+
+

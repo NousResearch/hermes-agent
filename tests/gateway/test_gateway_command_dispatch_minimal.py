@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -130,19 +130,19 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
 
 
 @pytest.mark.asyncio
-async def test_idle_queue_without_payload_returns_usage():
-    runner, _adapter = _make_runner()
-    called = False
+async def test_wisdom_dm_continuation_obeys_wisdom_slash_policy():
+    runner, adapter = _make_runner()
+    adapter.send_wisdom_continuation = AsyncMock()
+    checked: list[str] = []
 
-    async def fake_handle_message_with_agent(event, source, key, generation):
-        nonlocal called
-        called = True
-        return {"final_response": "", "messages": []}
+    def check_access(_source, command):
+        checked.append(command)
+        return "denied" if command == "wisdom" else None
 
-    runner._handle_message_with_agent = fake_handle_message_with_agent
+    runner._check_slash_access = check_access
 
-    result = await runner._handle_message(_make_event("/queue"))
+    result = await runner._handle_message(_make_event("/start wisdom_token-1"))
 
-    assert result == "Usage: /queue <prompt>"
-    assert called is False
-    assert runner._running_agents == {}
+    assert result == "denied"
+    assert checked == ["start", "wisdom"]
+    adapter.send_wisdom_continuation.assert_not_awaited()

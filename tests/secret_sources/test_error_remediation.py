@@ -1,0 +1,184 @@
+"""Error remediation for secret sources.
+
+Covers the ErrorKind classification of Bitwarden's `invalid_client`
+identity reject, the bws stderr summarizer, the per-source
+``remediation()`` hook, and the env_loader startup hint printer.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from agent.secret_sources import bitwarden as bw
+from agent.secret_sources import onepassword as op
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+from agent.secret_sources.bitwarden import (
+    BitwardenSource,
+    _classify_bws_error,
+    _summarize_bws_stderr,
+)
+from agent.secret_sources.onepassword import OnePasswordSource
+
+
+_BWS_INVALID_CLIENT_DUMP = """\
+Error:
+   0: Received error message from server: [400 Bad Request] {"error":"invalid_client"}
+
+Location:
+   crates/bws/src/main.rs:108
+
+Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+"""
+
+
+# ---------------------------------------------------------------------------
+# _summarize_bws_stderr
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_strips_rust_report_noise():
+    summary = _summarize_bws_stderr(_BWS_INVALID_CLIENT_DUMP)
+    assert "invalid_client" in summary
+    assert "Location:" not in summary
+    assert "main.rs" not in summary
+    assert "Backtrace" not in summary
+    assert "Error:" not in summary
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# _classify_bws_error — the invalid_client identity reject is an auth failure
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# BitwardenSource.fetch — auth failures get a human explanation
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_auth_failure_gets_friendly_error(monkeypatch, tmp_path):
+    src = BitwardenSource()
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.dead")
+    monkeypatch.setattr(bw, "find_bws", lambda install_if_missing=True: tmp_path / "bws")
+
+    def boom(**kwargs):
+        raise RuntimeError(
+            'bws exited 1: Received error message from server: '
+            '[400 Bad Request] {"error":"invalid_client"}'
+        )
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", boom)
+    result = src.fetch({"enabled": True, "project_id": "p"}, tmp_path)
+    assert result.error_kind == ErrorKind.AUTH_FAILED
+    assert "revoked, expired" in result.error
+    assert "BWS_ACCESS_TOKEN" in result.error
+    assert "invalid_client" in result.error  # mechanics preserved
+
+
+# ---------------------------------------------------------------------------
+# remediation() hook
+# ---------------------------------------------------------------------------
+
+
+
+
+def test_onepassword_auth_remediation_points_at_token_command():
+    hint = OnePasswordSource().remediation(ErrorKind.AUTH_FAILED, {})
+    assert "hermes secrets onepassword token" in hint
+    assert "OP_SERVICE_ACCOUNT_TOKEN" in hint
+
+
+
+
+
+
+def test_remediation_never_raises_on_junk_cfg():
+    for cfg in (None, [], "nope", 42):
+        assert isinstance(BitwardenSource().remediation(ErrorKind.AUTH_FAILED, cfg), str)
+        assert isinstance(OnePasswordSource().remediation(ErrorKind.AUTH_FAILED, cfg), str)
+
+
+# ---------------------------------------------------------------------------
+# env_loader startup hint
+# ---------------------------------------------------------------------------
+
+
+def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
+    from hermes_cli import env_loader
+    from agent.secret_sources import registry
+
+    registry._reset_registry_for_tests()
+    env_loader.reset_secret_source_cache()
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: proj\n"
+    )
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.dead")
+    monkeypatch.setattr(bw, "find_bws", lambda install_if_missing=True: tmp_path / "bws")
+
+    def boom(**kwargs):
+        raise RuntimeError(
+            'bws exited 1: Received error message from server: '
+            '[400 Bad Request] {"error":"invalid_client"}'
+        )
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", boom)
+    try:
+        env_loader._apply_external_secret_sources(home)
+    finally:
+        registry._reset_registry_for_tests()
+        env_loader.reset_secret_source_cache()
+
+    err = capsys.readouterr().err
+    assert "rejected the machine-account access token" in err
+    assert "hermes secrets bitwarden token" in err
+
+
+def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):
+    from agent.secret_sources import registry
+    from hermes_cli import env_loader
+
+    class ScopedSource(SecretSource):
+        name = "scoped_hint"
+        label = "Scoped hint"
+        shape = "mapped"
+
+        def __init__(self, marker):
+            self.marker = marker
+
+        def fetch(self, cfg, home_path):
+            return FetchResult()
+
+        def remediation(self, kind, cfg):
+            return self.marker
+
+    monkeypatch.setattr(registry, "_ensure_builtin_sources", lambda: None)
+    registry._reset_registry_for_tests()
+    home_a = str((tmp_path / "hint-a").resolve())
+    home_b = str((tmp_path / "hint-b").resolve())
+    source_a = ScopedSource("profile-a")
+    source_b = ScopedSource("profile-b")
+    assert registry.register_source(source_a, scope=home_a)
+    assert registry.register_source(source_b, scope=home_b)
+    try:
+        assert env_loader._remediation_hint(
+            "scoped_hint", ErrorKind.AUTH_FAILED, {}, scope=home_b
+        ) == "profile-b"
+    finally:
+        registry._reset_registry_for_tests()
+

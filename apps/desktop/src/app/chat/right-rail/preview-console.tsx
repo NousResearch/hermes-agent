@@ -132,18 +132,6 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
   )
 }
 
-export function PreviewConsoleTitlebarIcon({ consoleState }: { consoleState: PreviewConsoleState }) {
-  const { t } = useI18n()
-  const logCount = useStore(consoleState.$logCount)
-
-  return (
-    <>
-      <PanelBottom />
-      {logCount > 0 && <span className="sr-only">{t.preview.console.messages(logCount)}</span>}
-    </>
-  )
-}
-
 interface PreviewConsolePanelProps {
   consoleBodyRef: RefObject<HTMLDivElement | null>
   consoleShouldStickRef: MutableRefObject<boolean>
@@ -166,6 +154,7 @@ export function PreviewConsolePanel({
   const sendableLogs = visibleSelection.length > 0 ? visibleSelection : logs
   const stickScrollRafRef = useRef<number | null>(null)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!consoleShouldStickRef.current) {
       return

@@ -147,7 +147,15 @@ def _hosted_ocr_config() -> tuple:
     is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
     live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
     key."""
-    api_key = os.environ.get("FIRECRAWL_API_KEY") or None
+    # Profile-scoped, like every other tool credential: a cron job ticked for a routed profile
+    # resolves ITS key, never the launch profile's os.environ value. UnscopedSecretError is the
+    # multiplex fail-closed probe (registry.py runs check_fns before any scope exists) and keeps
+    # this "never raises" — the tool re-probes on the first scoped turn.
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        api_key = get_secret("FIRECRAWL_API_KEY", "") or None
+    except UnscopedSecretError:
+        api_key = None
     enabled = api_key is not None
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly

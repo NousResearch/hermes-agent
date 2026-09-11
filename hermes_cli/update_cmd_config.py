@@ -20,8 +20,8 @@ def _reload_config_modules() -> None:
     import importlib
     importlib.invalidate_caches()
     for mod_name in (
-        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
-        "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
+        "hermes_cli.config_defaults_approvals", "hermes_cli.config_defaults", "hermes_cli.config",
+        "hermes_cli.config_migrations", "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             try:

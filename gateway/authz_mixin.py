@@ -218,31 +218,33 @@ class GatewayAuthorizationMixin:
         return getattr(self, "_profile_adapters", None) or {}
 
     def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None):
-        """Live adapter whose intake policy gates authorization.
-
-        Secondary-profile adapters live in ``_profile_adapters[profile]``; the primary profile owns
-        ``self.adapters``. ``_profile_adapters`` is consulted BEFORE the active profile name: multiplex
-        turns override ``HERMES_HOME`` so ``_active_profile_name()`` reports the secondary profile
-        mid-turn, and treating it as primary would hand it the default bot.
+        """Live adapter whose intake policy gates authorization (``_adapters_for_profile`` for the
+        profile rule). ``None`` when the profile has no adapter for *platform*.
         """
         if not platform:
             return None
+        return self._adapters_for_profile(profile).get(platform)
+
+    def _adapters_for_profile(self, profile: Optional[str]) -> dict:
+        """The live adapter map *profile* may deliver through: ``_profile_adapters[p]`` for a
+        secondary, ``self.adapters`` only for the primary/default. ``_profile_adapters`` is consulted
+        BEFORE the active profile name: multiplex turns override ``HERMES_HOME`` so
+        ``_active_profile_name()`` reports the secondary profile mid-turn, and treating it as primary
+        would hand it the default bot. A named profile with no map gets ``{}`` — fail closed: a
+        secondary whose adapter failed to connect must NOT fall back to the default profile's adapter
+        (replies, tool sends, marker-file notices out the wrong bot)."""
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
-            profile_adapters = self._profile_adapters_map()
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
-            # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
-            primary_profile = getattr(self, "_primary_profile_name", None)
-            if not primary_profile:
-                with contextlib.suppress(Exception):
-                    primary_profile = self._active_profile_name()
-            if profile_name == primary_profile:
-                return self._primary_adapters().get(platform)
-            # Fail closed: a secondary profile whose adapter failed to connect must NOT
-            # fall back to the default profile's adapter (replies out the wrong bot).
-            return None
-        return self._primary_adapters().get(platform)
+        if not profile_name or profile_name == "default":
+            return self._primary_adapters()
+        profile_adapters = self._profile_adapters_map()
+        if profile_name in profile_adapters:
+            return profile_adapters[profile_name]
+        # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
+        primary_profile = getattr(self, "_primary_profile_name", None)
+        if not primary_profile:
+            with contextlib.suppress(Exception):
+                primary_profile = self._active_profile_name()
+        return self._primary_adapters() if profile_name == primary_profile else {}
 
     def _adapter_for_source(self, source: Optional[SessionSource]):
         """Resolve the live adapter for an inbound ``SessionSource``."""

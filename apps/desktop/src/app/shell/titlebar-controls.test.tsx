@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -8,13 +8,15 @@ import { I18nProvider } from '@/i18n'
 
 import { ROUTES_AREA } from '../routes'
 
-import { TitlebarControls } from './titlebar-controls'
+import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
-function renderControls(pathname: string) {
+const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
+
+function renderControls(pathname: string, props?: { leftTools?: TitlebarTool[]; tools?: TitlebarTool[] }) {
   return render(
     <MemoryRouter initialEntries={[pathname]}>
       <I18nProvider configClient={null} initialLocale="en">
-        <TitlebarControls onOpenSettings={() => {}} />
+        <TitlebarControls leftTools={props?.leftTools} onOpenSettings={() => {}} tools={props?.tools} />
       </I18nProvider>
     </MemoryRouter>
   )
@@ -23,6 +25,7 @@ function renderControls(pathname: string) {
 const windowControls = () => screen.queryByLabelText('Window controls')
 const appControls = () => screen.queryByLabelText('App controls')
 const pluginChrome = () => screen.queryByText('plugin-chrome')
+const pluginTool = () => screen.queryByLabelText('plugin tool')
 
 describe('TitlebarControls fixed clusters', () => {
   let dispose: () => void
@@ -36,9 +39,10 @@ describe('TitlebarControls fixed clusters', () => {
         render: () => null
       },
       {
-        area: 'titleBar.center',
-        id: 'test-plugin-chrome',
-        render: () => <span>plugin-chrome</span>
+        area: ROUTES_AREA,
+        data: { path: '/plain' },
+        id: 'test-plain-route',
+        render: () => null
       }
     ])
   })
@@ -48,19 +52,11 @@ describe('TitlebarControls fixed clusters', () => {
     cleanup()
   })
 
-  it('hides the app clusters on a contributed full-page route', () => {
-    renderControls('/kanban')
+  it('keeps the app clusters on a contributed page that mounts no titlebar chrome', () => {
+    renderControls('/plain')
 
-    expect(windowControls()).toBeNull()
-    expect(appControls()).toBeNull()
-  })
-
-  it('keeps plugin titlebar contributions on a contributed full-page route', () => {
-    renderControls('/kanban')
-
-    expect(pluginChrome()).not.toBeNull()
-    expect(windowControls()).toBeNull()
-    expect(appControls()).toBeNull()
+    expect(windowControls()).not.toBeNull()
+    expect(appControls()).not.toBeNull()
   })
 
   it('keeps the app clusters on chat', () => {
@@ -77,16 +73,62 @@ describe('TitlebarControls fixed clusters', () => {
     expect(appControls()).toBeNull()
   })
 
-  it('hides plugin titlebar contributions on an overlay', () => {
-    renderControls('/settings')
-
-    expect(pluginChrome()).toBeNull()
-  })
-
   it('keeps the app clusters on a first-party workspace page', () => {
     renderControls('/skills')
 
     expect(windowControls()).not.toBeNull()
     expect(appControls()).not.toBeNull()
+  })
+
+  it('a titleBar.tools item alone does not claim the band', () => {
+    renderControls('/plain', { leftTools: [PLUGIN_TOOL] })
+
+    expect(windowControls()).not.toBeNull()
+    expect(pluginTool()).not.toBeNull()
+  })
+
+  describe('when the page projects titlebar chrome', () => {
+    let disposeChrome: () => void
+
+    beforeEach(() => {
+      disposeChrome = registry.register({
+        area: 'titleBar.center',
+        id: 'test-plugin-chrome',
+        render: () => <span>plugin-chrome</span>
+      })
+    })
+
+    afterEach(() => {
+      // The mounted controls subscribe to titleBar.* areas — dispose inside
+      // act so the unmount-time registry update doesn't warn.
+      act(() => disposeChrome())
+    })
+
+    it('hides the app clusters on a contributed full-page route', () => {
+      renderControls('/kanban')
+
+      expect(windowControls()).toBeNull()
+      expect(appControls()).toBeNull()
+    })
+
+    it('keeps plugin titlebar contributions on a contributed full-page route', () => {
+      renderControls('/kanban')
+
+      expect(pluginChrome()).not.toBeNull()
+      expect(windowControls()).toBeNull()
+      expect(appControls()).toBeNull()
+    })
+
+    it('keeps contributed titlebar tools on a chrome-owning page', () => {
+      renderControls('/kanban', { leftTools: [PLUGIN_TOOL] })
+
+      expect(pluginTool()).not.toBeNull()
+    })
+
+    it('hides plugin titlebar contributions on an overlay', () => {
+      renderControls('/settings')
+
+      expect(pluginChrome()).toBeNull()
+    })
   })
 })

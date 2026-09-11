@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
@@ -141,6 +142,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
+  // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
+  // only while that surface is up — so a non-empty area means a page is
+  // actively projecting chrome into the band right now.
+  const titleBarLeft = useContributions('titleBar.left')
+  const titleBarCenter = useContributions('titleBar.center')
+  const titleBarRight = useContributions('titleBar.right')
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarCenter.length + titleBarRight.length > 0
+
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
   // stay correct through flips and rearranges. $sidebarOpen ≙ left side,
@@ -257,18 +266,30 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
   )
 
-  // Contributed full-context plugin pages (`extension`) own the titlebar band.
-  // Hide the app's tool clusters but keep plugin slots in the same fixed
-  // position so `titleBar.center` (e.g. kanban's board switcher) stays mounted.
-  if (hidesFixedTitlebarClusters(view)) {
-    return <div className={leftClusterClass}>{titlebarSlots}</div>
+  // A contributed full page (`extension`) yields the fixed clusters only while
+  // it actually projects chrome into the band — page-mounted `titleBar.*` slots
+  // like kanban's board switcher. A page that mounts no titlebar chrome keeps
+  // the app's controls; an empty claim would leave a bare strip on every plugin
+  // route. Contributed `titleBar.tools` items keep rendering here too, so a
+  // chrome-owning page never silently drops a registered item.
+  if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
+    const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
+
+    return (
+      <div className={leftClusterClass}>
+        {pageTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
+        {titlebarSlots}
+      </div>
+    )
   }
 
   const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
 
   return (
     <>
-      <div aria-label={t.shell.windowControls} className={leftClusterClass}>
+      <div aria-label={t.shell.windowControls} className={leftClusterClass} data-titlebar-cluster="left">
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
@@ -278,6 +299,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+        data-titlebar-cluster="right"
       >
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />

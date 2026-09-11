@@ -10,16 +10,18 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import struct
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
@@ -27,6 +29,34 @@ from hermes_state_common import (
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
+
+
+def _prepare_connection_retirement():
+    """Bind a non-finalizing reference before opening a writable SQLite handle.
+
+    A Python container is cleared during interpreter shutdown. An unmatched
+    CPython C reference keeps the exact connection alive through that cleanup,
+    so SQLite cannot checkpoint its lost WAL generation from a finalizer. This
+    deliberately retains the connection and its descriptors until process exit;
+    it does not make already-unlinked WAL data durable after the last fd closes.
+    """
+    message = (
+        "Writable SessionDB on a Python without sqlite3 setconfig (< 3.12) requires CPython with "
+        "ctypes support to retain a quarantined SQLite connection through interpreter shutdown."
+    )
+    if sys.implementation.name != "cpython":
+        raise RuntimeError(message)
+    try:
+        import ctypes
+
+        # A private function object avoids changing another caller's signature.
+        retain = ctypes.pythonapi["Py_IncRef"]
+        retain.argtypes = (ctypes.py_object,)
+        retain.restype = None
+    except (ImportError, AttributeError, OSError) as exc:
+        raise RuntimeError(message) from exc
+    return retain
+
 
 # _read_sqlite_application_id runs on EVERY write (_raise_if_db_replaced) against the LIVE
 # state.db.  A bare open()/read()/close() there is the howtocorrupt §2.2 bug: close() cancels
@@ -42,13 +72,14 @@ _RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
-def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
-    """Lock-safe raw header read of a possibly-live SQLite database: POSIX preads from a cached,
+def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
+    """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
     never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
     advisory-lock cancellation is a POSIX-only hazard."""
     from hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         with contextlib.suppress(OSError), db_path.open("rb") as handle:
+            handle.seek(offset)
             return handle.read(length)
         return None
     key = str(db_path)
@@ -74,8 +105,13 @@ def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
                 return None
             cached = _HEADER_PROBE_FDS[key] = (fd, fst.st_dev, fst.st_ino)
         with contextlib.suppress(OSError):
-            return os.pread(cached[0], length, 0)
+            return os.pread(cached[0], length, offset)
     return None
+
+
+def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
+    """Lock-safe raw header read of a possibly-live SQLite database (see :func:`_pread_db_range`)."""
+    return _pread_db_range(db_path, 0, length)
 
 
 def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
@@ -147,6 +183,213 @@ def refuse_deleted_wal_generation(db_path) -> None:
         return
     logger.error(_DELETED_WAL_GENERATION_MSG)
     raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
+
+# ── Retired WAL generation capture ──────────────────────────────────────────────────────────────
+#
+# When a writer's -wal/-shm generation is deleted or replaced underneath it, the frames committed only in
+# that WAL survive exactly as long as this process keeps the unlinked inode open. The quarantine (#105670)
+# stops them from being checkpointed under wrong page numbers, but the canonical remediation -- "stop the
+# writers, then reopen" -- lets the kernel drop the inode with them. So the exact generation is captured
+# durably first: located by the recorded (st_dev, st_ino) among this process's OWN descriptors (never by
+# pathname, so a sibling's deleted WAL or a newer sidecar minted at the same path cannot be mistaken for
+# it), read with pread (no descriptor is closed, moved or truncated) and written with fsync.
+
+RETIRED_GENERATION_DIR_SUFFIX = ".retired-wal-"
+RETIRED_GENERATION_MANIFEST = "manifest.json"
+RETIRED_GENERATION_MANIFEST_VERSION = 1
+# Up to this size the main image is copied whole, so the artifact is a self-contained state.db + -wal
+# pair that `hermes sessions recover --source <dir>/state.db` can open. Above it only the 100-byte
+# header is kept (the manifest says so): unlike the WAL inode, the main file survives process exit at
+# its path, and a multi-GB copy inside a shutdown path is a worse failure than a header-only artifact.
+RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES = 512 * 1024 * 1024
+_CAPTURE_CHUNK_BYTES = 8 * 1024 * 1024
+_SQLITE_HEADER_BYTES = 100
+
+
+class RetiredGenerationCaptureError(RuntimeError):
+    """The retired WAL generation could not be captured durably; nothing was mutated."""
+
+
+def _fsync_path(path: Path) -> None:
+    """fsync a file or directory we own. Never used on the live database: opening and closing a
+    descriptor on a file SQLite has locked would cancel this process's POSIX advisory locks."""
+    from hermes_state import _IS_WINDOWS
+    if _IS_WINDOWS:
+        return  # directories cannot be opened; file writes fsync their own handle
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _own_descriptor_for_identity(identity) -> "Optional[int]":
+    """This process's open descriptor for the inode ``(st_dev, st_ino)``, or None.
+
+    Exact-generation qualified: pathnames are never consulted. The descriptor stays owned by
+    SQLite; callers only pread from it."""
+    if not identity:
+        return None
+    wanted = tuple(identity)
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for name in names:
+            if not name.isdigit():
+                continue
+            try:
+                st = os.fstat(int(name))
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == wanted:
+                return int(name)
+        return None  # the table was readable: a definitive miss
+    return None
+
+
+def _copy_range(read: Callable[[int, int], Optional[bytes]], dest: Path, *, size: int) -> Dict[str, Any]:
+    """Stream ``size`` bytes via ``read(offset, length)`` into ``dest`` (temp file, fsync, rename).
+
+    A short read raises ``RetiredGenerationCaptureError``: a truncated copy with a valid-looking
+    manifest would let the caller settle the handle while the unlinked inode still dies at exit."""
+    digest = hashlib.sha256()
+    part = dest.with_name(dest.name + ".part")
+    offset = 0
+    try:
+        with open(part, "wb") as out:
+            while offset < size:
+                chunk = read(offset, min(_CAPTURE_CHUNK_BYTES, size - offset))
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                offset += len(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+    except Exception:
+        part.unlink(missing_ok=True)
+        raise
+    if offset != size:
+        part.unlink(missing_ok=True)
+        raise RetiredGenerationCaptureError(
+            f"short read copying {dest.name}: {offset} of {size} bytes — the retired generation "
+            "is NOT fully captured; the handle stays open for a retry"
+        )
+    os.replace(part, dest)
+    return {"file": dest.name, "bytes": offset, "sha256": digest.hexdigest()}
+
+
+def _copy_descriptor(fd: int, dest: Path, *, size: int) -> Dict[str, Any]:
+    """pread ``fd`` (a descriptor SQLite owns; never closed here) into ``dest``."""
+    return _copy_range(lambda offset, length: os.pread(fd, length, offset), dest, size=size)
+
+
+def _copy_main_image(db_path: Path, dest: Path, *, size: int) -> Dict[str, Any]:
+    """Copy the live main file through the lock-safe cached descriptor (see ``_pread_db_range``)."""
+    return _copy_range(lambda offset, length: _pread_db_range(db_path, offset, length), dest, size=size)
+
+
+def _parse_sqlite_header(header: bytes) -> Dict[str, Any]:
+    if len(header) < _SQLITE_HEADER_BYTES or header[:16] != b"SQLite format 3\x00":
+        return {"valid": False}
+    raw_page_size = struct.unpack(">H", header[16:18])[0]
+    from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
+    fields = {"change_counter": 24, "page_count": 28, "user_version": 60,
+              "application_id": _STATE_DB_APPLICATION_ID_OFFSET, "version_valid_for": 92}
+    parsed = {name: struct.unpack(">I", header[off:off + 4])[0] for name, off in fields.items()}
+    return {"valid": True, "page_size": 65536 if raw_page_size == 1 else raw_page_size, **parsed}
+
+
+def capture_retired_wal_generation(
+    db_path, *, sidecar_identity: Dict[str, tuple], trigger: str,
+) -> Path:
+    """Durably capture the lost WAL generation this process still holds open; return the artifact dir.
+
+    The artifact sits next to the database as ``<name>.retired-wal-<utc ts>-<pid>/`` and holds the
+    retired ``<name>-wal`` (and ``-shm`` when still ours), the main image (or its header past the size
+    cap) and ``manifest.json`` with identities, sizes, digests and the sidecar generation found at the
+    path at capture time. Nothing is merged: whether those frames belong on top of the main file is
+    the operator's decision. Raises :class:`RetiredGenerationCaptureError` when the exact generation
+    cannot be located or written; no descriptor is ever closed, moved or truncated.
+    """
+    db_path = Path(db_path)
+    wal_identity = tuple(sidecar_identity.get("-wal") or ())
+    if not wal_identity:
+        raise RetiredGenerationCaptureError(
+            f"no recorded WAL generation identity for {db_path}; refusing to guess it by pathname")
+    wal_fd = _own_descriptor_for_identity(wal_identity)
+    if wal_fd is None:
+        raise RetiredGenerationCaptureError(
+            f"this process no longer holds the retired WAL inode {wal_identity} of {db_path}")
+    try:
+        wal_size = os.fstat(wal_fd).st_size
+    except OSError as exc:
+        raise RetiredGenerationCaptureError(f"cannot stat the retired WAL of {db_path}: {exc}") from exc
+
+    stem = f"{db_path.name}{RETIRED_GENERATION_DIR_SUFFIX}{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{os.getpid()}"
+    final = db_path.with_name(stem)
+    n = 0
+    while final.exists() or final.with_name(final.name + ".partial").exists():
+        n += 1
+        final = db_path.with_name(f"{stem}-{n}")
+    staging = final.with_name(final.name + ".partial")
+    try:
+        staging.mkdir(parents=True, exist_ok=False)
+        manifest: Dict[str, Any] = {
+            "version": RETIRED_GENERATION_MANIFEST_VERSION,
+            "database": str(db_path),
+            "trigger": trigger,
+            "pid": os.getpid(),
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "python": sys.version.split()[0],
+            "sqlite": sqlite3.sqlite_version,
+            "wal": {"identity": list(wal_identity),
+                    **_copy_descriptor(wal_fd, staging / (db_path.name + "-wal"), size=wal_size)},
+            "shm": None,
+            # The generation living at the path when we captured: a newer writer's, if one was minted.
+            "path_generation_at_capture": {
+                suffix: list(ident) for suffix, ident in _stat_sqlite_sidecar_identity(db_path).items()},
+            "note": ("Frames in the captured WAL were committed by the retired generation. Whether they "
+                     "belong on top of the main file now at the path is an operator decision; inspect "
+                     "the copied image with `hermes sessions recover --inspect-only` first."),
+        }
+        shm_identity = tuple(sidecar_identity.get("-shm") or ())
+        shm_fd = _own_descriptor_for_identity(shm_identity) if shm_identity else None
+        if shm_fd is not None:
+            with contextlib.suppress(OSError):  # SQLite rebuilds the index; the WAL is what matters
+                manifest["shm"] = {"identity": list(shm_identity), **_copy_descriptor(
+                    shm_fd, staging / (db_path.name + "-shm"), size=os.fstat(shm_fd).st_size)}
+        header = _pread_db_range(db_path, 0, _SQLITE_HEADER_BYTES)
+        if header is None:
+            raise RetiredGenerationCaptureError(f"cannot read the main image header of {db_path}")
+        main_size = os.stat(db_path).st_size
+        main: Dict[str, Any] = {"identity": list(_stat_db_file_identity(db_path) or ()) or None,
+                                "size": main_size, "header": _parse_sqlite_header(header)}
+        if main_size <= RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES:
+            main.update(mode="copied", **_copy_main_image(db_path, staging / db_path.name, size=main_size))
+        else:
+            header_file = staging / (db_path.name + ".header")
+            header_file.write_bytes(header)
+            _fsync_path(header_file)
+            main.update(mode="header_only", file=header_file.name, bytes=len(header))
+        manifest["main"] = main
+        # Late import: utils pulls agent-side deps; the capture must stay dependency-light.
+        from utils import atomic_json_write
+        atomic_json_write(staging / RETIRED_GENERATION_MANIFEST, manifest, sort_keys=True)
+        _fsync_path(staging)
+        os.replace(staging, final)
+        _fsync_path(final.parent)
+    except RetiredGenerationCaptureError:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RetiredGenerationCaptureError(
+            f"could not write the retired WAL generation of {db_path} under {staging}: {exc}") from exc
+    return final
 
 
 def _connect_tracked_db(path, tracking_path=None, **kwargs):

@@ -876,7 +876,8 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
-        # Generic relay adapter only if GATEWAY_RELAY_URL / gateway.relay_url is set; no URL -> no-op.
+        # Relay entrypoints share the effective profile opt-out, including when a
+        # deployment injects a URL. No URL or explicitly disabled -> no side effects.
         try:
             from gateway.relay import (
                 register_relay_adapter, relay_url, self_provision_relay, send_relay_policy

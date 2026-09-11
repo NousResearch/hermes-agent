@@ -91,10 +91,10 @@ def portal(monkeypatch, tmp_path):
     anon_auth._mint_failed = False
     from hermes_cli import free_tier_bootstrap as _fb
     _fb.reset_for_tests()
-    # resolve_nous_access_token memoises the last token for 5 s across the process; a token minted
+    # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted
     # by an earlier test must not be served to this one.
     from hermes_cli import auth as auth_mod
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", None)
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
     return fake
 
 

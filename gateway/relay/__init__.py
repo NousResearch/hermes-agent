@@ -6,7 +6,8 @@ hands it at handshake, and the production ``WebSocketRelayTransport``. The publi
 API MAY CHANGE without a deprecation cycle until >=2 real Class-1 platforms have
 shaken out the schema (``docs/relay-connector-contract.md``). Activation is
 config-driven: the relay platform is registered when a connector relay URL is set
-(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url``), like ``gateway.proxy_url``.
+(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url``), like ``gateway.proxy_url``,
+unless the effective relay platform configuration explicitly disables it.
 """
 
 from __future__ import annotations
@@ -69,8 +70,39 @@ def _env_or_cfg_url(env_var: str, cfg_key: str) -> Optional[str]:
     return _env_or_cfg(env_var, cfg_key).rstrip("/") or None
 
 
+def relay_explicitly_disabled() -> bool:
+    """``platforms.relay.enabled: false`` in the profile's YAML (user or managed).
+
+    Same files, merge and boolean normalization as the gateway loader (a malformed user
+    file drops the whole YAML layer there too), minus its env/plugin side effects, so a
+    standalone scheduler can ask without bootstrapping the gateway.
+    Mirrors the loader's ``_enabled_explicit`` rule: only a YAML ``enabled`` key is
+    authoritative — a legacy ``gateway.json`` block is advisory for relay exactly as it
+    is for every other platform, and an absent key keeps URL-only activation.
+    """
+    from gateway.config import Platform, PlatformConfig
+    from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
+    from hermes_constants import get_hermes_home
+
+    try:
+        cfg = read_yaml_layers(get_hermes_home())
+    except Exception:  # noqa: BLE001 - same fallback as load_gateway_config: no YAML layer at all
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    platforms = merge_platform_sections(cfg, gateway, {})
+    bridge_platform_shared_keys(cfg, gateway.get("platforms"), {}, platforms, [Platform.RELAY])
+    block = platforms.get("relay")
+    if not isinstance(block, dict) or not block.get("extra", {}).get("_enabled_explicit"):
+        return False
+    return not PlatformConfig.from_dict(block).enabled
+
+
 def relay_url() -> Optional[str]:
-    """The connector relay endpoint URL, or None. A non-empty value activates the relay platform."""
+    """Effective connector URL; an explicit platform disable vetoes even an env URL."""
+    if relay_explicitly_disabled():
+        return None
     return _env_or_cfg_url("GATEWAY_RELAY_URL", "relay_url")
 
 
@@ -97,6 +129,8 @@ def relay_fronted_platforms() -> set[str]:
     Same env source the live adapter's identity set comes from, so config-time
     validation (cron delivery preflight) and fire-time routing can never disagree —
     and it needs no live adapter, so a standalone scheduler can use it."""
+    if relay_explicitly_disabled():
+        return set()
     return {p for p, _ in relay_platform_identities() if p != "relay"}
 
 
@@ -641,9 +675,12 @@ def send_relay_policy() -> bool:
 
 def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bool:
     """Register the generic ``relay`` platform when a relay URL is configured (or
-    ``force=True`` for tests: transport-less adapter). Returns True if registered.
+    ``force=True`` for tests: transport-less adapter). Neither overrides an
+    explicit profile disable. Returns True if registered.
     With a URL the factory builds a live ``WebSocketRelayTransport``; the adapter
     negotiates the real ``CapabilityDescriptor`` at ``connect()``."""
+    if relay_explicitly_disabled():
+        return False
     resolved_url = url if url is not None else relay_url()
     if not (force or resolved_url):
         return False

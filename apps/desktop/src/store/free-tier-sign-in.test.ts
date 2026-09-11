@@ -17,6 +17,7 @@ vi.mock('@/hermes', async importOriginal => ({
 
 const requestGateway = (async <T>(_method: string, _params?: Record<string, unknown>): Promise<T> =>
   ({ available: true, has_guest: true }) as T) satisfies FreeTierRequester
+
 const start = (id: string) => ({
   expires_in: 900,
   flow: 'device_code' as const,
@@ -44,9 +45,10 @@ describe('free-tier sign-in attempts', () => {
     const { $freeTierSignIn, beginFreeTierSignIn, closeFreeTierSignIn } = await import('./free-tier-sign-in')
     let resolveA: (value: unknown) => void = () => undefined
     startOAuthLogin.mockResolvedValueOnce(start('session-a')).mockResolvedValueOnce(start('session-b'))
-    pollOAuthSession.mockImplementation(
-      (_provider: string, id: string) =>
-        id === 'session-a' ? new Promise(resolve => (resolveA = resolve)) : Promise.resolve({ session_id: id, status: 'pending' })
+    pollOAuthSession.mockImplementation((_provider: string, id: string) =>
+      id === 'session-a'
+        ? new Promise(resolve => (resolveA = resolve))
+        : Promise.resolve({ session_id: id, status: 'pending' })
     )
 
     await beginFreeTierSignIn(requestGateway)

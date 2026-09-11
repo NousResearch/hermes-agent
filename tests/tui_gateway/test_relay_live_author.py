@@ -106,8 +106,12 @@ def test_busy_relay_dms_queue_with_their_authors_and_drain_with_them(monkeypatch
     assert [(t, kw.get("turn_author")) for t, kw in dispatched] == [("ping", AUTHOR), ("hello", OTHER), ("human note", None)]
 
 
-def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_declares_it(turn_env):
+def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_declares_it(turn_env, monkeypatch):
+    from tui_gateway import wisdom_mediation
+
     seen = []
+    activity = []
+    monkeypatch.setattr(wisdom_mediation, "note_activity", lambda session, **kwargs: activity.append(session))
 
     def accepting(user_message, *, turn_author="not passed", **kwargs):
         seen.append(turn_author)
@@ -119,9 +123,14 @@ def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_d
 
     for fn, author in ((accepting, AUTHOR), (accepting, None), (legacy, AUTHOR)):
         agent = types.SimpleNamespace(session_id="a", run_conversation=fn, clear_interrupt=lambda: None)
-        srv._run_prompt_submit("rid", "ui-sid", _session(agent=agent, running=True), "ping", turn_author=author)
+        session = _session(agent=agent, running=True)
+        session["_wisdom_activity_tracking"] = True
+        srv._run_prompt_submit("rid", "ui-sid", session, "ping", turn_author=author)
+        assert session["_wisdom_user_activity"] > 0
+        assert activity[-1] is session
 
     assert seen == [AUTHOR, "not passed", "legacy called"]
+    assert len(activity) == 3
 
 
 def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monkeypatch):

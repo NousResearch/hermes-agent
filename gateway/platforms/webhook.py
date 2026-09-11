@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -60,6 +61,8 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "ip6-localhost", "
 _V2_REPLAY_WINDOW_SECONDS = 300
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+# Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
+_GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def _is_loopback_host(host: Optional[str]) -> bool:
@@ -448,10 +451,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 return _UNPARSEABLE
 
     async def _handle_deliver_only(self, prompt: str, payload: Any, route_config: dict, route_name: str,
-                                   event_type: str, delivery_id: str) -> "web.Response":
+                                   event_type: str, delivery_id: str, profile: Optional[str] = None) -> "web.Response":
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
-        delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload,
+        delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
@@ -556,7 +559,8 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("deliver_only"):
-            return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
+            return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
+                                                   profile)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 
@@ -565,8 +569,10 @@ class WebhookAdapter(BasePlatformAdapter):
         """Record delivery info, spawn the agent run, and return 202 immediately."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
+        # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
-            "deliver": route_config.get("deliver", "log"),
+            "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
@@ -735,7 +741,8 @@ class WebhookAdapter(BasePlatformAdapter):
             # the worker thread is bounded by the subprocess timeout below.
             result = await asyncio.to_thread(
                 subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                env=self._github_env(delivery.get("profile")))
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)
@@ -748,14 +755,26 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] github_comment delivery error: %s", e)
             return SendResult(success=False, error=str(e))
 
-    def _find_adapter(self, target_platform: Platform):
-        """Default adapters first; multiplex may park a platform only on a secondary profile (_profile_adapters)."""
-        if adapter := self.gateway_runner.adapters.get(target_platform):
-            return adapter
-        for amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).values():
-            if isinstance(amap, dict) and amap.get(target_platform) is not None:
-                return amap[target_platform]
-        return None
+    def _github_env(self, profile: Optional[str]) -> Optional[dict]:
+        """``gh`` environment for a delivery: a routed profile authenticates with ITS ``GH_TOKEN`` /
+        ``GITHUB_TOKEN`` from the profile secret scope; under multiplex ``os.environ`` carries the default
+        profile's, so those keys are dropped when the profile has none (fail closed, ``gh`` then falls to
+        its own stored login). ``None`` (inherit) for bare/default-bound routes."""
+        if not profile or not isinstance(profile, str) or profile == "default":
+            return None
+        from agent.secret_scope import get_secret
+        env = {k: v for k, v in os.environ.items() if k not in _GH_TOKEN_VARS}
+        with self._profile_scope(profile):
+            for name in _GH_TOKEN_VARS:
+                if value := get_secret(name):
+                    env[name] = value
+        return env
+
+    def _find_adapter(self, target_platform: Platform, profile: Optional[str]):
+        """The routed profile's own adapter, fail-closed. A ``/p/<profile>/`` route must never post as
+        another profile's bot, and a bare (default-bound) route must not borrow a platform parked only on
+        a secondary profile — both directions leaked before #65939."""
+        return self.gateway_runner._authorization_adapter(target_platform, profile)
 
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
@@ -765,14 +784,26 @@ class WebhookAdapter(BasePlatformAdapter):
             target_platform = Platform(platform_name)
         except ValueError:
             return SendResult(success=False, error=f"Unknown platform: {platform_name}")
-        if not (adapter := self._find_adapter(target_platform)):
+        profile = delivery.get("profile")
+        if not (adapter := self._find_adapter(target_platform, profile)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
-        if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
-            if not home:
-                return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
-            chat_id = home.chat_id
-        thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-        return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+        # Whole leg under the routed profile's scope: the home channel comes from THAT profile's config
+        # (``self.gateway_runner.config`` is the default profile's), and the adapter's send reads its
+        # credentials through the profile secret scope.
+        with self._profile_scope(profile):
+            if not chat_id:
+                home = self._delivery_config(profile).get_home_channel(target_platform)
+                if not home:
+                    return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
+                chat_id = home.chat_id
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+
+    def _delivery_config(self, profile: Optional[str]):
+        """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""
+        if not profile or not isinstance(profile, str):
+            return self.gateway_runner.config
+        from gateway.config import load_gateway_config
+        return load_gateway_config()

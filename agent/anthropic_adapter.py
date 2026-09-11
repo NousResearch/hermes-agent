@@ -343,16 +343,22 @@ def _build_anthropic_client_with_bearer_hook(
 
 
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
-    """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
-    ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
-    sends dual auth — X-Api-Key *and* Authorization: Bearer — on every Portal/MiniMax/OAuth/Entra
-    request; clear it whenever we intentionally authenticated via auth_token."""
-    if headers:
-        kwargs["default_headers"] = headers
-    client = sdk.Anthropic(**kwargs)
-    if "auth_token" in kwargs and "api_key" not in kwargs:
-        client.api_key = None
-    return client
+    """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+
+    The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
+    ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
+    auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
+    / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
+    SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
+    ``with_options()``, which re-runs the constructor and re-reads the environment."""
+    merged = dict(headers)
+    if "api_key" in kwargs and "auth_token" not in kwargs:
+        merged["Authorization"] = sdk.Omit()
+    elif "auth_token" in kwargs and "api_key" not in kwargs:
+        merged["X-Api-Key"] = sdk.Omit()
+    if merged:
+        kwargs["default_headers"] = merged
+    return sdk.Anthropic(**kwargs)
 
 
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
@@ -410,14 +416,17 @@ def build_anthropic_bedrock_client(region: str):
     """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
     SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
     budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
-    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K."""
+    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
+    A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
+    (primary, auxiliary, per-request rebuild) enforces it."""
+    from agent.bedrock_adapter import bedrock_guardrail_headers
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
     return sdk.AnthropicBedrock(
         aws_region=region, timeout=_client_timeout(None),
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
-        default_headers=_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]),
+        default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
 
 

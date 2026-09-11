@@ -66,6 +66,61 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_cli.local_runtime.binaries import runtimes_root
+    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    from hermes_cli.local_runtime.growth import save_window_override
+    from hermes_cli.web_routers import local_models
+
+    # Dense spill has no override-tensor flag: status must use the recorded decision.
+    profile = ModelProfile("status-mtp", 16 << 30, 0, 262144,
+                           [(LayerKind.FULL, 4096)] * 32, n_vocab=151936)
+    model_id = profile.name
+    _write_fake_gguf(bootstrap.models_dir() / f"{model_id}.gguf")
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+    monkeypatch.setattr(local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1"})
+
+    server_window = FLOOR
+
+    def router_response(running, route, **kwargs):
+        if route == "/models":
+            return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
+        assert route == f"/props?model={model_id}"
+        return {"default_generation_settings": {"n_ctx": server_window}}
+
+    monkeypatch.setattr(local_models, "_router_request", router_response)
+    floor_need = profile.weights_bytes + ctx_bytes(replace(profile, kv_scale=1.2), FLOOR)
+    lean = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    ini = runtimes_root() / "presets.ini"
+    grown = 73728
+    for device, override, spilled in ((floor_need + lean - 1, FLOOR, True),
+                                      (floor_need + stacked, grown, False)):
+        save_window_override(model_id, override)
+        preset = presets.generate_presets(bootstrap.models_dir(),
+                                         HardwareBudget(device, device, 8 << 30), ini, {model_id})[0]
+        assert preset.window == override and preset.spilled is spilled
+        assert preset.keys["spec-type"] == "draft-mtp"
+        assert "ubatch-size" not in preset.keys and "override-tensor" not in preset.keys
+        # Deliberately differ from the plan to prove the server remains the grant authority.
+        server_window = preset.window - 1024
+        response = client.get("/api/local-models/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["loaded_models"][model_id] == "loaded"
+        placement = data["placement"][model_id]
+        assert placement["spilled"] is spilled
+        assert placement["window"] == preset.window
+        assert placement["granted_window"] == server_window
+        assert placement["granted_window_label"] == local_models._k_label(server_window)
+
+
 # ── hardware ─────────────────────────────────────────────────
 
 

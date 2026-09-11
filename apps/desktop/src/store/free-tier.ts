@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 /** The model the free-tier route runs on. Used to recognise a session that is
@@ -98,7 +99,7 @@ export function freeTierReadyPending(status: FreeTierStatus | null, route: boole
  * instead, so the two can never both be on screen.
  */
 export function freeTierStripPending(status: FreeTierStatus | null, route: boolean | null): boolean {
-  return freeTierNoticePending(status) && route === false
+  return freeTierNoticePending(status) && route === false && !onboardingSurfaceActive()
 }
 
 // Several composers can be mounted at once (split zones, a popout mid-dock).

@@ -16,7 +16,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, extract_skill_editorial_metadata,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -184,9 +185,23 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _skill_metadata_projection(
+    skills: List[Dict[str, Any]], *, include_editorial: bool
+) -> List[Dict[str, Any]]:
+    """Copy cached metadata, omitting UI-only copy for agent-facing callers."""
+    if include_editorial:
+        return [dict(skill) for skill in skills]
+    return [
+        {key: value for key, value in skill.items()
+         if key not in {"editorial_name", "editorial_description"}}
+        for skill in skills
+    ]
+
+
+def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI).
+    ``include_editorial=True`` adds human-facing copy without replacing the canonical fields."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -197,7 +212,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return [dict(s) for s in cached[2]]
+        return _skill_metadata_projection(cached[2], include_editorial=include_editorial)
     skills = []
     seen_names: set = set()
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
@@ -217,7 +232,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
+                description = _truncate_description(description)
+                editorial = extract_skill_editorial_metadata(
+                    frontmatter, fallback_name=name, fallback_description=description)
+                skills.append({"name": name, "description": description, **editorial,
                                "category": _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -226,7 +244,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return [dict(s) for s in skills]
+    return _skill_metadata_projection(skills, include_editorial=include_editorial)
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -516,191 +534,6 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
-
-
-# ── KENSEI CUSTOM — skill access allowlist + task-scoped grants (ported) ──
-
-def _skill_exists(name: str) -> bool:
-    """True if a skill named ``name`` exists anywhere in the resolvable skill
-    dirs (local + external). Used to refuse grants for non-existent skills."""
-    try:
-        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-
-        for d in get_all_skills_dirs():
-            if not d.exists():
-                continue
-            for md in d.rglob("SKILL.md"):
-                if is_excluded_skill_path(md):
-                    continue
-                if md.parent.name == name:
-                    return True
-        return False
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _current_profile() -> Optional[str]:
-    """Resolve the active profile name from HERMES_HOME (gateways set HERMES_HOME,
-    not HERMES_PROFILE). Falls back to the HERMES_PROFILE env if present."""
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-
-        return get_active_profile_name()
-    except Exception:  # noqa: BLE001
-        return os.environ.get("HERMES_PROFILE")
-
-
-def _has_active_grant(profile: Optional[str], skill: str) -> bool:
-    """True if ``profile`` holds a live temporary grant for ``skill``.
-
-    Delegates to the single grant engine (tools.skill_grants) so the
-    borrow/revoke reconciliation lives in exactly one place. Fails closed.
-    """
-    try:
-        from tools.skill_grants import has_active_grant
-
-        return has_active_grant(profile, skill)
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _skill_access_decision(resolved_name: str) -> str:
-    """Allowlist decision for loading ``resolved_name``.
-
-    Returns ``"allow"``, ``"shadow_block"`` (load proceeds, log a would-block),
-    or ``"block"`` (deny the load). Honours the per-profile enforcement mode,
-    the enabled_skills allowlist (always_skills included), and active grants.
-    """
-    from agent.skill_utils import (
-        get_enabled_skill_names,
-        get_skill_enforcement_mode,
-    )
-
-    mode = get_skill_enforcement_mode()
-    if mode == "off":
-        return "allow"
-    enabled = get_enabled_skill_names()
-    if enabled is None:  # no allowlist configured yet → unrestricted (pre-seed)
-        return "allow"
-    profile = _current_profile()
-    if resolved_name in enabled or _has_active_grant(profile, resolved_name):
-        return "allow"
-    return "shadow_block" if mode == "shadow" else "block"
-
-
-def skill_request(skill: str, task_id: str, reason: str = "", **kwargs) -> str:
-    """Request a temporary, task-scoped grant for a skill not in your enabled set.
-
-    The skill broker evaluates the request against the NEVER_GRANT safety list
-    and a per-skill frequency cap. A granted skill becomes loadable with
-    skill_view for the duration of the task and is auto-revoked when the task
-    completes (or after a TTL). Repeated grants are tracked so Denji can decide
-    whether to enable the skill permanently for this profile.
-
-    Args:
-        skill: The skill name to borrow (must already exist in the library;
-            raw external skills are refused until rewritten — ask a lead/Denji).
-        task_id: The kanban task this grant is scoped to.
-        reason: Why the skill is needed for this task.
-    """
-    profile = _current_profile() or "default"
-    try:
-        from tools.skill_grants import grant_skill
-
-        # A grant only makes sense for a skill that exists in the library.
-        if not _skill_exists(skill):
-            return json.dumps(
-                {
-                    "success": False,
-                    "granted": False,
-                    "error": (
-                        f"Skill '{skill}' is not in the library. Ask the relevant lead "
-                        "or Denji to source/create it (external skills must be rewritten "
-                        "internally before use)."
-                    ),
-                },
-                ensure_ascii=False,
-            )
-        decision = grant_skill(profile, skill, task_id, reason)
-        decision["success"] = True
-        decision["profile"] = profile
-        decision["skill"] = skill
-        return json.dumps(decision, ensure_ascii=False)
-    except Exception as e:  # noqa: BLE001
-        return json.dumps({"success": False, "granted": False, "error": str(e)}, ensure_ascii=False)
-
-
-
-
-# ── KENSEI CUSTOM — agent-facing tool_request tool (ported) ──
-
-def tool_request(tool: str, task_id: str, reason: str = "", **kwargs) -> str:
-    """Request a temporary, task-scoped grant for a tool not in your enabled toolset.
-
-    The tool broker validates the tool exists in the registry, checks it
-    against the NEVER_GRANT safety list (curated dangerous tool names, plus
-    every tool in dangerous toolsets such as "terminal"), and applies a
-    per-tool frequency cap. A granted tool becomes callable for the duration
-    of the task and is auto-revoked when the task completes (or after a TTL).
-    Dangerous tools (profile-lifecycle mutators, skill management, terminal
-    commands) are never granted this way; ask the relevant lead or Denji.
-    Repeated grants are tracked so the tool can be enabled permanently for
-    this profile.
-
-    Args:
-        tool: The tool name to borrow.
-        task_id: The kanban task this grant is scoped to.
-        reason: Why the tool is needed for this task.
-    """
-    profile = _current_profile() or "default"
-    try:
-        from tools.tool_grants import grant_tool
-
-        decision = grant_tool(profile, tool, task_id, reason)
-        decision["success"] = True
-        decision["profile"] = profile
-        decision["tool"] = tool
-        return json.dumps(decision, ensure_ascii=False)
-    except Exception as e:  # noqa: BLE001
-        return json.dumps({"success": False, "granted": False, "error": str(e)}, ensure_ascii=False)
-
-
-TOOL_REQUEST_SCHEMA = {
-    "name": "tool_request",
-    "description": (
-        "Request temporary, task-scoped access to a tool that is not in your "
-        "enabled toolset. Use this when, mid-task, you need a tool you cannot "
-        "call. The broker validates the tool exists, checks safety (some "
-        "tools and toolsets are never granted, e.g. terminal commands or "
-        "profile-lifecycle mutators) and a frequency cap, then grants the "
-        "tool for this task only; it is auto-revoked when the task completes. "
-        "Dangerous tools require Denji. Repeated requests are tracked so the "
-        "tool can be enabled permanently if you use it often."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "tool": {"type": "string", "description": "The tool name to borrow."},
-            "task_id": {"type": "string", "description": "The kanban task this grant is scoped to."},
-            "reason": {"type": "string", "description": "Why the tool is needed for this task."},
-        },
-        "required": ["tool", "task_id"],
-    },
-}
-
-registry.register(
-    name="tool_request",
-    toolset="skills",
-    schema=TOOL_REQUEST_SCHEMA,
-    handler=lambda args, **kw: tool_request(
-        tool=args.get("tool"),
-        task_id=args.get("task_id") or kw.get("task_id"),
-        reason=args.get("reason", ""),
-    ),
-    check_fn=check_skills_requirements,
-    emoji="🛠️",
-)
-
 def skill_view(
     name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
@@ -721,18 +554,6 @@ def skill_view(
         # since `bare` is not namespace-checked.
         if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        # KENSEI CUSTOM — allowlist enforcement (Skill Access Manager, Phase 2-3).
-        _access = _skill_access_decision(name)
-        if _access != "allow":
-            _profile = _current_profile()
-            from agent.skill_utils import get_skill_enforcement_mode as _gem
-            _shadow = _gem() == "shadow"
-            return _fail(
-                f"Skill '{name}' is not in your enabled set"
-                + (" (shadow mode: this load would be blocked in enforce mode)" if _shadow else "")
-                + ". Use skill_request(skill, task_id, reason) to ask for task-scoped access.",
-                hint="brokered access",
-            )
         project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
         error, skill_dir, skill_md = _locate_skill(
             name, local_category_name, project_dirs, all_dirs)
@@ -834,6 +655,25 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
+def _record_active_skill_view(skill_name: str, **kw) -> None:
+    """Track every successful skill_view, including unchanged dedup stubs."""
+
+    try:
+        from tools.skill_usage import bump_use, bump_view
+
+        bump_view(skill_name)
+        # A skill_view tool call is the agent actively loading the skill to
+        # act on it. The unchanged-content stub saves prompt tokens, but it is
+        # still a real use for lifecycle and local Wisdom qualification.
+        bump_use(
+            skill_name,
+            task_id=kw.get("task_id"),
+            session_id=kw.get("session_id"),
+        )
+    except Exception:
+        pass
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
@@ -841,6 +681,9 @@ def _skill_view_with_bump(args, **kw):
     name = args.get("name", "")
     task_id = kw.get("task_id")
     if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+        with suppress(Exception):
+            if resolved := json.loads(stub).get("name") or name:
+                _record_active_skill_view(str(resolved), **kw)
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
@@ -848,74 +691,13 @@ def _skill_view_with_bump(args, **kw):
         if isinstance(parsed, dict) and parsed.get("success"):
             _record_skill_view(task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
-                bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
-        # ── KENSEI CUSTOM — profile-activity ledger: skill.loaded (ported) ──
-        with suppress(Exception):
-            from hermes_cli.profile_activity_ledger import record_event_if_enabled
-            from tools.skill_utils import _current_profile
-            _loaded_profile = _current_profile()
-            record_event_if_enabled(
-                source="skill.loader",
-                actor_profile=_loaded_profile,
-                target_profile=_loaded_profile,
-                event_type="skill.loaded",
-                object_type="skill",
-                object_id=str(parsed.get("name") or name),
-                summary=f"Loaded skill {parsed.get('name') or name}",
-                payload={
-                    "requested_name": name,
-                    "file_path": args.get("file_path"),
-                    "skill_dir": parsed.get("skill_dir"),
-                    "preprocess": True,
-                    "task_id": task_id,
-                },
-            )
-        # ── END KENSEI CUSTOM ──
+                _record_active_skill_view(str(resolved), **kw)
     return result
 
 
 registry.register(
     name="skill_view", toolset="skills", schema=SKILL_VIEW_SCHEMA, handler=_skill_view_with_bump,
     check_fn=check_skills_requirements, emoji="📚")
-
-SKILL_REQUEST_SCHEMA = {
-    "name": "skill_request",
-    "description": (
-        "Request temporary, task-scoped access to a skill that is not in your "
-        "enabled set. Use this when, mid-task, you need a skill you cannot load. "
-        "The broker checks safety (some capabilities are never granted) and a "
-        "frequency cap, then grants the skill for this task only; it is "
-        "auto-revoked when the task completes. If the skill does not exist, ask "
-        "the relevant lead or Denji to source/create it. Repeated requests are "
-        "tracked so the skill can be enabled permanently if you use it often."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "skill": {"type": "string", "description": "The skill name to borrow."},
-            "task_id": {"type": "string", "description": "The kanban task this grant is scoped to."},
-            "reason": {"type": "string", "description": "Why the skill is needed for this task."},
-        },
-        "required": ["skill", "task_id"],
-    },
-}
-
-registry.register(
-    name="skill_request",
-    toolset="skills",
-    schema=SKILL_REQUEST_SCHEMA,
-    handler=lambda args, **kw: skill_request(
-        skill=args.get("skill"),
-        task_id=args.get("task_id") or kw.get("task_id"),
-        reason=args.get("reason", ""),
-    ),
-    check_fn=check_skills_requirements,
-    emoji="🙋",
-)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

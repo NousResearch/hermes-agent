@@ -536,7 +536,11 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
     with _queue_state_lock:
         if not _queued_file_handlers:
             return False
-        if any(isinstance(h, _ProfileRoutingFileHandler) for h in _queued_file_handlers):
+        routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+        if routers:
+            for handler in routers:
+                with handler._profile_handlers_lock:
+                    handler._profile_homes = handler._profile_homes.union(homes)
             return True
         listener = _queue_listener
         if listener is not None:

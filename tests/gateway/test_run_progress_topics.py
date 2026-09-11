@@ -1131,6 +1131,15 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
     assert adapter.native_stops == 1
 
 
+class UnsupportedDestinationTaskCardAdapter(NativeTaskCardAdapter):
+    """Relay connector shape for a flat Slack DM: cards need a thread anchor, so the
+    connector rejects every card frame with a deterministic unsupported-destination error."""
+
+    async def send_native_task_card_progress(self, *args, **kwargs) -> SendResult:
+        await super().send_native_task_card_progress(*args, **kwargs)
+        return SendResult(success=False, error="slack task_card requires a thread anchor")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "display_cfg",
@@ -1187,6 +1196,34 @@ async def test_slack_operator_tool_progress_new_keeps_task_cards(monkeypatch, tm
     assert adapter.native_updates
     assert adapter.sent == []
     assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_unsupported_card_destination_does_not_degrade_to_text_progress(
+    monkeypatch, tmp_path
+):
+    # Flat Slack DM, no operator config (tier default: tool_progress off). The connector cannot
+    # render a card without a thread anchor; that is a property of the destination, not a
+    # transient native failure, so the lane must NOT fall back to text tool progress the operator
+    # never asked for. Transient failures keep the fallback (see the test above).
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-unsupported-dest",
+        platform=Platform.SLACK,
+        chat_id="D1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=UnsupportedDestinationTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.native_updates) == 1
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

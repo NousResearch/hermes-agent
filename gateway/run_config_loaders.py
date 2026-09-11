@@ -198,7 +198,8 @@ class GatewayConfigLoadersMixin:
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
         """Effective service tier: a session-scoped /fast override beats the config default.
 
-        The override stores "priority" or None (explicit normal), so presence — not truthiness — decides.
+        The override stores "priority" / "flex" / "auto" / "cold" or None (explicit normal), so
+        presence — not truthiness — decides.
         """
         resolved_session_key = self._resolve_session_key_or_none(source, session_key)
         if resolved_session_key:
@@ -207,8 +208,18 @@ class GatewayConfigLoadersMixin:
                 return _t_state.conversation.service_tier_override
         return self._load_service_tier()
 
+    def _session_service_tier_is_pinned(self, session_key: Optional[str] = None) -> bool:
+        """True when this session has an explicit /fast pin (including normal)."""
+        if not session_key:
+            return False
+        _t_state = self._peek_session_state(session_key)
+        return (
+            _t_state is not None
+            and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET
+        )
+
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
-        """Set ("priority" / None = explicit normal) or ``clear`` the session-scoped /fast override."""
+        """Set ("priority" / "flex" / None = explicit normal) or ``clear`` the session-scoped /fast override."""
         if not session_key:
             return
         # Presence-sensitive: "priority" or None (explicit normal) both count as an override; the
@@ -219,16 +230,16 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
+        """``agent.service_tier`` via :func:`parse_service_tier`; unknown values warn + None."""
+        from hermes_constants import SERVICE_TIER_DISABLED_VALUES, parse_service_tier
+
         raw = cls._cfg_str("agent", "service_tier")
+        parsed = parse_service_tier(raw)
+        if parsed is not None:
+            return parsed
         value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
+        if value and value not in SERVICE_TIER_DISABLED_VALUES:
+            logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 
     @staticmethod

@@ -427,6 +427,43 @@ class TestParseReasoningEffort:
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
+class TestParseServiceTier:
+    """Tests for parse_service_tier() — string → canonical wire/bounded value."""
+
+    def test_aliases_and_disabled(self):
+        from hermes_constants import parse_service_tier
+
+        assert parse_service_tier("fast") == "priority"
+        assert parse_service_tier("on") == "priority"
+        assert parse_service_tier("priority") == "priority"
+        assert parse_service_tier("flex") == "flex"
+        assert parse_service_tier("auto") == "auto"
+        assert parse_service_tier("COLD") == "cold"
+        assert parse_service_tier("") is None
+        assert parse_service_tier("normal") is None
+        assert parse_service_tier("bogus") is None
+
+    def test_resolve_per_model_then_global_then_fallback(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        cfg = {
+            "service_tier": "priority",
+            "service_tier_overrides": {"gpt-5": "flex"},
+        }
+        assert resolve_service_tier_for_model(cfg, "openai/gpt-5") == "flex"
+        assert resolve_service_tier_for_model(cfg, "other") == "priority"
+        assert resolve_service_tier_for_model({"service_tier": ""}, "x", fallback="auto") == "auto"
+
+    def test_explicit_normal_override_clears_global(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        cfg = {
+            "service_tier": "priority",
+            "service_tier_overrides": {"gpt-5": "normal"},
+        }
+        assert resolve_service_tier_for_model(cfg, "gpt-5") is None
+
+
 class TestResolvePerModelReasoningEffort:
     """Tests for resolve_per_model_reasoning_effort() — spelling-tolerant
     per-model override lookup from agent.reasoning_overrides dict.

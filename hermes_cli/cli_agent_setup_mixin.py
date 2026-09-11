@@ -44,6 +44,32 @@ def _current_runtime(cli) -> dict:
         "credential_pool": getattr(cli, "_credential_pool", None)}
 
 
+def _baked_tier_keys_from_mapping(mapped: dict | None) -> dict:
+    """Keys the framework resolver actually wrote (gateway-shaped provenance)."""
+    from agent.fast_mode import TIER_WIRE_KEYS
+
+    mapped = mapped or {}
+    return {key: mapped[key] for key in TIER_WIRE_KEYS if key in mapped}
+
+
+def _apply_framework_tier_bake(agent, mapped: dict | None) -> None:
+    """Mark ``service_tier``/``speed`` keys the CLI framework wrote onto *agent*."""
+    from agent.fast_mode import set_framework_baked_tier_keys
+
+    set_framework_baked_tier_keys(agent, mapped or None)
+
+
+def _release_framework_tier_bake(agent) -> None:
+    """Drop a previous session's /fast bake from a reused agent (``/new``).
+
+    Clears live ``request_overrides`` and ``_primary_runtime.request_overrides``
+    so a later fallback restore cannot resurrect the old pin unmarked.
+    """
+    from agent.fast_mode import release_framework_baked_tier_keys
+
+    release_framework_baked_tier_keys(agent)
+
+
 def _route_signature(model, runtime: dict) -> tuple:
     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
     return (
@@ -392,19 +418,22 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With `/fast` on (service_tier == "priority") attach request_overrides;
-        auto/cold tiers are applied per request by agent.fast_mode instead."""
-        from hermes_cli.models import resolve_fast_mode_overrides
+        provider. Static ``priority``/``flex`` attach request_overrides; auto/cold
+        tiers are applied per request by agent.fast_mode instead."""
+        from hermes_cli.models import resolve_service_tier_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        overrides = None
-        if getattr(self, "service_tier", None) == "priority":
+        mapped = None
+        if getattr(self, "service_tier", None) in {"priority", "flex"}:
             try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                mapped = resolve_service_tier_overrides(
+                    route["model"], self.service_tier,
+                    provider=runtime["provider"], base_url=runtime["base_url"])
             except Exception:
                 pass
-        route["request_overrides"] = overrides
+        route["request_overrides"] = mapped
+        # * Only keys the resolver added — caller-supplied request_overrides stay unmarked.
+        route["framework_baked_tier_keys"] = _baked_tier_keys_from_mapping(mapped)
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -492,7 +521,7 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, framework_baked_tier_keys: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
@@ -567,6 +596,10 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
+            self.agent._service_tier_session_pinned = bool(
+                getattr(self, "_service_tier_session_pinned", False)
+            )
+            _apply_framework_tier_bake(self.agent, framework_baked_tier_keys)
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

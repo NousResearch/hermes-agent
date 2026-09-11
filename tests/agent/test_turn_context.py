@@ -214,6 +214,48 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_fast_window_opens_after_primary_runtime_restore(monkeypatch):
+    """auto/cold begin_turn runs after restore, with the turn-start deadline."""
+    agent = _FakeAgent()
+    agent.model = "fallback-model"
+    agent.service_tier = None
+    agent.fast_auto_seconds = 60
+    agent._fast_turn_started_at = 1000.0
+    order = []
+
+    def restore():
+        order.append(("restore", agent.model))
+        agent.model = "gpt-5.4"
+
+    agent._restore_primary_runtime = restore
+    orig_begin = __import__("agent.fast_mode", fromlist=["begin_turn"]).begin_turn
+
+    def tracking_begin(ag, history, *, started_at=None):
+        order.append(("begin", ag.model, started_at))
+        return orig_begin(ag, history, started_at=started_at)
+
+    monkeypatch.setattr("agent.fast_mode.begin_turn", tracking_begin)
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {
+            "agent": {
+                "service_tier": "",
+                "service_tier_overrides": {"gpt-5.4": "auto"},
+                "fast_auto_seconds": 60,
+            }
+        },
+    )
+    _build(agent)
+    assert order[0][0] == "restore"
+    assert order[1][0] == "begin"
+    assert order[1][1] == "gpt-5.4"
+    assert order[1][2] == 1000.0
+    assert agent._fast_until == 1060.0
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged oversized payload must not escape turn construction."""
     agent = _FakeAgent()

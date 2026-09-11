@@ -816,6 +816,9 @@ prompt_caching:
 #                            # Increase for slow connections or self-hosted image servers
 #     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,
 #                            # high, xhigh, max, ultra. Empty = provider default.
+#                            # service_tier: flex | priority  OpenRouter-only
+#                            # queue for this aux slot (extra_body.service_tier
+#                            # wins; first-party routes ignore it).
 #                            # Works on every auxiliary task block (vision,
 #                            # web_extract, compression, title_generation, curator,
 #                            # background_review, moa_reference, ...). Example: run
@@ -884,6 +887,7 @@ prompt_caching:
 #     enabled: true            # false = skip automatic forks (/refine still works)
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
+#     # service_tier: "flex"   # OpenRouter-only; extra_body.service_tier wins
 
 # =============================================================================
 # Persistent Memory
@@ -1191,14 +1195,44 @@ agent:
   reasoning_overrides: {}
 
   # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
-  # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.
+  # on Opus 4.8+, plus OpenRouter flex / priority for any catalog model).
+  # Premium pricing on first-party fast endpoints; OpenRouter flex is the
+  # cheaper slower queue, priority is the faster one.
   #   "" / "normal" - off (default)
-  #   "fast"        - every request
+  #   "fast"        - every request (priority)
+  #   "flex"        - OpenRouter Flex Processing (ignored on first-party routes)
   #   "auto"        - only the first fast_auto_seconds of every turn
   #   "cold"        - that window on the first turn of a session only
-  # Also: /fast normal|fast|auto|cold [--global]
+  # Also: /fast normal|fast|flex|auto|cold [--global]
   service_tier: ""
   fast_auto_seconds: 60
+
+  # Per-model service-tier overlay (optional dict). Resolved at request time so
+  # /model, fallback, cron, and delegated children pick the right tier without
+  # extra plumbing. Spelling-tolerant keys (same matching as reasoning_overrides).
+  # Precedence: session /fast pin > this map > agent.service_tier.
+  # service_tier_overrides:
+  #   "openai/gpt-5": "flex"
+  #   "anthropic/claude-opus-4.6": "priority"
+  service_tier_overrides: {}
+
+  # Opt-in per-turn OpenRouter service-tier climb on slow streaming TTFT.
+  # consecutive_slow_requests slow successes climb one rung (flex -> default ->
+  # priority) for the REST of that turn; the next user prompt resets to the
+  # configured base. Never mutates agent.service_tier / request_overrides.
+  # Hard-off for cron, batch, subagents, curator, background tasks, and /fast pins.
+  # When disabled: no clock reads and no module import; a single None-check per
+  # streamed delta.
+  # Non-streaming calls, length-continuation, and compression/redirect restarts
+  # produce no observation (conservative under-escalation).
+  # service_tier_escalation:
+  #   enabled: true                    # default: false (opt-in)
+  #   ttft_threshold_seconds: 8.0
+  #   consecutive_slow_requests: 1
+  service_tier_escalation:
+    enabled: false
+    ttft_threshold_seconds: 8.0
+    consecutive_slow_requests: 1
 
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,

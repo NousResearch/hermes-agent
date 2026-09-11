@@ -1398,6 +1398,34 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
 
 
+def _apply_effective_overrides_to_summary_kwargs(agent, summary_kwargs: dict) -> None:
+    """Copy main-loop request overrides onto the iteration-limit summary call.
+
+    There is no separate ``auxiliary.summary`` tier. The summary is still
+    part of the same turn, so it must carry the effective ``service_tier``
+    (including a TTFT climb) the conversation loop uses.
+
+    Chat-completions only. ``anthropic_messages`` does not put
+    ``service_tier`` on the wire (main loop maps overrides to ``fast_mode``
+    only); its summary ``_ant_kw`` is built the same way.
+    """
+    try:
+        overrides = effective_request_overrides(agent)
+    except Exception:
+        return
+    if not overrides:
+        return
+    extra_override = overrides.get("extra_body")
+    if isinstance(extra_override, dict):
+        merged = dict(summary_kwargs.get("extra_body") or {})
+        merged.update(extra_override)
+        if merged:
+            summary_kwargs["extra_body"] = merged
+    for key, value in overrides.items():
+        if key != "extra_body":
+            summary_kwargs[key] = value
+
+
 def _model_dump_safe(obj):
     """``model_dump(warnings=False)`` (avoids pydantic serializer UserWarnings on
     generic-union SDK models), falling back for shims that reject the kwarg."""
@@ -1906,6 +1934,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+            try:
+                from agent.service_tier_escalation import (
+                    escalation_base_tier,
+                    rebase_escalation_runtime,
+                )
+
+                rebase_escalation_runtime(agent, escalation_base_tier(agent))
+            except Exception:
+                logger.debug(
+                    "Fallback %s: service-tier escalation rebase failed",
+                    agent.model,
+                    exc_info=True,
+                )
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
@@ -2064,6 +2105,7 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
+    _apply_effective_overrides_to_summary_kwargs(agent, summary_kwargs)
     return summary_kwargs
 
 
@@ -2277,7 +2319,11 @@ def _with_stream_emitters(agent, run):
 def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
     """Codex streams internally via _run_codex_stream (reached through
     _interruptible_api_call); park ``on_first_delta`` on the agent so it can pick
-    it up, and bracket the call with the stream start/end emitters."""
+    it up, and bracket the call with the stream start/end emitters.
+
+    TTFT escalation does not time this path (matching the streaming
+    ``_StreamingCall`` / ``mark_ttft_send`` hook, which is chat-completions only).
+    """
     agent._codex_on_first_delta = on_first_delta
     try:
         return _with_stream_emitters(agent, lambda: agent._interruptible_api_call(api_kwargs))
@@ -2540,6 +2586,18 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # * Bind TTFT marks only when perform_api_call already stacked an obs
+        # (escalation is active). Disabled: no clock reads and no module import;
+        # a single None-check per streamed delta.
+        stack = getattr(agent, "_ttft_obs_stack", None)
+        if stack:
+            from agent.service_tier_escalation import mark_ttft_first_delta, mark_ttft_send
+
+            self._mark_ttft_send = mark_ttft_send
+            self._mark_ttft_first_delta = mark_ttft_first_delta
+        else:
+            self._mark_ttft_send = None
+            self._mark_ttft_first_delta = None
 
     # ── shared small helpers ────────────────────────────────────────────
 
@@ -2603,6 +2661,12 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
+        mark = self._mark_ttft_first_delta
+        if mark is not None:
+            try:
+                mark(self.agent)
+            except Exception:
+                pass
         if not self.first_delta_fired["done"] and self.on_first_delta:
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
@@ -2701,6 +2765,12 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
+        mark = self._mark_ttft_send
+        if mark is not None:
+            try:
+                mark(self.agent)
+            except Exception:
+                pass
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -2846,6 +2916,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
+                    mark = self._mark_ttft_first_delta
+                    if mark is not None:
+                        try:
+                            mark(self.agent)
+                        except Exception:
+                            pass
                     if name is not None:
                         self._emit_tool_started(name)
                         # Lets the stub-builder warn if streaming dies before the args

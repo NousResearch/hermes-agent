@@ -892,6 +892,14 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    # * auto/cold must see the restored primary model; deadline stays the turn-start stamp.
+    from agent.fast_mode import begin_turn as begin_fast_mode_turn
+
+    begin_fast_mode_turn(
+        agent,
+        conversation_history,
+        started_at=getattr(agent, "_fast_turn_started_at", None),
+    )
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

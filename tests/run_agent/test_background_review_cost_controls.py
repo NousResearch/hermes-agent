@@ -88,6 +88,182 @@ def test_unrouted_runtime_keeps_parent_pool_and_overrides():
     assert rt["max_tokens"] == 4096
 
 
+def test_unrouted_runtime_applies_aux_service_tier_on_openrouter():
+    agent = _FakeAgent(provider="openrouter", model="openai/gpt-5")
+    agent._current_main_runtime = lambda: {
+        "api_key": "or-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+    }
+    cfg = {"auxiliary": {"background_review": {"service_tier": "flex"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["request_overrides"].get("service_tier") == "flex"
+    assert rt["routed"] is False
+
+
+def test_routed_runtime_applies_aux_service_tier_on_openrouter():
+    agent = _FakeAgent()
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "provider": "openrouter",
+                "model": "google/gemini-3-flash-preview",
+                "service_tier": "priority",
+            }
+        }
+    }
+    routed = {
+        "provider": "openrouter",
+        "model": "google/gemini-3-flash-preview",
+        "api_key": "or-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "credential_pool": None,
+        "request_overrides": {},
+        "max_output_tokens": 2048,
+        "command": None,
+        "args": [],
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ), patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=routed):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is True
+    assert rt["request_overrides"].get("service_tier") == "priority"
+
+
+def test_aux_service_tier_ignored_on_first_party_review_runtime():
+    agent = _FakeAgent()
+    cfg = {"auxiliary": {"background_review": {"service_tier": "flex"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ):
+        rt = br._resolve_review_runtime(agent)
+    assert "service_tier" not in rt["request_overrides"]
+    assert "speed" not in rt["request_overrides"]
+
+
+def test_aux_service_tier_priority_ignored_on_first_party_review_runtime():
+    agent = _FakeAgent()
+    cfg = {"auxiliary": {"background_review": {"service_tier": "priority"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ):
+        rt = br._resolve_review_runtime(agent)
+    assert "service_tier" not in rt["request_overrides"]
+    assert "speed" not in rt["request_overrides"]
+
+
+def test_apply_aux_honors_slot_extra_body_over_slot_tier():
+    from hermes_cli.models import apply_aux_service_tier_overrides
+
+    out = apply_aux_service_tier_overrides(
+        {},
+        {"service_tier": "flex", "extra_body": {"service_tier": "priority"}},
+        model="openai/gpt-5",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        task="background_review",
+    )
+    assert out.get("service_tier") == "priority"
+
+
+def test_unrouted_runtime_applies_slot_extra_body_service_tier():
+    agent = _FakeAgent(provider="openrouter", model="openai/gpt-5")
+    agent._current_main_runtime = lambda: {
+        "api_key": "or-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+    }
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "service_tier": "flex",
+                "extra_body": {"service_tier": "priority"},
+            }
+        }
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["request_overrides"].get("service_tier") == "priority"
+
+
+def test_background_review_final_api_kwargs_slot_beats_global(monkeypatch):
+    """auxiliary.background_review.service_tier wins over global agent.service_tier on the wire."""
+    from run_agent import AIAgent
+
+    cfg = {
+        "agent": {"service_tier": "priority", "service_tier_overrides": {}},
+        "auxiliary": {"background_review": {"service_tier": "flex"}},
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    parent = AIAgent(
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        provider="openrouter",
+        api_mode="chat_completions",
+        model="openai/gpt-5",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+        platform="cli",
+    )
+    fork = None
+    try:
+        fork, _rt, _routed = br.build_cache_parity_fork(
+            parent, cfg["auxiliary"]["background_review"], max_iterations=2,
+        )
+        kwargs = fork._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("service_tier") == "flex"
+        assert fork._service_tier_session_pinned is True
+    finally:
+        if fork is not None:
+            fork.close()
+        parent.close()
+
+
+def test_background_review_final_api_kwargs_extra_body_beats_slot(monkeypatch):
+    from run_agent import AIAgent
+
+    task = {"service_tier": "flex", "extra_body": {"service_tier": "priority"}}
+    cfg = {
+        "agent": {"service_tier": "flex", "service_tier_overrides": {}},
+        "auxiliary": {"background_review": task},
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    parent = AIAgent(
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        provider="openrouter",
+        api_mode="chat_completions",
+        model="openai/gpt-5",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+        platform="cli",
+    )
+    fork = None
+    try:
+        fork, _rt, _routed = br.build_cache_parity_fork(parent, task, max_iterations=2)
+        kwargs = fork._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("service_tier") == "priority"
+    finally:
+        if fork is not None:
+            fork.close()
+        parent.close()
+
+
 def test_routing_same_model_as_parent_is_not_routed():
     agent = _FakeAgent(provider="openrouter", model="anthropic/claude-opus-4.8")
     cfg = {"auxiliary": {"background_review": {

@@ -133,6 +133,8 @@ def validate_tool_calls(
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),
         )
+        from agent.conversation_loop import _try_accept_logical_request
+        _try_accept_logical_request(agent)
         return _verdict("continue")
     # Reset retry counter on successful tool call validation
     agent._invalid_tool_retries = 0
@@ -207,8 +209,12 @@ def validate_tool_calls(
             )
 
         _append_tool_error_results(messages, tool_calls, _json_error_result)
+        from agent.conversation_loop import _try_accept_logical_request
+        _try_accept_logical_request(agent)
         return _verdict("continue")
 
     # Reset retry counter on successful JSON validation
     agent._invalid_json_retries = 0
+    from agent.conversation_loop import _try_accept_logical_request
+    _try_accept_logical_request(agent)
     return _verdict("ok")

@@ -177,7 +177,8 @@ _BUSY_MODE_LONG = {
 
 # /fast argument -> (service_tier value, persisted config value)
 _FAST_TIERS = {
-    "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
+    "fast": ("priority", "fast"), "on": ("priority", "fast"), "priority": ("priority", "fast"),
+    "flex": ("flex", "flex"), "normal": (None, "normal"),
     "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
 
 # /reasoning display toggles: arg -> (attr, value, headline, follow-up note)
@@ -239,6 +240,36 @@ def _scope_outcome(explicit_global: bool, saved: bool) -> str:
     if explicit_global:
         return "(session only; config save failed)"
     return "(this session — use --global to persist)"
+
+
+def _effective_service_tier_for_fast_status(shell):
+    """Resolve the tier CLI /fast status should display.
+
+    Session /fast pin wins. Unpinned shells re-resolve from config so a
+    per-model overlay (e.g. flex on openai/gpt-5) is visible even when
+    ``shell.service_tier`` still holds the global default.
+    """
+    if getattr(shell, "_service_tier_session_pinned", False) is True:
+        return getattr(shell, "service_tier", None)
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_service_tier_for_model
+
+        cfg = load_config_readonly() or {}
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        model = getattr(getattr(shell, "agent", None), "model", None) or getattr(shell, "model", None)
+        return resolve_service_tier_for_model(
+            agent_cfg, str(model or ""), fallback=getattr(shell, "service_tier", None),
+        )
+    except Exception:
+        return getattr(shell, "service_tier", None)
+
+
+def _fast_status_label(shell) -> str:
+    """Map effective service_tier to CLI /fast status: fast / flex / normal / auto / cold."""
+    from hermes_constants import service_tier_status_label
+
+    return service_tier_status_label(_effective_service_tier_for_fast_status(shell))
 
 
 def _toggle_target(arg: str, current: bool):
@@ -1945,6 +1976,12 @@ class CLICommandsMixin:
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
+                bg_agent._service_tier_session_pinned = bool(
+                    getattr(self, "_service_tier_session_pinned", False)
+                )
+                from hermes_cli.cli_agent_setup_mixin import _apply_framework_tier_bake
+                _apply_framework_tier_bake(bg_agent, turn_route.get("framework_baked_tier_keys"))
+                bg_agent._block_service_tier_escalation = True
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 
@@ -2604,28 +2641,33 @@ class CLICommandsMixin:
                                 "The TUI picks up the new style on its next render.")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
-        Session-scoped by default; ``--global`` persists agent.service_tier to config.yaml
-        (parity with /model and /reasoning)."""
-        if not self._fast_command_available():
-            return _cp("  (._.) /fast is only available for models that support fast mode "
-                       "(OpenAI Priority Processing or Anthropic Fast Mode).")
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode /
+        OpenRouter flex). Session-scoped by default; ``--global`` persists agent.service_tier
+        to config.yaml (parity with /model and /reasoning). Status is ungated; switching to
+        ``fast`` stays route-capability-gated."""
         # Determine the branding for the current model
         model = getattr(getattr(self, "agent", None), "model", None) or getattr(self, "model", None)
         anthropic = _probe("hermes_cli.models", "_is_anthropic_fast_model", None, model)
         feature_name = ("Fast mode" if anthropic is None
                         else "Anthropic Fast Mode" if anthropic else "Priority Processing")
         raw = _command_arg(cmd)
-        usage = _dim_line('Usage: /fast [normal|fast|auto|cold|status] [--global]')
+        usage = _dim_line('Usage: /fast [normal|fast|flex|auto|cold|status] [--global]')
         if not raw or raw.lower() == "status":
-            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
+            status = _fast_status_label(self)
             return _cp(_accent_line(f"{feature_name}: {status}"), usage)
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
+        if arg in {"fast", "on", "priority"} and not self._fast_command_available():
+            return _cp("  (._.) /fast is only available for models that support fast mode "
+                       "(OpenAI Priority Processing, Anthropic Fast Mode, or OpenRouter).")
         self.service_tier, saved_value = _FAST_TIERS[arg]
         self.agent = None  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
+        if explicit_global and saved:
+            self._service_tier_session_pinned = False
+        else:
+            self._service_tier_session_pinned = True
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))
 

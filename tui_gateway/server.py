@@ -1532,7 +1532,14 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
-    if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
+    # * Only an explicit session /fast pin is restored as an override.
+    # Unpinned rows inherit profile resolution (per-model > global).
+    # ``normal`` without the flag is a legacy explicit pin (never written
+    # for unpinned inherit).
+    if service_tier and (
+        model_config.get("service_tier_session_pinned")
+        or service_tier.lower() == "normal"
+    ):
         overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
     return overrides
 
@@ -1553,17 +1560,24 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)
+    pinned = getattr(agent, "_service_tier_session_pinned", False) is True
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
         # An empty dict is still a real (present) reasoning config.
         "reasoning_config": reasoning_config if isinstance(reasoning_config, dict) else None,
-        "service_tier": getattr(agent, "service_tier", None),
+        # * Persist the wire value only for an explicit session pin; unpinned
+        # agents inherit per-model/global resolution on resume.
+        "service_tier": (getattr(agent, "service_tier", None) or "normal") if pinned else None,
     }
     for key, value in live.items():
         if value or isinstance(value, dict):
             config[key] = value
         else:
             config.pop(key, None)
+    if pinned:
+        config["service_tier_session_pinned"] = True
+    else:
+        config.pop("service_tier_session_pinned", None)
     return config
 
 
@@ -1579,6 +1593,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
+            model_config["service_tier_session_pinned"] = True
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -1741,12 +1756,52 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from hermes_constants import parse_service_tier
+
+    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip()
+    return parse_service_tier(raw)
+
+
+def _effective_session_service_tier(agent, session=None):
+    """Request-time tier for status/toggle: session pin, else per-model, else global.
+
+    Read-only — does not mutate canonical agent or session state. A live
+    agent's pin (including explicit normal) wins via ``logical_service_tier``.
+    Pre-build sessions honor ``create_service_tier_override``; otherwise the
+    picked/default model is resolved against config overlays.
+    """
+    if agent is not None:
+        from agent.fast_mode import logical_service_tier
+
+        return logical_service_tier(agent)
+    if session is not None and session.get("create_service_tier_override") is not None:
+        raw = session["create_service_tier_override"]
+        return raw or None
+    from hermes_constants import resolve_service_tier_for_model
+
+    cfg = _load_cfg() or {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    model = ""
+    if isinstance(session, dict):
+        override = session.get("model_override")
+        if isinstance(override, dict):
+            model = str(override.get("model") or "")
+        elif isinstance(override, str):
+            model = override
+    if not model:
+        with contextlib.suppress(Exception):
+            model = str(_resolve_model() or "")
+    return resolve_service_tier_for_model(
+        agent_cfg, model, fallback=_load_service_tier(),
+    )
+
+
+def _fast_status_value(tier) -> str:
+    """Map a canonical service_tier to the ``config.get/set fast`` status label."""
+    from hermes_constants import service_tier_status_label
+
+    return service_tier_status_label(tier if tier not in ("",) else None)
 
 
 def _load_provider_routing() -> dict:
@@ -2320,6 +2375,7 @@ def _make_agent(
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    agent._service_tier_session_pinned = service_tier_override is not None
     return agent
 
 

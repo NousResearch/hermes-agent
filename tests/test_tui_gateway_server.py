@@ -3823,7 +3823,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
-                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","service_tier_session_pinned":true,"base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
             }
 
         def reopen_session(self, target):
@@ -4132,7 +4132,6 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
             "base_url": "https://custom.example/v1",
             "api_mode": "chat_completions",
             "reasoning_config": {"enabled": True, "effort": "high"},
-            "service_tier": "priority",
         },
         "gpt-5.4",
     )

@@ -272,7 +272,34 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
-def _background_agent_kwargs(agent, task_id: str) -> dict:
+def _background_tier_snapshot(parent) -> dict:
+    """Pin value, flag, bake marks, and overrides from one parent read.
+
+    A session pin carries the parent's ``service_tier`` literally, including
+    ``None``. The global fallback is consulted only when there is no pin.
+    ``request_overrides`` is copied here so construction cannot pick up a
+    later ``/fast`` toggle against a stale marker.
+    """
+    from agent.fast_mode import TIER_WIRE_KEYS
+
+    pinned = getattr(parent, "_service_tier_session_pinned", False) is True
+    parent_tier = getattr(parent, "service_tier", None)
+    overrides = dict(getattr(parent, "request_overrides", None) or {})
+    baked = getattr(parent, "_framework_baked_tier_keys", None) or ()
+    mapped = {
+        key: overrides[key]
+        for key in TIER_WIRE_KEYS
+        if key in baked and key in overrides
+    }
+    return {
+        "service_tier": parent_tier if pinned else (parent_tier or _load_service_tier()),
+        "pinned": pinned,
+        "framework_baked_tier_keys": mapped or None,
+        "request_overrides": overrides,
+    }
+
+
+def _background_agent_kwargs(agent, task_id: str, snap=None) -> dict:
     cfg = _load_cfg()
 
     def g(name, default=None):
@@ -284,6 +311,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
     else:
         fallback = (agent._fallback_model if hasattr(agent, "_fallback_model")
                     else _load_fallback_model())
+    snap = snap if snap is not None else _background_tier_snapshot(agent)
     # Detached tasks declare platform="tui" (no UI sid for renderer-routed events), so resolve
     # toolsets against it — never GUI schema they can't use.
     return {
@@ -296,13 +324,23 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
-        "service_tier": g("service_tier") or _load_service_tier(),
-        "request_overrides": dict(g("request_overrides", {}) or {}),
+        "service_tier": snap["service_tier"],
+        "request_overrides": dict(snap.get("request_overrides") or {}),
+        "service_tier_escalation": {"enabled": False},
         "platform": "tui", "session_db": _get_db(), "fallback_model": fallback}
 
 
-def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
-    return {**_background_agent_kwargs(agent, task_id),
+def _apply_background_tier_provenance(bg_agent, parent, snap=None) -> None:
+    """CLI /bg parity: inherit the session pin and mark copied framework keys."""
+    from agent.fast_mode import set_framework_baked_tier_keys
+
+    snap = snap if snap is not None else _background_tier_snapshot(parent)
+    bg_agent._service_tier_session_pinned = bool(snap.get("pinned"))
+    set_framework_baked_tier_keys(bg_agent, snap.get("framework_baked_tier_keys"))
+
+
+def _ephemeral_preview_agent_kwargs(agent, task_id: str, snap=None) -> dict:
+    return {**_background_agent_kwargs(agent, task_id, snap),
             "enabled_toolsets": ["terminal", "file"], "session_db": None, "skip_memory": True}
 
 
@@ -431,6 +469,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
         # /reasoning, /fast) do NOT carry forward and the pins are cleared so a rebuild can't
         # resurrect them. Global process state is never touched (see _apply_model_switch).
+        # * Rebuilds a new agent — unlike CLI /new there is no reused
+        # ``_primary_runtime`` snapshot that could revive a baked tier.
         for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
             session.pop(k, None)
         new_agent = _rebuild_session_agent(

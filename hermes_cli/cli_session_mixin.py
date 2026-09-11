@@ -551,6 +551,7 @@ class CLISessionMixin:
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self._service_tier_session_pinned = False
         _reset_model_to_config_default(self, silent)
         _sync_process_session_id(self.session_id)
 
@@ -558,6 +559,10 @@ class CLISessionMixin:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
+            self.agent.service_tier = self.service_tier
+            self.agent._service_tier_session_pinned = False
+            from hermes_cli.cli_agent_setup_mixin import _release_framework_tier_bake
+            _release_framework_tier_bake(self.agent)
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0

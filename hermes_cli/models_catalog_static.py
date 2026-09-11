@@ -529,8 +529,9 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see
 # openai.com/api-priority-processing). Pattern-based: any OpenAI flagship (gpt-*, o1*, o3*, o4*).
-# Non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies) strip service_tier, so false
-# positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
+# First-party gate is unchanged. OpenRouter routes honor top-level flex/priority service_tier;
+# other non-OpenAI endpoints (Copilot/opencode-zen proxies) still strip it, so false positives
+# there remain harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
 

@@ -148,9 +148,9 @@ gateway:
     denied_reason_plural:  "❌ رُفضت الأوامر ({count} أوامر). السبب المُبلّغ للوكيل: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast متاح فقط لنماذج OpenAI التي تدعم المعالجة ذات الأولوية."
-    status:                "⚡ المعالجة ذات الأولوية\n\nالوضع الحالي: `{mode}`\n\n_الاستخدام:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ وسيط غير معروف: `{arg}`\n\n**الخيارات الصالحة:** normal, fast, status"
+    not_supported:         "⚡ /fast متاح فقط عندما يدعم نموذج هذه الجلسة ومسارها وضع السرعة (OpenAI أو Anthropic أو xAI أو OpenRouter)."
+    status:                "⚡ المعالجة ذات الأولوية\n\nالوضع الحالي: `{mode}`\n\n_الاستخدام:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ وسيط غير معروف: `{arg}`\n\n**الخيارات الصالحة:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ المعالجة ذات الأولوية: **{label}** (حُفظت في الإعدادات)\n_(تسري على الرسالة التالية)_"
     session_only:          "⚡ ✓ المعالجة ذات الأولوية: **{label}** (هذه الجلسة فقط)"
     label_fast:            "سريع"
@@ -162,6 +162,8 @@ gateway:
     choice_normal:         "normal — المعالجة القياسية"
     choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
     choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
+    status_flex:           "flex"
+    choice_flex:           "flex — معالجة OpenRouter المرنة"
 
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"

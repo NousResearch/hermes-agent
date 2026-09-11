@@ -168,13 +168,11 @@ def _cfg_get_reasoning(params):
 def _cfg_get_fast(params):
     # `config.set fast` is session-scoped: prefer the session's live/pinned value over the
     # global key (a pre-build session keeps its pin in create_service_tier_override).
+    # None-inherit (unset pin falling through to global) is an accepted display gap.
     session = _sessions.get(params.get("session_id", "")) or {}
     agent = session.get("agent")
-    tier = (getattr(agent, "service_tier", None) if agent is not None
-            else session.get("create_service_tier_override"))
-    if tier is None:
-        tier = _load_service_tier()
-    return {"value": "fast" if tier == "priority" else "normal"}
+    tier = _effective_session_service_tier(agent, session)
+    return {"value": _fast_status_value(tier)}
 
 
 def _cfg_get_thinking_mode(params):

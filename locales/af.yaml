@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ Opdragte geweier ({count} opdragte). Rede aan die agent oorgedra: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast is slegs beskikbaar vir OpenAI-modelle wat Priority Processing ondersteun."
-    status:                "⚡ Priority Processing\n\nHuidige modus: `{mode}`\n\n_Gebruik:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Onbekende argument: `{arg}`\n\n**Geldige opsies:** normal, fast, status"
+    not_supported:         "⚡ /fast is slegs beskikbaar wanneer hierdie sessie se model en roete fast-modus ondersteun (OpenAI, Anthropic, xAI of OpenRouter)."
+    status:                "⚡ Priority Processing\n\nHuidige modus: `{mode}`\n\n_Gebruik:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Onbekende argument: `{arg}`\n\n**Geldige opsies:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (slegs hierdie sessie)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — standaardverwerking"
     choice_auto:           "auto — vinnig vir die eerste sekondes van elke beurt"
     choice_cold:           "cold — vinnig slegs vir die eerste beurt van 'n sessie"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter Flex-verwerking"
 
   footer:
     status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"

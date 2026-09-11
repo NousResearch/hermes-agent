@@ -14,7 +14,7 @@ from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(fallback_model=None, **kwargs):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -28,6 +28,7 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            **kwargs,
         )
         agent.client = MagicMock()
         return agent
@@ -510,3 +511,73 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+
+def _empty_tier_cfg(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config_readonly",
+        lambda: {"agent": {"service_tier": "", "service_tier_overrides": {}}},
+    )
+
+
+def test_fallback_rebase_keeps_raw_flex_base(monkeypatch):
+    """Production fallback: raw flex + no configured source keeps flex as the ladder base."""
+    _empty_tier_cfg(monkeypatch)
+    agent = _make_agent(
+        fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        request_overrides={"service_tier": "flex"},
+        service_tier=None,
+        service_tier_escalation={
+            "enabled": True,
+            "ttft_threshold_seconds": 8.0,
+            "consecutive_slow_requests": 1,
+        },
+    )
+    try:
+        assert agent._build_api_kwargs([{"role": "user", "content": "hi"}])["service_tier"] == "flex"
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "anthropic/claude-sonnet-4"),
+        ):
+            assert agent._try_activate_fallback() is True
+        state = agent._service_tier_escalation
+        assert state.base_tier == "flex"
+        assert agent._build_api_kwargs([{"role": "user", "content": "hi"}])["service_tier"] == "flex"
+    finally:
+        agent.close()
+
+
+def test_fallback_rebase_climbed_rung_keeps_flex_base(monkeypatch):
+    """Climbed flex→default then fallback must not jump default→priority."""
+    _empty_tier_cfg(monkeypatch)
+    agent = _make_agent(
+        fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        request_overrides={"service_tier": "flex"},
+        service_tier=None,
+        service_tier_escalation={
+            "enabled": True,
+            "ttft_threshold_seconds": 8.0,
+            "consecutive_slow_requests": 1,
+        },
+    )
+    try:
+        state = agent._service_tier_escalation
+        assert state.base_tier == "flex"
+        state.observe_ttft(12.0, model=agent.model)
+        assert state.climbed_rungs == 1
+        assert state.effective_tier is None
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "anthropic/claude-sonnet-4"),
+        ):
+            assert agent._try_activate_fallback() is True
+        assert state.base_tier == "flex"
+        assert state.effective_tier is None
+        assert state.climbed_rungs == 1
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "service_tier" not in kwargs
+    finally:
+        agent.close()

@@ -1088,13 +1088,30 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
 
 
+def _is_openrouter_service_tier_route(
+    provider: Optional[str], base_url: Optional[str]
+) -> bool:
+    """Return whether a request route uses OpenRouter's service-tier API."""
+    provider_name = str(provider or "").strip()
+    if provider_name and normalize_provider(provider_name) == "openrouter":
+        return True
+    if not base_url:
+        return False
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "openrouter.ai")
+
+
 def _fast_mode_route_supported(
     model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
-    """Only the first-party endpoint that bills for fast mode may receive its params."""
+    """OpenRouter accepts ``service_tier`` for any catalog model; first-party fast params stay
+    on the billing endpoint that actually supports them."""
     from urllib.parse import urlparse
 
     from agent.model_metadata import is_grok_46_family
 
+    if _is_openrouter_service_tier_route(provider, base_url):
+        return True
     if _is_anthropic_fast_model(model_id):
         allowed = {"anthropic": "api.anthropic.com"}
     elif is_grok_46_family(str(model_id or "")):
@@ -1111,14 +1128,156 @@ def resolve_fast_mode_overrides(
     model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None
 ) -> dict[str, Any] | None:
     """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
-    ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
-    With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
-    never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
+    ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing, or any OpenRouter
+    catalog model) — or None if unsupported.
+    With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so
+    non-OpenRouter proxies never see the params. Single fast-mode gate for ``/fast`` and
+    ``agent.fast_mode`` windows."""
+    if _is_openrouter_service_tier_route(provider, base_url):
+        return {"service_tier": "priority"}
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
+
+
+def resolve_service_tier_overrides(
+    model_id: Optional[str],
+    service_tier: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
+    """Return request overrides for a normalized service-tier preference.
+
+    OpenRouter accepts both ``flex`` and ``priority`` as top-level request
+    fields for every catalog model. Elsewhere, ``flex`` is warned and ignored;
+    ``priority`` retains the existing model-aware /fast mapping: OpenAI models
+    receive ``service_tier`` while supported Anthropic models receive ``speed``.
+    """
+    from hermes_constants import parse_service_tier
+
+    tier = parse_service_tier(service_tier)
+    if tier == "flex":
+        if _is_openrouter_service_tier_route(provider, base_url):
+            return {"service_tier": "flex"}
+        logger.warning(
+            "service_tier 'flex' is OpenRouter-only; ignoring for %s",
+            provider or base_url or "this route",
+        )
+        return None
+    if tier == "priority" and _is_openrouter_service_tier_route(provider, base_url):
+        return {"service_tier": "priority"}
+    if tier == "priority":
+        return resolve_fast_mode_overrides(model_id, provider=provider, base_url=base_url)
+    return None
+
+
+_aux_service_tier_ignored: set[str] = set()
+
+
+def _warn_aux_service_tier_ignored(
+    task: Optional[str], raw: Any, provider: Optional[str], base_url: Optional[str],
+) -> None:
+    """One warning per aux task that set a first-party ``service_tier`` shortcut."""
+    key = str(task or "").strip() or str(provider or base_url or "aux")
+    if key in _aux_service_tier_ignored:
+        return
+    _aux_service_tier_ignored.add(key)
+    logger.warning(
+        "auxiliary%s.service_tier is OpenRouter-only; ignoring %r for %s",
+        f".{task}" if task else "",
+        raw,
+        provider or base_url or "this route",
+    )
+
+
+def apply_aux_service_tier_overrides(
+    overrides: dict[str, Any] | None,
+    slot: dict[str, Any] | None,
+    *,
+    model: Optional[str],
+    provider: Optional[str],
+    base_url: Optional[str],
+    task: Optional[str] = None,
+) -> dict[str, Any]:
+    """Lift an auxiliary slot's ``service_tier`` onto top-level request kwargs.
+
+    Precedence: ``extra_body.service_tier`` (already-merged overrides, then
+    ``slot.extra_body``) > slot ``service_tier``. OpenRouter
+    ``flex`` / ``priority`` become a top-level ``service_tier``; first-party
+    routes omit the key (main-chat /fast mapping is not applied). Call after
+    the slot's runtime is known.
+    """
+    merged = dict(overrides or {})
+    extra_src = merged.get("extra_body")
+    had_dict_extra = isinstance(extra_src, dict)
+    extra = dict(extra_src) if had_dict_extra else {}
+    extra_tier = extra.get("service_tier") if had_dict_extra else None
+    slot_extra = slot.get("extra_body") if isinstance(slot, dict) else None
+    slot_extra_tier = slot_extra.get("service_tier") if isinstance(slot_extra, dict) else None
+    slot_tier = slot.get("service_tier") if isinstance(slot, dict) else None
+    # * extra_body.service_tier (already-merged, then slot) beats slot.service_tier.
+    if extra_tier not in (None, ""):
+        raw = extra_tier
+    elif slot_extra_tier not in (None, ""):
+        raw = slot_extra_tier
+    else:
+        raw = slot_tier
+    if raw in (None, ""):
+        return merged
+    if had_dict_extra:
+        extra.pop("service_tier", None)
+        if extra:
+            merged["extra_body"] = extra
+        else:
+            merged.pop("extra_body", None)
+    if not _is_openrouter_service_tier_route(provider, base_url):
+        _warn_aux_service_tier_ignored(task, raw, provider, base_url)
+        return merged
+    mapped = resolve_service_tier_overrides(
+        model, raw, provider=provider, base_url=base_url,
+    )
+    merged.pop("service_tier", None)
+    merged.pop("speed", None)
+    if mapped:
+        merged.update(mapped)
+    return merged
+
+
+def aux_slot_configures_service_tier(slot: dict[str, Any] | None) -> bool:
+    """True when the aux slot names a ``service_tier`` (top-level or extra_body)."""
+    if not isinstance(slot, dict):
+        return False
+    extra = slot.get("extra_body")
+    extra_tier = extra.get("service_tier") if isinstance(extra, dict) else None
+    return extra_tier not in (None, "") or slot.get("service_tier") not in (None, "")
+
+
+def bind_aux_slot_service_tier(agent: Any, slot: dict[str, Any] | None) -> None:
+    """Make the aux-resolved tier the authority for this agent's wire keys.
+
+    Uses the constructed agent's own ``request_overrides`` (already lifted by
+    :func:`apply_aux_service_tier_overrides`). Pins the slot tier (including
+    first-party omit) so global ``agent.service_tier`` cannot re-resolve over
+    it. Marks the mapped keys as framework-baked so they are not treated as
+    raw user intent. No-op when the slot does not configure a tier.
+    """
+    if not aux_slot_configures_service_tier(slot):
+        return
+    from hermes_constants import parse_service_tier
+    from agent.fast_mode import TIER_WIRE_KEYS, set_framework_baked_tier_keys
+
+    overrides = getattr(agent, "request_overrides", None)
+    mapped = {
+        key: overrides[key]
+        for key in TIER_WIRE_KEYS
+        if isinstance(overrides, dict) and key in overrides
+    }
+    agent.service_tier = parse_service_tier(mapped.get("service_tier"))
+    agent._service_tier_session_pinned = True
+    set_framework_baked_tier_keys(agent, mapped or None)
 
 
 def _first_exchangeable_copilot_token(raw_tokens) -> str:

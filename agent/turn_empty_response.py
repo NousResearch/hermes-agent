@@ -216,6 +216,8 @@ def recover_empty_response(
         append_message(messages, {
             "role": "user", "content": _EMPTY_TOOL_RESPONSE_NUDGE, "_empty_recovery_synthetic": True
         })
+        from agent.conversation_loop import _try_accept_logical_request
+        _try_accept_logical_request(agent)
         return _verdict("continue")
 
     # Thinking-only prefill: append the reasoning as-is and continue so the model sees
@@ -239,6 +241,8 @@ def recover_empty_response(
         interim_msg["_thinking_prefill"] = True
         append_message(messages, interim_msg)
         agent._session_messages = messages
+        from agent.conversation_loop import _try_accept_logical_request
+        _try_accept_logical_request(agent)
         return _verdict("continue")
 
     # Empty-response retries: truly empty replies AND reasoning-only replies after

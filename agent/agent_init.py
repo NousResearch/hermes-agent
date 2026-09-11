@@ -40,7 +40,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, parse_service_tier
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -2193,6 +2193,7 @@ def init_agent(
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+    service_tier_escalation: Dict[str, Any] = None,
     request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -2268,6 +2269,18 @@ def init_agent(
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
+    agent.service_tier = parse_service_tier(getattr(agent, "service_tier", None))
+    # * Surfaces that apply a session /fast set this True after construction. Default-off so
+    # delegated children never inherit a parent session pin.
+    agent._service_tier_session_pinned = False
+    # * Constructor does not write service_tier/speed into request_overrides;
+    # pre-existing keys on that dict stay unmarked raw user overrides.
+    # Surfaces that bake (/fast, gateway merge, TUI set) mark after construction.
+    from agent.fast_mode import set_framework_baked_tier_keys
+
+    set_framework_baked_tier_keys(agent, None)
+    # * Batch / background constructors set this True so an enabled config cannot climb.
+    agent._block_service_tier_escalation = False
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
 
@@ -2289,6 +2302,14 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    from agent.service_tier_escalation import bind_service_tier_escalation
+
+    _esc_raw = service_tier_escalation
+    if _esc_raw is None and isinstance(_agent_cfg, dict):
+        _agent_section = _agent_cfg.get("agent")
+        _esc_raw = _agent_section if isinstance(_agent_section, dict) else None
+    bind_service_tier_escalation(agent, _esc_raw)
 
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)

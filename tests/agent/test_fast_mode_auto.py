@@ -61,8 +61,14 @@ def test_bounded_fast_window_policy(monkeypatch):
     # unsupported routes never get fast params, in auto or static mode
     from hermes_cli.models import resolve_fast_mode_overrides
 
+    or_agent = _agent(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+    fast_mode.begin_turn(or_agent, conversation_history=[])
+    assert fast_mode.effective_request_overrides(or_agent)["service_tier"] == "priority"
+    assert resolve_fast_mode_overrides(
+        "gpt-5.4", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+    ) == {"service_tier": "priority"}
+
     for provider, base_url in (
-        ("openrouter", "https://openrouter.ai/api/v1"),
         ("nous", "https://inference-api.nousresearch.com/v1"),
         ("copilot", "https://api.githubcopilot.com"),
         ("azure", "https://foo.openai.azure.com"),
@@ -90,6 +96,55 @@ def test_bounded_fast_window_policy(monkeypatch):
     assert fast_mode.effective_request_overrides(off) == {"extra_body": {"keep": 1}}
 
 
+def test_bounded_window_opens_for_restored_primary_auto_and_cold(monkeypatch):
+    """Window decision uses the restored primary, deadline stays the turn-start stamp."""
+    clock = [1000.0]
+    monkeypatch.setattr(fast_mode.time, "monotonic", lambda: clock[0])
+    cfg = {
+        "agent": {
+            "service_tier": "",
+            "service_tier_overrides": {"gpt-5.4": "auto"},
+            "fast_auto_seconds": 60,
+        }
+    }
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: cfg)
+
+    started = clock[0]
+    agent = _agent(model="fallback-model", service_tier=None, fast_auto_seconds=60)
+    fast_mode.begin_turn(agent, conversation_history=[], started_at=started)
+    assert getattr(agent, "_fast_until", 0.0) == 0.0
+
+    clock[0] += 5.0
+    agent.model = "gpt-5.4"
+    fast_mode.begin_turn(agent, conversation_history=[], started_at=started)
+    assert agent._fast_until == started + 60
+    assert fast_mode.effective_request_overrides(agent)["service_tier"] == "priority"
+
+    cold_cfg = {
+        "agent": {
+            "service_tier": "",
+            "service_tier_overrides": {"gpt-5.4": "cold"},
+            "fast_auto_seconds": 60,
+        }
+    }
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: cold_cfg)
+    cold = _agent(model="fallback-model", service_tier=None, fast_auto_seconds=60)
+    fast_mode.begin_turn(cold, conversation_history=[], started_at=started)
+    assert getattr(cold, "_fast_until", 0.0) == 0.0
+    cold.model = "gpt-5.4"
+    fast_mode.begin_turn(cold, conversation_history=[], started_at=started)
+    assert cold._fast_until == started + 60
+    assert fast_mode.effective_request_overrides(cold)["service_tier"] == "priority"
+    fast_mode.begin_turn(
+        cold,
+        conversation_history=[{"role": "user", "content": "prior"}],
+        started_at=started,
+    )
+    assert getattr(cold, "_fast_until", 0.0) == 0.0
+
+
 def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     import hermes_cli.config as config_mod
 
@@ -101,7 +156,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     from hermes_cli.config import DEFAULT_CONFIG
 
     # config parsing: CLI, gateway, TUI all accept auto/cold; default stays off
-    for raw, expected in (("auto", "auto"), ("COLD", "cold"), ("fast", "priority"), ("", None), ("bogus", None)):
+    for raw, expected in (("auto", "auto"), ("COLD", "cold"), ("fast", "priority"), ("flex", "flex"), ("", None), ("bogus", None)):
         assert cli_mod._parse_service_tier_config(raw) == expected
         monkeypatch.setattr(
             "gateway.run._load_gateway_runtime_config", lambda: {"agent": {"service_tier": raw}}
@@ -109,10 +164,11 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
         assert GatewayRunner._load_service_tier() == expected
     assert DEFAULT_CONFIG["agent"]["service_tier"] == ""
     assert DEFAULT_CONFIG["agent"]["fast_auto_seconds"] == 60
+    assert DEFAULT_CONFIG["agent"]["service_tier_overrides"] == {}
 
     # /fast auto — session-scoped, agent rebuilt, status reports the mode
     fast_cmd = next(c for c in COMMAND_REGISTRY if c.name == "fast")
-    assert {"auto", "cold"} <= set(fast_cmd.subcommands)
+    assert {"auto", "cold", "flex"} <= set(fast_cmd.subcommands)
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: printed.append(" ".join(map(str, a))))
     monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no config write")))
@@ -140,4 +196,6 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     }
     route_stub.base_url = "https://openrouter.ai/api/v1"
     route_stub.provider = "openrouter"
-    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
+    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] == {
+        "service_tier": "priority"
+    }

@@ -226,7 +226,15 @@ def _build_child_agent(
         # _resolve_delegation_credentials already merged OVER the parent's
         request_overrides = dict(override_request_overrides)
     else:
-        request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+        if override_provider:
+            request_overrides = {}
+        else:
+            from agent.fast_mode import strip_inherited_framework_baked_overrides
+
+            request_overrides = strip_inherited_framework_baked_overrides(
+                getattr(parent_agent, "request_overrides", {}) or {},
+                parent_agent,
+            )
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():

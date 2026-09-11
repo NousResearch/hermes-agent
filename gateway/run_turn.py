@@ -182,10 +182,10 @@ class GatewayTurnMixin:
         return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
+        """Effective model/runtime config for one turn. Static ``priority``/``flex``
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
         from gateway.run import _deep_merge_request_overrides
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.models import resolve_service_tier_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
             k: runtime_kwargs.get(k) for k in (
@@ -204,19 +204,35 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        if getattr(self, "_service_tier", None) != "priority":
+        if getattr(self, "_service_tier", None) not in {"priority", "flex"}:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
-            overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+            overrides = resolve_service_tier_overrides(
+                route["model"], getattr(self, "_service_tier", None),
+                provider=runtime["provider"], base_url=runtime["base_url"],
             )
         except Exception:
             overrides = None
+        mapped = overrides or {}
         # Fast-mode keys (service_tier / speed) are top-level and don't collide with extra_body.
-        route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
+        route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, mapped)
+        # * Only keys the framework added this turn — user request_overrides stay unmarked.
+        from agent.fast_mode import TIER_WIRE_KEYS
+
+        route["framework_baked_tier_keys"] = {
+            key: mapped[key] for key in TIER_WIRE_KEYS if key in mapped
+        }
         return route
+
+    def _apply_background_agent_tier_provenance(self, agent, snapshot):
+        """Apply a pre-await {pinned, framework_baked_tier_keys} snapshot."""
+        from agent.fast_mode import set_framework_baked_tier_keys
+
+        snap = snapshot or {}
+        agent._service_tier_session_pinned = bool(snap.get("pinned"))
+        set_framework_baked_tier_keys(agent, snap.get("framework_baked_tier_keys"))
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
@@ -2156,8 +2172,18 @@ class GatewayTurnMixin:
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
+            # * Value + pin from one pre-await snapshot. ``self._service_tier`` is
+            # shared across sessions; do not re-read it after vision enrichment.
+            session_key = self._session_key_for_source(source)
+            service_tier = self._resolve_session_service_tier(source=source)
+            pinned = bool(self._session_service_tier_is_pinned(session_key))
+            self._service_tier = service_tier
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            tier_snapshot = {
+                "service_tier": service_tier,
+                "pinned": pinned,
+                "framework_baked_tier_keys": turn_route.get("framework_baked_tier_keys"),
+            }
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt
@@ -2182,7 +2208,7 @@ class GatewayTurnMixin:
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
+                    service_tier=tier_snapshot["service_tier"],
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -2200,6 +2226,8 @@ class GatewayTurnMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                self._apply_background_agent_tier_provenance(agent, tier_snapshot)
+                agent._block_service_tier_escalation = True
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:

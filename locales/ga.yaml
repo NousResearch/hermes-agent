@@ -129,9 +129,9 @@ gateway:
     denied_reason_plural:  "❌ Orduithe diúltaithe ({count} ordú). Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing."
-    status:                "⚡ Priority Processing\n\nMód reatha: `{mode}`\n\n_Úsáid:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Argóint anaithnid: `{arg}`\n\n**Roghanna bailí:** normal, fast, status"
+    not_supported:         "⚡ Tá /fast ar fáil amháin nuair a thacaíonn samhail agus bealach an tseisiúin seo le mód tapa (OpenAI, Anthropic, xAI nó OpenRouter)."
+    status:                "⚡ Priority Processing\n\nMód reatha: `{mode}`\n\n_Úsáid:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Argóint anaithnid: `{arg}`\n\n**Roghanna bailí:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (an seisiún seo amháin)"
     label_fast:            "FAST"
@@ -143,6 +143,8 @@ gateway:
     choice_normal:         "normal — gnáthphróiseáil"
     choice_auto:           "auto — tapa do na chéad soicindí de gach seal"
     choice_cold:           "cold — tapa don chéad seal de sheisiún amháin"
+    status_flex:           "flex"
+    choice_flex:           "flex — Próiseáil Flex OpenRouter"
 
   footer:
     status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"

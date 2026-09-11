@@ -29,6 +29,14 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_flex_and_bounded_and_off(self):
+        self.assertEqual(self._parse("flex"), "flex")
+        self.assertEqual(self._parse("auto"), "auto")
+        self.assertEqual(self._parse("cold"), "cold")
+        self.assertIsNone(self._parse(""))
+        self.assertIsNone(self._parse("normal"))
+        self.assertIsNone(self._parse("off"))
+
 
 
 class TestHandleFastCommand(unittest.TestCase):
@@ -71,9 +79,22 @@ class TestHandleFastCommand(unittest.TestCase):
         mock_save.assert_not_called()
         self.assertIsNone(stub.service_tier)
         self.assertIsNone(stub.agent)
+        self.assertTrue(stub._service_tier_session_pinned)
+
+    def test_flex_argument_sets_flex_and_pins(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast flex")
+        mock_save.assert_not_called()
+        self.assertEqual(stub.service_tier, "flex")
+        self.assertTrue(stub._service_tier_session_pinned)
 
 
-    def test_unsupported_model_does_not_expose_fast(self):
+    def test_unsupported_model_status_is_ungated_switch_is_gated(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             service_tier=None,
@@ -82,6 +103,7 @@ class TestHandleFastCommand(unittest.TestCase):
             model="gpt-5.3-codex",
             _fast_command_available=lambda: False,
             agent=MagicMock(),
+            _service_tier_session_pinned=False,
         )
 
         with (
@@ -91,7 +113,19 @@ class TestHandleFastCommand(unittest.TestCase):
             cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
 
         mock_save.assert_not_called()
-        self.assertTrue(mock_cprint.called)
+        printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+        self.assertIn("normal", printed)
+
+        mock_cprint.reset_mock()
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast fast")
+        mock_save.assert_not_called()
+        printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+        self.assertIn("only available", printed)
+        self.assertIsNone(stub.service_tier)
 
 
 class TestPriorityProcessingModels(unittest.TestCase):
@@ -152,6 +186,19 @@ class TestFastModeRouting(unittest.TestCase):
 
         assert cli_mod.HermesCLI._fast_command_available(stub) is True
 
+    def test_fast_command_available_on_openrouter_for_any_model(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            provider="openrouter", requested_provider="openrouter",
+            model="meta-llama/llama-3.1-8b-instruct",
+            agent=SimpleNamespace(
+                model="meta-llama/llama-3.1-8b-instruct",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            ),
+        )
+        assert cli_mod.HermesCLI._fast_command_available(stub) is True
+
 
     def test_turn_route_injects_overrides_without_provider_switch(self):
         """Fast mode should add request_overrides but NOT change the provider/runtime."""
@@ -175,13 +222,17 @@ class TestFastModeRouting(unittest.TestCase):
         assert route["runtime"]["api_mode"] == "chat_completions"
         # But request_overrides should be set
         assert route["request_overrides"] == {"service_tier": "priority"}
+        assert route["framework_baked_tier_keys"] == {"service_tier": "priority"}
 
-        # Proxied routes (OpenRouter etc.) strip/400 on the param — never sent.
+        # OpenRouter catalog models may carry service_tier.
         stub.base_url = "https://openrouter.ai/api/v1"
         stub.provider = "openrouter"
-        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] is None
+        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] == {
+            "service_tier": "priority"
+        }
 
     def test_turn_route_keeps_primary_runtime_when_model_has_no_fast_backend(self):
+        """OpenRouter still injects service_tier for catalog ids that are not first-party fast models."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             model="gpt-5.3-codex",
@@ -198,7 +249,8 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
-        assert route.get("request_overrides") is None
+        assert route.get("request_overrides") == {"service_tier": "priority"}
+        assert route.get("framework_baked_tier_keys") == {"service_tier": "priority"}
 
 
 class TestAnthropicFastMode(unittest.TestCase):
@@ -285,6 +337,7 @@ class TestAnthropicFastMode(unittest.TestCase):
 
         assert route["runtime"]["provider"] == "anthropic"
         assert route["request_overrides"] == {"speed": "fast"}
+        assert route["framework_baked_tier_keys"] == {"speed": "fast"}
 
 
 class TestAnthropicFastModeAdapter(unittest.TestCase):
@@ -338,6 +391,58 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
 
+
+
+class TestCliFrameworkTierBake(unittest.TestCase):
+    """CLI /fast rebuild records resolver keys so ctor-cleared bake is restored."""
+
+    def test_unpinned_turn_records_empty_bake_set(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="gpt-5.4",
+            api_key="primary-key",
+            base_url="https://api.openai.com/v1",
+            provider="openai",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            service_tier=None,
+        )
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        self.assertIsNone(route["request_overrides"])
+        self.assertEqual(route["framework_baked_tier_keys"], {})
+
+    def test_apply_bake_marks_only_resolver_keys(self):
+        from hermes_cli.cli_agent_setup_mixin import _apply_framework_tier_bake
+
+        agent = SimpleNamespace(request_overrides={"service_tier": "priority", "keep": 1})
+        _apply_framework_tier_bake(agent, {"service_tier": "priority"})
+        self.assertEqual(agent._framework_baked_tier_keys, frozenset({"service_tier"}))
+
+    def test_release_bake_strips_marked_keys_keeps_raw(self):
+        from hermes_cli.cli_agent_setup_mixin import (
+            _apply_framework_tier_bake,
+            _release_framework_tier_bake,
+        )
+
+        agent = SimpleNamespace(
+            request_overrides={"service_tier": "priority", "extra_body": {"keep": 1}},
+            _primary_runtime={
+                "request_overrides": {
+                    "service_tier": "priority",
+                    "extra_body": {"keep": 1},
+                },
+            },
+        )
+        _apply_framework_tier_bake(agent, {"service_tier": "priority"})
+        _release_framework_tier_bake(agent)
+        self.assertEqual(agent.request_overrides, {"extra_body": {"keep": 1}})
+        self.assertEqual(
+            agent._primary_runtime["request_overrides"],
+            {"extra_body": {"keep": 1}},
+        )
+        self.assertFalse(agent._framework_baked_tier_keys)
 
 
 class TestConfigDefault(unittest.TestCase):

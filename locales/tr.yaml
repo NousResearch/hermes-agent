@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ Komutlar reddedildi ({count} komut). Gerekçe ajana iletildi: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
-    status:                "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, status"
+    not_supported:         "⚡ /fast yalnızca bu oturumun modeli ve rotası hızlı modu desteklediğinde kullanılabilir (OpenAI, Anthropic, xAI veya OpenRouter)."
+    status:                "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (yapılandırmaya kaydedildi)\n_(sonraki mesajda geçerli olur)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (yalnızca bu oturum)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — standart işleme"
     choice_auto:           "auto — her turun ilk saniyelerinde hızlı"
     choice_cold:           "cold — yalnızca oturumun ilk turunda hızlı"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter Flex işleme"
 
   footer:
     status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"

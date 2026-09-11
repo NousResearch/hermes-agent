@@ -50,7 +50,8 @@ class CLIChatTurnMixin:
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
+                                request_overrides=turn_route.get("request_overrides"),
+                                framework_baked_tier_keys=turn_route.get("framework_baked_tier_keys")):
             return None
         agent = self.agent
         if agent is None:

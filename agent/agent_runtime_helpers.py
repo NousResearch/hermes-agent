@@ -1193,6 +1193,18 @@ def restore_primary_runtime(agent) -> bool:
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
+        try:
+            from agent.service_tier_escalation import (
+                escalation_base_tier,
+                rebase_escalation_runtime,
+            )
+
+            rebase_escalation_runtime(agent, escalation_base_tier(agent))
+        except Exception:
+            logger.debug(
+                "restore_primary_runtime: service-tier escalation rebase failed",
+                exc_info=True,
+            )
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -2189,6 +2201,12 @@ def switch_model(
         )
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+    try:
+        from agent.service_tier_escalation import reset_escalation_for_model_switch
+
+        reset_escalation_for_model_switch(agent)
+    except Exception:
+        logger.debug("switch_model: service_tier_escalation reset failed", exc_info=True)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.

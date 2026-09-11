@@ -25,6 +25,8 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 _FAST_SELECTIONS = {
     "fast": ("priority", "fast", "gateway.fast.label_fast"),
     "on": ("priority", "fast", "gateway.fast.label_fast"),
+    "priority": ("priority", "fast", "gateway.fast.label_fast"),
+    "flex": ("flex", "flex", None),
     "normal": (None, "normal", "gateway.fast.label_normal"),
     "off": (None, "normal", "gateway.fast.label_normal"),
     "auto": ("auto", "auto", None),
@@ -727,20 +729,38 @@ class GatewayModelCommandsMixin:
 
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
-        (persists agent.service_tier, parity with /model)."""
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from hermes_cli.models import model_supports_fast_mode
+        (persists agent.service_tier, parity with /model). Status is ungated; switching to
+        ``fast`` is route-gated (OpenRouter or first-party fast models)."""
+        from gateway.run import _load_gateway_runtime_config
+        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_constants import resolve_service_tier_for_model, service_tier_status_label
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
         session_key = self._session_key_for_source(event.source)
+        model, provider, base_url = self._session_effective_fast_route(session_key)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
+        if not self._session_service_tier_is_pinned(session_key):
+            cfg = _load_gateway_runtime_config() or {}
+            agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+            self._service_tier = resolve_service_tier_for_model(
+                agent_cfg, model, fallback=self._service_tier,
+            )
+        if (
+            args
+            and args != "status"
+            and args in {"fast", "on", "priority"}
+            and resolve_fast_mode_overrides(model, provider=provider, base_url=base_url) is None
+        ):
             return t("gateway.fast.not_supported")
         if args and args != "status":
             return self._apply_fast_selection(session_key, args, persist=persist_global)
-        mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
-        status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
+        mode = service_tier_status_label(self._service_tier)
+        status = {
+            "fast": t("gateway.fast.status_fast"),
+            "normal": t("gateway.fast.status_normal"),
+            "flex": t("gateway.fast.status_flex"),
+        }.get(mode, mode)
 
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
             return self._apply_fast_selection(session_key, value, persist=persist_global)
@@ -751,10 +771,32 @@ class GatewayModelCommandsMixin:
             title=t("gateway.fast.picker_title", mode=status),
             choices=[
                 {"value": v, "label": t(f"gateway.fast.choice_{v}"), "is_current": mode == v}
-                for v in ("fast", "normal", "auto", "cold")
+                for v in ("fast", "flex", "normal", "auto", "cold")
             ],
             on_choice_selected=_on_fast_choice,
         )
         if picker_sent:
             return None  # Picker sent — adapter handles the response
         return t("gateway.fast.status", mode=status)
+
+    def _session_effective_fast_route(self, session_key: str) -> tuple[str, Any, Any]:
+        """Session-effective (model, provider, base_url) for /fast gating and status."""
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+        override = (getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}
+        model = str(override.get("model") or "")
+        if not model:
+            state = self._peek_session_state(session_key) if session_key else None
+            last = getattr(getattr(state, "conversation", None), "last_resolved_model", None) if state else None
+            model = str(last or "")
+        if not model:
+            model = str(_resolve_gateway_model(_load_gateway_config()) or "")
+        provider = override.get("provider")
+        base_url = override.get("base_url")
+        if not provider:
+            cfg = _load_gateway_config() or {}
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            if isinstance(model_cfg, dict):
+                provider = provider or model_cfg.get("provider")
+                base_url = base_url or model_cfg.get("base_url")
+        return model, provider, base_url

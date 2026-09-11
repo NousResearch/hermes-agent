@@ -227,6 +227,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
         # "" is the in-memory sentinel for an explicit normal tier (bypasses _make_agent's profile fallback); persist a
         # durable marker so resume can tell it from an inherited tier.
         model_config["service_tier"] = service_tier or "normal"
+        model_config["service_tier_session_pinned"] = True
     # Same ``_branched_from`` marker the TUI /branch uses (list_sessions_rich + sidebar nesting).
     if parent_session_id := session.get("parent_session_id"):
         model_config["_branched_from"] = parent_session_id

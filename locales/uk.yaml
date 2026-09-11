@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ Команди відхилено ({count} команд). Причину передано агентові: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast доступний лише для моделей OpenAI, які підтримують Priority Processing."
-    status:                "⚡ Priority Processing\n\nПоточний режим: `{mode}`\n\n_Використання:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Невідомий аргумент: `{arg}`\n\n**Допустимі варіанти:** normal, fast, status"
+    not_supported:         "⚡ /fast доступний лише коли модель і маршрут цієї сесії підтримують швидкий режим (OpenAI, Anthropic, xAI або OpenRouter)."
+    status:                "⚡ Priority Processing\n\nПоточний режим: `{mode}`\n\n_Використання:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Невідомий аргумент: `{arg}`\n\n**Допустимі варіанти:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (лише ця сесія)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — стандартна обробка"
     choice_auto:           "auto — швидко в перші секунди кожного ходу"
     choice_cold:           "cold — швидко лише на першому ході сесії"
+    status_flex:           "flex"
+    choice_flex:           "flex — гнучка обробка OpenRouter"
 
   footer:
     status:                "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"

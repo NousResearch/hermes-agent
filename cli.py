@@ -273,15 +273,15 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
+    """Parse a persisted fast-mode preference via :func:`parse_service_tier`."""
+    from hermes_constants import SERVICE_TIER_DISABLED_VALUES, parse_service_tier
+
+    parsed = parse_service_tier(raw)
+    if parsed is not None:
+        return parsed
     value = str(raw or "").strip().lower()
-    if not value or value in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if value in {"fast", "priority", "on"}:
-        return "priority"
-    if value in {"auto", "cold"}:
-        return value
-    logger.warning("Unknown service_tier '%s', ignoring", raw)
+    if value and value not in SERVICE_TIER_DISABLED_VALUES:
+        logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
 
@@ -2785,6 +2785,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             else:
                 self.reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self._service_tier_session_pinned = False
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
@@ -4420,6 +4421,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    framework_baked_tier_keys=turn_route.get("framework_baked_tier_keys"),
                 ):
                     _configure_quiet_agent(cli.agent)
                     _run_quiet_single_query(cli, effective_query)

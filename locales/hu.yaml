@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."
-    status:                "⚡ Priority Processing\n\nJelenlegi mód: `{mode}`\n\n_Használat:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes lehetőségek:** normal, fast, status"
+    not_supported:         "⚡ A /fast csak akkor érhető el, ha a munkamenet modellje és útvonala támogatja a gyors módot (OpenAI, Anthropic, xAI vagy OpenRouter)."
+    status:                "⚡ Priority Processing\n\nJelenlegi mód: `{mode}`\n\n_Használat:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes lehetőségek:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (csak ebben a munkamenetben)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — normál feldolgozás"
     choice_auto:           "auto — gyors minden kör első másodperceiben"
     choice_cold:           "cold — gyors csak a munkamenet első körében"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter Flex feldolgozás"
 
   footer:
     status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"

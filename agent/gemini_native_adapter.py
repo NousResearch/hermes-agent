@@ -95,6 +95,17 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
+def is_gemini_3x_model(model: str) -> bool:
+    """Gemini 3.x reasoning is tuned for default sampling; Google recommends omitting
+    temperature/top_p/top_k for these models ("unexpected behavior, such as looping or degraded
+    performance" otherwise). Covers the whole 3.x series — versioned ``gemini-3.1-*``/``gemini-3.5-*``
+    and the unversioned 3.0 previews ``gemini-3-flash-preview``/``gemini-3-pro-preview`` alike.
+    See https://ai.google.dev/gemini-api/docs/gemini-3 (Parameter updates).
+    """
+    match = re.match(r"gemini-(\d+)", bare_gemini_model_id(model).lower())
+    return match is not None and int(match.group(1)) == 3
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -405,10 +416,16 @@ def build_gemini_request(
         ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
     )
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
+    # Gemini 3.x is tuned for default sampling; Google recommends omitting temperature/top_p/top_k
+    # ("looping or degraded performance" otherwise). Hermes often supplies a global default
+    # temperature, so drop it (and topP) for 3.x — the None values fall out of the dict below.
+    drop_sampling = is_gemini_3x_model(model)
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
-        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
-        ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
+        ("temperature", None if drop_sampling else temperature),
+        ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
+        ("topP", None if drop_sampling else top_p),
+        ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
     request["generationConfig"] = {k: v for k, v in generation if v is not None}

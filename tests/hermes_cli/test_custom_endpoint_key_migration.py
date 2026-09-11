@@ -11,6 +11,7 @@ def test_migration_moves_plaintext_custom_key_to_env(tmp_path, monkeypatch):
         yaml.safe_dump(
             {
                 "_config_version": 39,
+                "cron": {"model_drift_guard": True, "max_iterations": 17},
                 "model": {
                     "provider": "custom",
                     "base_url": "https://text.example.com/v1",
@@ -24,12 +25,16 @@ def test_migration_moves_plaintext_custom_key_to_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     from hermes_cli.config import get_env_value
-    from hermes_cli.config_migrations import run_migrations
+    from hermes_cli.config_migrations import MIGRATIONS, run_migrations
 
+    versions = [version for version, _step in MIGRATIONS]
+    assert versions == sorted(set(versions))
     results = {"env_added": [], "config_added": [], "warnings": []}
     run_migrations(39, results, quiet=True)
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "model_drift_guard" not in raw["cron"]
+    assert raw["cron"]["max_iterations"] == 17
     key_env = raw["model"]["key_env"]
     assert "api_key" not in raw["model"]
     assert get_env_value(key_env) == "sk-legacy-secret"

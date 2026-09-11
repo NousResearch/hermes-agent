@@ -48,6 +48,8 @@ class TurnContext:
     process_baseline: frozenset[str] = field(default_factory=frozenset)
     _interrupt_depth: int = 0
     event_message_id: Optional[str] = None
+    # Trusted per-inbound-event routing authority; never reconstructed from durable source state.
+    event_metadata: Optional[dict] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None

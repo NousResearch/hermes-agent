@@ -98,13 +98,36 @@ def _float_env(name: str, default: float) -> float:
     return _or_default(lambda: float(raw) if raw else default, default)
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: str | None = None,
+    event_metadata: dict | None = None,
+) -> dict | None:
     """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
     ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` when supported."""
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    # Telegram Business send-as-account is deliberately event-bound. Merely
+    # carrying a business_connection_id is not permission to impersonate the
+    # connected account: a trusted event must opt in and match its scope.
+    if platform == "telegram":
+        business_connection_id = str(
+            (event_metadata or {}).get("business_connection_id") or ""
+        ).strip()
+        if (
+            (event_metadata or {}).get("allow_business_send_as_account") is True
+            and business_connection_id
+            and str(getattr(source, "scope_id", "") or "")
+            == f"telegram-business:{business_connection_id}"
+        ):
+            metadata.update(
+                {
+                    "allow_business_send_as_account": True,
+                    "business_connection_id": business_connection_id,
+                }
+            )
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
     # gateway never falls back to its primary WebClient.
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
@@ -114,7 +137,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
-        if str(thread_id) not in {"", "1"}:
+        if thread_id is not None and str(thread_id) not in {"", "1"}:
             metadata["direct_messages_topic_id"] = str(thread_id)
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
@@ -129,7 +152,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 def _thread_metadata_for_event(event) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    return _thread_metadata_for_source(
+        event.source,
+        _reply_anchor_for_event(event),
+        getattr(event, "metadata", None),
+    )
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -3671,12 +3698,22 @@ class BasePlatformAdapter(ABC):
         if is_ephemeral_response or str(event.text or "").lstrip().startswith(
             ("/", self.typed_command_prefix or "!")):
             return None
+        source = event.source
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and str(getattr(source, "scope_id", "") or "").startswith("telegram-business:")
+        ):
+            # Business send-as-account authority belongs to the trusted inbound event and is
+            # deliberately absent from durable SessionSource/ledger rows. Recording a normal
+            # obligation here would let startup/reconnect recovery replay the content through the
+            # bot's ordinary DM route after that authority is gone. Prefer a failed/unknown final
+            # over an identity downgrade into a different conversation.
+            return None
         try:
             from gateway.delivery_ledger import (
                 compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
             if not await asyncio.to_thread(ledger_enabled):
                 return None
-            source = event.source
             # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
             # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
             _ledger_id = getattr(event, "ledger_message_id", None)

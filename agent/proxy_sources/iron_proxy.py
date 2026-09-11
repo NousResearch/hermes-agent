@@ -140,6 +140,26 @@ _EGRESS_CONTROL_ENV_NAMES = frozenset({
     _HERMES_IRON_PROXY_NONCE_ENV,
 })
 
+# Names that can change host subprocess loading, executable resolution, invoked programs, or
+# Hermes policy. Custom credentials are copied into iron-proxy's own env, so accepting these
+# would turn credential configuration into subprocess control.
+_SUBPROCESS_EXECUTION_ENV_NAMES = frozenset({
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "NODE_OPTIONS", "NODE_PATH",
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+    "HERMES_CONFIG_PATH", "HERMES_ENV_PATH", "HERMES_OPTIONAL_MCPS",
+    "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
+    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
+    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION", "HERMES_SESSION_KEY",
+    "HERMES_SESSION_PLATFORM",
+})
+
 
 @dataclass
 class ProxyStatus:
@@ -242,7 +262,9 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
     reserved_env_names = (
         builtins
         | builtin_aliases
+        | set(_NON_BEARER_PROVIDERS)
         | set(_EGRESS_CONTROL_ENV_NAMES)
+        | set(_SUBPROCESS_EXECUTION_ENV_NAMES)
         | set(_PROXY_SUBPROCESS_ENV_ALLOWLIST)
     )
     claimed_hosts = [

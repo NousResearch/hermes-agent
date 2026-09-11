@@ -68,6 +68,8 @@ def test_extra_secret_specs_reject_unbounded_or_unsafe_targets(extra_secrets, er
 
 @pytest.mark.parametrize("env_var", [
     "GOOGLE_API_KEY", "HTTPS_PROXY", "HERMES_IRON_PROXY_MGMT_KEY", "PATH",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+    "LD_PRELOAD", "HERMES_HOME",
 ])
 def test_extra_secret_specs_reject_builtin_aliases_and_egress_control_names(env_var):
     with pytest.raises(ValueError, match="reserved egress credential name"):

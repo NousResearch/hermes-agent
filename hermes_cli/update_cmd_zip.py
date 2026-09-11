@@ -320,7 +320,9 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
     from hermes_cli.update_cmd import (
         _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
+        _python_dependencies_changed, _python_install_group, _record_python_dependencies_hash,
     )
+    from hermes_constants import get_default_hermes_root
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
     update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
@@ -328,6 +330,9 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     pip_cmd = [_m().sys.executable, "-m", "pip"]
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
+
+    shared_hermes_root = get_default_hermes_root()
+    uv_env = None
     if uv_bin:
         # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
         # from unrelated software must not steer which interpreter uv resolves here.
@@ -337,19 +342,27 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
-            # it — refuse here with the same defer-via-marker contract.
-            # See #87331.
-            _refuse_update_for_contended_shims(_sqe)
-        install_prefix, install_env = [uv_bin, "pip"], uv_env
+    install_group = _python_install_group(uv_env)
+    if _python_dependencies_changed(shared_hermes_root, install_group):
+        if uv_bin:
+            try:
+                _m()._install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group)
+            except _shim_quarantine_error_type() as _sqe:
+                # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
+                # it — refuse here with the same defer-via-marker contract.
+                # See #87331.
+                _refuse_update_for_contended_shims(_sqe)
+        else:
+            # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.
+            _ensure_venv_pip(pip_cmd, _m().sys.executable)
+            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+        _record_python_dependencies_hash(shared_hermes_root, install_group)
     else:
-        # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.
-        _ensure_venv_pip(pip_cmd, _m().sys.executable)
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
-        install_prefix, install_env = pip_cmd, None
+        print("  ✓ Python dependency inputs unchanged, skipping reinstall.")
+
+    install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
+    install_env = uv_env if uv_bin else None
     _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
     # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
     _m()._refresh_active_memory_provider_dependencies()

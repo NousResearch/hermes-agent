@@ -1396,6 +1396,8 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
+        if provider == "custom" or provider.startswith("custom:"):
+            return model_cfg, "custom"
         return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)

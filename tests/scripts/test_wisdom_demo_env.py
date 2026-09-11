@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -15,6 +18,7 @@ def demo_env(tmp_path: Path) -> dict[str, str]:
     value = os.environ.copy()
     value.update({
         "HOME": str(tmp_path),
+        "HERMES_HOME": str(tmp_path / "hermes-profile"),
         "HERMES_WISDOM_PYTHON": sys.executable,
         "HERMES_WISDOM_QUIET": "1",
     })
@@ -22,6 +26,46 @@ def demo_env(tmp_path: Path) -> dict[str, str]:
     value.pop("HERMES_DESKTOP_HERMES_ROOT", None)
     value.pop("HERMES_DESKTOP_PYTHON", None)
     return value
+
+
+def write_entitled_nous_auth(home: Path) -> None:
+    def jwt_segment(value: dict[str, object]) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    access_token = ".".join(
+        (
+            jwt_segment({"alg": "none", "typ": "JWT"}),
+            jwt_segment(
+                {
+                    "sub": "wisdom-demo-test-user",
+                    "scope": "inference:invoke",
+                    "org_id": "wisdom-demo-test-org",
+                    "wisdom_scopes": ["wisdom:read"],
+                    "exp": int(time.time()) + 3600,
+                }
+            ),
+            "signature",
+        )
+    )
+    hermes_home = home / "hermes-profile"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "nous",
+                "providers": {
+                    "nous": {
+                        "auth_method": "oauth_device_code",
+                        "access_token": access_token,
+                        "scope": "inference:invoke",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_sourcing_demo_environment_pins_every_surface_to_worktree(tmp_path: Path):
@@ -56,6 +100,7 @@ hermes --version
 
 
 def test_executable_demo_environment_forwards_to_worktree_cli(tmp_path: Path):
+    write_entitled_nous_auth(tmp_path)
     result = subprocess.run(
         [str(ENV_SCRIPT), "--", "hermes", "wisdom", "--help"],
         cwd=REPO_ROOT,

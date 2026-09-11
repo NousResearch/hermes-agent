@@ -169,6 +169,10 @@ _DEFAULT_PAYLOADS = {
         "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
         "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
     },
+    "runtime_request_succeeded": {
+        "credential_pool_entry_id": "opaque-entry", "occurred_at": 1756000001.234,
+        "api_request_id": "test-turn:api:1", "provider": "openai-codex", "model": "gpt-5",
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",

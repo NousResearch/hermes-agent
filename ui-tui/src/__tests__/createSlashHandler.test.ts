@@ -1131,10 +1131,17 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/title')
 
     expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc' })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
+  })
+
+  it('/recover restarts gateway to restore connection and session', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/recover')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('recovering gateway and reconnecting session…')
+    expect(ctx.gateway.gw.start).toHaveBeenCalled()
   })
 })
 
@@ -1163,7 +1170,8 @@ const buildGateway = () => ({
   gw: {
     getLogTail: vi.fn(() => ''),
     kill: vi.fn(),
-    request: vi.fn(() => Promise.resolve({}))
+    request: vi.fn(() => Promise.resolve({})),
+    start: vi.fn()
   },
   rpc: vi.fn(() => Promise.resolve({}))
 })

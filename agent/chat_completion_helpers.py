@@ -258,9 +258,11 @@ def _payload_has_error_shape(payload: Any) -> bool:
         payload.get("code") or payload.get("error_code") or _status_code_from_payload(payload) is not None)
 
 
-def _provider_stream_text_may_be_sse(text: str) -> bool:
+def _provider_stream_text_may_be_sse(text: Any) -> bool:
     """Return True while pending text still looks like an SSE control block."""
-    stripped = (text or "").lstrip()
+    if not isinstance(text, str):
+        return False
+    stripped = text.lstrip()
     if not stripped:
         return False
 

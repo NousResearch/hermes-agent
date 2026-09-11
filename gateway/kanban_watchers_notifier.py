@@ -8,6 +8,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 from __future__ import annotations
 
 import re
+import time
 from functools import partial
 from pathlib import Path
 import weakref
@@ -50,6 +51,35 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 # every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
 # unattended gate where a false drop means silent work pileup.
 MAX_SEND_FAILURES = 12
+# Network-gap handling. Host/adapter outages are not evidence that a target chat is dead,
+# so retain the subscription and retry it with bounded jittered backoff.
+_NETWORK_ERROR_MARKERS = (
+    "nodename nor servname", "name or service not known", "temporary failure in name resolution",
+    "connection refused", "connection reset", "network is unreachable", "no route to host",
+    "not connected to whatsapp", "bridge not connected", "not connected", "connecterror",
+    "cannot connect to host", "all connection attempts failed", "session is closed",
+    "transport disconnected", "socket mode unhealthy", "timed out", "timeout",
+)
+_NETWORK_DEFER_BASE_SECONDS = 5.0
+_NETWORK_DEFER_CAP_SECONDS = 300.0
+_NETWORK_DEFER_RETAIN_SECONDS = 6 * 3600
+_FAILURE_DEDUPE_SECONDS = 30 * 60
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """True when the failure looks like the host/adapter being offline rather than a dead chat."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _NETWORK_ERROR_MARKERS)
+
+
+def _network_defer_seconds(attempt: int) -> float:
+    """Capped exponential backoff with full jitter: 5s, 10s, 20s ... 300s."""
+    import random
+    ceiling = min(_NETWORK_DEFER_CAP_SECONDS, _NETWORK_DEFER_BASE_SECONDS * (2 ** max(0, attempt - 1)))
+    return random.uniform(ceiling / 2, ceiling)
+
+
+_FAILURE_KINDS = frozenset({"crashed", "gave_up"})
 
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
@@ -383,6 +413,9 @@ class _KanbanNotification:
         self.d = d
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
+        # Per-sub network-outage backoff state, shared across ticks via the runner.
+        self.sub_defer: dict[tuple, dict[str, Any]] = getattr(runner, "_kanban_sub_defer", None) or {}
+        runner._kanban_sub_defer = self.sub_defer
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
@@ -422,9 +455,51 @@ class _KanbanNotification:
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
+        outage = self.sub_defer.pop(self.sub_key, None)
+        if outage and outage.get("logged"):
+            logger.info(
+                "kanban notifier: delivery for %s on %s resumed after network outage (%d deferred attempts)",
+                self.task_id, self.platform_str, outage.get("attempts", 0),
+            )
+
+    def deferred_for_network(self) -> bool:
+        """True while this sub sits in a network-outage backoff window."""
+        outage = self.sub_defer.get(self.sub_key)
+        return bool(outage) and time.monotonic() < outage.get("until", 0.0)
+
+    async def _defer_for_network(self, exc: Exception) -> bool:
+        """Park the sub instead of counting a host-offline error as a dead chat.
+
+        Returns False (caller falls through to the ordinary counter) when the
+        error is not network-shaped or the outage has outlasted the retention.
+        """
+        if not _is_transient_network_error(exc):
+            return False
+        now = time.monotonic()
+        outage = self.sub_defer.get(self.sub_key) or {"since": now, "attempts": 0, "logged": False}
+        if now - outage["since"] > _NETWORK_DEFER_RETAIN_SECONDS:
+            return False
+        outage["attempts"] += 1
+        outage["until"] = now + _network_defer_seconds(outage["attempts"])
+        self.sub_defer[self.sub_key] = outage
+        if not outage["logged"]:
+            outage["logged"] = True
+            logger.warning(
+                "kanban notifier: delivery for %s on %s deferred by network outage (%s); "
+                "subscription kept, retrying with backoff up to %ds for %dh",
+                self.task_id, self.platform_str, str(exc)[:160],
+                int(_NETWORK_DEFER_CAP_SECONDS), _NETWORK_DEFER_RETAIN_SECONDS // 3600,
+            )
+        else:
+            logger.debug("kanban notifier: %s still deferred (attempt %d, next in %.0fs)",
+                         self.task_id, outage["attempts"], outage["until"] - now)
+        await self.rewind()
+        return True
 
     async def delivery_failed(self, fmt: str, prefix: tuple, drop_fmt: str, exc: Exception, exc_info: bool) -> None:
         """Bump the failure counter; drop the sub past the limit, else rewind the claim so the next tick retries."""
+        if await self._defer_for_network(exc):
+            return
         fails = self.sub_fail_counts.get(self.sub_key, 0) + 1
         self.sub_fail_counts[self.sub_key] = fails
         logger.warning(fmt, *prefix, fails, MAX_SEND_FAILURES, exc, exc_info=exc_info)
@@ -585,6 +660,10 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        if self.deferred_for_network():
+            # Backoff window still open: give the claim back, try again on a later tick.
+            await self.rewind()
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:

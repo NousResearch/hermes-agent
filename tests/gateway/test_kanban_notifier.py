@@ -748,3 +748,78 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+class _FlakyNetworkAdapter(RecordingAdapter):
+    """Fails every send with a host-offline error until ``fail_times`` is exhausted."""
+
+    def __init__(self, fail_times: int):
+        super().__init__()
+        self.fail_times = fail_times
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        self.attempts += 1
+        if self.attempts <= self.fail_times:
+            raise RuntimeError('adapter send() reported failure: {"error":"Not connected to WhatsApp"}')
+        await super().send(chat_id, text, metadata)
+
+
+def _sub_still_exists(tid):
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ? AND platform = 'telegram'", (tid,)
+        ).fetchone()
+        return row[0] == 1
+    finally:
+        conn.close()
+
+
+def test_network_outage_keeps_subscription_and_resumes(tmp_path, monkeypatch):
+    """Host-offline send errors must not consume MAX_SEND_FAILURES nor drop the sub;
+    once the adapter recovers the ping is delivered (regression for 2026-09-11 Wi-Fi gap)."""
+    from gateway import kanban_watchers_notifier as notifier_mod
+
+    db_path = tmp_path / "network-gap.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    # Many more failures than MAX_SEND_FAILURES, all network-shaped.
+    adapter = _FlakyNetworkAdapter(fail_times=notifier_mod.MAX_SEND_FAILURES * 3)
+    runner = _make_runner(adapter)
+    # No backoff waiting in tests: every tick is eligible again.
+    monkeypatch.setattr(notifier_mod, "_network_defer_seconds", lambda attempt: 0.0)
+
+    for _ in range(notifier_mod.MAX_SEND_FAILURES * 3):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+        runner._running = True
+    assert _sub_still_exists(tid), "network errors dropped the subscription"
+    assert runner._kanban_sub_fail_counts == {}, "network errors were counted as dead-chat failures"
+    outage = runner._kanban_sub_defer.get((tid, "telegram", "chat-1", ""))
+    assert outage and outage["attempts"] == notifier_mod.MAX_SEND_FAILURES * 3
+
+    # Network back: the next tick delivers and clears the outage state.
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert (tid, "telegram", "chat-1", "") not in runner._kanban_sub_defer
+
+
+def test_dead_chat_error_still_drops_after_limit(tmp_path, monkeypatch):
+    """A destination-specific error keeps the original MAX_SEND_FAILURES behaviour."""
+    from gateway import kanban_watchers_notifier as notifier_mod
+
+    class _DeadChatAdapter(RecordingAdapter):
+        async def send(self, chat_id, text, metadata=None):
+            raise RuntimeError("Bad Request: chat not found")
+
+    db_path = tmp_path / "dead-chat.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+    runner = _make_runner(_DeadChatAdapter())
+    for _ in range(notifier_mod.MAX_SEND_FAILURES):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+        runner._running = True
+    assert not _sub_still_exists(tid)

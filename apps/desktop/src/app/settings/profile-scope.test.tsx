@@ -65,4 +65,45 @@ describe('SettingsProfileScope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'default' }))
     expect($settingsScopeOverride.get()).toBeNull()
   })
+
+  // #89190/#89162 class: after opening a Bot Mode chat, the ACTIVE profile is
+  // the bot's — so with no override the settings pages silently edit the bot's
+  // config. The target must be stated (accented) whenever it isn't the default
+  // profile, override or not.
+  it('states the edit target when the active profile is a non-default bot (no override)', () => {
+    $activeGatewayProfile.set('scout')
+    $profiles.set([profile('default', true), profile('scout')])
+
+    const { container } = render(<SettingsProfileScope />)
+
+    expect($settingsScopeOverride.get()).toBeNull()
+    expect(container.textContent).toContain('scout')
+    // The note paragraph is present and accented (font-medium marks the loud variant).
+    const note = container.querySelector('p')
+    expect(note).toBeTruthy()
+    expect(note?.className).toContain('font-medium')
+  })
+
+  it('shows no note when following the active DEFAULT profile', () => {
+    $activeGatewayProfile.set('default')
+    $profiles.set([profile('default', true), profile('coder')])
+
+    const { container } = render(<SettingsProfileScope />)
+
+    expect(container.querySelector('p')).toBeNull()
+  })
+
+  it('keeps the quiet note style for an explicit override onto the default profile', () => {
+    $activeGatewayProfile.set('scout')
+    $profiles.set([profile('default', true), profile('scout')])
+
+    render(<SettingsProfileScope />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'default' }))
+    expect($settingsScopeOverride.get()).toBe('default')
+
+    const note = document.querySelector('p')
+    expect(note).toBeTruthy()
+    expect(note?.className).not.toContain('font-medium')
+  })
 })

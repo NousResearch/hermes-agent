@@ -51,6 +51,8 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   }
 
   const selected = normalizeProfileKey(override ?? active)
+  const defaultProfile = profiles.find(profile => profile.is_default)
+  const editingNonDefault = defaultProfile ? selected !== normalizeProfileKey(defaultProfile.name) : false
 
   return (
     <div className={cn('grid gap-2', className)}>
@@ -67,8 +69,19 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           />
         ))}
       </div>
-      {override !== null ? (
-        <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+      {/* The scope follows the app's ACTIVE profile when no override is set —
+          which, after opening any Bot Mode chat, is the BOT's profile. Users
+          reasonably assume Settings edit their main config, so an edit landing
+          in profiles/<bot>/config.yaml with only a faint chip tint as the tell
+          is a silent misdirect (the #89190/#89162 report class). Always state
+          the target when it isn't the default profile, and make it loud. */}
+      {override !== null || editingNonDefault ? (
+        <p
+          className={cn(
+            'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)',
+            editingNonDefault ? 'font-medium text-(--ui-accent)' : 'text-(--ui-text-tertiary)'
+          )}
+        >
           {scope.editsProfile(selected)}
         </p>
       ) : null}

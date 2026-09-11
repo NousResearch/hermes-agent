@@ -1703,6 +1703,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    desktop_delivery_enabled: bool = False,
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1714,7 +1715,10 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    desktop_delivery_enabled: When True, job output is also delivered to a persistent
+        per-job Desktop delivery session (in addition to the normal deliver target).
+        The delivery session accumulates output across runs and appears in the Desktop sidebar."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1738,6 +1742,7 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_desktop_delivery = bool(desktop_delivery_enabled)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
@@ -1805,6 +1810,10 @@ def create_job(
     ):
         if value is not None:
             job[key] = value
+    # Only persist desktop_delivery_enabled when True, so existing jobs and
+    # the common case stay byte-identical (absent key => default False).
+    if normalized_desktop_delivery:
+        job["desktop_delivery_enabled"] = normalized_desktop_delivery
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])

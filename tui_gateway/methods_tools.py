@@ -667,6 +667,9 @@ def _cmd_steer(rid, params, session, name, arg):
         return _err(rid, 4004, "usage: /steer <prompt>")
     agent = session.get("agent") if session else None
     if agent and hasattr(agent, "steer"):
+        # Revoke before steer publishes to a concurrent tool worker.
+        from tools.approval_task import revoke_session_task
+        revoke_session_task(session)
         with contextlib.suppress(Exception):
             if agent.steer(arg):
                 shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"

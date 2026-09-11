@@ -83,7 +83,10 @@ export function useComposerSubmit({
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
+  const dispatchSubmit = (
+    text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden',
+    inputProvenance?: import('@hermes/shared').ComposerInputProvenance
+  ) => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
@@ -98,8 +101,8 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(text, { attachments, ...(inputProvenance ? { inputProvenance } : {}), composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        : onSubmit(text, { ...(inputProvenance ? { inputProvenance } : {}), composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
@@ -155,7 +158,8 @@ export function useComposerSubmit({
     // A path that never got its committing space (`@apps/desktop/` left by a Tab
     // descend, then Enter) is still the reference the user picked — promote it
     // on the way out so it attaches instead of submitting as inert text.
-    const text = pathifyRefs(draftRef.current)
+    const rawComposerText = draftRef.current
+    const text = pathifyRefs(rawComposerText)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
     // A clarify card parked on this session owns the turn: the agent is blocked
@@ -227,7 +231,9 @@ export function useComposerSubmit({
       resetBrowseState(sessionId)
       clearDraft()
       scope.attachments.clear()
-      dispatchSubmit(text, submittedAttachments)
+      dispatchSubmit(text, submittedAttachments, undefined, {
+        kind: 'desktop_composer', raw_text: rawComposerText
+      })
     }
 
     focusInput()

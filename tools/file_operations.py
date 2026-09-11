@@ -358,6 +358,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+        from tools.approval_protected import review_atomic_write
+        from tools.approval_task import task_revoked
+        with review_atomic_write(self, path, content) as checked_path:
+            if task_revoked():
+                return ExecuteResult(stdout="Task ended before write", exit_code=1)
+            return self._atomic_write_unchecked(checked_path, content)
+
+    def _atomic_write_unchecked(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` atomically: stdin → temp file in the SAME directory →
         ``mv -f`` (same-FS rename; cross-device ``mv`` is copy+unlink, NOT atomic).
         ``mkdir -p`` folded in. Exit 0 = swap happened; non-zero = original intact.
@@ -1322,6 +1330,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact
         # first-line match); the raw read becomes write_file's pre_content.
         raw_content = read_result.stdout
+        from tools.approval_protected import record_patch_preimage
+        record_patch_preimage(path, raw_content)
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import fuzzy_find_and_replace

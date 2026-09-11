@@ -390,6 +390,8 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics."""
+    from tools.approval_task import revoke_session_task
+    revoke_session_task(session)
     use_compute_host = _session_uses_compute_host(session)
     should_interrupt = bool(session.get("running"))
     run_thread_alive = False

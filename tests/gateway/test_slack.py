@@ -3160,6 +3160,69 @@ class TestThreadReplyHandling:
         # Watermark advanced to the trigger ts.
         assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
 
+    @pytest.mark.asyncio
+    async def test_active_thread_plain_wake_recovers_intermediate_app_message(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """A routed plain reply must recover messages that were not routed as
+        turns, even after this process already hydrated the active thread.
+
+        External apps commonly post a completion update between Milo's reply
+        and a human's plain-language wake. Advancing the watermark without a
+        fresh conversations.replies read silently hides that evidence.
+        """
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=True
+        )
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.000", "user": "U_PARENT", "text": "Original report"},
+                    {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                    {
+                        "ts": "123.200",
+                        "user": "U_APP",
+                        "bot_id": "B_APP",
+                        "subtype": "bot_message",
+                        "text": "Issue resolved; PR merged and deployment succeeded",
+                    },
+                    {"ts": "123.456", "user": "U_USER", "text": "Milo, please verify"},
+                ]
+            }
+        )
+        adapter_with_session_store._user_name_cache = {
+            ("T_TEAM", "U_PARENT"): "Reporter",
+            ("T_TEAM", "U_USER"): "User",
+            ("T_TEAM", "U_APP"): "Release app",
+        }
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "Milo, please verify",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert "Issue resolved; PR merged and deployment succeeded" in msg_event.channel_context
+        assert "Old context" not in msg_event.channel_context
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
 
 # ---------------------------------------------------------------------------
 # TestAssistantThreadLifecycle

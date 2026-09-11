@@ -6,11 +6,20 @@ import type { ChatMessage } from '@/lib/chat-messages'
 export function latestConnectorPart(messages: ChatMessage[]) {
   return messages
     .flatMap(message => message.parts)
-    .filter(
-      part =>
-        part.type === 'tool-call' &&
-        (part.toolName === 'manage_connections' || connectorCalls(part.toolName, part.args).length > 0)
-    )
+    .filter(part => {
+      if (part.type !== 'tool-call') {
+        return false
+      }
+
+      if (part.toolName === 'manage_connections') {
+        const input = recordOf(part.args)
+
+        return (input.action ?? 'status') !== 'status' ||
+          (Array.isArray(input.connectors) && input.connectors.length > 0)
+      }
+
+      return connectorCalls(part.toolName, part.args).length > 0
+    })
     .at(-1)
 }
 

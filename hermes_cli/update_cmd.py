@@ -91,7 +91,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
+    _has_http_code, _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
@@ -171,6 +171,49 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result
+
+
+# Degrade past a *transient* repo-scoped HTTP 429 on the existing-install update path (#105857).
+# GitHub throttles packfile generation for this large repo with a repo-scoped HTTP 429 that a
+# one-shot ``ls-remote`` slips past but a full ``fetch origin main`` dies on — so a single failed
+# attempt strands a healthy checkout behind upstream across indefinite manual retries. Retry with
+# bounded linear backoff so a transient/secondary throttle self-clears; only a 429 retries, so
+# unrelated errors (no network, auth, DNS) still fail fast. Shared by the apply and ``--check`` paths.
+#
+# NB: a ``--filter=blob:none`` degradation was considered (mirroring the fresh-install clone,
+# #89624) but is deliberately NOT done here: a filtered fetch into an ordinary full checkout
+# *persistently* rewrites it into a partial clone (it sets ``remote.origin.promisor=true`` /
+# ``partialclonefilter=blob:none``), so every later git op may demand-fetch omitted blobs over the
+# network. Realizing those blobs through the subsequent ``merge --ff-only`` on a still-throttled
+# remote is unproven and the config mutation must be transaction-owned/restored. That belongs in a
+# separate change with a real ordinary-clone regression, not folded into this retry fix.
+_FETCH_MAX_ATTEMPTS = 4
+
+
+def _fetch_is_rate_limited(stderr: str) -> bool:
+    """True when a failed git fetch's stderr is the repo-scoped HTTP 429 packfile throttle."""
+    return _has_http_code(stderr or "", "429") or "rate limit" in (stderr or "").lower()
+
+
+def _fetch_with_rate_limit_retry(git_cmd, fetch_args, *, sleep=_time.sleep):
+    """``git fetch <fetch_args>`` that degrades past a transient repo-scoped HTTP 429 (#105857).
+
+    ``fetch_args`` is the argv after ``fetch`` (e.g. ``["origin", branch]`` on the apply path, or
+    ``["--depth", "1", "upstream", branch]`` on ``--check``), so both the apply and check paths
+    share one retry policy. Returns the final ``CompletedProcess`` (caller inspects ``returncode``).
+    A non-rate-limit failure is returned immediately so unrelated errors still fail fast; only a 429
+    triggers the bounded 5/10/15s backoff. When every attempt is throttled the last 429 result is
+    returned so ``_print_fetch_failure`` keeps its accurate diagnosis."""
+    result = _git_run(git_cmd, ["fetch", *fetch_args], network=True)
+    if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+        return result
+    for attempt in range(2, _FETCH_MAX_ATTEMPTS + 1):
+        sleep((attempt - 1) * 5)
+        print(f"  Rate-limited (HTTP 429) — retrying fetch (attempt {attempt}/{_FETCH_MAX_ATTEMPTS})...")
+        result = _git_run(git_cmd, ["fetch", *fetch_args], network=True)
+        if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+            return result
+    return result
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -519,12 +562,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     fetch_result = None
     if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
         print("→ Fetching from upstream...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
+        fetch_result = _fetch_with_rate_limit_retry(git_cmd, depth_args + ["upstream", branch])
     if fetch_result is not None and fetch_result.returncode == 0:
         compare_branch = f"upstream/{branch}"
     else:
         print("→ Fetching from origin...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
+        fetch_result = _fetch_with_rate_limit_retry(git_cmd, depth_args + ["origin", branch])
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
@@ -1351,7 +1394,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_result = _fetch_with_rate_limit_retry(git_cmd, ["origin", branch])
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)

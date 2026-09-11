@@ -43,12 +43,16 @@ export function useCardCommit() {
  *  read as a form. */
 export function CardFrame({
   children,
+  continueLabel = 'Continue',
   disabled = false,
   done,
   locked = false,
   onContinue
 }: {
   children: React.ReactNode
+  /** The action, named for what it does when the default reads as a shrug —
+   *  "Continue with 2" tells them the picks registered. */
+  continueLabel?: string
   disabled?: boolean
   done: boolean
   locked?: boolean
@@ -71,7 +75,7 @@ export function CardFrame({
           onClick={onContinue}
           size="sm"
         >
-          {done ? '✓ Done' : 'Continue'}
+          {done ? '✓ Done' : continueLabel}
         </Button>
       </div>
     </div>

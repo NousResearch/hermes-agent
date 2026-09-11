@@ -28,6 +28,7 @@ import { setAccentOverride } from '@/themes/accent-override'
 export function ConnectorsCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
   const { commit, done } = useCardCommit()
+  const picked = CONNECTORS.filter(connector => answers.connectors.includes(connector.id))
 
   const toggle = (id: string) =>
     setOnboardingAnswers({
@@ -38,11 +39,10 @@ export function ConnectorsCard({ locked }: CardProps) {
 
   return (
     <CardFrame
+      continueLabel={picked.length > 0 ? `Continue with ${picked.length}` : 'None of these'}
       done={done}
       locked={locked}
       onContinue={() => {
-        const picked = CONNECTORS.filter(connector => answers.connectors.includes(connector.id))
-
         commit(
           `apps I use, not connected yet: ${picked.length > 0 ? picked.map(c => c.name).join(', ') : 'none for now'}`
         )
@@ -64,6 +64,13 @@ export function ConnectorsCard({ locked }: CardProps) {
           />
         ))}
       </div>
+      {/* Picking is a preference, not an authorization: nothing is signed into
+          here. Saying so is what keeps the Connect cards later from reading as
+          a second ask for the same thing. */}
+      <p className="text-xs text-muted-foreground">
+        Nothing connects yet. Hermes will offer to link these when a task needs them, and asks before reading
+        anything.
+      </p>
     </CardFrame>
   )
 }

@@ -1,0 +1,115 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: compartment
+description: >-
+  Offline agentic vector memory: encrypted, hybrid search, no cloud (stdio).
+source: https://github.com/MaxFreedomPollard/Compartment
+
+# Compartment is a local encrypted memory vault (Apache-2.0, PyPI:
+# `compartment`). Fully offline: the embedding model ships inside the wheel,
+# the vault is AEAD-encrypted at rest including vectors, and the server is
+# stdio-only with no ports and no network at runtime. One default vault is
+# shared by every agent on the machine, so memories stored from Hermes are
+# recallable from any other MCP client and vice versa. The same install
+# carries the Compartment panel app (menu bar on macOS, notification area
+# on Windows, a window on Linux); `compartment init` seeds the vault with
+# the bundled starter pack by default (starter@1.5.0, 6,665 starting
+# memories at the pinned release), editable and forgettable like anything
+# the agent stores, and starting memories never carry an expiry.
+#
+# Live-verified at the pinned SHA: clean clone + this exact bootstrap, then
+# an MCP probe over stdio. initialize returns serverInfo compartment 4.8.0,
+# tools/list returns all 14 tools, and a store/search round-trip on a
+# scratch vault recalls the stored memory. The server also starts and lists
+# tools before a vault exists; memory tools answer with lock-state guidance
+# until `compartment init` has been run (see post_install), so the
+# install-time probe succeeds pre-setup.
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/compartment"
+  args:
+    - "--caller"
+    - "hermes"
+    - "serve"
+
+# Pinned per catalog dependency policy: full commit SHA. This SHA is the
+# v4.8.0 release (2026-08-20: memory expiry, panel app can run the whole
+# setup, integrate writes absolute paths); it passes the policy's two-week
+# age line on 2026-09-03. The current release is v4.9.4 (2026-09-02): the
+# memory graph names every entity, the panel gains a Dashboard button, and
+# the server runs under mcp 1.x and 2.x from one wheel (mcp 2.0 removed
+# mcp.server.fastmcp; the import now follows whichever module the installed
+# SDK has, so this bootstrap's `pip install .` resolves against any current
+# mcp). v4.9.4 is pin-eligible 2026-09-16. Bumping the pin is a PR to this
+# manifest.
+#
+# The bootstrap is POSIX-shaped (same as the n8n entry): macOS and Linux
+# install through it as-is. Windows has no `python3`/`.venv/bin`, so
+# post_install documents the direct path there (pip install + `hermes
+# mcp add`); the engine's dependencies are wheels-only on all three OSes.
+install:
+  type: git
+  url: https://github.com/MaxFreedomPollard/Compartment.git
+  ref: 77f08e490477068f6ff8348f6d29e998118fea2d
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install ."
+
+# No account, no API key, no cloud service. The vault is encrypted with a
+# passphrase the user creates locally via `compartment init`; it never
+# passes through Hermes or this manifest.
+auth:
+  type: none
+
+# Tool selection at install time:
+# 14 hand-built tools (store/search, graph relations, status/diagnostics);
+# memory_store carries optional expiry (`expires: 2w` or a date). Nothing
+# is auto-generated, so `default_enabled` is left unset and the
+# install-time checklist starts with everything pre-checked, and users
+# deselect what they don't want. Tool descriptions are agent-first: they
+# tell the model when to recall before answering and what is worth
+# storing, so automatic tool use works without prompt changes.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - compartment
+    - memory
+    - agentic memory
+    - vector memory
+
+post_install: |
+  Requires Python 3.11+ on PATH as `python3`. One-time vault setup (you
+  choose the passphrase that encrypts everything; it cannot be recovered
+  if lost):
+
+    ~/.hermes/mcp-installs/compartment/.venv/bin/compartment init
+
+  init seeds the vault with the bundled starter pack by default
+  (starter@1.5.0, 6,665 starting memories, editable and forgettable like
+  anything the agent stores), so recall answers usefully from the first
+  session. It also starts the Compartment panel app and enables it at
+  login: menu bar on macOS, notification area on Windows, a window on
+  Linux. Add --no-app for headless boxes. On macOS, `init --keychain`
+  stores a reboot-surviving credential; otherwise the vault comes up
+  locked after a restart and `compartment unlock` (or the panel) reopens
+  it. Until unlocked, the memory tools answer with lock-state guidance
+  instead of failing.
+
+  Already running Compartment on this machine? The catalog server shares
+  the same default vault; skip init.
+
+  Windows: the catalog bootstrap is POSIX-shaped, so install directly
+  with `py -m pip install compartment`, then register the same server:
+
+    hermes mcp add compartment --command compartment --args --caller hermes serve
+
+  Everything else (init, starter pack, panel app, shared vault) works
+  the same there.
+
+  Restart your Hermes session so the tools load. For the deeper native
+  integration (a `hermes memory setup` provider with automatic capture):
+
+    ~/.hermes/mcp-installs/compartment/.venv/bin/compartment integrate hermes

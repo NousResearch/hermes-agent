@@ -173,6 +173,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
+  const previous = approval.$all.get()[keyFor(sessionId)]
   let rawResult: unknown
 
   try {
@@ -192,9 +193,20 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   const result =
     rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
 
-  const pending = Array.isArray(result?.approvals) ? result.approvals[0] : undefined
+  // Live requests/responses outrank a replay that was already in flight.
+  if (approval.$all.get()[keyFor(sessionId)] !== previous || !Array.isArray(result.approvals)) {
+    return
+  }
 
-  if (!pending || typeof pending.request_id !== 'string') {
+  const pending = result.approvals[0]
+
+  if (!pending) {
+    clearApprovalRequest(sessionId, previous?.requestId)
+
+    return
+  }
+
+  if (typeof pending.request_id !== 'string') {
     return
   }
 

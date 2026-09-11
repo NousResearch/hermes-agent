@@ -721,8 +721,10 @@ from hermes_cli.main_provider_setup import (
     _aux_config_menu,
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
+    _edit_custom_provider,
     _is_profile_api_key_provider,
     _named_custom_provider_map,
+    _parse_context_length_input,
     _prompt_provider_choice,
     _remove_custom_provider,
 )
@@ -2026,6 +2028,8 @@ def select_provider_and_model(args=None):
             )
             return
         _model_flow_named_custom(config, provider_info)
+    elif selected_provider == "edit-custom":
+        _edit_custom_provider(config)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
     elif (
@@ -2040,6 +2044,7 @@ def select_provider_and_model(args=None):
     if selected_provider not in {
         "custom",
         "cancel",
+        "edit-custom",
         "remove-custom",
     } and not selected_provider.startswith("custom:"):
         _clear_stale_openai_base_url()

@@ -38,10 +38,16 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 
 
 def _evict_modules(module_name: str) -> None:
-    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
+    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
+
+    ``sys.modules`` is process-global, so any concurrent import — another profile's plugin
+    load, a lazy import on a worker thread — mutates it while this runs. Snapshot the keys
+    with ``list()`` (one atomic C-level copy) instead of iterating the live mapping, and drop
+    with ``pop`` so a key another evictor already removed is not a ``KeyError``.
+    """
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    for name in [n for n in list(sys.modules) if n == module_name or n.startswith(prefix)]:
+        sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

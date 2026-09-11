@@ -49,7 +49,7 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_unlock = config_subparsers.add_parser(
         "unlock", help="Open a time-boxed window in which locked settings may be changed")
     config_unlock.add_argument("--minutes", type=float, default=15.0,
-                               help="How long the window stays open (default: 15)")
+                               help="Length of the unlock window in minutes (default: 15)")
 
     config_subparsers.add_parser("relock", help="Close an open unlock window immediately")
 

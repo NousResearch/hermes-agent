@@ -986,15 +986,50 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return True, str(result) if result else None, command
+                from hermes_cli.plugin_invocation import (
+                    _bind_plugin_invocation,
+                    _revoke_plugin_invocation,
+                )
+                invocation = self._hm_plugin_invocation(event, source)
+                try:
+                    plugin_handler = get_plugin_command_handler(
+                        command.replace("_", "-"), invocation
+                    )
+                    if plugin_handler:
+                        with _bind_plugin_invocation(invocation):
+                            result = plugin_handler(event.get_command_args().strip())
+                            if asyncio.iscoroutine(result):
+                                result = await result
+                        return True, str(result) if result else None, command
+                finally:
+                    _revoke_plugin_invocation(invocation)
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
         return False, None, command
+
+    def _hm_plugin_invocation(
+        self, event: "MessageEvent", source: SessionSource
+    ) -> "PluginInvocationContext":
+        """Build trusted plugin context after gateway admission and authorization."""
+        from hermes_cli.plugin_invocation import _new_plugin_invocation
+
+        platform = source.platform.value if source.platform else None
+        profile = self._adapter_profile_for_source(source) or source.profile or "default"
+        session_id = self._session_key_for_source(source) or None
+        target = source.thread_id or source.chat_id or None
+        origin = event.message_id or source.message_id or None
+        internal = bool(getattr(event, "internal", False))
+        return _new_plugin_invocation(
+            profile=profile,
+            session_id=session_id,
+            platform=platform,
+            authenticated_actor=None if internal else source.user_id,
+            target=str(target) if target is not None else None,
+            chat_id=str(source.chat_id) if source.chat_id is not None else None,
+            thread_id=str(source.thread_id) if source.thread_id is not None else None,
+            origin=str(origin) if origin is not None else None,
+            execution_kind="background" if internal else "root",
+        )
 
     def _hm_bundle_slash_rewrite(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: str

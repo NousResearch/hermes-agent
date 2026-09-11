@@ -271,10 +271,13 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
-        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None) -> None:
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        plugin_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+    ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
+        self._plugin_commands_provider = plugin_commands_provider
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -454,8 +457,12 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         try:
-            from hermes_cli.plugins import get_plugin_commands
-            for cmd_name, cmd_info in get_plugin_commands().items():
+            if self._plugin_commands_provider is None:
+                from hermes_cli.plugins import get_plugin_commands
+                plugin_commands = get_plugin_commands()
+            else:
+                plugin_commands = self._call_provider(self._plugin_commands_provider)
+            for cmd_name, cmd_info in plugin_commands.items():
                 if cmd_name.startswith(word):
                     yield _cmd_completion(
                         cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")

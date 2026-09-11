@@ -2375,11 +2375,31 @@ def get_skill_bundles() -> dict:
 build_bundle_invocation_message = _lazy_shim("agent.skill_bundles", "build_bundle_invocation_message")
 
 
-def _get_plugin_cmd_handler_names() -> set:
+def _cli_plugin_invocation(cli) -> "PluginInvocationContext":
+    """Build trusted plugin context from the active interactive CLI session."""
+    from hermes_cli.plugin_invocation import _new_plugin_invocation
+    from hermes_cli.profiles import get_active_profile_name
+
+    session_id = str(getattr(cli, "session_id", "") or "").strip() or None
+    profile = str(get_active_profile_name() or "").strip() or None
+    return _new_plugin_invocation(
+        profile=profile,
+        session_id=session_id,
+        platform="cli",
+        authenticated_actor=None,
+        target=session_id,
+        chat_id=None,
+        thread_id=None,
+        origin=None,
+        execution_kind="root",
+    )
+
+
+def _get_plugin_cmd_handler_names(invocation=None) -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
         from hermes_cli.plugins import get_plugin_commands
-        return set(get_plugin_commands().keys())
+        return set(get_plugin_commands(invocation).keys())
     except Exception:
         return set()
 
@@ -3250,14 +3270,19 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         user_args = cmd_original[len(base_cmd):].strip()
         if bare in quick_commands:
             return self._run_quick_command(base_cmd, quick_commands[bare], user_args)
-        if bare in _get_plugin_cmd_handler_names():
-            self._run_plugin_slash_command(base_cmd, user_args)
-        elif base_cmd in skill_bundles:
-            self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
-        elif base_cmd in skill_commands:
-            self._run_skill_slash_command(base_cmd, skill_commands[base_cmd], user_args)
-        else:
-            return self._expand_slash_prefix(cmd_original, cmd_lower, skill_commands, skill_bundles)
+        plugin_invocation = _cli_plugin_invocation(self)
+        try:
+            if bare in _get_plugin_cmd_handler_names(plugin_invocation):
+                self._run_plugin_slash_command(base_cmd, user_args, plugin_invocation)
+            elif base_cmd in skill_bundles:
+                self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
+            elif base_cmd in skill_commands:
+                self._run_skill_slash_command(base_cmd, skill_commands[base_cmd], user_args)
+            else:
+                return self._expand_slash_prefix(cmd_original, cmd_lower, skill_commands, skill_bundles)
+        finally:
+            from hermes_cli.plugin_invocation import _revoke_plugin_invocation
+            _revoke_plugin_invocation(plugin_invocation)
         return True
 
     def _run_quick_command(self, base_cmd: str, qcmd: dict, user_args: str) -> bool:
@@ -3301,14 +3326,16 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             self._console_print(f"[bold red]Quick command error: {e}[/]")
         return True
 
-    def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
+    def _run_plugin_slash_command(self, base_cmd: str, user_args: str, invocation) -> None:
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+        from hermes_cli.plugin_invocation import _bind_plugin_invocation
 
-        plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
+        plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"), invocation)
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            with _bind_plugin_invocation(invocation):
+                result = resolve_plugin_command_result(plugin_handler(user_args))
             if result:
                 _cprint(str(result))
         except Exception as e:

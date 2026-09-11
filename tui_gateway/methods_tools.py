@@ -5,6 +5,7 @@ bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / ``_mcp_`` prefixes).
 """
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -376,8 +377,37 @@ def _catalog_quick_commands(cat: _Catalog) -> None:
         cat.add(f"/{qname}", desc, "User commands")
 
 
-def _catalog_plugin_commands(cat: _Catalog) -> None:
-    plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
+def _plugin_invocation(session: dict | None):
+    """Build trusted plugin context from a live TUI gateway session record."""
+    if not session:
+        return None
+    invocation_mod = _tools_mod("hermes_cli.plugin_invocation")
+    session_id = str(session.get("session_key") or "").strip() or None
+    profile = profile_name_for_home(session.get("profile_home")) or _current_profile_name()
+    return invocation_mod._new_plugin_invocation(
+        profile=profile,
+        session_id=session_id,
+        platform="tui",
+        authenticated_actor=None,
+        target=session_id,
+        chat_id=None,
+        thread_id=None,
+        origin=None,
+        execution_kind="root",
+    )
+
+
+def _catalog_plugin_commands(cat: _Catalog, invocation=None) -> None:
+    plugins = _tools_mod("hermes_cli.plugins")
+    try:
+        plugin_cmds = (
+            plugins.get_plugin_commands(invocation)
+            if invocation is not None
+            else plugins.get_plugin_commands()
+        ) or {}
+    finally:
+        if invocation is not None:
+            _tools_mod("hermes_cli.plugin_invocation")._revoke_plugin_invocation(invocation)
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):
@@ -412,7 +442,8 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         warning = f"quick_commands discovery unavailable: {e}"
     try:
-        _catalog_plugin_commands(cat)
+        session = _sessions.get(params.get("session_id", ""))
+        _catalog_plugin_commands(cat, _plugin_invocation(session))
     except Exception as e:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
@@ -475,15 +506,28 @@ def _dispatch_quick(rid, params, session, name, arg):
     return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
-def _plugin_command_handler(name: str):
+def _plugin_command_handler(name: str, invocation=None):
     try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
+        plugins = _tools_mod("hermes_cli.plugins")
+        return (
+            plugins.get_plugin_command_handler(name, invocation)
+            if invocation is not None
+            else plugins.get_plugin_command_handler(name)
+        )
     except Exception:
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, invocation) -> str:
+    invocation_mod = _tools_mod("hermes_cli.plugin_invocation")
+    scope = (
+        invocation_mod._bind_plugin_invocation(invocation)
+        if invocation is not None
+        else contextlib.nullcontext()
+    )
+    with scope:
+        result = _tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg))
+    return str(result or "")
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:
@@ -503,9 +547,17 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+    invocation = _plugin_invocation(session)
+    try:
+        if handler := _plugin_command_handler(name, invocation):
+            with contextlib.suppress(Exception):
+                return _ok(
+                    rid,
+                    {"type": "plugin", "output": _run_plugin_command(handler, arg, invocation)},
+                )
+    finally:
+        if invocation is not None:
+            _tools_mod("hermes_cli.plugin_invocation")._revoke_plugin_invocation(invocation)
     return None
 
 
@@ -834,11 +886,19 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+    invocation = _plugin_invocation(session)
+    try:
+        if plugin_handler := _plugin_command_handler(base, invocation) if base else None:
+            try:
+                return _ok(
+                    rid,
+                    {"output": _run_plugin_command(plugin_handler, arg, invocation) or "(no output)"},
+                )
+            except Exception as e:
+                return _ok(rid, {"output": f"Plugin command error: {e}"})
+    finally:
+        if invocation is not None:
+            _tools_mod("hermes_cli.plugin_invocation")._revoke_plugin_invocation(invocation)
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

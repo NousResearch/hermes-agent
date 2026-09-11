@@ -2123,7 +2123,12 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
+        from cli import (
+            _cli_plugin_invocation,
+            _estimate_tui_input_height,
+            get_skill_bundles,
+            get_skill_commands,
+        )
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self
@@ -2131,10 +2136,20 @@ class CLITuiMixin:
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
+        def _available_plugin_commands(current_cli):
+            from hermes_cli.plugins import get_plugin_commands
+            from hermes_cli.plugin_invocation import _revoke_plugin_invocation
+            invocation = _cli_plugin_invocation(current_cli)
+            try:
+                return get_plugin_commands(invocation)
+            finally:
+                _revoke_plugin_invocation(invocation)
+
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
-            skill_bundles_provider=lambda: get_skill_bundles())
+            skill_bundles_provider=lambda: get_skill_bundles(),
+            plugin_commands_provider=lambda: _available_plugin_commands(cli_ref))
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,

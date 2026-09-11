@@ -385,8 +385,13 @@ def is_gateway_known_command(name: str | None) -> bool:
     up lazily); decides whether the gateway emits ``command:<name>`` hooks."""
     if not name:
         return False
-    return name in GATEWAY_KNOWN_COMMANDS or any(
-        plugin_name == name for plugin_name, _d, _h in _iter_plugin_command_entries())
+    if name in GATEWAY_KNOWN_COMMANDS:
+        return True
+    try:
+        from hermes_cli.plugins import is_plugin_command_registered
+        return is_plugin_command_registered(name.replace("_", "-"))
+    except Exception:
+        return False
 
 
 # Commands with explicit mid-run handling (busy_policy != "reject"). Kept

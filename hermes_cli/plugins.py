@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import inspect
 import json
@@ -33,6 +34,11 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.plugin_invocation import (
+    PluginInvocationContext,
+    _context_without_plugin_invocation,
+    current_plugin_invocation,
+)
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
@@ -399,6 +405,15 @@ class PluginContext:
         except Exception:
             return "default"
 
+    @property
+    def invocation(self) -> PluginInvocationContext:
+        """Immutable host-derived context for the command currently invoking this plugin.
+
+        Access outside a host-bound dispatch raises instead of synthesizing identity or routing
+        facts from process environment or plugin-controlled arguments.
+        """
+        return current_plugin_invocation()
+
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
         with registration teardown; exceptions are logged, never propagated."""
@@ -409,12 +424,14 @@ class PluginContext:
         return handle
 
     def spawn_task(self, coro, *, name: Optional[str] = None) -> "asyncio.Task":
-        """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
+        """Spawn a supervised task without command invocation authority; unload cancels it."""
         if not asyncio.iscoroutine(coro):
             raise TypeError("spawn_task expects a coroutine")
         loop = asyncio.get_running_loop()
         task_name = name or f"plugin:{self.plugin_id}:task"
-        task = loop.create_task(coro, name=task_name)
+        task = _context_without_plugin_invocation().run(
+            loop.create_task, coro, name=task_name
+        )
         handle = self._track("background_task", task_name, lambda: task.done() or task.cancel())
         task.add_done_callback(lambda _t: handle.dispose())
         logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
@@ -651,11 +668,16 @@ class PluginContext:
     @_serialized_replacement
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
-        argument_mode: str | None = None,
+        argument_mode: str | None = None, *,
+        availability: Callable[[PluginInvocationContext], bool] | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
         (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        field; without it the command registers parameterless there but still accepts trailing text.
+        ``availability`` is a cheap synchronous predicate over trusted invocation context. It must
+        return literal ``True``; missing context, exceptions, and awaitables deny the command."""
+        if availability is not None and not callable(availability):
+            raise TypeError("command availability must be callable")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -672,6 +694,7 @@ class PluginContext:
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
+            "availability": availability,
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
@@ -1976,10 +1999,47 @@ def get_plugin_context_engine():
     return _ensure_plugins_discovered()._context_engine
 
 
-def get_plugin_command_handler(name: str) -> Optional[Callable]:
-    """Return the handler for a plugin-registered slash command, or ``None``."""
+def _plugin_command_available(
+    entry: Mapping[str, Any], invocation: PluginInvocationContext | None,
+) -> bool:
+    """Evaluate a command's optional trusted-context predicate, failing closed."""
+    availability = entry.get("availability")
+    if availability is None:
+        return True
+    if invocation is None:
+        return False
+    try:
+        result = availability(invocation)
+    except Exception:
+        logger.warning(
+            "Plugin %s command availability failed; command hidden",
+            entry.get("plugin") or "<unknown>",
+            exc_info=True,
+        )
+        return False
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        logger.warning(
+            "Plugin %s command availability returned an awaitable; command hidden",
+            entry.get("plugin") or "<unknown>",
+        )
+        return False
+    return result is True
+
+
+def get_plugin_command_handler(
+    name: str, invocation: PluginInvocationContext | None = None,
+) -> Optional[Callable]:
+    """Return an available plugin slash-command handler, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
-    return entry["handler"] if entry else None
+    return entry["handler"] if entry and _plugin_command_available(entry, invocation) else None
+
+
+def is_plugin_command_registered(name: str) -> bool:
+    """Return whether discovery registered a command name, independent of availability."""
+    return name in _ensure_plugins_discovered()._plugin_commands
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
@@ -2007,7 +2067,13 @@ def resolve_plugin_command_result(result: Any) -> Any:
         finally:
             done.set()
 
-    threading.Thread(target=_runner, name="hermes-plugin-command-await", daemon=True).start()
+    callback_context = contextvars.copy_context()
+    threading.Thread(
+        target=callback_context.run,
+        args=(_runner,),
+        name="hermes-plugin-command-await",
+        daemon=True,
+    ).start()
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
         raise TimeoutError("Plugin command async handler did not complete within "
                            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
@@ -2016,9 +2082,16 @@ def resolve_plugin_command_result(result: Any) -> Any:
     return outcome.get("value")
 
 
-def get_plugin_commands() -> Dict[str, dict]:
-    """Plugin commands dict (name -> {handler, description, plugin}) after idempotent discovery."""
-    return _ensure_plugins_discovered()._plugin_commands
+def get_plugin_commands(
+    invocation: PluginInvocationContext | None = None,
+) -> Dict[str, dict]:
+    """Available plugin commands after discovery; ungated legacy commands remain visible."""
+    commands = _ensure_plugins_discovered()._plugin_commands
+    return {
+        name: entry
+        for name, entry in commands.items()
+        if _plugin_command_available(entry, invocation)
+    }
 
 
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:

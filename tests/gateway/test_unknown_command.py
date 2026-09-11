@@ -5,6 +5,7 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,6 +15,8 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_cli.plugin_invocation import PluginInvocationContextUnavailable
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 def _make_source() -> SessionSource:
@@ -131,6 +134,104 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
     assert result is not None
     assert "Unknown command" not in result
+
+
+def test_plugin_command_receives_admitted_gateway_context(monkeypatch):
+    from hermes_cli import plugins
+
+    runner = _make_runner()
+    manager = PluginManager(scope_key="/tmp/hermes-gateway-plugin-context-test")
+    context = PluginContext(PluginManifest(name="neutral-consumer", source="user"), manager)
+    seen = []
+
+    def handler(raw_args):
+        invocation = context.invocation
+        seen.append(
+            (
+                raw_args,
+                invocation,
+                {
+                    "platform": invocation.platform,
+                    "session_id": invocation.session_id,
+                    "chat_id": invocation.chat_id,
+                    "thread_id": invocation.thread_id,
+                },
+            )
+        )
+        return "gateway handled"
+
+    context.register_command(
+        "context-probe",
+        handler,
+        availability=lambda invocation: (
+            invocation.platform == "telegram"
+            and invocation.authenticated_actor == "u1"
+            and invocation.target == "thread-2"
+            and invocation.chat_id == "c1"
+            and invocation.thread_id == "thread-2"
+            and invocation.origin == "m1"
+            and invocation.execution_kind == "root"
+        ),
+    )
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
+
+    event = _make_event("/context-probe MiXeD")
+    event.source.thread_id = "thread-2"
+    result = asyncio.run(runner._handle_message(event))
+
+    assert result == "gateway handled"
+    raw_args, invocation, snapshot = seen.pop()
+    assert raw_args == "MiXeD"
+    assert snapshot == {
+        "platform": "telegram",
+        "session_id": build_session_key(event.source),
+        "chat_id": "c1",
+        "thread_id": "thread-2",
+    }
+    with pytest.raises(PluginInvocationContextUnavailable, match="expired"):
+        _ = invocation.platform
+    with pytest.raises(PluginInvocationContextUnavailable):
+        _ = context.invocation
+
+
+def test_unavailable_registered_plugin_command_never_reaches_model(monkeypatch):
+    from hermes_cli import plugins
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("unavailable plugin command reached the model")
+    )
+    manager = PluginManager(scope_key="/tmp/hermes-gateway-unavailable-command-test")
+    context = PluginContext(PluginManifest(name="neutral-consumer", source="user"), manager)
+    handler = MagicMock()
+    context.register_command(
+        "context-probe",
+        handler,
+        availability=lambda invocation: invocation.execution_kind == "subagent",
+    )
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
+
+    result = asyncio.run(runner._handle_message(_make_event("/context-probe do it")))
+
+    assert "Unknown command" in result
+    handler.assert_not_called()
+    runner._run_agent.assert_not_awaited()
+
+
+def test_internal_gateway_context_is_background_and_anonymous():
+    from hermes_cli.plugin_invocation import _revoke_plugin_invocation
+
+    runner = _make_runner()
+    event = _make_event("background wakeup")
+    event.internal = True
+    invocation = runner._hm_plugin_invocation(event, event.source)
+    try:
+        assert invocation.execution_kind == "background"
+        assert invocation.authenticated_actor is None
+        assert invocation.chat_id == "c1"
+        assert invocation.thread_id is None
+    finally:
+        _revoke_plugin_invocation(invocation)
 
 
 @pytest.mark.asyncio

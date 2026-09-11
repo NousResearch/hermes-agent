@@ -14,6 +14,7 @@ import os
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
+from urllib.parse import urlencode
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
@@ -309,7 +310,7 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract last_failure_error session_id origin".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -839,7 +840,12 @@ def _handle_create(args: dict, **kw) -> str:
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
         session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
+                      or kw.get("session_id")
                       or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
+        # A worker-created child belongs to the durable creator chain. Never combine a
+        # legacy parent's session id with the worker turn's unrelated prompt metadata.
+        origin = (self_task.origin if self_task else
+                  _conversation_origin(session_id, kw.get("tool_origin"), platform=kw.get("platform")))
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
@@ -859,9 +865,45 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+            created_by=os.environ.get("HERMES_PROFILE") or "worker",
+            session_id=session_id, origin=origin)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
+
+
+_ORIGIN_PROMPT_CHARS = 240
+
+
+def _conversation_origin(
+    session_id: Optional[str], tool_origin: Any, *, platform: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Build the privacy-bounded origin persisted on an agent-created card."""
+    if not session_id:
+        return None
+    from gateway.session_context import get_session_env as env
+
+    tool_origin = tool_origin if isinstance(tool_origin, dict) else {}
+    profile = env("HERMES_SESSION_PROFILE", "") or os.environ.get("HERMES_PROFILE") or "default"
+    native_message_id = env("HERMES_SESSION_MESSAGE_ID", "") or None
+    row_id = tool_origin.get("message_row_id")
+    prompt = tool_origin.get("prompt")
+    prompt_excerpt = None
+    if prompt:
+        prompt_excerpt = " ".join(_redact(prompt).split())
+        if len(prompt_excerpt) > _ORIGIN_PROMPT_CHARS:
+            prompt_excerpt = prompt_excerpt[:_ORIGIN_PROMPT_CHARS - 1].rstrip() + "…"
+    origin = {
+        "profile": str(profile),
+        "session_id": str(session_id),
+        "message_id": str(native_message_id or row_id) if native_message_id or row_id is not None else None,
+        "message_row_id": int(row_id) if isinstance(row_id, int) else None,
+        "platform": env("HERMES_SESSION_PLATFORM", "") or platform or None,
+        "chat_id": env("HERMES_SESSION_CHAT_ID", "") or None,
+        "thread_id": env("HERMES_SESSION_THREAD_ID", "") or None,
+        "prompt_excerpt": prompt_excerpt,
+        "session_link": "/chat?" + urlencode({"resume": session_id, "profile": profile}),
+    }
+    return {key: value for key, value in origin.items() if value is not None}
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

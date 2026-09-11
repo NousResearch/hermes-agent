@@ -11,7 +11,9 @@ def test_creator_origin_survives_without_dependency_parent(tmp_path, monkeypatch
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     kb.init_db()
     with kbc.connect_closing() as conn:
-        owner = kb.create_task(conn, title="owner", session_id="durable", triage=True)
+        origin = {"profile": "daily", "session_id": "durable", "message_row_id": 767}
+        owner = kb.create_task(
+            conn, title="owner", session_id="durable", origin=origin, triage=True)
         kn.add_notify_sub(conn, task_id=owner, platform="telegram", chat_id="chat",
                          delivery_mode="wake", notifier_profile="default")
         if surface == "builtin":
@@ -29,7 +31,10 @@ def test_creator_origin_survives_without_dependency_parent(tmp_path, monkeypatch
             monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
             assert kanban_command(parser.parse_args(["kanban", "create", "child", "--json"])) == 0
             tid = json.loads(capsys.readouterr().out)["id"]
-        assert kb.get_task(conn, tid).session_id == "durable"
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.session_id == "durable"
+        assert task.origin == origin
         subs = kn.list_notify_subs(conn, tid)
         assert len(subs) == 1 and subs[0]["delivery_mode"] == "wake"
         assert not conn.execute("SELECT 1 FROM task_links WHERE child_id = ?", (tid,)).fetchone()

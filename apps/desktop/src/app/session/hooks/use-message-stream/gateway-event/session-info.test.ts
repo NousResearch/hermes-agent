@@ -4,10 +4,14 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
   releaseWorkspaceCwdOwner,
-  setCurrentCwd
+  setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider
 } from '@/store/session'
 
 import { handleSessionInfoEvent } from './session-info'
@@ -145,5 +149,58 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     handleSessionInfoEvent(ctx)
 
     expect(next).toBe(original)
+  })
+
+  // When a model/provider switch happens mid-conversation (e.g. the user
+  // switches to a custom-provider model like qwen3.8-flash-next), the
+  // session cache may already carry the new model after resume, making
+  // applySessionInfoStatePatch a no-op. The composer atoms
+  // ($currentModel / $currentProvider — which the model-pill dropdown reads)
+  // must still be synced so the pill reflects the live model, not the stale
+  // persisted value.
+  it('syncs model/provider to composer atoms when session cache is already current but the pill is stale', () => {
+    $selectedStoredSessionId.set('selected-session')
+
+    // Session cache already holds the switched-to model (e.g. from resume).
+    const cached = {
+      ...createClientSessionState('stored-1'),
+      cwd: '',
+      model: 'qwen3.8-flash-next',
+      provider: 'dgx-vllm'
+    }
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    ctx.payload = {
+      ...ctx.payload,
+      model: 'qwen3.8-flash-next',
+      provider: 'dgx-vllm'
+    }
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', cached)
+
+    // Stale composer atom — pill shows the old model.
+    setCurrentModel('laguna-s-2.1:free')
+    setCurrentProvider('')
+
+    let next: ClientSessionState | undefined
+    ctx.deps.updateSessionState = vi.fn(
+      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const updated = updater(cached)
+        next = updated
+        return updated
+      }
+    )
+
+    handleSessionInfoEvent(ctx)
+
+    // The patch is a no-op (cached model matches payload), but the composer
+    // atoms must still be synced to the live runtime model.
+    expect(next).toBe(cached)
+    expect($currentModel.get()).toBe('qwen3.8-flash-next')
+    expect($currentProvider.get()).toBe('dgx-vllm')
   })
 })

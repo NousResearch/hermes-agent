@@ -343,6 +343,149 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser()
 
 
+def _canonical_mount_authority_root(
+    value: str | os.PathLike[str],
+) -> Optional[Path]:
+    """Return a safe existing host-bind authority root, else ``None``.
+
+    Filesystem root is never a valid authority grant. Symlinks are resolved so
+    containment checks compare canonical coordinates rather than lexical aliases.
+    """
+    try:
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            return None
+        root = raw.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir() or root == Path(root.anchor):
+        return None
+    return root
+
+
+def _path_within_any(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _worktree_mount_authority_roots(
+    workspace: Path,
+    configured_roots: list[Path],
+) -> list[str]:
+    """Authorize a worktree only when Git metadata traces to configured state.
+
+    A linked worktree may live outside the owning project directory, but its Git
+    common directory must remain under a configured Project/board root. In that
+    case the exact external worktree is added as a narrow authority root; its
+    parent and siblings are never authorized.
+    """
+    common = _git_common_dir(workspace)
+    if common is None:
+        return []
+    owners = [root for root in configured_roots if _path_within_any(common, [root])]
+    if not owners:
+        return []
+    authorized = list(owners)
+    if not _path_within_any(workspace, authorized):
+        authorized.append(workspace)
+    return [str(root) for root in authorized]
+
+
+def workspace_mount_authority_roots(
+    task: Task,
+    workspace: str | os.PathLike[str],
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
+    """Derive Docker bind authority from existing task/project/board state.
+
+    An absolute ``workspace_path`` is a coordinate, not authorization. Authority
+    comes only from state Hermes already treats as operator-owned configuration:
+
+    * an auto-generated scratch task authorizes only its exact task directory;
+    * a task- or board-bound Project authorizes the configured root containing
+      the workspace (and, for linked worktrees, the root owning Git metadata);
+    * otherwise the board's ``default_workdir`` is the configured root.
+
+    Project-bound tasks never fall back to a broader board root. If no trusted
+    provenance contains the workspace, the runtime is emitted without roots and
+    Docker consumption fails closed before creating a bind mount.
+    """
+    ws = _canonical_mount_authority_root(workspace)
+    if ws is None:
+        return []
+
+    board_slug = board if board else _kb.get_current_board()
+    meta = _kb.read_board_metadata(board_slug)
+    kind = task.workspace_kind or "scratch"
+
+    if kind == "scratch":
+        scratch_root = _canonical_mount_authority_root(
+            _kb.workspaces_root(board=board_slug)
+        )
+        if scratch_root is not None:
+            try:
+                generated = (scratch_root / task.id).resolve(strict=True)
+                generated.relative_to(scratch_root)
+            except (OSError, RuntimeError, ValueError):
+                generated = None
+            if generated is not None and ws == generated:
+                return [str(ws)]
+
+    effective_project_id = str(
+        task.project_id or meta.get("project_id") or ""
+    ).strip()
+    if effective_project_id:
+        try:
+            from hermes_cli import projects_db as project_db
+
+            with project_db.connect_closing() as project_conn:
+                project = project_db.get_project(project_conn, effective_project_id)
+        except Exception as exc:
+            _kb._log.warning(
+                "kanban mount authority: could not resolve project %r: %s",
+                effective_project_id,
+                exc,
+            )
+            return []
+        if project is None:
+            _kb._log.warning(
+                "kanban mount authority: project %r is unavailable",
+                effective_project_id,
+            )
+            return []
+
+        candidates: list[str] = []
+        if project.primary_path:
+            candidates.append(project.primary_path)
+        candidates.extend(folder.path for folder in project.folders)
+        configured = [
+            root
+            for candidate in candidates
+            if (root := _canonical_mount_authority_root(candidate)) is not None
+        ]
+        if kind == "worktree":
+            return _worktree_mount_authority_roots(ws, configured)
+        containing = [root for root in configured if _path_within_any(ws, [root])]
+        return [str(root) for root in containing]
+
+    board_default = _canonical_mount_authority_root(
+        str(meta.get("default_workdir") or "")
+    )
+    if board_default is None:
+        return []
+    if kind == "worktree":
+        return _worktree_mount_authority_roots(ws, [board_default])
+    if not _path_within_any(ws, [board_default]):
+        return []
+    return [str(board_default)]
+
+
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     try:
         result = _git(repo_root, "show-ref", "--verify", f"refs/heads/{branch_name}", timeout=30)

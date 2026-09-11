@@ -52,11 +52,26 @@
     "ip-address": "10.3.1",
     "nanoid@^3": "3.3.18",
     "nanoid@^6": "6.0.0",
-    "js-yaml@^4": "4.3.1",
+    "js-yaml@^4": "4.3.2",
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
     "postcss": "8.5.23",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "leva": {
+      "colord": "2.9.4"
+    },
+    "@nous-research/ui": {
+      "sanitize-html": "2.17.7"
+    },
+    "plist@3.1.0": {
+      "@xmldom/xmldom": "0.8.15"
+    },
+    "plist@3.1.1": {
+      "@xmldom/xmldom": "0.9.12"
+    },
+    "wait-on": {
+      "joi": "18.2.5"
+    }
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

@@ -2132,6 +2132,27 @@ class TestFeishuNormalizeText(unittest.TestCase):
         self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
 
 
+class TestStripLeadingAtAll(unittest.TestCase):
+    """A leading @all/@_all (@everyone) trigger must not hide a trailing slash command."""
+
+    def test_strips_leading_at_all_exposing_slash_command(self):
+        from plugins.platforms.feishu.adapter import _strip_leading_at_all
+
+        self.assertEqual(_strip_leading_at_all("@all /new"), "/new")
+        self.assertEqual(_strip_leading_at_all("@_all /sethome"), "/sethome")
+        self.assertEqual(_strip_leading_at_all("@all\n/reset"), "/reset")
+
+    def test_keeps_mid_message_and_non_all_mentions(self):
+        from plugins.platforms.feishu.adapter import _strip_leading_at_all
+
+        # Mid-message @all is content, not a routing trigger.
+        self.assertEqual(_strip_leading_at_all("ping @all please"), "ping @all please")
+        # A leading non-@all mention is untouched (mention gating handles it).
+        self.assertEqual(_strip_leading_at_all("@Alice /new"), "@Alice /new")
+        # Word boundary: "@allhands" is not the @everyone token.
+        self.assertEqual(_strip_leading_at_all("@allhands on deck"), "@allhands on deck")
+
+
 class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_tag_renders_via_mentions_map(self):
         """Post <at>.user_id is a placeholder ('@_user_N'); the real display

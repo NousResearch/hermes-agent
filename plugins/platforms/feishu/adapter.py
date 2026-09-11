@@ -966,6 +966,19 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
             return remaining
 
 
+def _strip_leading_at_all(text: str) -> str:
+    """Strip a leading @all / @_all (@everyone) trigger from message text.
+
+    Feishu renders @everyone as an ``@_all`` placeholder that ``_normalize_feishu_text``
+    turns into a literal leading ``@all``. That prefix is a routing trigger, not message
+    content, but it hides a trailing slash command: ``"@all /new"`` fails the
+    ``startswith("/")`` check in ``_process_inbound_message``, so the command is folded
+    into conversational text instead of being dispatched. Only a *leading* token is
+    stripped — a mid-message ``@all`` (``"ping @all please"``) stays as content.
+    """
+    return re.sub(r"^@_?all\b\s*", "", text or "")
+
+
 # --- Multiplex isolation for the lark_oapi WebSocket client ---
 #
 # ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
@@ -2497,6 +2510,7 @@ class FeishuAdapter(BasePlatformAdapter):
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
+            text = _strip_leading_at_all(text)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.

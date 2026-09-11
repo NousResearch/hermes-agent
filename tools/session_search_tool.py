@@ -326,6 +326,99 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def check_profile_session_access(caller_profile: Optional[str] = None,
+                                 target_profile: Optional[str] = None,
+                                 config: Optional[dict] = None) -> tuple[bool, str]:
+    """Check if caller_profile is allowed to read sessions from target_profile based on session_access config.
+
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        caller = profiles_mod.normalize_profile_name(caller_profile) if caller_profile else (profiles_mod.get_active_profile_name() or "default")
+    except Exception:
+        caller = (caller_profile or "default").strip().lower()
+
+    try:
+        from hermes_cli import profiles as profiles_mod
+        target = profiles_mod.normalize_profile_name(target_profile) if target_profile else caller
+    except Exception:
+        target = (target_profile or caller).strip().lower()
+
+    # Self-access is always allowed
+    if caller == target:
+        return True, "Self profile read"
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly() or {}
+        except Exception:
+            config = {}
+
+    access_cfg = config.get("session_access")
+    if access_cfg is None and "session_search" in config and isinstance(config["session_search"], dict):
+        access_cfg = config["session_search"].get("access")
+
+    if not access_cfg or not isinstance(access_cfg, dict):
+        return True, "No session_access restrictions configured"
+
+    # Determine global default policy ('allow' or 'deny')
+    raw_global = access_cfg.get("default_policy")
+    if raw_global is None:
+        raw_global = access_cfg.get("policy", access_cfg.get("default", "allow"))
+    if isinstance(raw_global, bool):
+        global_policy = "allow" if raw_global else "deny"
+    else:
+        global_policy = str(raw_global).strip().lower() if raw_global else "allow"
+
+    # Per-profile rules for target profile
+    target_cfg = access_cfg.get(target)
+    if target_cfg is None and "profiles" in access_cfg and isinstance(access_cfg["profiles"], dict):
+        target_cfg = access_cfg["profiles"].get(target)
+
+    if isinstance(target_cfg, dict):
+        # 1. Explicit deny list
+        deny_list = (target_cfg.get("deny") or target_cfg.get("session_read_blocked_by") or
+                     target_cfg.get("blocked_by") or [])
+        if isinstance(deny_list, (list, tuple, set)):
+            norm_deny = [str(x).strip().lower() for x in deny_list]
+            if caller in norm_deny or "*" in norm_deny or "all" in norm_deny:
+                return False, f"Profile '{target}' explicitly denies access from profile '{caller}'"
+
+        # 2. Explicit allow list
+        allow_list = (target_cfg.get("allow") or target_cfg.get("allowed_by") or
+                      target_cfg.get("allow_list") or target_cfg.get("exceptions") or [])
+        if isinstance(allow_list, (list, tuple, set)) and len(allow_list) > 0:
+            norm_allow = [str(x).strip().lower() for x in allow_list]
+            if caller in norm_allow or "*" in norm_allow or "all" in norm_allow:
+                return True, f"Profile '{target}' explicitly allows access from profile '{caller}'"
+            else:
+                return False, f"Profile '{target}' allows access only to specified profiles (caller '{caller}' not in allowlist)"
+
+        # 3. Profile-specific default policy or blocked_by_default
+        if target_cfg.get("session_read_blocked_by_default") is True:
+            return False, f"Profile '{target}' denies cross-profile access by default"
+        raw_target_policy = target_cfg.get("default_policy") or target_cfg.get("policy") or target_cfg.get("default")
+        if raw_target_policy is not None:
+            t_pol = "allow" if raw_target_policy is True else ("deny" if raw_target_policy is False else str(raw_target_policy).strip().lower())
+            if t_pol == "deny":
+                return False, f"Profile '{target}' policy denies cross-profile access"
+
+    # Check global exceptions
+    global_exceptions = access_cfg.get("exceptions")
+    if isinstance(global_exceptions, (list, tuple, set)):
+        norm_exceptions = [str(x).strip().lower() for x in global_exceptions]
+        if target in norm_exceptions or caller in norm_exceptions:
+            return True, "Allowed by global exception"
+
+    if global_policy == "deny":
+        return False, f"Global session_access default_policy is deny (caller '{caller}' -> target '{target}')"
+
+    return True, "Access allowed"
+
+
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
@@ -391,6 +484,14 @@ def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
     if located is None:
         return result
     try:
+        try:
+            from hermes_cli import profiles as profiles_mod
+            caller_profile = _quiet(profiles_mod.get_active_profile_name, "default", "get_active_profile_name failed") or "default"
+        except Exception:
+            caller_profile = "default"
+        allowed, reason = check_profile_session_access(caller_profile, owner)
+        if not allowed:
+            return tool_error(f"Access denied: profile '{caller_profile}' is not authorized to access sessions in profile '{owner}' ({reason})", success=False)
         found = json.loads(_read_session(located, sid, link_profile=owner))
     finally:
         located.close()
@@ -502,10 +603,22 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     # split on it and adopt the embedded profile only when none was passed.
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
+        if emb_profile.startswith("@session:"):
+            emb_profile = emb_profile[len("@session:"):]
         if emb_id:
             session_id = emb_id
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
+    # Cross-profile access check: verify caller is authorized to access target profile
+    if profile is not None and str(profile).strip():
+        try:
+            from hermes_cli import profiles as profiles_mod
+            caller_profile = _quiet(profiles_mod.get_active_profile_name, "default", "get_active_profile_name failed") or "default"
+        except Exception:
+            caller_profile = "default"
+        allowed, reason = check_profile_session_access(caller_profile, profile)
+        if not allowed:
+            return tool_error(f"Access denied: profile '{caller_profile}' is not authorized to access sessions in profile '{profile}' ({reason})", success=False)
     # Cross-profile: swap in the named profile's DB (read-only) for every shape;
     # current-lineage guards key off ids that won't collide, so they stay inert.
     try:

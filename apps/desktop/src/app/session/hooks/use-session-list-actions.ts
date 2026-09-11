@@ -64,9 +64,24 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
   const tombstones = $removedSessionIds.get()
 
-  return tombstones.size
-    ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
-    : sessions
+  if (!tombstones.size) {
+    return sessions
+  }
+
+  // Never hide the currently viewed session behind a stale tombstone —
+  // the user is looking at this chat, and the backend still lists it
+  // (delete hasn't committed or the tombstone is stale). Hiding it
+  // makes the active session vanish from the sidebar while its tile
+  // is open.
+  const active = $selectedStoredSessionId.get()
+
+  return sessions.filter(s => {
+    if (active && (s.id === active || (s._lineage_root_id && s._lineage_root_id === active))) {
+      return true
+    }
+
+    return !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+  })
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:

@@ -8,8 +8,49 @@ from agent.usage_pricing import (
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
+    usage_field_availability,
 )
 from decimal import Decimal
+
+from agent.api_request_hooks import ApiRequestHooksMixin
+
+
+def test_usage_field_availability_distinguishes_explicit_zero_from_missing_cache_metadata():
+    explicit_zero = {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "input_tokens_details": {"cached_tokens": 0},
+    }
+    missing = {"input_tokens": 100, "output_tokens": 10}
+
+    assert usage_field_availability(explicit_zero, api_mode="codex_responses") == {
+        "input_tokens": True,
+        "output_tokens": True,
+        "cache_read_tokens": True,
+        "cache_write_tokens": False,
+        "reasoning_tokens": False,
+    }
+    assert usage_field_availability(missing, api_mode="codex_responses")["cache_read_tokens"] is False
+
+
+def test_api_request_hook_usage_includes_field_availability():
+    class Hooks(ApiRequestHooksMixin):
+        provider = "openai-codex"
+        api_mode = "codex_responses"
+
+    hooks = Hooks()
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=100,
+            output_tokens=10,
+            input_tokens_details=SimpleNamespace(cached_tokens=0),
+        )
+    )
+
+    summary = hooks._usage_summary_for_api_request_hook(response)
+
+    assert summary is not None
+    assert summary["available_fields"]["cache_read_tokens"] is True
 
 
 def test_astra_whole_request_price_tier_includes_cache_writes():

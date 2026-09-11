@@ -311,6 +311,23 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
     return next((v for v in (_usage_field(obj, *path) for path in paths) if v), 0)
 
 
+def _usage_path_is_present(obj: Any, *path: str) -> bool:
+    """Whether a provider supplied a usage path, preserving explicit zeroes."""
+    for hop in path:
+        if isinstance(obj, dict):
+            if hop not in obj:
+                return False
+            obj = obj[hop]
+            continue
+        fields_set = getattr(obj, "model_fields_set", getattr(obj, "__fields_set__", None))
+        if fields_set is not None and hop not in fields_set:
+            return False
+        if not hasattr(obj, hop):
+            return False
+        obj = getattr(obj, hop)
+    return obj is not None
+
+
 # Picker slugs → snapshot provider key ("openai-api" is the slug for direct
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
@@ -488,6 +505,38 @@ _CHAT_USAGE_SHAPE = (
     (("prompt_tokens_details", "cache_write_tokens"), ("prompt_tokens_details", "cache_creation_input_tokens"),
      ("cache_creation_input_tokens",), ("cache_write_tokens",)),
 )
+
+
+def usage_field_availability(
+    response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
+) -> Dict[str, bool]:
+    """Report which canonical token buckets were present in raw provider usage.
+
+    Normalized counters intentionally use zero for both missing and explicit-zero
+    fields. Hook consumers need this side channel to avoid reporting unsupported
+    cache accounting as a zero-percent cache hit rate.
+    """
+    provider_name = (provider or "").strip().lower()
+    mode = (api_mode or "").strip().lower()
+    if mode == "anthropic_messages" or provider_name == "anthropic":
+        shape = _ANTHROPIC_USAGE_SHAPE
+    elif mode == "codex_responses":
+        shape = _CODEX_USAGE_SHAPE
+    else:
+        shape = _CHAT_USAGE_SHAPE
+    names = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    available = {
+        name: any(_usage_path_is_present(response_usage, *path) for path in paths)
+        for name, paths in zip(names, shape)
+    }
+    available["reasoning_tokens"] = any(
+        _usage_path_is_present(response_usage, *path)
+        for path in (
+            ("output_tokens_details", "reasoning_tokens"),
+            ("completion_tokens_details", "reasoning_tokens"),
+        )
+    )
+    return available
 
 
 def normalize_usage(

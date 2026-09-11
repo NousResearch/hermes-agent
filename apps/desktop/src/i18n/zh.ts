@@ -4349,6 +4349,9 @@ export const zh: Translations = {
     readOnlyTranscriptSendBlocked: '该会话目前以只读记录方式打开——发送已禁用。',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    poolSlotTimeoutBody:
+      '所有本地配置后端槽位都在使用中。请在“设置”→“高级”中增加 Warm Bot Backends，或等待空闲后端被驱逐后重试。',
+    poolSlotTimeoutOpenSettings: '打开高级设置',
     resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',

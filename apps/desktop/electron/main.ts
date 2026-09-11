@@ -290,7 +290,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { selectPoolEvictions } from './pool-eviction'
+import { evictPoolEntries } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
   isBackgroundSlotWaitTimeout,
@@ -310,6 +310,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PrimaryProfilePin } from './primary-profile-pin'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -1622,7 +1623,7 @@ function setPoolLimits(raw) {
   poolLimits = clampPoolLimits(raw)
   persistPoolLimits(poolLimits)
   localBackendSpawnCoordinator.setLimit(poolLimits.maxBackends)
-  evictLruPoolBackends(poolMaxBackends())
+  void evictLruPoolBackends(poolMaxBackends())
   startPoolIdleReaper()
 
   return { ...poolLimits }
@@ -11261,6 +11262,8 @@ function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
+  // The next startHermes() re-reads active-profile.json for its launch profile.
+  primaryProfilePin.clear()
   const hermesProcess = backendConnectionState.invalidate()
   stopBackendChild(hermesProcess)
 
@@ -11340,11 +11343,13 @@ function waitForBackendExit(child, timeoutMs = 5000) {
   return waiting
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// The profile the primary (window) backend was actually LAUNCHED as. Pinned by
+// startHermes() and cleared when the primary is torn down; while a primary is
+// live this must NOT follow active-profile.json (see primary-profile-pin.ts).
+const primaryProfilePin = new PrimaryProfilePin()
+
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
@@ -11425,7 +11430,10 @@ async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?:
   }
 
   assertNotPassiveSpawn(passive, key)
-  evictLruPoolBackends(poolMaxBackends() - 1)
+  // The hard slot is released only after the evicted child exits. Wait for
+  // that teardown before entering the spawn queue; otherwise a successful
+  // LRU choice still leaves this wake racing the old child for 30 seconds.
+  await evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -11604,7 +11612,7 @@ async function ensureRegistryBackend(
     }
 
     assertNotPassiveSpawn(passive, localRoute.poolKey)
-    evictLruPoolBackends(poolMaxBackends() - 1)
+    await evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
       process: null,
@@ -11678,7 +11686,7 @@ async function ensureRegistryBackend(
   }
 
   assertNotPassiveSpawn(passive, key)
-  evictLruPoolBackends(poolMaxBackends() - 1)
+  await evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -12329,13 +12337,17 @@ function touchPoolBackend(profile) {
 // across N registered remote connections LRU-evict a REAL local backend that
 // was merely idle past the keepalive window. Descriptors are still reclaimed
 // by the idle reaper.
-function evictLruPoolBackends(keep) {
-  const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
-
-  for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
-    stopPoolBackend(profile)
-  }
+async function evictLruPoolBackends(keep) {
+  return evictPoolEntries(
+    backendPool.entries(),
+    Math.max(0, keep),
+    Date.now(),
+    POOL_KEEPALIVE_FRESH_MS,
+    async profile => {
+      rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
+      await stopPoolBackend(profile)
+    }
+  )
 }
 
 function startPoolIdleReaper() {
@@ -12886,6 +12898,9 @@ async function runHermesStart() {
 
   const connectionAttempt = backendConnectionState.startAttempt()
   const primaryProfile = primaryProfileKey()
+  // Pin the routing table to the profile this primary actually boots as; a
+  // later hermes:profile:remember must not retarget requests mid-life.
+  primaryProfilePin.pin(primaryProfile)
 
   // Legacy path callers without an explicit profile belong to the primary
   // window backend. Profile-scoped callers still pass their key directly.

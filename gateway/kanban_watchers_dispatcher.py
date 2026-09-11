@@ -256,9 +256,11 @@ class _KanbanDispatcher:
             try:
                 os.environ["HERMES_KANBAN_BOARD"] = slug
                 try:
-                    triage_ids = _decomp.list_triage_ids()
+                    # Excludes parked (non-spawnable-assignee) cards so they don't consume
+                    # auto_decompose_per_tick and starve eligible cards behind them (#62985).
+                    triage_ids = _decomp.list_spawnable_triage_ids()
                 except Exception as exc:
-                    logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
+                    logger.debug("kanban auto-decompose: list_spawnable_triage_ids failed on board %s (%s)", slug, exc)
                     triage_ids = []
                 for tid in triage_ids:
                     if attempted >= auto_decompose_per_tick:

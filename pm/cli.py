@@ -299,7 +299,8 @@ def cmd_update(args) -> int:
         if not targets:
             continue
         try:
-            decision = resolve_package(package, targets, lockfile.version(name))
+            decision = resolve_package(package, targets, lockfile.version(name),
+                                       artifacts=lockfile.pinned_artifacts(name))
         except Exception as e:  # an upstream index outage must not kill the whole check
             decision = Resolved(name, lockfile.version(name), package.version_style, reason=f"resolve failed: {e}")
             failures.append(name)
@@ -318,7 +319,10 @@ def cmd_update(args) -> int:
             per = ""
             if d.per_target and len(set(d.per_target.values())) > 1:
                 per = " (" + ", ".join(f"{t}={v}" for t, v in sorted(d.per_target.items())) + ")"
-            print(f"{d.name:<{width}}  {d.locked or '—'} → {d.version}{per}")
+            if d.version == d.locked and d.artifact_updates:
+                print(f"{d.name:<{width}}  {d.version}: newer artifacts for {', '.join(sorted(d.artifact_updates))}")
+            else:
+                print(f"{d.name:<{width}}  {d.locked or '—'} → {d.version}{per}")
         else:
             print(f"{d.name:<{width}}  {d.locked} up to date")
     if failures:
@@ -335,7 +339,7 @@ def cmd_update(args) -> int:
     if changed:
         for d in changed:
             package = get_package(d.name)
-            artifacts = _pin_artifacts(package, d)
+            artifacts = _pin_artifacts(package, d, lockfile.pinned_artifacts(d.name))
             lockfile.set_pin(d.name, d.version, artifacts)
             print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
         lockfile.save()
@@ -388,26 +392,25 @@ def cmd_update(args) -> int:
     return 0
 
 
-def _pin_artifacts(package, decision) -> dict:
-    """The lockfile artifacts dict for a resolved update, mirroring cmd_lock's
-    per-target shape (identical single artifacts collapse to 'any'). For
-    minor-style packages each target pins its OWN patch version. The
-    lockfile always pins EVERY target the package serves — apply never
-    narrows to the current machine."""
+def _pin_artifacts(package, decision, current: dict) -> dict:
+    """Retain unresolved targets and reuse hashes for unchanged artifact URLs."""
     per_target = decision.per_target or {t: decision.version for t in ALL_TARGETS}
-    urls_by_target = {}
-    for t, version in per_target.items():
-        if package.missing_reason(t) is not None:
+    artifacts = dict(current)
+    for target, version in per_target.items():
+        if package.missing_reason(target) is not None:
             continue
-        urls_by_target[t] = [
-            {"url": u, "sha256": package.known_sha256(version, u) or hash_url(u)}
-            for u in package.fetch_urls(version, t)
-        ]
-    distinct = {tuple(u["url"] for u in v) for v in urls_by_target.values()}
-    if len(distinct) == 1:
-        first = next(iter(urls_by_target.values()))
-        return {"any": first[0] if len(first) == 1 else first}
-    return urls_by_target
+        old = current.get(target, current.get("any", []))
+        old = old if isinstance(old, list) else [old]
+        known = {row["url"]: row["sha256"] for row in old}
+        urls = decision.artifact_updates.get(target)
+        if urls is None:
+            urls = package.fetch_urls(version, target)
+        if urls == [row["url"] for row in old]:
+            continue
+        pinned = [{"url": url, "sha256": known.get(url) or package.known_sha256(version, url) or hash_url(url)}
+                  for url in urls]
+        artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
+    return artifacts
 
 
 def cmd_status(args) -> int:

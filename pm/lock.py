@@ -96,6 +96,10 @@ class Lockfile:
             return []
         return list(found) if isinstance(found, list) else [found]
 
+    def pinned_artifacts(self, name: str) -> dict:
+        """Return the complete pin table, including targets without discovery."""
+        return deepcopy((self._packages.get(name) or {}).get("artifacts") or {})
+
     def names(self) -> list[str]:
         return sorted(self._packages)
 

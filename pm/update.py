@@ -93,6 +93,7 @@ class Resolved:
     version: Optional[str] = None  # lockfile label: full (semver) or X.Y (minor)
     per_target: dict[str, str] = field(default_factory=dict)  # target -> exact version
     reason: str = ""  # "up to date" / "no source" / "no shared minor" / ""
+    artifact_updates: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def changed(self) -> bool:
@@ -101,7 +102,7 @@ class Resolved:
         if self.locked is None:
             return True
         if self.style == "minor":
-            return minor_of(self.version) != minor_of(self.locked)
+            return bool(self.artifact_updates) or minor_of(self.version) != minor_of(self.locked)
         return version_key(self.version) > version_key(self.locked)
 
 
@@ -149,13 +150,23 @@ def resolve_best(
     return Resolved(name, locked, style, version=version, per_target={t: version for t in present})
 
 
-def resolve_package(package, targets: list[str], locked: Optional[str]) -> Resolved:
-    """Call a package's own latest_versions() per target, then intersect."""
+def resolve_package(package, targets: list[str], locked: Optional[str], *, artifacts: dict | None = None) -> Resolved:
+    """Resolve versions and detect new artifacts within a shared minor."""
     latest = {
         t: list(package.latest_versions(t, locked=locked) or [])
         for t in targets
     }
-    return resolve_best(package.name, targets, latest, locked, package.version_style)
+    decision = resolve_best(package.name, targets, latest, locked, package.version_style)
+    if decision.style == "minor" and decision.version is not None and artifacts is not None:
+        for target, version in decision.per_target.items():
+            current = artifacts.get(target, artifacts.get("any", []))
+            current = current if isinstance(current, list) else [current]
+            urls = package.fetch_urls(version, target)
+            if urls != [row["url"] for row in current]:
+                decision.artifact_updates[target] = urls
+        if locked is not None and minor_of(decision.version) == minor_of(locked):
+            decision.version = locked
+    return decision
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,23 @@ import type { RosterRow } from './types'
 
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
+// Rows whose server avatar is only the plugin's own face raster: nothing to
+// paint, so the roster must not re-fetch it on every tick.
+const avatarFaceOnly = new Set<string>()
+
+/** Avatar sync RPC for a row of the ACTIVE source's roster (#99336, #102913).
+ *
+ *  Assets are profile-directory files, which every backend on that host can
+ *  read for any of its profiles — the gateway that just answered
+ *  profiles.list included. Routing them through requestForBot dialed each
+ *  bot's OWN backend instead: every source-scoped row (which, after the
+ *  multi-source merge, is every row) paid a fresh WebSocket per roster tick
+ *  and, for a bot with no running backend, a pool spawn just to read a PNG —
+ *  a spawn re-queued every ~30s against a full pool. Ride the active socket
+ *  like the roster query itself; the roster passes active-source rows only. */
+function requestAvatarAsset<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  return host.request<T>(method, params)
+}
 
 /** Backfill: local meta has art the server lacks -> profiles.set_asset.
  *  Server-side avatars power the inter-agent notice pfp (core #85855) and
@@ -56,17 +73,11 @@ function pushLocalAvatars(roster: RosterRow[]) {
     if (image && typeof image === 'string' && image.startsWith('data:')) {
       avatarPushInflight.add(key)
 
-      const request = bot.sourceScoped
-        ? requestForBot(bot, 'profiles.set_asset', {
-            name: bot.name,
-            asset: 'avatar',
-            data: image
-          })
-        : host.request('profiles.set_asset', {
-            name: bot.name,
-            asset: 'avatar',
-            data: image
-          })
+      const request = requestAvatarAsset('profiles.set_asset', {
+        name: bot.name,
+        asset: 'avatar',
+        data: image
+      })
 
       Promise.resolve(request)
         .then(() =>
@@ -92,18 +103,11 @@ function pushLocalAvatars(roster: RosterRow[]) {
     rasterizeSvgToPng(svg, 160)
       .then(png =>
         png
-          ? (bot.sourceScoped
-              ? requestForBot(bot, 'profiles.set_asset', {
-                  name: bot.name,
-                  asset: 'avatar',
-                  data: png
-                })
-              : host.request('profiles.set_asset', {
-                  name: bot.name,
-                  asset: 'avatar',
-                  data: png
-                })
-            ).then(() =>
+          ? requestAvatarAsset('profiles.set_asset', {
+              name: bot.name,
+              asset: 'avatar',
+              data: png
+            }).then(() =>
               queryClient.invalidateQueries({
                 queryKey: ['hermes-bots', 'roster']
               })
@@ -165,7 +169,7 @@ export function pullServerAvatars(roster: RosterRow[]) {
   for (const bot of roster) {
     const key = botMetaKey(bot)
 
-    if (!bot.has_avatar || avatarFetchInflight.has(key)) {
+    if (!bot.has_avatar || avatarFetchInflight.has(key) || avatarFaceOnly.has(key)) {
       continue
     }
 
@@ -175,25 +179,24 @@ export function pullServerAvatars(roster: RosterRow[]) {
 
     avatarFetchInflight.add(key)
 
-    const assetRequest = bot.sourceScoped
-      ? requestForBot(bot, 'profiles.get_asset', {
-          name: bot.name,
-          asset: 'avatar'
-        })
-      : host.request('profiles.get_asset', {
-          name: bot.name,
-          asset: 'avatar'
-        })
+    const assetRequest = requestAvatarAsset<ProfilesGetAssetResult>('profiles.get_asset', {
+      name: bot.name,
+      asset: 'avatar'
+    })
 
-    Promise.resolve(assetRequest as Promise<ProfilesGetAssetResult>)
+    assetRequest
       .then(res => {
         if (res?.found && res.data) {
           const current = $botMeta.get()
           const mine = current[key] || {}
 
           // A 160px raster of the vector face is only for inter-agent
-          // notices. Do not park it on the roster or the live face dies.
+          // notices. Do not park it on the roster or the live face dies —
+          // and remember the answer, or the empty image slot re-fetches the
+          // same raster on every roster tick.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
+            avatarFaceOnly.add(key)
+
             return
           }
 
@@ -432,6 +435,7 @@ export async function deleteBot(bot: RosterRow) {
   forgetSessionUnread([bot.canonical_session?.id, bot.canonical_session?.resolved_id], bot.name)
   rosterWatermarks.delete(botSelectionKey(bot))
   avatarFetchInflight.delete(botMetaKey(bot))
+  avatarFaceOnly.delete(botMetaKey(bot))
   avatarPushInflight.delete(botMetaKey(bot))
 
   if ($selectedBot.get() === botSelectionKey(bot)) {

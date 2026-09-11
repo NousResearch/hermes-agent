@@ -12,11 +12,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $botMeta } from './data'
-import { duplicateBot } from './profile-ops'
+import { duplicateBot, pullServerAvatars } from './profile-ops'
 import type { RosterRow } from './types'
 
-const { ensureBotMetadataMock, hostMock, storageMock } = vi.hoisted(() => ({
+const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
   ensureBotMetadataMock: vi.fn(),
+  faceOnlyMock: vi.fn((_data: string) => false),
   hostMock: {
     request: vi.fn(),
     requestProfile: vi.fn(),
@@ -39,13 +40,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 
 vi.mock('./shared', () => ({ getPluginCtx: () => ({ storage: storageMock }), ID: 'hermes-bots' }))
-vi.mock('./avatar-image', () => ({ isBackfilledFacePng: () => false }))
+vi.mock('./avatar-image', () => ({ isBackfilledFacePng: (data: string) => faceOnlyMock(data) }))
 vi.mock('./canonical-chat', () => ({ ensureBotMetadata: ensureBotMetadataMock }))
 
 const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
 beforeEach(() => {
   vi.clearAllMocks()
+  faceOnlyMock.mockReturnValue(false)
   calls.length = 0
   $botMeta.set({})
   storageMock.set.mockResolvedValue(undefined)
@@ -151,5 +153,58 @@ describe('duplicating a bot', () => {
     hostMock.requestProfile.mockResolvedValue({ ok: true })
 
     expect(await duplicateBot(bot, [bot, elsewhere])).toBe('ops-2')
+  })
+})
+
+describe('roster avatar sync rides the active socket (#99336, #102913)', () => {
+  // The roster paints every 5s and hands pullServerAvatars its ACTIVE-source
+  // rows, which the multi-source merge marks sourceScoped. Dialing each row's
+  // own backend for a profile-directory file was a fresh WebSocket per bot per
+  // tick, and a pool spawn for every bot with no running backend.
+  const scopedRows = (...names: string[]) =>
+    names.map(
+      name =>
+        ({
+          connectionId: 'local',
+          connectionKind: 'local',
+          has_avatar: true,
+          name,
+          route: { connectionId: 'local', mode: 'local', profile: name, targetProfile: name },
+          sourceScoped: true
+        }) as RosterRow
+    )
+
+  const answerAssets = (reply: Record<string, unknown>) =>
+    hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params: structuredClone(params ?? {}) })
+
+      return reply
+    })
+
+  it('reads every active-source avatar through the active gateway, never a per-bot route', async () => {
+    answerAssets({ found: false })
+
+    pullServerAvatars(scopedRows('secretary', 'ux-designer'))
+    await vi.waitFor(() => expect(calls.filter(call => call.method === 'profiles.get_asset')).toHaveLength(2))
+
+    expect(hostMock.requestProfile).not.toHaveBeenCalled()
+  })
+
+  it('does not re-fetch a face-only raster on the next roster tick', async () => {
+    faceOnlyMock.mockReturnValue(true)
+    answerAssets({ data: 'data:image/png;base64,AAAA', found: true })
+
+    pullServerAvatars(scopedRows('secretary'))
+    await vi.waitFor(() => expect(calls.filter(call => call.method === 'profiles.get_asset')).toHaveLength(1))
+
+    // Let the first fetch fully settle (its in-flight guard clears in a
+    // finally) so the second tick is decided by memory, not by that guard.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    pullServerAvatars(scopedRows('secretary'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(calls.filter(call => call.method === 'profiles.get_asset')).toHaveLength(1)
+    // The raster is a notice-only copy of the live face — never parked on the roster.
+    expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
 })

@@ -185,6 +185,14 @@ jobs:
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
 
+      # A t() key that no catalog defines does not raise: t() returns the bare key
+      # and users read the dotted path. Same for a format kwarg the English value
+      # needs but the call site omits, which ships a literal {placeholder}. Neither
+      # is visible to the catalog parity tests, which only compare catalogs to each
+      # other. --with pyyaml because this job installs no project dependencies.
+      - name: Check t() usage against the English catalog
+        run: uv run --no-project --python 3.11 --with pyyaml python scripts/check_i18n_usage.py
+
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.

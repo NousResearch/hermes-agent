@@ -3,6 +3,11 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import {
+  $requireModifierToOpenInlineLinks,
+  INLINE_LINK_GATED_ATTR,
+  shouldOpenInlineLink
+} from '@/store/inline-link-open'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -265,6 +270,10 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
    *  signed into over there — a cloud console, an account page. */
   native?: boolean
   showExternalIcon?: boolean
+  /** Honour the appearance "⌘/Ctrl-click to open chat links" preference.
+   *  Default off so settings, plugins, artifacts and other chrome stay
+   *  single-click. Opt in only for inline chat markdown URLs. */
+  applyInlineOpenPreference?: boolean
 }
 
 export function ExternalLinkIcon({ className }: { className?: string }) {
@@ -288,6 +297,7 @@ export function LinkBrandIcon({ className, href }: { className?: string; href: s
 }
 
 export function ExternalLink({
+  applyInlineOpenPreference = false,
   children,
   className,
   href,
@@ -324,12 +334,27 @@ export function ExternalLink({
           return
         }
 
+        const forceNative = native || hudForcesNativeLinks()
+        const honourInlinePreference = applyInlineOpenPreference && !forceNative
+
+        if (honourInlinePreference && !shouldOpenInlineLink(event)) {
+          event.preventDefault()
+
+          return
+        }
+
         event.preventDefault()
-        openLink(target, { native: native || wantsNativeBrowser(event.nativeEvent) })
+        openLink(target, {
+          native:
+            forceNative ||
+            (!(honourInlinePreference && $requireModifierToOpenInlineLinks.get()) &&
+              wantsNativeBrowser(event.nativeEvent))
+        })
       }}
       rel="noopener noreferrer"
       target="_blank"
       {...rest}
+      {...(applyInlineOpenPreference ? { [INLINE_LINK_GATED_ATTR]: '' } : {})}
     >
       {children ?? urlSlugTitleLabel(target)}
       {showExternalIcon && <ExternalLinkIcon />}
@@ -341,6 +366,7 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   href: string
   label?: string
   fallbackLabel?: string
+  applyInlineOpenPreference?: boolean
 }
 
 // Title resolution is a fallback, not an override. Both props carry authored

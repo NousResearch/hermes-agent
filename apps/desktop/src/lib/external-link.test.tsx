@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { INLINE_LINK_GATED_ATTR, setRequireModifierToOpenInlineLinks } from '@/store/inline-link-open'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import {
@@ -39,6 +40,7 @@ function installTitleBridge(title: string) {
 }
 
 afterEach(() => {
+  setRequireModifierToOpenInlineLinks(false)
   __resetLinkTitleCache()
   closeRightRail()
   vi.restoreAllMocks()
@@ -355,5 +357,121 @@ describe('external link helpers', () => {
     render(<PrettyLink fallbackLabel="Some Page" href={url} />)
 
     expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
+  })
+
+  it('still opens a non-chat link on a regular click when the chat modifier preference is on', async () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), { detail: 1 })
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  it('still escapes a non-chat link to the OS browser on the platform modifier when the preference is on', () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('still opens a non-chat PrettyLink on a regular click when the preference is on', async () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<PrettyLink fallbackLabel="Docs" href="https://example.com/guide" />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs' }), { detail: 1 })
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/guide'))
+  })
+
+  it('does not open an opted-in chat link on a regular mouse click when the preference is on', async () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(
+      <ExternalLink applyInlineOpenPreference href="https://example.com/path/to/resource">
+        Example link
+      </ExternalLink>
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), { detail: 1 })
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await Promise.resolve()
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('opens an opted-in chat link in-app on the platform modifier when the preference is on', async () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(
+      <ExternalLink applyInlineOpenPreference href="https://example.com/path/to/resource">
+        Example link
+      </ExternalLink>
+    )
+
+    fireEvent.click(
+      screen.getByRole('link', { name: 'Example link' }),
+      IS_MAC ? { detail: 1, metaKey: true } : { detail: 1, ctrlKey: true }
+    )
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  it('still opens an opted-in chat link on a keyboard-generated click when the preference is on', async () => {
+    setRequireModifierToOpenInlineLinks(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(
+      <ExternalLink applyInlineOpenPreference href="https://example.com/path/to/resource">
+        Example link
+      </ExternalLink>
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), { detail: 0 })
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  it('marks only opted-in chat links as cursor-gated', () => {
+    setRequireModifierToOpenInlineLinks(true)
+
+    const { rerender } = render(
+      <ExternalLink applyInlineOpenPreference href="https://example.com/chat">
+        Chat link
+      </ExternalLink>
+    )
+
+    expect(screen.getByRole('link', { name: 'Chat link' }).hasAttribute(INLINE_LINK_GATED_ATTR)).toBe(true)
+
+    rerender(<ExternalLink href="https://example.com/chrome">Chrome link</ExternalLink>)
+
+    expect(screen.getByRole('link', { name: 'Chrome link' }).hasAttribute(INLINE_LINK_GATED_ATTR)).toBe(false)
+  })
+
+  it('does not mark a non-chat PrettyLink as cursor-gated', () => {
+    render(<PrettyLink fallbackLabel="Docs" href="https://example.com/guide" />)
+
+    expect(screen.getByRole('link', { name: 'Docs' }).hasAttribute(INLINE_LINK_GATED_ATTR)).toBe(false)
   })
 })

@@ -541,6 +541,9 @@ export const ja = defineLocale({
       toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      requireModifierToOpenLinksTitle: 'チャットリンクを ⌘/Ctrl-クリックで開く',
+      requireModifierToOpenLinksDesc:
+        'Mac では ⌘-クリック、他の環境では Ctrl-クリックで、チャット内のパスや URL（コードチップを含む）を開きます。通常のクリックはテキスト選択です。フォーカスしたリンクの Enter はこれまでどおり開きます。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',

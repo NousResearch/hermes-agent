@@ -874,6 +874,17 @@
   text-underline-offset: 0.15em;
 }
 
+/* Chat-scoped inline links when ⌘/Ctrl-click is required: look like text
+   until the modifier is held. Flags live on <html> so a stationary pointer
+   still switches — no per-link key listeners. */
+html[data-inline-link-require-modifier='true'] a[data-inline-link-gated] {
+  cursor: default;
+}
+
+html[data-inline-link-require-modifier='true'][data-inline-link-modifier='held'] a[data-inline-link-gated] {
+  cursor: pointer;
+}
+
 /* The leading glyph. Sized in `em` so it tracks the text at any scale, and
    spaced with `margin` — not flex `gap` — so `.ref` stays an inline box whose
    label can wrap mid-word (a long URL has to break across lines like the prose

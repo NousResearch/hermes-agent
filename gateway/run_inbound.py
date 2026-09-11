@@ -520,6 +520,14 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
+        # If the message looks like an approval/denial reply but did not
+        # resolve as a recognized slash command (e.g. a quoted reply where
+        # the command is on the last line), route it before the busy
+        # queue/steer/interrupt logic consumes it.
+        _approval_reply = await self._route_pending_approval_response(event, _quick_key)
+        if _approval_reply is not None:
+            return True, _approval_reply
+
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:

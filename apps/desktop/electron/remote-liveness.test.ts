@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
+  HOST_EVENT_DISTINCT_PROFILE_THRESHOLD,
+  HOST_EVENT_WINDOW_MS,
+  POOLED_REMOTE_DIAL_CONCURRENCY,
+  POOLED_REMOTE_DIAL_JITTER_MS,
   POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+  PooledRemoteDialGate,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
   REMOTE_LIVENESS_TIMEOUT_MS,
+  RemoteHostEventTracker,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
@@ -257,6 +263,82 @@ describe('revalidateRemoteConnection', () => {
     await expect(revalidateRemoteConnection(rejected.options)).resolves.toEqual({ ok: true, rebuilt: false })
     expect(rejected.probe).not.toHaveBeenCalled()
   })
+
+  // The primary connection has no pool sibling to vote with, so it cannot use
+  // the pooled host-event signal. A busy host still makes its quick streak
+  // expire, and dropping it is a visible whole-app reload.
+  describe('drop confirmation', () => {
+    function confirmation(overrides: Record<string, unknown> = {}) {
+      return {
+        backoff: vi.fn(async () => undefined),
+        transportAlive: vi.fn(async () => true),
+        ...overrides
+      }
+    }
+
+    it('keeps a connection that answers the re-probe after the backoff', async () => {
+      const probe = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+        .mockResolvedValueOnce({ ok: true })
+
+      const confirmDrop = confirmation()
+      const test = harness({ confirmDrop, probe })
+
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+
+      expect(confirmDrop.backoff).toHaveBeenCalledOnce()
+      expect(confirmDrop.transportAlive).toHaveBeenCalledOnce()
+      expect(probe).toHaveBeenCalledTimes(4)
+      expect(test.resetConnection).not.toHaveBeenCalled()
+      expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining('answered after'))
+    })
+
+    it('still drops a connection whose re-probe fails after the backoff', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('ECONNRESET'))
+      const confirmDrop = confirmation()
+      const test = harness({ confirmDrop, probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      expect(confirmDrop.backoff).toHaveBeenCalledOnce()
+      expect(probe).toHaveBeenCalledTimes(4)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+      expect(test.log).toHaveBeenLastCalledWith(expect.stringContaining('dropping stale connection'))
+    })
+
+    it('drops without a re-probe when the transport itself is gone', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('ECONNRESET'))
+      const confirmDrop = confirmation({ transportAlive: vi.fn(async () => false) })
+      const test = harness({ confirmDrop, probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      // Three liveness probes and no fourth: a dead transport needs no re-probe.
+      expect(probe).toHaveBeenCalledTimes(3)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+    })
+
+    it('drops on the unchanged fast path when no confirmation is wired', async () => {
+      const probe = vi.fn().mockRejectedValue(new Error('offline'))
+      const test = harness({ probe })
+
+      await revalidateRemoteConnection(test.options)
+      await revalidateRemoteConnection(test.options)
+      await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: true })
+
+      expect(probe).toHaveBeenCalledTimes(3)
+      expect(test.resetConnection).toHaveBeenCalledOnce()
+    })
+  })
 })
 
 describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
@@ -297,6 +379,257 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     })
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  describe('host events', () => {
+    // One busy host, many pooled profiles: the harness models a whole
+    // connection so a probe failure can be correlated the way the real pool
+    // sees it, instead of one descriptor in isolation.
+    const hostHarness = () => {
+      const tracker = new RemoteHostEventTracker()
+      const state = { backendAnswers: true, backoffs: 0, hostReachable: true, probeFails: true }
+
+      const probe = vi.fn(async () => {
+        if (state.probeFails) {
+          throw new Error('read ECONNRESET')
+        }
+      })
+
+      const dispatch = (poolKey: string, connection: { baseUrl: string; mode: string }) => {
+        const connectionPromise = Promise.resolve(connection)
+        const retire = vi.fn(async () => {})
+        const reconnect = vi.fn(async () => connection)
+
+        const result = ensureHealthyPooledRemoteBackendForDispatch({
+          connectionPromise,
+          currentConnectionPromise: () => connectionPromise,
+          hostEvent: {
+            backoff: async () => {
+              state.backoffs += 1
+              // The backoff is where a busy host recovers; model that by
+              // letting the descriptor answer again once it has elapsed.
+              state.probeFails = !state.backendAnswers
+            },
+            classify: () => tracker.recordProbeFailure('conn:remote', poolKey),
+            hostAlive: async () => state.hostReachable
+          },
+          probe,
+          reconnect,
+          retire
+        })
+
+        return { connection, reconnect, result, retire }
+      }
+
+      return { dispatch, probe, state, tracker }
+    }
+
+    const descriptorFor = (poolKey: string) => ({ baseUrl: `http://127.0.0.1/${poolKey}`, mode: 'remote' })
+
+    it('defers teardown once distinct profiles fail together and keeps a descriptor that recovers', async () => {
+      const host = hostHarness()
+      const keys = ['conn:remote::alpha', 'conn:remote::beta', 'conn:remote::gamma']
+
+      const dispatches = keys.map(key => host.dispatch(key, descriptorFor(key)))
+
+      await Promise.all(dispatches.map(dispatch => dispatch.result))
+
+      // The first two are below the distinct-profile threshold, so they take
+      // the unchanged fast path; the third crosses it and must be spared.
+      expect(dispatches[2].retire).not.toHaveBeenCalled()
+      expect(dispatches[2].reconnect).not.toHaveBeenCalled()
+      await expect(dispatches[2].result).resolves.toBe(dispatches[2].connection)
+      expect(host.state.backoffs).toBe(1)
+    })
+
+    it('still retires a descriptor that is dead after the host-event backoff', async () => {
+      const host = hostHarness()
+      host.state.backendAnswers = false
+      const keys = ['conn:remote::alpha', 'conn:remote::beta', 'conn:remote::gamma']
+
+      const dispatches = keys.map(key => host.dispatch(key, descriptorFor(key)))
+
+      await Promise.all(dispatches.map(dispatch => dispatch.result))
+
+      expect(host.state.backoffs).toBe(1)
+      expect(dispatches[2].retire).toHaveBeenCalledOnce()
+      expect(dispatches[2].reconnect).toHaveBeenCalledOnce()
+    })
+
+    it('retires when the host itself is still unreachable after the backoff', async () => {
+      const host = hostHarness()
+      host.state.hostReachable = false
+      host.state.backendAnswers = true
+      const keys = ['conn:remote::alpha', 'conn:remote::beta', 'conn:remote::gamma']
+
+      const dispatches = keys.map(key => host.dispatch(key, descriptorFor(key)))
+
+      await Promise.all(dispatches.map(dispatch => dispatch.result))
+
+      expect(dispatches[2].retire).toHaveBeenCalledOnce()
+    })
+
+    it('retires a lone failing profile immediately, with no backoff', async () => {
+      const host = hostHarness()
+      const solo = host.dispatch('conn:remote::alpha', descriptorFor('alpha'))
+
+      await solo.result
+
+      expect(host.state.backoffs).toBe(0)
+      expect(solo.retire).toHaveBeenCalledOnce()
+      expect(solo.reconnect).toHaveBeenCalledOnce()
+    })
+  })
+})
+
+describe('RemoteHostEventTracker', () => {
+  it('classifies a host event only after enough DISTINCT profiles fail in the window', () => {
+    const tracker = new RemoteHostEventTracker()
+
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::one')).toBe(false)
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::two')).toBe(false)
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::three')).toBe(true)
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::four')).toBe(true)
+  })
+
+  it('never classifies one profile failing repeatedly as a host event', () => {
+    const tracker = new RemoteHostEventTracker()
+
+    for (let attempt = 0; attempt < HOST_EVENT_DISTINCT_PROFILE_THRESHOLD + 2; attempt += 1) {
+      expect(tracker.recordProbeFailure('conn:a', 'conn:a::one')).toBe(false)
+    }
+  })
+
+  it('tracks connections independently', () => {
+    const tracker = new RemoteHostEventTracker()
+
+    tracker.recordProbeFailure('conn:a', 'conn:a::one')
+    tracker.recordProbeFailure('conn:a', 'conn:a::two')
+
+    expect(tracker.recordProbeFailure('conn:b', 'conn:b::one')).toBe(false)
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::three')).toBe(true)
+  })
+
+  it('ages failures out of the window instead of latching', () => {
+    let now = 0
+    const tracker = new RemoteHostEventTracker(HOST_EVENT_DISTINCT_PROFILE_THRESHOLD, HOST_EVENT_WINDOW_MS, () => now)
+
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::one')).toBe(false)
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::two')).toBe(false)
+
+    now += HOST_EVENT_WINDOW_MS + 1
+
+    // The earlier two are stale, so an isolated later failure is not a herd.
+    expect(tracker.recordProbeFailure('conn:a', 'conn:a::three')).toBe(false)
+  })
+
+  it('rejects a threshold that could fire on a single profile', () => {
+    expect(() => new RemoteHostEventTracker(1)).toThrow(/at least 2/)
+  })
+})
+
+describe('PooledRemoteDialGate', () => {
+  const gateHarness = (limit = POOLED_REMOTE_DIAL_CONCURRENCY) => {
+    const delays: number[] = []
+    const releases: Array<() => void> = []
+    let concurrent = 0
+    let peak = 0
+
+    const gate = new PooledRemoteDialGate({
+      delay: async ms => {
+        delays.push(ms)
+      },
+      jitterMs: POOLED_REMOTE_DIAL_JITTER_MS,
+      limit,
+      random: () => 0.5
+    })
+
+    const dial = (connectionId: string) => {
+      const result = gate.run(connectionId, async () => {
+        concurrent += 1
+        peak = Math.max(peak, concurrent)
+
+        await new Promise<void>(resolve => {
+          releases.push(() => {
+            concurrent -= 1
+            resolve()
+          })
+        })
+
+        return connectionId
+      })
+
+      return result
+    }
+
+    return {
+      delays,
+      dial,
+      gate,
+      peak: () => peak,
+      releaseAll: async () => {
+        while (releases.length > 0) {
+          releases.shift()?.()
+          // Let the released slot's waiter be admitted before the next round.
+          await new Promise<void>(resolve => setTimeout(resolve, 0))
+        }
+      }
+    }
+  }
+
+  it('never lets one connection exceed the dial concurrency cap', async () => {
+    const harness = gateHarness()
+    const dials = Array.from({ length: 21 }, () => harness.dial('conn:remote'))
+
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+
+    expect(harness.gate.active('conn:remote')).toBe(POOLED_REMOTE_DIAL_CONCURRENCY)
+
+    await harness.releaseAll()
+    await Promise.all(dials)
+
+    expect(harness.peak()).toBe(POOLED_REMOTE_DIAL_CONCURRENCY)
+  })
+
+  it('jitters every queued admission but never the first ones', async () => {
+    const harness = gateHarness()
+    const dials = Array.from({ length: 5 }, () => harness.dial('conn:remote'))
+
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+
+    expect(harness.delays).toEqual([])
+
+    await harness.releaseAll()
+    await Promise.all(dials)
+
+    // Two callers were queued, so exactly two admissions paid jitter.
+    expect(harness.delays).toEqual([POOLED_REMOTE_DIAL_JITTER_MS / 2, POOLED_REMOTE_DIAL_JITTER_MS / 2])
+  })
+
+  it('does not make one connection wait behind another', async () => {
+    const harness = gateHarness(1)
+    const first = harness.dial('conn:one')
+    const second = harness.dial('conn:two')
+
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+
+    expect(harness.peak()).toBe(2)
+
+    await harness.releaseAll()
+    await Promise.all([first, second])
+  })
+
+  it('frees the slot when a dial rejects', async () => {
+    const gate = new PooledRemoteDialGate({ delay: async () => {}, limit: 1 })
+
+    await expect(
+      gate.run('conn:remote', () => {
+        throw new Error('ssh: connect to host remote port 22: Connection refused')
+      })
+    ).rejects.toThrow('Connection refused')
+
+    await expect(gate.run('conn:remote', async () => 'ok')).resolves.toBe('ok')
+    expect(gate.active('conn:remote')).toBe(0)
   })
 })
 

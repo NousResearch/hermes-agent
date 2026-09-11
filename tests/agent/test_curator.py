@@ -320,6 +320,28 @@ def _disable_prune_builtins(curator_env, monkeypatch):
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
 
 
+def test_get_prune_builtins_defaults_off_with_no_config_key(monkeypatch):
+    """#103098: an absent ``curator.prune_builtins`` key must resolve to
+    False (opt-in), not True — bundled skills ship with Hermes and users
+    may not have triggered every one yet, so pruning them must be a
+    deliberate choice."""
+    import agent.curator as curator
+
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+    assert curator.get_prune_builtins() is False
+
+
+def test_skill_usage_prune_builtins_enabled_defaults_off_with_no_config_key(monkeypatch):
+    """Same #103098 default, on tools.skill_usage's independent config-reading
+    path (``_prune_builtins_enabled``), exercised without the module's own
+    test stub so the real fallback logic runs."""
+    import tools.skill_usage as usage
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(hermes_config, "load_config", lambda: {"curator": {}})
+    assert usage._prune_builtins_enabled() is False
+
+
 
 
 

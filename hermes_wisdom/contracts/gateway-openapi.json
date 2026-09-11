@@ -11140,7 +11140,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11258,7 +11258,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11356,7 +11356,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11464,7 +11464,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11585,7 +11585,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11652,7 +11652,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11726,7 +11726,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11822,7 +11822,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11927,7 +11927,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12004,7 +12004,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12050,7 +12050,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12119,7 +12119,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12177,7 +12177,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12246,7 +12246,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12326,7 +12326,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12400,7 +12400,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12475,7 +12475,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12543,7 +12543,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12650,7 +12650,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12718,7 +12718,7 @@
           {
             "schema": {
               "type": "string",
-              "description": "Max rows (default 50)."
+              "description": "Max rows: integer 1-100 (default 50)."
             },
             "required": false,
             "name": "limit",
@@ -12736,6 +12736,16 @@
               }
             }
           },
+          "400": {
+            "description": "limit is not an integer from 1 to 100.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing/invalid bearer.",
             "content": {
@@ -12747,7 +12757,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12823,7 +12833,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12910,7 +12920,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12997,7 +13007,7 @@
             }
           },
           "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "description": "Missing wisdom scope or org_role.",
             "content": {
               "application/json": {
                 "schema": {

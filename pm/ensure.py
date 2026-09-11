@@ -81,6 +81,8 @@ class InstalledPackage:
 def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPackage | None:
     """Read the selected PM entry without installing or changing its facts."""
     package = get_package(name)
+    if package.internal:
+        raise ValueError(f"{name} is internal PM tooling, not an application package")
     target = current_target()
     location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
     if location is None:
@@ -480,6 +482,8 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
         except KeyError:
             continue
         for package in chain:
+            if package.internal:
+                continue
             location = _installed_location(package, lockfile, target)
             if location:
                 facts, store = location
@@ -778,60 +782,3 @@ def activate() -> None:
     missing = [d for d in dirs if d.lower() not in existing_lower]
     if missing:
         os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
-
-
-
-def uv(command: str = "uv", *, venv=None, realize: bool = True, explicit: bool = False, base_env=None):
-    """Return uv or uvx with its native suffix and PM's pinned Python.
-
-    Probes never install. A command with missing prerequisites realizes the
-    package closure or raises; it must not fall back to host Python discovery.
-    ``venv`` selects the active project environment. ``uv pip`` callers must
-    still pass their destination interpreter explicitly.
-    """
-    from pm.packages import uv_env
-
-    if command not in ("uv", "uvx"):
-        raise ValueError(f"unknown uv executable: {command}")
-    env = uv_env(base_env)
-    if venv is not None:
-        env["VIRTUAL_ENV"] = str(venv)
-        env.pop("UV_NO_CONFIG", None)
-    if realize:
-        ensure("uv", explicit=explicit)
-
-    lockfile = _lockfile()
-    target = current_target()
-    binaries = {}
-    for name in ("uv", "python"):
-        package = get_package(name)
-        location = _installed_location(package, lockfile, target)
-        if location is None:
-            return None, env
-        if name == "python" and target.startswith("win32") and sealed():
-            # uv creates redirectors outside the MSIX. Their Python must also
-            # live outside it; the app keeps its original packaged interpreter.
-            writable = paths.writable_store_root()
-            if location[1].root != writable:
-                copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
-                if copied is None:
-                    if not realize:
-                        return None, env
-                    if not explicit and not lazy_installs_allowed():
-                        raise _refuse_lazy(name, "a writable Python is required for bundled uv builds")
-                    copy_store = Store(writable)
-                    copy_facts = Facts(writable / "facts.json")
-                    _install(package, lockfile, copy_facts, copy_store, target, copy_from=location)
-                    copied = copy_facts, copy_store
-                location = copied
-        facts, store = location
-        binary = package.binary(store.entry(facts.get(name)["entry"]), target)
-        if name == "uv" and binary is not None:
-            binary = binary.with_name(command + binary.suffix)
-        if binary is None or not binary.is_file():
-            if not realize:
-                return None, env
-            raise InstallError(name, "installed binary is missing", "run `hermes pm install`")
-        binaries[name] = str(binary)
-    env["UV_PYTHON"] = binaries["python"]
-    return binaries["uv"], env

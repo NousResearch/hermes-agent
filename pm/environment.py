@@ -1,7 +1,7 @@
-"""Explicit uv construction, independent of PM tool discovery and live selection.
+"""PM's private Python engine: tool routing, isolation and command execution.
 
-Callers own the destination, source/workspace, cache and publication lifecycle.
-This module neither discovers profiles nor modifies the process environment.
+Operations own source, destination and publication. Bootstrap may inject its
+staged toolchain directly without recursing through the worker it is building.
 """
 from __future__ import annotations
 
@@ -93,6 +93,36 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
     return subprocess.CompletedProcess(command, code, "", tail)
 
 
+def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Ambient UV settings are never policy; explicit build index settings are."""
+    index_settings = {
+        "UV_DEFAULT_INDEX", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX", "UV_FIND_LINKS",
+        "UV_INSECURE_HOST", "UV_KEYRING_PROVIDER", "UV_NATIVE_TLS",
+    }
+    return {key: value for key, value in (os.environ if env is None else env).items()
+            if not key.startswith("PYTHON") and key != "VIRTUAL_ENV"
+            and (not key.startswith("UV_") or
+                 (env is not None and (key.startswith("UV_INDEX") or key in index_settings)))}
+
+
+def managed_environment(destination: Path, *, python: Path | None = None,
+                        cache: Path | None = None, env: Mapping[str, str] | None = None,
+                        offline: bool = False, explicit: bool = False,
+                        output: TextIO | None = None) -> PythonEnvironment:
+    from pm._uv import _toolchain
+    from pm.packages import uv_cache_dir
+
+    tools = _toolchain(explicit=explicit)
+    if tools is None:
+        raise InstallError("venv", "PM's pinned toolchain is unavailable")
+    uv, pinned_python = tools
+    return PythonEnvironment(
+        uv=uv, python=pinned_python if python is None else python.absolute(),
+        destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
+        env=_base_environment(env), offline=offline, output=output,
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class PythonEnvironment:
     uv: Path
@@ -102,25 +132,23 @@ class PythonEnvironment:
     env: Mapping[str, str]
     offline: bool = False
     output: TextIO | None = None
+    no_config: bool = False
 
     @property
     def executable(self) -> Path:
         return self.destination / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     def _run(self, args: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
-        # The caller supplies policy (PM already sanitizes it via pm.ensure.uv).
-        # Preserve intentional index credentials/settings; only explicit routing
-        # inputs and project-config visibility override this child environment.
-        env = {key: value for key, value in self.env.items() if key not in (
-            "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
-            "UV_WORKING_DIR", "UV_PROJECT", "UV_CONFIG_FILE", "UV_NO_CONFIG",
-            "UV_MANAGED_PYTHON", "UV_NO_MANAGED_PYTHON", "UV_SYSTEM_PYTHON",
-        )}
+        # Explicit index credentials survive, but cannot redirect the project,
+        # interpreter or cache selected by the operation.
+        env = _base_environment(self.env)
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]
+            if self.no_config and "--no-config" not in command:
+                command.append("--no-config")
             if self.offline:
                 command.append("--offline")
             if self.output is not None:
@@ -139,8 +167,20 @@ class PythonEnvironment:
         if result.returncode:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
 
-    def sync(self, source: Path, *, extras: Sequence[str] = (), frozen: bool = True,
-             all_extras: bool = False, no_install_project: bool = False) -> None:
+    def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
+        from pm.workspace import classify_uv_failure
+
+        command = ["lock", "--python", str(self.python)]
+        if upgrade:
+            command.append("--upgrade")
+        result = self._run(command, cwd=source, timeout=timeout)
+        if result.returncode:
+            raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
+
+    def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
+             timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
+             no_install_project: bool = False, locked: bool = False,
+             no_default_groups: bool = False) -> None:
         """Install the root and every member; resolve only in a writable workspace.
 
         ``frozen=False`` is reserved for the caller-owned generated workspace,
@@ -149,11 +189,12 @@ class PythonEnvironment:
         from pm.workspace import classify_uv_failure
 
         if not frozen:
-            locked = self._run(["lock", "--python", str(self.python)], cwd=source, timeout=1800)
-            if locked.returncode:
-                raise classify_uv_failure("lock", locked.returncode, locked.stderr or locked.stdout)
+            self.lock(source, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.
-        command = ["sync", "--frozen", "--all-packages", "--python", str(self.python)]
+        command = ["sync", "--locked" if locked else "--frozen", "--all-packages",
+                   "--python", str(self.python)]
+        if no_default_groups:
+            command.append("--no-default-groups")
         if all_extras:
             command.append("--all-extras")
         if no_install_project:
@@ -166,9 +207,29 @@ class PythonEnvironment:
             command += ["--no-install-project", "--no-install-package", project["project"]["name"]]
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
-        result = self._run(command, cwd=source, timeout=1800)
+        for group in sorted(set(groups)):
+            command += ["--group", group]
+        result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+
+    def install_wheelhouse(self, source: Path, wheelhouse: Path, *, timeout: int = 1800) -> None:
+        """Install rebuilt wheels whose hashes the bundle manifest owns, not uv.lock."""
+        from pm.workspace import classify_uv_failure
+
+        requirements = source / "requirements.txt"
+        commands = [
+            ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
+             "--no-emit-project", "--no-hashes", "--output-file", str(requirements)],
+            ["pip", "install", "--python", str(self.executable), "--no-index",
+             "--only-binary", ":all:", "--find-links", str(wheelhouse.absolute()),
+             "-r", str(requirements)],
+        ]
+        for command in commands:
+            result = self._run(command, cwd=source, timeout=timeout)
+            if result.returncode:
+                raise classify_uv_failure(command[0], result.returncode, result.stderr or result.stdout)
+        self.check()
 
     def check(self) -> None:
         result = self._run(

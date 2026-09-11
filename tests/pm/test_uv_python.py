@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from pm._uv import _toolchain
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError
 from pm.packages import Python, Uv
@@ -37,9 +38,6 @@ def installed_uv(tmp_path, monkeypatch):
     entry.mkdir(parents=True)
     binary = entry / ("uv.exe" if os.name == "nt" else "uv")
     shutil.copy2(uv, binary)
-    uvx = Path(uv).with_name("uvx" + binary.suffix)
-    assert uvx.is_file(), "the real uv distribution must include uvx"
-    shutil.copy2(uvx, entry / uvx.name)
     lock.set_pin("uv", "test", {target: {"url": "https://test.invalid/uv", "sha256": digest}})
     lock.set_pin("python", "test", {target: {"url": "https://test.invalid/python", "sha256": digest}})
     lock.save()
@@ -50,6 +48,19 @@ def installed_uv(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "writable_store_root", lambda: store)
     monkeypatch.setitem(registry._packages, "uv", Uv())
     return tmp_path, binary, facts, target, digest
+
+
+def test_internal_tooling_cannot_escape_package_queries(installed_uv):
+    from pm import env_for, installed_package
+
+    _, binary, facts, target, digest = installed_uv
+    assert "PATH" not in Uv().env(binary.parent, target)
+    # Legacy facts can contain PATH even after the package stops exporting it.
+    facts.record("uv", "test", binary.parent.name, {"PATH": [str(binary.parent)]},
+                 binary.parent.parent, target=target, artifacts=[digest])
+    assert str(binary.parent) not in env_for("uv", "venv", base_env={"PATH": "external"})["PATH"]
+    with pytest.raises(ValueError, match="internal"):
+        installed_package("uv")
 
 
 def test_all_uv_commands_keep_the_pm_interpreter(installed_uv, monkeypatch):
@@ -72,16 +83,11 @@ def test_all_uv_commands_keep_the_pm_interpreter(installed_uv, monkeypatch):
     monkeypatch.setenv("UV_PYTHON", str(root / "ambient-python"))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(root / "ambient-venv"))
     before = dict(os.environ)
-    managed_uv, env = importlib.import_module("pm.ensure").uv(realize=False)
-    assert managed_uv == str(uv)
-    assert env.get("UV_PYTHON") == str(python)
-    assert "UV_PROJECT_ENVIRONMENT" not in env
-    assert dict(os.environ) == before
-    uvx, uvx_env = importlib.import_module("pm.ensure").uv("uvx", realize=False)
-    assert Path(uvx) == uv.with_name("uvx" + uv.suffix)
-    assert uvx_env["UV_PYTHON"] == str(python)
-    subprocess.run([uvx, "--version"], cwd=root, env=uvx_env, check=True, capture_output=True, timeout=30)
+    from pm._uv import _toolchain
+    from pm.environment import managed_environment
 
+    assert _toolchain(realize=False) == (uv, python)
+    assert dict(os.environ) == before
     project = root / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
@@ -89,25 +95,16 @@ def test_all_uv_commands_keep_the_pm_interpreter(installed_uv, monkeypatch):
         '[tool.uv]\npackage=false\n', encoding="utf-8",
     )
     (project / ".python-version").write_text(str(root / "host-only-python"), encoding="utf-8")
-    env.pop("UV_NO_CONFIG")
-    env.update({"UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never"})
-    environment = root / "candidate"
-    env["VIRTUAL_ENV"] = str(environment)
-    for args in (["venv", str(environment)], ["lock"], ["sync", "--frozen", "--active"],
-                 ["run", "--active", "--no-sync", "python", "-c", "import sys; print(sys.prefix)"]):
-        result = subprocess.run([managed_uv, *args], cwd=project, env=env,
-                                capture_output=True, text=True, check=True, timeout=60)
-    assert Path(result.stdout.strip()).resolve() == environment.resolve()
-
-    incomplete = root / "store" / "uv-without-uvx"
-    incomplete.mkdir()
-    shutil.copy2(uv, incomplete / uv.name)
-    facts.record("uv", "test", incomplete.name, {}, incomplete.parent,
-                 target=target, artifacts=[digest])
-    ensure = importlib.import_module("pm.ensure")
-    assert ensure.uv("uvx", realize=False)[0] is None
-    with pytest.raises(InstallError, match="binary is missing"):
-        ensure.uv("uvx")
+    environment = managed_environment(root / "candidate", offline=True)
+    assert environment.python == python
+    environment.create()
+    environment.lock(project)
+    environment.sync(project)
+    environment.check()
+    result = subprocess.run([str(environment.executable), "-I", "-c", "import sys; print(sys.prefix)"],
+                            capture_output=True, text=True, check=True, timeout=30)
+    assert Path(result.stdout.strip()).resolve() == environment.destination.resolve()
+    assert dict(os.environ) == before
 
 
 def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatch):
@@ -115,21 +112,19 @@ def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatc
     ensure = importlib.import_module("pm.ensure")
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: False)
     monkeypatch.setenv("UV_PYTHON", str(root / "ambient-python"))
-    managed_uv, env = ensure.uv(realize=False)
-    assert managed_uv is None
-    assert "UV_PYTHON" not in env
+    assert _toolchain(realize=False) is None
     assert not (root / "store" / "python-test").exists()
     with pytest.raises(InstallError, match="python"):
-        ensure.uv()
+        _toolchain()
 
     entry = root / "store" / "missing-binary"
     entry.mkdir()
     facts.record("python", "test", entry.name, {}, entry.parent,
                  target=target, artifacts=[digest])
     recorded = facts.path.read_bytes()
-    assert ensure.uv(realize=False)[0] is None
+    assert _toolchain(realize=False) is None
     with pytest.raises(InstallError, match="lazy installs are disabled: python"):
-        ensure.uv()
+        _toolchain()
     assert facts.path.read_bytes() == recorded
     assert not list(entry.iterdir())
 
@@ -174,16 +169,16 @@ def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(ins
         raise AssertionError("the verified Python must be copied without downloading")
 
     monkeypatch.setattr(Store, "fetch_many", no_download)
-    assert ensure.uv(realize=False)[0] is None
+    assert _toolchain(realize=False) is None
     assert not writable.exists()
     with pytest.raises(InstallError, match="lazy installs are disabled"):
-        ensure.uv()
+        _toolchain()
     assert not writable.exists()
 
-    resolved_uv, env = ensure.uv(explicit=True)
+    resolved_uv, python = _toolchain(explicit=True)
     copied = writable / entry.name
-    assert resolved_uv == str(uv_binary)
-    assert env["UV_PYTHON"] == str(copied / "python.exe")
+    assert resolved_uv == uv_binary
+    assert python == copied / "python.exe"
     assert tree_digest(copied) == shipped_digest
     copied_fact = Facts(writable / "facts.json").get("python")
     assert copied_fact["digest"] == shipped_digest
@@ -197,8 +192,8 @@ def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(ins
 
     with monkeypatch.context() as reuse:
         reuse.setattr(shutil, "copytree", no_copy)
-        assert ensure.uv(realize=False)[1]["UV_PYTHON"] == env["UV_PYTHON"]
-        assert ensure.uv()[1]["UV_PYTHON"] == env["UV_PYTHON"]
+        assert _toolchain(realize=False)[1] == python
+        assert _toolchain()[1] == python
 
     assert facts.path.read_bytes() == before
     assert tree_digest(entry) == shipped_digest

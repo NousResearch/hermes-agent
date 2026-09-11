@@ -105,8 +105,12 @@ def locked_project(tmp_path):
 
 
 @pytest.fixture
-def installable_project(locked_project):
+def installable_project(locked_project, monkeypatch):
     source, uv, env = locked_project
+    # The parent suite exercises the worker transport; these tests exercise the
+    # build adapter and engine with locally supplied, real tool binaries.
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
     metadata = source / "pyproject.toml"
     metadata.write_text(metadata.read_text().replace("package=false", "package=true") +
                         '\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\nbackend-path=["."]\n')
@@ -137,8 +141,8 @@ build_editable = build_wheel
     return source, uv, env
 
 
-def test_native_provider_builds_all_extras_at_explicit_destination(installable_project, tmp_path, monkeypatch):
-    from scripts.build.python_env import build_python_environment
+def test_public_build_installs_all_extras_at_explicit_destination(installable_project, tmp_path, monkeypatch):
+    from pm import build_environment
     import pm.paths
     import pm.workspace
 
@@ -147,8 +151,8 @@ def test_native_provider_builds_all_extras_at_explicit_destination(installable_p
     monkeypatch.setattr(pm.workspace, "enabled_member_dirs", lambda: pytest.fail("user plugins"))
     before = dict(os.environ)
     locked = (source / "uv.lock").read_bytes()
-    executable = build_python_environment(
-        source=source, python=Path(sys.executable), uv=uv, out=tmp_path / "native environment",
+    executable = build_environment(
+        source=source, python=Path(sys.executable), out=tmp_path / "native environment",
         cache=tmp_path / "cache", env=env, all_extras=True, offline=True,
     )
     assert _run([str(executable), "-I", "-c",
@@ -160,26 +164,24 @@ def test_native_provider_builds_all_extras_at_explicit_destination(installable_p
     assert not Path(env["HERMES_HOME"]).exists()
 
 
-@pytest.mark.parametrize("extra_flags, expected", [
-    (["--extra", "chosen", "--extra", "chosen"], [True, False]),
-    (["--all-extras"], [True, True]),
-    ([], [False, False]),
+@pytest.mark.parametrize("selection, expected", [
+    ({"extras": ["chosen", "chosen"]}, [True, False]),
+    ({"all_extras": True}, [True, True]),
+    ({}, [False, False]),
 ])
-def test_cli_dependency_only_needs_no_application_source(installable_project, tmp_path, extra_flags, expected):
+def test_public_dependency_only_build_needs_no_application_source(installable_project, tmp_path, selection, expected):
     source, uv, env = installable_project
     (source / "root_app.py").unlink()
     (source / "local_backend.py").unlink()
     locked = (source / "uv.lock").read_bytes()
-    repo = Path(__file__).resolve().parents[2]
-    executable = _run(
-        [sys.executable, "-m", "scripts.build.python_env", "--source", str(source),
-         "--python", sys.executable, "--uv", str(uv), "--out", str(tmp_path / "docker env"),
-         "--no-install-project", "--offline", *extra_flags],
-        cwd=tmp_path, env={**env, "PYTHONPATH": str(repo)},
-    )
-    assert executable, "CLI must return the verified environment executable"
+    from pm import build_environment
+
+    executable = build_environment(source=source, python=Path(sys.executable),
+                                   out=tmp_path / "docker env", cache=tmp_path / "cache", env=env,
+                                   no_install_project=True, offline=True, **selection)
+    assert executable.is_file()
     result = json.loads(_run(
-        [executable, "-I", "-c", "import json, importlib.util, importlib.metadata, base_dep; "
+        [str(executable), "-I", "-c", "import json, importlib.util, importlib.metadata, base_dep; "
          "print(json.dumps([importlib.util.find_spec('chosen_dep') is not None, "
          "importlib.util.find_spec('other_dep') is not None, "
          "'construction-root' in [d.metadata['Name'] for d in importlib.metadata.distributions()]]))"],
@@ -205,7 +207,9 @@ def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
     output = AcknowledgingLog()
     child_env = dict(os.environ, UV_INDEX_PRIVATE_USERNAME="fixture-user",
                      UV_INDEX_PRIVATE_PASSWORD="fixture-secret",
-                     UV_DEFAULT_INDEX="https://fixture.invalid/simple")
+                     UV_DEFAULT_INDEX="https://fixture.invalid/simple",
+                     UV_PROJECT="/poison/project", UV_VENV_SEED="true", UV_SYSTEM_PYTHON="true",
+                     UV_PYTHON="/poison/python", UV_CACHE_DIR="/poison/cache")
     environment = PythonEnvironment(
         uv=Path(sys.executable), python=Path(sys.executable), destination=tmp_path / "venv",
         cache=tmp_path / "cache", env=child_env, output=output,
@@ -219,6 +223,9 @@ def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
         "assert os.environ['UV_INDEX_PRIVATE_USERNAME'] == 'fixture-user'\n"
         "assert os.environ['UV_INDEX_PRIVATE_PASSWORD'] == 'fixture-secret'\n"
         "assert os.environ['UV_DEFAULT_INDEX'] == 'https://fixture.invalid/simple'\n"
+        "assert not {'UV_PROJECT', 'UV_VENV_SEED', 'UV_SYSTEM_PYTHON'} & os.environ.keys()\n"
+        f"assert os.environ['UV_PYTHON'] == {sys.executable!r}\n"
+        f"assert os.environ['UV_CACHE_DIR'] == {str(tmp_path / 'cache')!r}\n"
         "print('child-complete', flush=True)\n"
     )
     result = environment._run(["-c", script], cwd=tmp_path, timeout=10)
@@ -304,13 +311,13 @@ def test_streaming_eof_does_not_restart_process_wait_timeout(tmp_path):
 
 @pytest.mark.parametrize("damage", ["source", "check", "lock"])
 def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, damage):
-    from scripts.build.python_env import build_python_environment
+    from pm import build_environment
     from pm.package import InstallError
 
     source, uv, env = installable_project
     previous = tmp_path / "previous"
-    executable = build_python_environment(source=source, python=Path(sys.executable), uv=uv,
-                                          out=previous, env=env, offline=True)
+    executable = build_environment(source=source, python=Path(sys.executable),
+                                          out=previous, env=env, cache=tmp_path / "cache", offline=True)
     cfg = (previous / "pyvenv.cfg").read_bytes()
     source_lock = (source / "uv.lock").read_bytes()
     if damage == "source":
@@ -323,13 +330,13 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
     else:
         (source / "uv.lock").unlink()
     candidate = tmp_path / "candidate"
-    with pytest.raises(InstallError, match="dependency validation" if damage == "check" else "uv sync"):
-        build_python_environment(source=source, python=Path(sys.executable), uv=uv,
+    with pytest.raises(InstallError, match="dependency validation" if damage == "check" else "uv sync|frozen build requires a lock"):
+        build_environment(source=source, python=Path(sys.executable),
                                  out=candidate, env=env, cache=tmp_path / "cold-cache", offline=True)
     assert not candidate.exists()
     with pytest.raises(FileExistsError):
-        build_python_environment(source=source, python=Path(sys.executable), uv=uv,
-                                 out=previous, env=env, offline=True)
+        build_environment(source=source, python=Path(sys.executable),
+                                 out=previous, env=env, cache=tmp_path / "cache", offline=True)
     assert (previous / "pyvenv.cfg").read_bytes() == cfg
     assert _run([str(executable), "-I", "-c", "import base_dep; print(base_dep.__version__)"],
                 cwd=tmp_path, env=env) == "1.0"
@@ -337,6 +344,31 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
         assert (source / "uv.lock").read_bytes() == source_lock
     else:
         assert not (source / "uv.lock").exists(), "frozen builds must not manufacture a lock"
+
+
+def test_lock_upgrade_and_group_selection_use_the_same_environment(locked_project, tmp_path):
+    from pm.environment import PythonEnvironment
+    import tomllib
+
+    source, uv, env = locked_project
+    manifest = source / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace('base-dep==1.0', 'base-dep>=1,<2') +
+                        '\n[dependency-groups]\nqa=["other-dep==1.0"]\n')
+    environment = PythonEnvironment(uv=uv, python=Path(sys.executable), destination=tmp_path / "candidate",
+                                    cache=tmp_path / "cache", env=env, offline=True)
+    environment.lock(source, timeout=60)
+    _wheel(tmp_path / "wheels", "base_dep", "1.1")
+    environment.lock(source, timeout=60)
+    packages = tomllib.loads((source / "uv.lock").read_text())["package"]
+    assert next(p["version"] for p in packages if p["name"] == "base-dep") == "1.0"
+    environment.lock(source, upgrade=True, timeout=60)
+    locked = (source / "uv.lock").read_bytes()
+    environment.create()
+    environment.sync(source, groups=["qa", "qa"], timeout=60)
+    assert _run([str(environment.executable), "-I", "-c",
+                 "import base_dep, other_dep; print(base_dep.__version__, other_dep.__version__)"],
+                cwd=tmp_path, env=env) == "1.1 1.0"
+    assert (source / "uv.lock").read_bytes() == locked
 
 
 def test_explicit_environment_installs_locked_members_without_live_selection(locked_project, tmp_path, monkeypatch):
@@ -422,7 +454,6 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
 
 
 def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, monkeypatch):
-    import importlib
     from hermes_cli.runtime_paths import runtime_facts_path, selected_venv
     from pm.lock import Facts
     from pm.packages import Venv
@@ -438,7 +469,7 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
     monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
     # Tool acquisition is the adapter's job; the same prepared env is not mutated.
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv", lambda **kwargs: (str(uv), env))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
     original_env = dict(env)
     prepared = Venv().apply(["chosen"], plugin_dirs=[source / "member"])
     assert env == original_env

@@ -22,12 +22,11 @@ def runtime_environment() -> dict[str, str]:
     from hermes_constants import get_hermes_home
     from pm.paths import store_root
 
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("PYTHON") and not key.startswith("UV_")
-           and key != "VIRTUAL_ENV"}
+    from pm.environment import _base_environment
+
+    env = _base_environment()
     env["HERMES_HOME"] = str(get_hermes_home())
     env["HERMES_RUNTIME_DIR"] = str(store_root())
-    env["UV_PYTHON_DOWNLOADS"] = "never"
     return env
 
 
@@ -148,15 +147,15 @@ def runtime_python(*, bootstrap: bool = True) -> Path:
     if is_runtime():
         return Path(sys.executable)
     from hermes_cli.runtime_paths import install_state_dir
-    from pm.ensure import uv as managed_uv
+    from pm._uv import _toolchain
     from pm.paths import repo_root
 
     project = repo_root()
     resident = _resident_runtime()
     if resident is not None:
         return resident[0]
-    uv, env = managed_uv(realize=False)
-    if uv is None:
+    tools = _toolchain(realize=False)
+    if tools is None:
         if not bootstrap:
             raise InstallError("pm-runtime", "not installed and lazy installs are disabled",
                                "run `hermes pm install` to prepare the independent PM runtime")
@@ -172,13 +171,14 @@ def runtime_python(*, bootstrap: bool = True) -> Path:
         target = current_target()
         staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
         if staged is not None and staged.is_file():
-            uv, env = str(staged), {"UV_PYTHON": sys.executable}
+            tools = staged, Path(sys.executable)
         else:
             # Non-shell bootstrap callers (CI) already have a host interpreter.
-            uv, env = managed_uv(explicit=True)
-    if uv is None:
+            tools = _toolchain(explicit=True)
+    if tools is None:
         raise InstallError("pm-runtime", "pinned uv and Python are unavailable")
-    return prepare_runtime(Path(uv), Path(env["UV_PYTHON"]), install_state_dir(project) / "pm-runtime",
+    uv, python = tools
+    return prepare_runtime(uv, python, install_state_dir(project) / "pm-runtime",
                            bootstrap=bootstrap)
 
 

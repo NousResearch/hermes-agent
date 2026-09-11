@@ -471,15 +471,7 @@ def lock_and_sync(
         frozen = True
 
     if environment is None:
-        from pm.ensure import uv as pm_uv
-        from pm.environment import PythonEnvironment
+        from pm.environment import managed_environment
 
-        uv_bin, run_env = pm_uv(base_env=env)
-        if uv_bin is None:
-            raise InstallError("venv", "PM's uv and Python are required; run `hermes pm install`")
-        environment = PythonEnvironment(
-            uv=Path(uv_bin), python=Path(run_env["UV_PYTHON"]), destination=venv_dir,
-            cache=Path(run_env["UV_CACHE_DIR"]), env=run_env,
-            offline=run_env.get("UV_OFFLINE") == "1",
-        )
+        environment = managed_environment(venv_dir, env=env)
     environment.sync(generated, extras=extras or (), frozen=frozen)

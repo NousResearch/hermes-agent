@@ -2,7 +2,6 @@
 
 import importlib
 import locale
-import os
 import subprocess
 import sys
 
@@ -42,11 +41,9 @@ def test_uv_failure_retains_utf8_build_diagnostic(
     raw = diagnostic.encode("utf-8") + suffix + b"\n"
     expected = diagnostic + ("�" if suffix else "")
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (tmp_path, False))
-    monkeypatch.setattr(
-        importlib.import_module("pm.ensure"), "uv",
-        lambda **kwargs: (sys.executable, {**os.environ, "UV_PYTHON": sys.executable,
-                                         "UV_CACHE_DIR": str(tmp_path / "cache")}),
-    )
+    from pathlib import Path
+
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(sys.executable), Path(sys.executable)))
     completed = []
 
     def run_uv(cmd, **kwargs):

@@ -12,7 +12,7 @@ import sys
 import pytest
 
 from pm.lock import Facts
-from pm.packages import uv_env
+from pm.runtime import runtime_environment
 from tests.pm.test_workspace_build_inputs import _wheel
 
 @pytest.fixture(autouse=True)
@@ -88,14 +88,12 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     )
     monkeypatch.setattr(paths, "repo_root", lambda: core)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
-        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
-    ))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(workspace, "enabled_member_dirs", lambda: [plugin])
     # The committed core lock is independent of the plugin union.
-    env = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    env.pop("UV_NO_CONFIG")
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
     subprocess.run([uv, "lock"], cwd=core, env=env, capture_output=True, check=True, timeout=60)
     engine.sync_venv([], explicit=True)
     old = selected_venv(core)
@@ -194,12 +192,10 @@ def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_pa
     sibling_config.write_text("plugins:\n  enabled: [worker-deps]\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(paths, "repo_root", lambda: core)
-    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
-        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
-    ))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
-    env = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
-    env.pop("UV_NO_CONFIG")
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
     subprocess.run([uv, "lock"], cwd=core, env=env, check=True, capture_output=True, timeout=60)
     engine.sync_venv([], explicit=True)
     old = selected_venv(core)

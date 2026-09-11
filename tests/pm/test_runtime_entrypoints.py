@@ -32,10 +32,7 @@ def test_ci_dependency_phase_uses_isolated_runtime(tmp_path, monkeypatch):
     from scripts.ci import setup_toolchain
     import subprocess
 
-    import importlib
-    ensure = importlib.import_module("pm.ensure")
-
-    monkeypatch.setattr(ensure, "uv", lambda: pytest.fail("dependency work ran in bootstrap Python"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda: pytest.fail("dependency work ran in bootstrap Python"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     calls = []
     python = tmp_path / "pm-runtime" / "python"
@@ -56,11 +53,9 @@ def test_ci_dependency_phase_uses_isolated_runtime(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("distribution", ["nix", "docker"])
 def test_packaged_runtime_uses_explicit_stamp_without_tool_downloads(tmp_path, monkeypatch, distribution):
-    import importlib
     from pm import runtime, paths
 
-    engine = importlib.import_module("pm.ensure")
-    monkeypatch.setattr(engine, "uv", lambda **kw: pytest.fail("packaged PM tried to download tools"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: pytest.fail("packaged PM tried to download tools"))
     project = tmp_path / "app"
     project.mkdir()
     monkeypatch.setattr(paths, "repo_root", lambda: project)

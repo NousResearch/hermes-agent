@@ -347,15 +347,209 @@ _SECTIONS = (
     _render_sessions, _render_deep, _render_footer)
 
 
+def get_status_data(args=None) -> dict:
+    """Collect all Hermes Agent component status facts as a JSON-serializable dict."""
+    import hermes_cli
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    # ESTOP
+    estop_state = None
+    try:
+        from agent.estop import get_state
+        estop_state = get_state()
+    except Exception:
+        pass
+
+    estop_info = {
+        "paused": estop_state is not None,
+        "reason": estop_state.get("reason") if estop_state else None,
+        "timestamp": estop_state.get("timestamp") if estop_state else None,
+    }
+
+    # Gateway
+    gateway_info = {
+        "running": False,
+        "manager": "unknown",
+        "pids": [],
+        "service_installed": False,
+        "service_running": False,
+    }
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+        snapshot = get_gateway_runtime_snapshot()
+        gateway_info = {
+            "running": bool(snapshot.running),
+            "manager": snapshot.manager,
+            "pids": list(snapshot.gateway_pids or []),
+            "service_installed": bool(snapshot.service_installed),
+            "service_running": bool(snapshot.service_running),
+        }
+    except Exception:
+        platform = "termux" if _is_termux() else "linux" if sys.platform.startswith("linux") else sys.platform
+        status_text, manager = _GATEWAY_FALLBACK.get(platform, ("unknown", "(not supported on this platform)"))
+        gateway_info["manager"] = manager
+
+    # Terminal backend
+    terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
+    terminal_backend = os.getenv("TERMINAL_ENV", "") or terminal_cfg.get("backend", "local")
+    terminal_info = {
+        "backend": terminal_backend,
+        "sudo": bool(os.getenv("SUDO_PASSWORD", "")),
+    }
+
+    # Auth: API Keys (configured names only, never secret values)
+    from hermes_cli.status_auth import _API_KEYS, _OAUTH_BLOCKS
+    from hermes_cli.auth import get_anthropic_key
+
+    configured_api_keys = []
+    for name, env_ref in (*_API_KEYS.items(), ("Anthropic", get_anthropic_key)):
+        try:
+            val = env_ref() if callable(env_ref) else _first_env_value(env_ref)
+            if bool(val):
+                configured_api_keys.append(name)
+        except Exception:
+            pass
+
+    # Auth: OAuth Providers
+    import hermes_cli.auth as auth
+    oauth_providers = {}
+    for name, getter_name, hint, rows in _OAUTH_BLOCKS:
+        try:
+            getter = getattr(auth, getter_name, None)
+            st = getter() if getter else {}
+            oauth_providers[name] = {
+                "logged_in": bool(st.get("logged_in")),
+                "auth_file": st.get("auth_store") or st.get("auth_file"),
+                "last_refresh": st.get("last_refresh"),
+                "error": st.get("error") if not st.get("logged_in") else None,
+            }
+        except Exception as e:
+            oauth_providers[name] = {"logged_in": False, "error": str(e)}
+
+    # Platforms
+    platforms_info = {}
+    for name, (token_var, home_var) in _PLATFORMS.items():
+        has_token = bool(os.getenv(token_var, ""))
+        platforms_info[name] = {
+            "configured": has_token,
+            "home_channel": (os.getenv(home_var, "") or None) if home_var else None,
+        }
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
+            platforms_info[entry.label] = {"configured": configured, "plugin": True}
+    except Exception:
+        pass
+
+    # Scheduled jobs
+    jobs_count = 0
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    if jobs_file.exists():
+        try:
+            data = _load_json(jobs_file)
+            jobs_count = len(data.get("jobs", [])) if isinstance(data, dict) else len(data) if isinstance(data, list) else 0
+        except Exception:
+            jobs_count = 0
+
+    # Sessions & Usage
+    active_sessions_count = 0
+    last_activity = None
+    total_sessions_count = 0
+    recent_sessions = []
+    usage_info = {"tokens": 0, "cost_usd": 0.0}
+
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            gateway_rows = db.list_gateway_sessions(active_only=True) or []
+            active_sessions_count = len(gateway_rows)
+            freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
+            if freshest > 0:
+                last_activity = freshest
+
+            total_sessions_count = db.session_count()
+            recent_rows = db.list_recent_sessions_bounded(limit=10) or []
+            for r in recent_rows:
+                recent_sessions.append({
+                    "id": r.get("id"),
+                    "title": r.get("title"),
+                    "source": r.get("source"),
+                    "model": r.get("model"),
+                    "created_at": r.get("created_at"),
+                    "updated_at": r.get("updated_at") or r.get("last_active"),
+                })
+
+            usage_info = db.usage_totals()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Slot usage
+    slots_info = None
+    try:
+        from hermes_cli.active_sessions import (
+            active_session_registry_snapshot, resolve_max_concurrent_sessions)
+        cap = resolve_max_concurrent_sessions(config)
+        if cap is not None:
+            held = active_session_registry_snapshot() or []
+            slots_info = {"in_use": len(held), "cap": cap}
+    except Exception:
+        pass
+
+    sessions_info = {
+        "active": active_sessions_count,
+        "total": total_sessions_count,
+        "last_activity": last_activity,
+        "recent": recent_sessions,
+        "slots": slots_info,
+    }
+
+    return {
+        "version": getattr(hermes_cli, "__version__", "unknown"),
+        "project_root": str(PROJECT_ROOT),
+        "python_version": sys.version.split()[0],
+        "env_file_exists": get_env_path().exists(),
+        "model": _configured_model_label(config),
+        "provider": _effective_provider_label(),
+        "estop": estop_info,
+        "gateway": gateway_info,
+        "terminal": terminal_info,
+        "auth": {
+            "api_keys": configured_api_keys,
+            "oauth": oauth_providers,
+        },
+        "platforms": platforms_info,
+        "cron": {
+            "jobs_count": jobs_count,
+        },
+        "sessions": sessions_info,
+        "usage": usage_info,
+    }
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
+    if getattr(args, "json", False):
+        data = get_status_data(args)
+        print(json.dumps(data, indent=2))
+        return 0
+
     # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
     # for the later Nous Tool Gateway section.
     ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
                           nous_inference_present=False, nous_account_info=None)
     for render in _SECTIONS:
         render(ctx)
-
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.

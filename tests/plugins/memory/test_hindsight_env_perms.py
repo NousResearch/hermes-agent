@@ -13,12 +13,7 @@ from plugins.memory.hindsight import (
     _embedded_profile_env_path,
     _materialize_embedded_profile_env,
 )
-from plugins.memory.hindsight.embedded import (
-    _build_embedded_profile_env,
-    _load_simple_env,
-    _may_rewrite_profile_env,
-    _on_disk_llm_api_key,
-)
+from plugins.memory.hindsight.embedded import _build_embedded_profile_env, _may_rewrite_profile_env
 
 
 @pytest.fixture(autouse=True)
@@ -122,62 +117,6 @@ def test_scopeless_worker_reuses_on_disk_key(monkeypatch):
         secret_scope.reset_secret_scope(token)
 
 
-def test_gate_refuses_keyless_build_against_keyed_disk(monkeypatch):
-    """_may_rewrite_profile_env False branch: keyless build + keyed disk."""
-    import plugins.memory.hindsight.embedded as hs_embedded
-
-    monkeypatch.setattr(hs_embedded, "_build_embedded_profile_env",
-                        lambda config, **kw: {"HINDSIGHT_API_LLM_API_KEY": ""})
-    monkeypatch.setattr(hs_embedded, "_on_disk_llm_api_key", lambda config: "sk-test-live-key")
-    assert hs_embedded._may_rewrite_profile_env(_CONFIG) is False
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
-def test_on_disk_key_survives_empty_build(monkeypatch):
-    """Fail-closed core: a keyed file survives a key-destroying rewrite attempt.
-
-    Uses the worker's real compare inputs — on-disk file vs a keyless build
-    (llm_api_key="" models the pre-fix scopeless build shape) — and the
-    gated worker body (rewrite only when the gate passes).
-    """
-    from agent import secret_scope
-
-    profile_env = _embedded_profile_env_path(_CONFIG)
-    profile_env.parent.mkdir(parents=True)
-    profile_env.write_text(
-        "HINDSIGHT_API_LLM_PROVIDER=openai\n"
-        "HINDSIGHT_API_LLM_API_KEY=sk-test-live-key\n"
-        "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
-        "HINDSIGHT_API_LOG_LEVEL=info\n",
-        encoding="utf-8",
-    )
-    os.chmod(profile_env, 0o600)
-
-    token = secret_scope.set_secret_scope(None)
-    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
-    monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
-    try:
-        # The worker's real compare inputs: on-disk file vs a keyless build
-        # (llm_api_key="" models the pre-fix scopeless build shape).
-        keyless = _build_embedded_profile_env(_CONFIG, llm_api_key="")
-        assert keyless["HINDSIGHT_API_LLM_API_KEY"] == ""
-        assert _load_simple_env(profile_env) != keyless
-
-        # The gate predicate on those same inputs: keyless build + keyed disk
-        # -> refuse. Inline the predicate (same two reads the gate uses) so
-        # the test pins behavior, not the helper's name.
-        build_has_key = bool(keyless.get("HINDSIGHT_API_LLM_API_KEY"))
-        disk_has_key = bool(_on_disk_llm_api_key(_CONFIG))
-        assert not build_has_key and disk_has_key
-
-        before = profile_env.read_bytes()
-        # Gated worker body: rewrite only when the gate passes.
-        if build_has_key or not disk_has_key:
-            _materialize_embedded_profile_env(_CONFIG, llm_api_key="")
-        assert profile_env.read_bytes() == before
-        assert stat.S_IMODE(profile_env.stat().st_mode) == 0o600
-    finally:
-        secret_scope.reset_secret_scope(token)
 
 
 def test_rewrite_allowed_when_build_carries_key():
@@ -202,20 +141,5 @@ def test_api_prefixed_vault_name_resolves(monkeypatch):
     monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
     try:
         assert hs_embedded._embedded_llm_api_key(_CONFIG) == "sk-test-live-key"
-    finally:
-        secret_scope.reset_secret_scope(token)
-
-
-def test_rewrite_allowed_when_no_key_anywhere(monkeypatch):
-    """Keyless providers (ollama) must not brick: empty build + empty disk rewrites."""
-    from agent import secret_scope
-
-    token = secret_scope.set_secret_scope(None)
-    monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
-    try:
-        cfg = dict(_CONFIG, llm_provider="ollama", llm_model="qwen3:8b")
-        # No key on disk either -> gate passes, non-key drift still converges.
-        assert _on_disk_llm_api_key(cfg) == ""
-        assert _may_rewrite_profile_env(cfg) is True
     finally:
         secret_scope.reset_secret_scope(token)

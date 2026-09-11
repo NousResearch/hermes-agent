@@ -2636,8 +2636,15 @@ class GatewayTurnMixin:
             for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
         )
         progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
-        # Operator intent vs tier default: True when a human wrote the mode (config or env).
-        _tool_progress_explicit = _tool_progress_configured or bool(_env_tp)
+        # Operator intent vs tier default: True when a human WROTE a mode (config or env). A ``null``
+        # value is inheritance, not intent — the resolver skips None (display_config.py), so a bare
+        # key with no value must not read as "explicitly off".
+        _tool_progress_explicit = bool(_env_tp) or any(
+            isinstance(cfg, dict) and cfg.get(key) is not None
+            for cfg, key in (
+                (_display_cfg, "tool_progress"), (_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key),
+            )
+        )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []

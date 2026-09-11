@@ -1176,6 +1176,39 @@ async def test_slack_operator_tool_progress_off_disables_task_cards(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "display_cfg",
+    [
+        {"platforms": {"slack": {"tool_progress": None}}},
+        {"tool_progress": None},
+        {"tool_progress_overrides": {"slack": None}},
+        # null at the platform level over a global "all": the platform inherits "all", cards stay.
+        {"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}},
+    ],
+    ids=["platform-null", "global-null", "legacy-null", "platform-null-over-global-all"],
+)
+async def test_slack_null_tool_progress_is_inheritance_not_explicit_off(monkeypatch, tmp_path, display_cfg):
+    # A bare key with ``null`` inherits (the resolver skips None); it is not an operator saying "off".
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-null",
+        config_data={"display": display_cfg},
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
 async def test_slack_operator_tool_progress_new_keeps_task_cards(monkeypatch, tmp_path):
     # An explicit non-off mode keeps the native card lane engaged (text lane stays swallowed by it).
     adapter, result = await _run_with_agent(

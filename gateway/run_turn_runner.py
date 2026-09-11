@@ -309,11 +309,13 @@ class TurnRunner:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
-        # TERMINAL authorization refusal, distinct from native_failed: the
-        # connector refused this destination, so no later publication in this
-        # turn may re-deliver the task text through the text fallback. Declared
-        # rather than set dynamically so the state is visible where it lives.
-        egress_declined: bool = False
+        # TERMINAL for the turn, distinct from native_failed: no later publication
+        # in this turn may deliver task text through the native lane OR the text
+        # fallback. Two causes, both properties of the destination rather than of
+        # one attempt: the connector's egress guard refused the chat, or the chat
+        # cannot host a card (no thread anchor). Declared rather than set
+        # dynamically so the state is visible where it lives.
+        publication_suppressed: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -359,7 +361,7 @@ class TurnRunner:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if getattr(st, "egress_declined", False):
+        if st.publication_suppressed:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
@@ -377,7 +379,7 @@ class TurnRunner:
                     "guard; suppressing progress delivery for the rest of this "
                     "turn (the destination is not approved)"
                 )
-                st.egress_declined = True
+                st.publication_suppressed = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -387,9 +389,10 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if getattr(st, "egress_declined", False):
-            # The connector refused this destination earlier in the turn; every
-            # later publication would re-deliver the same task text there.
+        if st.publication_suppressed:
+            # Publication was suppressed earlier in the turn (egress refusal or a chat
+            # that cannot host a card); every later publication would re-deliver the
+            # same task text there.
             return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
@@ -410,7 +413,7 @@ class TurnRunner:
                 # event skipped this branch (the lane is already "failed") and
                 # went straight to the text fallback. A refusal does not expire
                 # after one tick.
-                st.egress_declined = True
+                st.publication_suppressed = True
                 st.native_failed = True
                 logger.warning(
                     "Slack native task-card progress DECLINED by the connector's "
@@ -422,9 +425,10 @@ class TurnRunner:
             if _card_destination_unsupported(result):
                 # The destination itself cannot host a card (flat DM: no thread anchor). This is
                 # a property of the chat, not a transient outage, and it repeats on every event.
-                # Degrading to text would deliver tool progress the operator never enabled
-                # (Slack's default is off), so the lane goes silent for this turn.
-                st.egress_declined = True
+                # The text fallback exists to keep a WORKING card lane live through a transient
+                # native failure, not to turn an un-cardable chat into text bubbles; the lane
+                # goes silent for this turn whatever the configured mode.
+                st.publication_suppressed = True
                 logger.info(
                     "Slack native task cards are unsupported for this destination "
                     "(%s); tool progress stays off for this turn",

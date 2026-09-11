@@ -1,0 +1,15 @@
+name: modelark-pricing
+version: 1.0.0
+kind: backend
+author: WeRoll fleet (Cowork, on Richie's instruction 2026-09-11)
+description: >-
+  Notional pricing for the BytePlus ModelArk Coding Plan (a flat subscription). Every DeepSeek
+  v4-flash / v4-pro slot in the fleet is served by ModelArk from 2026-09-11. A subscription endpoint
+  returns no per-call cost, and Hermes has no price for the Ark model ids, so every call would record
+  $0 / unknown and the flat $1.00 card cap (enforce_max_cost sums estimated_cost_usd) would go blind
+  exactly as it did on 2026-09-08. This plugin prices the Ark ids at DeepSeek's own list rate (the
+  bundled "deepseek" snapshot) with cost_source "modelark-proxy", so the cap and the overwatch escalator
+  keep firing. The figure is NOTIONAL — nothing is invoiced per call; fleet reports label these rows
+  "modelark subscription". Bundled + kind:backend so it auto-loads in every profile, worker, cron job
+  and desktop backend (user plugins only load under the HERMES_HOME that holds them). New directory,
+  so it is zero merge-conflict surface for upstream catch-ups. Remove it if the fleet leaves ModelArk.

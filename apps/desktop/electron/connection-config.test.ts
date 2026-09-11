@@ -1342,3 +1342,34 @@ test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => 
   assert.equal((wrapped as any).needsOauthLogin, true)
   assert.equal((wrapped as any).statusCode, 401)
 })
+
+test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequired so startHermes latches it', () => {
+  for (const statusCode of [401, 403]) {
+    const source = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
+    const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any
+
+    assert.equal(wrapped.message, 'auth copy')
+    assert.equal(wrapped.needsOauthLogin, true)
+    assert.equal(wrapped.isReauthRequired, true, `a ${statusCode} mint rejection cannot self-heal`)
+    assert.equal(wrapped.statusCode, statusCode)
+  }
+
+  // A pre-tagged rejection (needsOauthLogin from an upstream classifier) is
+  // confirmed the same way.
+  const tagged = gatewayTicketFailure({ needsOauthLogin: true }, 'auth copy', 'transport copy') as any
+  assert.equal(tagged.isReauthRequired, true)
+})
+
+test('FIX #95701: transport and server failures at the ticket mint stay retryable — never reauth', () => {
+  for (const source of [
+    Object.assign(new Error('503: unavailable'), { statusCode: 503 }),
+    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+  ]) {
+    const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any
+
+    assert.equal(wrapped.message, 'transport copy')
+    assert.equal(wrapped.needsOauthLogin, undefined)
+    assert.equal(wrapped.isReauthRequired, undefined)
+  }
+})

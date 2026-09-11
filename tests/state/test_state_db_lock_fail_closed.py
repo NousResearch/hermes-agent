@@ -5,7 +5,7 @@ work on a file several Hermes processes share (gateway service, the Desktop
 app's `hermes serve` backend, CLI sessions, the TUI slash worker):
 
 * `hermes_state_common.fts_rebuild_admission` — full structural FTS rebuilds
-* `hermes_state._cross_process_repair_lock`   — writable_schema surgery / VACUUM
+* `hermes_state_repair._cross_process_repair_lock`   — writable_schema surgery / VACUUM
 
 Both document themselves as fail-closed, and both honoured that only for a
 *timed-out* acquire. When the lock file could not be `open()`ed at all they
@@ -34,8 +34,10 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_repair
 import hermes_state_common
-from hermes_state import SessionDB, repair_state_db_schema
+from hermes_state import SessionDB
+from hermes_state_repair import repair_state_db_schema
 
 
 def _make_unopenable(lock_path: Path) -> None:
@@ -130,7 +132,7 @@ def test_repair_lock_fails_closed_when_lock_file_is_unopenable(tmp_path):
     db_path = tmp_path / "state.db"
     _make_unopenable(db_path.with_name(db_path.name + ".repair.lock"))
 
-    with hermes_state._cross_process_repair_lock(db_path) as holding:
+    with hermes_state_repair._cross_process_repair_lock(db_path) as holding:
         assert holding is False
 
 
@@ -145,7 +147,7 @@ def test_repair_skips_surgery_when_lock_file_is_unopenable(tmp_path):
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
     _corrupt_duplicate_fts(db_path)
-    assert hermes_state._db_opens_cleanly(db_path) is not None
+    assert hermes_state_repair._db_opens_cleanly(db_path) is not None
     before = db_path.read_bytes()
 
     _make_unopenable(db_path.with_name(db_path.name + ".repair.lock"))

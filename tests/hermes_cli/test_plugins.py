@@ -1182,6 +1182,43 @@ class TestForceReloadSymmetry:
         assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         hold.set()
 
+    def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
+        self, monkeypatch
+    ):
+        """A transient worker-start failure must not poison later hook calls."""
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        calls = []
+
+        def policy(**_kwargs):
+            calls.append(1)
+            return None
+
+        real_start = threading.Thread.start
+        attempts = 0
+
+        def fail_once(thread):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("can't start new thread")
+            return real_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", fail_once)
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [policy]
+
+        assert mgr.invoke_hook("pre_tool_call") == [
+            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+        ]
+        assert mgr.invoke_hook("pre_tool_call") == []
+        assert calls == [1]
+
     def test_pre_tool_call_timeout_does_not_reach_tool_handler(self, monkeypatch):
         """E2E: timed-out pre_tool_call blocks handle_function_call before dispatch."""
         import json
@@ -1354,6 +1391,7 @@ class TestResolvePreToolBlock:
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         from tools import approval
+        from tools import approval_context
 
         seen = {}
         monkeypatch.setattr(
@@ -1364,8 +1402,8 @@ class TestResolvePreToolBlock:
         )
 
         def _approve(*args, **kwargs):
-            seen["turn_id"] = approval._approval_turn_id.get()
-            seen["tool_call_id"] = approval._approval_tool_call_id.get()
+            seen["turn_id"] = approval_context._approval_turn_id.get()
+            seen["tool_call_id"] = approval_context._approval_tool_call_id.get()
             return {"approved": True, "message": None}
 
         monkeypatch.setattr("tools.approval.request_tool_approval", _approve)

@@ -632,16 +632,16 @@ class TestRoundTrip:
 
 class TestFormatSize:
     def test_bytes(self):
-        from hermes_cli.backup import _format_size
+        from hermes_cli.sizefmt import format_bytes as _format_size
         assert _format_size(512) == "512 B"
 
     def test_kilobytes(self):
-        from hermes_cli.backup import _format_size
+        from hermes_cli.sizefmt import format_bytes as _format_size
         assert "KB" in _format_size(2048)
 
 
     def test_terabytes(self):
-        from hermes_cli.backup import _format_size
+        from hermes_cli.sizefmt import format_bytes as _format_size
         assert "TB" in _format_size(2 * 1024 ** 4)
 
 
@@ -1756,7 +1756,7 @@ class TestRunPreUpdateBackup:
         """pre_update_backup: off — an explicit opt-out disables the quick
         snapshot too (it previously ran unconditionally), with no output."""
         self._set_mode(hermes_home, "off")
-        from hermes_cli.main import _run_pre_update_backup
+        from hermes_cli.update_cmd import _run_pre_update_backup
         snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
         assert snap_id is None
@@ -1768,7 +1768,7 @@ class TestRunPreUpdateBackup:
 
     def test_config_full_mode(self, hermes_home, capsys):
         self._set_mode(hermes_home, "full")
-        from hermes_cli.main import _run_pre_update_backup
+        from hermes_cli.update_cmd import _run_pre_update_backup
         snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
         assert snap_id is not None
@@ -2423,3 +2423,25 @@ def _count_rows(db_path: Path) -> tuple[int, int]:
         )
     finally:
         conn.close()
+
+
+def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, monkeypatch):
+    """Hourly `hermes backup` callers accumulated 150+ zips; --keep bounds the default-named
+    ones and leaves custom-named or foreign zips alone (#81317)."""
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for i in range(4):
+        (tmp_path / f"hermes-backup-2026-01-0{i + 1}-000000.zip").write_bytes(b"old")
+    (tmp_path / "my-archive.zip").write_bytes(b"mine")
+
+    backup_mod.run_backup(Namespace(output=None, keep=2))
+
+    kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
+    assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
+    assert (tmp_path / "my-archive.zip").exists()

@@ -75,14 +75,14 @@ NATIVE_MCP_TEXT = (
 
 
 def test_native_mcp_reference_matches_runtime_timeout():
-    source = (REPO / "tools" / "mcp_tool.py").read_text(encoding="utf-8")
+    source = (REPO / "tools" / "mcp_tool_common.py").read_text(encoding="utf-8")
     match = re.search(r"_DEFAULT_TOOL_TIMEOUT\s*=\s*(\d+)", source)
     assert match, "the runtime no longer declares a default MCP tool timeout"
     assert f"| `timeout`         | int    | `{match.group(1)}`" in NATIVE_MCP_TEXT
 
 
 def test_native_mcp_reference_matches_runtime_tool_names():
-    source = (REPO / "tools" / "mcp_tool.py").read_text(encoding="utf-8")
+    source = (REPO / "tools" / "mcp_tool_schema.py").read_text(encoding="utf-8")
     assert 'MCP_TOOL_NAME_PREFIX = "mcp__"' in source
     assert "mcp__{server_name}__{tool_name}" in NATIVE_MCP_TEXT
     for stale in ("mcp_{server}_{tool}", "mcp_filesystem_", "mcp_github_", "mcp_time_"):
@@ -103,7 +103,7 @@ def test_native_mcp_reference_matches_runtime_interpolation():
     credential example, so pin the contract the way the timeout test does:
     against the runtime source, not a copy of it.
     """
-    source = (REPO / "tools" / "mcp_tool.py").read_text(encoding="utf-8")
+    source = (REPO / "tools" / "mcp_tool_config.py").read_text(encoding="utf-8")
     assert "def _interpolate_env_vars(" in source, (
         "the runtime no longer resolves ${VAR} placeholders in MCP configs"
     )

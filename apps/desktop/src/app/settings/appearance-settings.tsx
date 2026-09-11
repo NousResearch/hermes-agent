@@ -24,7 +24,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
@@ -48,6 +48,7 @@ import {
   TRANSLUCENCY_STEP,
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
+import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -402,10 +403,11 @@ export function AppearanceSettings() {
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
+  const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
-  const retiredTips = useStore($retiredTips)
+  const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -745,6 +747,24 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              // Same peek as the window lever: the bubble being tuned sits
+              // behind this overlay, so the overlay ghosts while the hand is
+              // on the slider.
+              <div className="flex items-center gap-3" data-translucency-peek-scope="">
+                <TranslucencySlider
+                  label={a.userBubbleTitle}
+                  onChange={setUserBubbleTransparency}
+                  value={userBubbleTransparency}
+                />
+              </div>
+            }
+            description={a.userBubbleDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
+            title={a.userBubbleTitle}
+          />
+
+          <ListRow
+            action={
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
@@ -822,9 +842,9 @@ export function AppearanceSettings() {
                   ]}
                   value={tipsEnabled ? 'on' : 'off'}
                 />
-                {/* The ✕ on a tip is permanent, so this is the only way back.
-                    It appears once there is something to bring back. */}
-                {retiredTips.length > 0 && (
+                {/* A tip shows once (✕ or timer), so this is the only way to a
+                    second lap. It appears once there is something to bring back. */}
+                {spentTips > 0 && (
                   <Button
                     onClick={() => {
                       triggerHaptic('selection')
@@ -833,7 +853,7 @@ export function AppearanceSettings() {
                     size="inline"
                     variant="text"
                   >
-                    {a.tipsReset(retiredTips.length)}
+                    {a.tipsReset(spentTips)}
                   </Button>
                 )}
               </div>

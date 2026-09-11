@@ -10,10 +10,8 @@ Covers:
 
 import pytest
 
-from hermes_cli.models import (
-    clamp_reasoning_effort_to_supported,
-    parse_openrouter_reasoning_capabilities,
-)
+from hermes_cli.models import clamp_reasoning_effort_to_supported
+from hermes_cli.models_reasoning_caps import parse_openrouter_reasoning_capabilities
 
 
 class TestParseReasoningCapabilities:
@@ -121,7 +119,7 @@ class TestOpenRouterModelReasoningCapabilities:
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
 
     def test_known_model(self, monkeypatch):
-        from hermes_cli.models import openrouter_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
         self._prime_cache(monkeypatch, {
             "nvidia/nemotron-3-ultra": {
                 "supports_reasoning": True,
@@ -133,19 +131,19 @@ class TestOpenRouterModelReasoningCapabilities:
         assert caps["supports_reasoning"] is True
 
     def test_unlisted_model_returns_none(self, monkeypatch):
-        from hermes_cli.models import openrouter_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
         self._prime_cache(monkeypatch, {"a/b": {"supports_reasoning": True}})
         assert openrouter_model_reasoning_capabilities("private/custom") is None
 
     def test_empty_model_returns_none(self, monkeypatch):
-        from hermes_cli.models import openrouter_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
         self._prime_cache(monkeypatch, {"a/b": {"supports_reasoning": True}})
         assert openrouter_model_reasoning_capabilities("") is None
         assert openrouter_model_reasoning_capabilities(None) is None
 
     def test_catalog_unreachable_returns_none_and_rate_limits(self, monkeypatch):
         import hermes_cli.models as models_mod
-        from hermes_cli.models import openrouter_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
@@ -163,7 +161,7 @@ class TestOpenRouterModelReasoningCapabilities:
 
     def test_cache_only_by_default_never_fetches(self, monkeypatch):
         import hermes_cli.models as models_mod
-        from hermes_cli.models import openrouter_model_reasoning_capabilities
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)

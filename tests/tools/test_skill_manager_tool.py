@@ -437,6 +437,57 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
+    def test_create_file_content_names_rejected_key(self, tmp_path):
+        """#101418 — create with write_file's key must name it and the fix."""
+        with _skill_dir(tmp_path):
+            batch = json.loads(skill_manage(
+                action="", name="",
+                operations=[{
+                    "action": "create",
+                    "name": "x",
+                    "file_content": VALID_SKILL_CONTENT,
+                }],
+            ))
+            flat = json.loads(skill_manage(
+                action="create",
+                name="y",
+                file_content=VALID_SKILL_CONTENT,
+            ))
+            missing = json.loads(skill_manage(action="create", name="z"))
+
+        assert batch["success"] is False
+        assert "'file_content' is only valid for action='write_file'" in batch["error"]
+        assert "for 'create' pass 'content'" in batch["error"]
+        assert "rolled back" in batch["error"]
+        assert flat["success"] is False
+        assert "'file_content' is only valid for action='write_file'" in flat["error"]
+        assert "for 'create' pass 'content'" in flat["error"]
+        assert missing["success"] is False
+        assert "content is required for 'create'" in missing["error"]
+        assert "file_content" not in missing["error"]
+
+    def test_write_file_content_names_rejected_key(self, tmp_path):
+        """#101418 — write_file with create's key must name it and the fix."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            crossed = json.loads(skill_manage(
+                action="write_file",
+                name="my-skill",
+                file_path="references/a.md",
+                content="hello",
+            ))
+            missing = json.loads(skill_manage(
+                action="write_file",
+                name="my-skill",
+                file_path="references/a.md",
+            ))
+
+        assert crossed["success"] is False
+        assert "'content' is only valid for action='create' or 'patch'" in crossed["error"]
+        assert "for 'write_file' pass 'file_content'" in crossed["error"]
+        assert missing["success"] is False
+        assert missing["error"] == "file_content is required for 'write_file'."
+
     def test_successful_mutations_emit_lifecycle_with_correlation(self, tmp_path):
         with (
             _skill_dir(tmp_path),

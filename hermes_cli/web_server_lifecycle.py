@@ -75,7 +75,9 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    if result.returncode == 1 and not marker:
+    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
+    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
+    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 
@@ -278,20 +280,25 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            actual_marker = probe(int(desktop_pid))
-            if _parent_start_markers_match(actual_marker, expected_start_marker):
-                return False
-            if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+            try:
+                actual_marker = probe(int(desktop_pid))
+            except ProcessLookupError:
                 return True
-            # Inconclusive marker: degrade to PID liveness instead of exiting.
+            except Exception:
+                actual_marker = None
+
+            if actual_marker is not None:
+                if _parent_start_markers_match(actual_marker, expected_start_marker):
+                    return False
+                if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+                    return True
+                # Inconclusive marker: degrade to PID liveness instead of exiting.
 
         if pid_exists is None:
             from gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
-    except ProcessLookupError:
-        return True
     except Exception:
         return False
 

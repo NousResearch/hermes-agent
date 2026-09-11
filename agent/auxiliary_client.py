@@ -5095,7 +5095,7 @@ def _fallback_supports_task(task: Optional[str], provider: str, model: Optional[
     """Reject fallback candidates known not to accept a vision request."""
     if task != "vision":
         return True
-    if (provider or "").strip().lower() in _PROVIDERS_WITHOUT_VISION:
+    if _normalize_aux_provider(provider) in _PROVIDERS_WITHOUT_VISION:
         return False
     return _main_model_supports_vision(provider, model)
 

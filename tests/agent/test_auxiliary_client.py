@@ -2005,6 +2005,19 @@ class TestTryMainAgentModelFallback:
         assert result == (None, None, "")
         mock_resolve.assert_not_called()
 
+    @pytest.mark.parametrize("provider", ["kimi", "moonshot-cn"])
+    def test_vision_skips_text_only_main_model_provider_aliases(self, provider):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value=provider), \
+             patch("agent.auxiliary_client._read_main_model", return_value="kimi-k2.5"), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=True), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            result = _try_main_agent_model_fallback("nous", task="vision", reason="rate limit")
+
+        assert result == (None, None, "")
+        mock_resolve.assert_not_called()
+
 
 
 

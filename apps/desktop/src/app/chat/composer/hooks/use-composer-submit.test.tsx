@@ -173,8 +173,23 @@ describe('useComposerSubmit external request routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('dispatches a busy hidden request and drops it on rejection', async () => {
+  it.each([true, false])('steers a busy hidden request like a visible one and queues only on rejection (%s)', async accepted => {
     const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
+    onSteer.mockResolvedValue(accepted)
+
+    await act(async () => {
+      requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
+    })
+
+    expect(onSteer).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(accepted ? [] : ['[setup] links opened'])
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+    expect(stashAt).not.toHaveBeenCalled()
+  })
+
+  it('drops an idle hidden request the gateway rejects instead of restoring it into the draft', async () => {
+    const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: false })
     onSubmit.mockResolvedValue(false)
 
     await act(async () => {

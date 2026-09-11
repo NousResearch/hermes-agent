@@ -727,6 +727,7 @@ function PlanPanel({ plan, onClose, onApply, applying, needsUnlock, unlock, setU
         ) : (
           <div className="fm-note fm-note--ok">{changed.length ? `${changed.length} config file(s) will change: ${changed.join(", ")}.` : "Nothing in the configs changes (registry notes/decisions only)."} Running workers, gateways and cron pick it up on their next call — no restart.</div>
         )}
+        {needsUnlock && !(plan.errors && plan.errors.length) ? <div className="fm-note fm-note--warn"><b>Smith is locked.</b> This change touches the overwatch agent — tick <b>Unlock Smith for this apply</b> below to allow it.</div> : null}
         {plan.warnings && plan.warnings.length ? <details className="fm-note fm-note--warn"><summary>{plan.warnings.length} warning(s)</summary>{plan.warnings.map((w, i) => <div key={i}>{w}</div>)}</details> : null}
         <div className="fm-plan-list">
           {Object.entries(plan.plan || {}).filter(([, v]) => v.changes.length).map(([p, v]) => (
@@ -791,10 +792,13 @@ function ModelsPage() {
   const needsUnlock = !!(dirty && base.agents && base.agents.root && base.agents.root.locked && !same(base.agents.root, draft.agents.root));
 
   const say = (msg, tone) => { setFlash({ msg, tone }); setTimeout(() => setFlash(null), 6000); };
-  const body = () => JSON.stringify({ doc: draft, base_revision: Number((baseRef.current || {}).revision || 0), unlock: unlock ? ["root"] : [], summary });
-  const preview = () => { setBusy(true); fetchJSON(`${API}/plan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: body() })
+  // Preview always dry-runs a Smith change WITH the unlock so you can see the diff; Apply sends the unlock only
+  // when the "Unlock Smith for this apply" box is ticked.
+  const body = (isPreview) => JSON.stringify({ doc: draft, base_revision: Number((baseRef.current || {}).revision || 0),
+    unlock: (isPreview ? needsUnlock : unlock) ? ["root"] : [], summary });
+  const preview = () => { setBusy(true); fetchJSON(`${API}/plan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: body(true) })
     .then((r) => { setPlan(r); setBusy(false); }).catch((e) => { setBusy(false); say(String(e.message || e), "bad"); }); };
-  const apply = () => { setBusy(true); fetchJSON(`${API}/apply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: body() })
+  const apply = () => { setBusy(true); fetchJSON(`${API}/apply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: body(false) })
     .then((r) => {
       setBusy(false);
       if (r.ok) { setPlan(null); setSummary(""); setUnlock(false); baseRef.current = null; setDraft(null);

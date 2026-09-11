@@ -89,3 +89,17 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     assert exc_info.value.code == 78
     remove_pid.assert_called_once_with()
     release_lock.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_instance_refusal_reaches_stderr(capsys):
+    """The duplicate-instance refusal must go to stderr: a service-manager-supervised gateway
+    (launchd KeepAlive, systemd Restart=) drops stdout unless StandardOutPath is wired, while
+    stderr is the stream supervisor wrappers collect and timestamp. A stdout-only refusal is a
+    silent exit-1 that the supervisor interprets as transient and retries forever (#105781)."""
+    refused = await gateway_run._start_gateway_replace_existing_instance(4242, replace=False)
+    captured = capsys.readouterr()
+
+    assert refused is False
+    assert "Gateway already running (PID 4242)" in captured.err
+    assert captured.out == ""

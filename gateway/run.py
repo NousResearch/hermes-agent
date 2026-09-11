@@ -4834,11 +4834,16 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
             "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
             "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
             existing_pid, hermes_home)
+        # stderr, not stdout: a service-manager-supervised gateway (launchd KeepAlive, systemd
+        # Restart=) drops stdout unless StandardOutPath is wired, while stderr is the stream the
+        # supervisor wrappers collect — a stdout-only refusal reads as a silent exit-1 crash-loop
+        # (#105781).
         print(
             f"\n❌ Gateway already running (PID {existing_pid}).\n"
             f"   Use 'hermes gateway restart' to replace it,\n"
             f"   or 'hermes gateway stop' to kill it first.\n"
-            f"   Or use 'hermes gateway run --replace' to auto-replace.\n")
+            f"   Or use 'hermes gateway run --replace' to auto-replace.\n",
+            file=sys.stderr)
         return False
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).

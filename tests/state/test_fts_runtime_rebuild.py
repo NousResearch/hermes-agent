@@ -787,13 +787,13 @@ class TestRuntimeFtsRebuild:
         finally:
             reopened.close()
 
-    def test_same_holder_set_across_futile_window_names_holder_and_gateway_safe_remedy(
+    def test_same_holder_set_across_futile_window_ends_the_deferral(
         self, db, tmp_path, monkeypatch, caplog
     ):
-        """#106393: a supervised peer never satisfies the orphan reap, so the generic
-        'remains blocked ... with the gateway stopped' escalation repeats forever. Once the SAME
-        PID set has blocked the futile window, the record is marked futile, the escalation names
-        the holder's cmdline and a remedy runnable from inside the gateway, and doctor says so."""
+        """#106393: a supervised peer never satisfies the orphan reap, so deferring to it repeats
+        forever. Short of the futile window the SAME PID set still defers; once it has blocked the
+        whole window the record is marked futile, doctor names the holder, and the deferral ENDS
+        (False) so the rebuild proceeds under the admission flock instead of waiting again."""
         if not db._fts_enabled:
             pytest.skip("FTS5 unavailable in this build")
         db_path = tmp_path / "state.db"
@@ -841,19 +841,85 @@ class TestRuntimeFtsRebuild:
             assert "futile" not in doctor_blob()
 
             clock[0] += futile_seconds
-            caplog.clear()
-            assert reopened._recover_stale_fts(cursor, legacy=False, timeout_seconds=0.0) is False
+            holders = reopened._foreign_state_db_holders()
+            assert reopened._defer_stale_fts_for_holders(cursor, holders) is False
             reopened._conn.commit()
             record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
             assert record.get("futile") is True and record["holder_pids"] == [4242]
-            futile_lines = [r for r in caplog.records if "waiting is futile" in r.getMessage()]
-            assert len(futile_lines) == 1 and futile_lines[0].levelno == logging.ERROR
-            msg = futile_lines[0].getMessage()
-            assert "pid 4242: python -m hermes_cli.main serve" in msg
-            assert "Stop ONLY the other holder" in msg and "with the gateway stopped" not in msg
-            blob = doctor_blob()
-            assert "4242" in blob and "waiting is futile" in blob and "stop only" in blob
-            assert "gateway stopped" not in blob
+            assert "4242" in doctor_blob()
+        finally:
+            reopened.close()
+
+    def _seed_futile_holders(self, db, tmp_path, monkeypatch, holders):
+        """Stale FTS plus a deferral record already past the futile window for *holders*;
+        the rebuild body is stubbed so the assertion is about admission, not SQLite's FTS5 build."""
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db, "rebuild_fts", lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_REBUILD_DEFERRAL_KEY, json.dumps({
+                "first_seen": 1.0, "last_seen": 1.0, "attempts": 500,
+                "holder_pids": sorted({pid for pid, _path in holders if pid > 0}),
+                "holders_since": 1.0, "holders_attempts": 500,
+            })),
+        )
+        raw.commit()
+        raw.close()
+        monkeypatch.setattr(SessionDB, "_foreign_state_db_holders", lambda self: list(holders))
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders", lambda self, h, *, min_age_seconds: [],
+        )
+        monkeypatch.setattr(
+            hermes_state_schema.time, "time", lambda: 1.0 + 100 * hermes_state_schema._FTS_HOLDER_FUTILE_SECONDS,
+        )
+        rebuilds = []
+
+        def fake_locked_rebuild(self, cursor, *, legacy):
+            rebuilds.append(legacy)
+            self._fts_stale = False
+            return True
+
+        monkeypatch.setattr(SessionDB, "_recover_stale_fts_locked", fake_locked_rebuild)
+        return db_path, rebuilds
+
+    def test_futile_live_permanent_holder_admits_the_rebuild(self, db, tmp_path, monkeypatch):
+        """#106393: a supervised peer never leaves and is never reaped; once the SAME live PID set
+        has blocked the futile window the deferral must end so the rebuild runs under the flock."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path, rebuilds = self._seed_futile_holders(
+            db, tmp_path, monkeypatch, [(4242, str(tmp_path / "state.db-wal"))],
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert rebuilds == [False]
+            assert reopened._fts_stale is False
+        finally:
+            reopened.close()
+
+    def test_futile_uninspectable_holder_keeps_deferring(self, db, tmp_path, monkeypatch):
+        """A pid <= 0 holder is the 'could not prove quiescence' sentinel: the rebuild flock cannot
+        serialise against it, so even past the futile window the deferral fails closed."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path, rebuilds = self._seed_futile_holders(
+            db, tmp_path, monkeypatch,
+            [(4242, str(tmp_path / "state.db-wal")), (-1, str(tmp_path / "state.db"))],
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert rebuilds == []
+            assert reopened._fts_stale is True
+            assert json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) or "{}").get("futile") is True
         finally:
             reopened.close()
 

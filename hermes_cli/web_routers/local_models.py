@@ -574,23 +574,156 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
 
 @router.get("/api/local-models/catalog")
 def local_models_catalog():
-    """Every entry answers up front: how big is the download, will it fit, what context/speed shape will I
-    get. The row advertises the BEST build for this machine (highest quality fully on GPU at the 64K floor;
-    else the smallest that works, spilled and priced). No entry is hidden; unaffordable models show WHY.
-    Sync def: blocking I/O -> threadpool."""
-    # Serve the in-memory catalog; a TTL-gated background fetch lands new entries for the next call
-    # (day-0 models without an app release).
-    catalog.refresh_catalog_soon()
-    # Planning budget: machine capacity, not live-free VRAM — a loaded model must not make every row unaffordable.
-    budget = hardware.probe_budget(planning=True)
-    # The reason key ships with the row so the Recommended badge's tooltip is the branch that actually
-    # fired, not a re-derivation that can drift.
-    recommended, recommended_reason = catalog.recommended_entry(budget, _eligible_entries()) or (None, None)
-    recommended_id = recommended.id if recommended is not None else None
-    # Completeness-checked staging (split parts all present) — same answer the picker and router see, so a
-    # mid-download model never reads as downloaded.
-    staged_ids = set(bootstrap.staged_model_ids())
-    return {"models": [_catalog_row(e, budget, recommended_id, recommended_reason, staged_ids) for e in catalog.CATALOG]}
+    """Every entry answers the user's three questions up front: how big is
+    the download, will it fit, and what context/speed shape will I get —
+    computed from the catalog's measured numbers + this machine's
+    budget. Hardware-aware quant selection: the row advertises the BEST
+    build for this machine (highest quality that runs fully on the GPU at
+    the 64K floor; else the smallest that works, spilled and priced). No
+    entry is hidden; unaffordable models show WHY. Sync def on purpose:
+    probe_budget + catalog I/O block — threadpool, not loop."""
+    from hermes_cli.local_runtime.catalog import (
+        CATALOG,
+        display_decode_tok_s,
+        predicted_decode_tok_s,
+        recommended_entry,
+        refresh_catalog_soon,
+        select_variant,
+    )
+    from hermes_cli.local_runtime.context_policy import (
+        RUNTIME_OVERHEAD_BYTES,
+        initial_window,
+        ub_logits_bytes,
+    )
+    from hermes_cli.local_runtime.estimator import PhysicsRefusal
+    from hermes_cli.local_runtime.hardware import probe_budget
+
+    # This request serves the catalog already in memory; a TTL-gated
+    # background fetch from the repo lands new entries for the next one
+    # (day-0 models reach the pane without an app release).
+    refresh_catalog_soon()
+
+    # Planning budget: price against machine capacity, not live-free VRAM.
+    # A loaded model must not make the catalog call every row unaffordable.
+    budget = probe_budget(planning=True)
+    # The default pick for THIS machine: quality-ranked, fit- and
+    # speed-gated (recommended_entry). Engine-gated entries can't be
+    # activated today, so they can't be the recommendation either. The
+    # reason key ships with the row — the Recommended badge's tooltip is
+    # the branch that actually fired, not a re-derivation that can drift.
+    eligible = tuple(e for e in CATALOG if not _engine_too_old(e.min_engine))
+    picked = recommended_entry(budget, eligible)
+    recommended = picked[0].id if picked is not None else None
+    recommended_reason = picked[1] if picked is not None else None
+    # Completeness-checked staging (split parts all present) — the same
+    # answer the picker and the router see, so a mid-download model never
+    # reads as downloaded here.
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    staged_ids = set(staged_model_ids())
+    entries = []
+    for entry in CATALOG:
+        choice = select_variant(entry, budget)
+        # Any variant of this family already on disk counts as downloaded
+        # (split variants stage under their first part).
+        downloaded_variant = next(
+            (v for v in entry.variants if v.model_id in staged_ids), None)
+        row: Dict[str, Any] = {
+            "id": entry.id,
+            "display_name": entry.display_name,
+            "description": entry.description,
+            "native_context": entry.n_ctx_train,
+            "native_context_label": f"{entry.n_ctx_train // 1024}K",
+            "recommended": entry.id == recommended,
+            "recommended_reason": recommended_reason if entry.id == recommended else None,
+            "downloaded": downloaded_variant is not None,
+            "downloaded_model_id": downloaded_variant.model_id if downloaded_variant else None,
+            "downloaded_quant": downloaded_variant.quant if downloaded_variant else None,
+            "mtp": entry.mtp,
+            "vision": entry.mmproj is not None,
+            # Day-0 architectures need the llama.cpp release where their
+            # support landed. True gates download/activate in the pane
+            # until the engine updates; the row still renders (visible +
+            # explained beats hidden).
+            "needs_engine": _engine_too_old(entry.min_engine),
+            "min_engine": entry.min_engine or None,
+        }
+        if choice is None:
+            smallest = min(entry.variants, key=lambda v: v.size_bytes)
+            smallest_total = entry.download_bytes(smallest)
+            speed = display_decode_tok_s(
+                predicted_decode_tok_s(entry, smallest, budget, spilled=True))
+            row.update({
+                "fits": False,
+                "size_bytes": smallest_total,
+                "size_label": _human_gb(smallest_total),
+                "fit_summary": "Needs more memory than this machine has",
+                "fit_detail": (f"even the most compact build ({smallest.quant}, "
+                               f"{_human_gb(smallest_total)}) exceeds GPU + system memory"),
+                # Still show the hypothetical host-memory decode estimate so
+                # an oversized model is comparable, while the red fit pill
+                # remains the authoritative runnable/not-runnable signal.
+                "predicted_tok_s": speed,
+                "predicted_tok_s_label": f"~{speed} tok/s",
+            })
+            entries.append(row)
+            continue
+
+        variant = choice.variant
+        profile = entry.profile(variant)
+        # Same overhead the launch decision prices (runtime buffers +
+        # vision projector + the microbatch/MTP logits buffers): the row
+        # must advertise the window the model will actually get, not a
+        # paper number the server's own fit then shaves down.
+        overhead = (RUNTIME_OVERHEAD_BYTES
+                    + (entry.mmproj.size_bytes if entry.mmproj else 0)
+                    + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
+        decision = initial_window(profile, budget, overhead_bytes=overhead)
+        download_total = entry.download_bytes(variant)
+        speed = display_decode_tok_s(
+            predicted_decode_tok_s(entry, variant, budget, spilled=bool(decision.spilled)))
+        row.update({
+            "fits": True,
+            "model_id": variant.model_id,
+            "quant": variant.quant,
+            "quant_validated": variant.validated,
+            "size_bytes": download_total,
+            "size_label": _human_gb(download_total),
+            "variant_count": len(entry.variants),
+            # The displayed value is intentionally the same value used for
+            # the UI tone; the estimate is only precise to a 5 tok/s band.
+            "predicted_tok_s": speed,
+            "predicted_tok_s_label": f"~{speed} tok/s",
+        })
+        if choice.reason_key == "best-large-window":
+            row["quant_reason"] = (
+                f"Recommended build ({variant.quant}) — the quant class this "
+                "engine is optimized for; runs fully on your GPU with a "
+                "large context window")
+        elif choice.reason_key == "best-fits":
+            row["quant_reason"] = (
+                f"Recommended build ({variant.quant}) — the quant class this "
+                "engine is optimized for; runs fully on your GPU")
+        else:
+            row["quant_reason"] = (
+                f"Compact build sized for this machine ({variant.quant}) — "
+                "larger than GPU memory, runs slower")
+        if not isinstance(decision, PhysicsRefusal):
+            row["start_window"] = decision.window
+            row["start_window_label"] = f"{decision.window // 1024}K"
+            row["spilled"] = decision.spilled
+            if decision.window >= entry.n_ctx_train:
+                shape = f"runs at its full {row['native_context_label']} context"
+            else:
+                shape = (f"starts at {row['start_window_label']} and grows toward "
+                         f"{row['native_context_label']} as you use it")
+            if decision.spilled:
+                shape += " (larger than your GPU memory — runs slower)"
+            row["fit_summary"] = shape
+        else:
+            row["fit_summary"] = row["quant_reason"]
+        entries.append(row)
+    return {"models": entries}
 
 
 # ── runtime install (job) ────────────────────────────────────

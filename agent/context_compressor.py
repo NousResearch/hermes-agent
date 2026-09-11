@@ -1555,13 +1555,31 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
-def resolve_model_threshold(model: str, model_thresholds: dict[str, float] | None, default: float) -> float:
-    """Per-model threshold: longest matching ``model_thresholds`` substring key wins, else ``default``.
-    Module-level so plugin context engines can reuse it."""
+def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
+    """Match rank for one ``model_thresholds`` key, or None when it does not apply.
+    ``"<provider>:<substr>"`` keys apply only on that provider; bare keys apply on every route.
+    The same slug means different windows on different routes (Codex caps Astra at 272K; OpenRouter
+    serves the full window), so a bare ``astra: 0.85`` written for Codex silently leaks everywhere.
+    Rank = (substring length, scoped): the most specific model match wins, scope breaks ties."""
+    scope, sep, substr = key.partition(":")
+    if not sep:
+        return (len(key), 0) if key in model else None
+    return (len(substr), 1) if scope.strip().lower() == provider and substr in model else None
+
+
+def resolve_model_threshold(
+    model: str, model_thresholds: dict[str, float] | None, default: float, provider: str = "",
+) -> float:
+    """Per-model threshold: longest matching ``model_thresholds`` key wins, else ``default``.
+    Keys are substrings of the model name, optionally provider-scoped as ``"<provider>:<substr>"``
+    (a scoped key outranks a bare one of the same substring). Module-level so plugin context
+    engines can reuse it."""
     if not model_thresholds or not model:
         return default
-    best_key = max((key for key in model_thresholds if key in model), key=len, default="")
-    return float(model_thresholds[best_key]) if best_key else default
+    provider = (provider or "").strip().lower()
+    ranked = ((_model_threshold_key_rank(key, model, provider), key) for key in model_thresholds)
+    best = max(((rank, key) for rank, key in ranked if rank is not None), default=None)
+    return float(model_thresholds[best[1]]) if best else default
 
 
 def _memory_provider_section(memory_context: str) -> str:
@@ -2169,7 +2187,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.context_length = context_length
         # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
         _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct)
+        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct, provider)
         self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
@@ -2295,7 +2313,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
         self._config_threshold_percent = threshold_percent
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent)
+        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)

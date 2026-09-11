@@ -157,6 +157,32 @@ describe('useSlashCompletions', () => {
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
   })
 
+  it('shows backend documentation for wisdom subcommands', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : {
+              replace_from: 8,
+              items: [
+                {
+                  text: 'installed',
+                  display: 'installed',
+                  meta: 'List and manage skills installed on this device'
+                }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const [installed] = await completions(api, 'wisdom ')
+
+    expect(installed?.label).toBe('installed')
+    expect(installed?.description).toBe('List and manage skills installed on this device')
+    expect((installed?.metadata as { command?: string })?.command).toBe('/wisdom installed')
+  })
+
   it('keeps a registry command in Commands even when the desktop table has no row', async () => {
     const request = vi.fn().mockImplementation((method: string) =>
       Promise.resolve(

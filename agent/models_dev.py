@@ -112,8 +112,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "moonshot": "kimi-for-coding", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
-    "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
-    "ai-gateway": "vercel", "opencode-zen": "opencode",
+    "deepinfra": "deepinfra", "alibaba": "alibaba", "qwen-oauth": "alibaba",
+    "copilot": "github-copilot", "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     # opencode-free is Zen-hosted (hermes_cli/models.py) and models.dev's "opencode" catalog lists
     # its *-contributor-free SKUs; without this alias every opencode-free lookup missed models.dev.

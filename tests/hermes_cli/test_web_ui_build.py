@@ -419,3 +419,154 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+class TestNpmCiRetryOnInstallScriptFailure:
+    """Teknium's review (2026-07-14) flagged that the retry path must
+    preserve the deterministic contract:
+
+    1. When ``npm ci`` fails with an install-script error, retry
+       ``npm ci --ignore-scripts`` (NOT ``npm install --ignore-scripts`` —
+       the previous version mutated committed lockfiles).
+    2. Every subprocess call (initial + retry) must use ``env=run_env``
+       (the ``CI=1``-forced env), not the caller's raw env. The previous
+       version used ``env=env`` on the retry, breaking the CI=1 invariant.
+    """
+
+    def _failed_ci(self):
+        import subprocess
+        return subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="info run electron-winstaller@5.4.0 install",
+        )
+
+    def test_npm_ci_install_script_failure_retries_npm_ci_with_ignore_scripts(self, tmp_path):
+        """Lockfile-present path: install-script failure on `npm ci` ->
+        retry `npm ci --ignore-scripts`, NOT `npm install --ignore-scripts`."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail = self._failed_ci()
+        ci_retry_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_web_build.subprocess.run", side_effect=[ci_fail, ci_retry_ok]) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        assert mock_run.call_count == 2
+        retry_args, _ = mock_run.call_args_list[1]
+        retry_cmd = retry_args[0]
+        assert retry_cmd[:2] == ["/usr/bin/npm", "ci"]
+        assert "--ignore-scripts" in retry_cmd
+        assert "install" not in retry_cmd[1]
+
+    def test_npm_ci_retry_uses_run_env_with_ci_1(self, tmp_path):
+        """The retry's env must equal `run_env` (CI=1 forced), not the caller's raw env."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail = self._failed_ci()
+        ci_retry_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_web_build.subprocess.run", side_effect=[ci_fail, ci_retry_ok]) as mock_run:
+            _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                env={"PYTHON": "/nix/store/python"},
+            )
+
+        _, retry_kwargs = mock_run.call_args_list[1]
+        assert retry_kwargs["env"]["CI"] == "1"
+
+
+
+    def test_npm_ci_non_script_failure_skips_retry_and_falls_to_install(self, tmp_path):
+        """If `npm ci` fails for a NON-install-script reason (lockfile
+        conflict, network error, etc.), do NOT retry with --ignore-scripts.
+        Fall through directly to `npm install`."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail_non_script = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="", stderr="npm ERR! code E405 Lockfile has conflict entries",
+        )
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_web_build.subprocess.run", side_effect=[ci_fail_non_script, install_ok]) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        assert mock_run.call_count == 2
+        install_args, _ = mock_run.call_args_list[1]
+        install_cmd = install_args[0]
+        assert install_cmd[:2] == ["/usr/bin/npm", "install"]
+        assert "--ignore-scripts" not in install_cmd
+
+    def test_npm_install_fallback_also_retries_with_ignore_scripts(self, tmp_path):
+        """The `npm install` fallback (lockfile-out-of-sync path) also
+        retries with --ignore-scripts on install-script failure. The retry
+        must use run_env, not the caller's raw env."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail_non_script = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="", stderr="lockfile out of sync",
+        )
+        install_fail_script = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="", stderr="info run electron-winstaller@5.4.0 install",
+        )
+        install_retry_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch(
+            "hermes_cli.main_web_build.subprocess.run",
+            side_effect=[ci_fail_non_script, install_fail_script, install_retry_ok],
+        ) as mock_run:
+            result = _run_npm_install_deterministic(
+                "/usr/bin/npm", web_dir, env={"PYTHON": "/nix/store/python"},
+            )
+
+        assert result.returncode == 0
+        assert mock_run.call_count == 3
+        retry_call = mock_run.call_args_list[2]
+        retry_args, retry_kwargs = retry_call.args, retry_call.kwargs
+        retry_cmd = retry_args[0]
+        assert retry_cmd[:2] == ["/usr/bin/npm", "install"]
+        assert "--ignore-scripts" in retry_cmd
+        assert retry_kwargs["env"]["CI"] == "1"
+        assert retry_kwargs["env"]["PYTHON"] == "/nix/store/python"
+
+
+class TestLooksLikeInstallScriptFailure:
+    """Tests for _looks_like_install_script_failure — detection heuristic."""
+
+    def _result(self, stderr: str = "", returncode: int = 1):
+        import subprocess
+        return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+
+    def test_info_run_pattern(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('info run electron-winstaller@5.4.0 install')) is True
+
+    def test_eagain_spawn_pattern(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('npm error spawn sh EAGAIN')) is True
+
+    def test_err_script_pattern(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! command sh -c node-gyp rebuild')) is True
+
+    def test_network_error_returns_false(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code ECONNRESET')) is False
+
+    def test_auth_failure_returns_false(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code E401\nnpm ERR! Unable to authenticate')) is False
+
+    def test_lockfile_mismatch_returns_false(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code E405\nnpm ERR! Lockfile has conflict entries')) is False
+
+    def test_empty_stderr_returns_false(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result()) is False
+
+    def test_successful_result_returns_false(self):
+        from hermes_cli.main_web_build import _looks_like_install_script_failure as check
+        assert check(self._result(returncode=0)) is False
+
+

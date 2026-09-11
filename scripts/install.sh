@@ -1512,20 +1512,32 @@ clone_repo() {
                 autostash_ref="stash@{0}"
             fi
 
-            # Fetch only the target branch. A bare `git fetch origin` pulls
-            # every ref, and this repo carries thousands of auto-generated
-            # branches — on a non-single-branch checkout that turns each update
-            # into a multi-minute download that can stall the installer.
-            git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+            local branch_ref_status=0
+            git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null || branch_ref_status=$?
+            if [ "$branch_ref_status" -eq 0 ]; then
+                # Fetch only the target branch. A bare `git fetch origin` pulls
+                # every ref, and this repo carries thousands of auto-generated
+                # branches — on a non-single-branch checkout that turns each update
+                # into a multi-minute download that can stall the installer.
+                git remote set-branches origin "$BRANCH" 2>/dev/null || true
+                git fetch origin "$BRANCH"
+                git checkout "$BRANCH"
+                # Managed installs should follow origin/$BRANCH exactly. If the
+                # checkout has diverged (or has local-only commits), ff-only pull
+                # cannot succeed — mirror ``hermes update`` and reset to the
+                # fetched remote so bootstrap/install can recover.
+                if ! git pull --ff-only origin "$BRANCH"; then
+                    log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                    git reset --hard "origin/$BRANCH"
+                fi
+            elif [ "$branch_ref_status" -eq 2 ]; then
+                # A fetch without a destination can leave a tag only in
+                # FETCH_HEAD on older Git versions. Materialize the ref and use
+                # a detached checkout, matching the install.ps1 tag path.
+                git fetch origin "refs/tags/${BRANCH}:refs/tags/${BRANCH}"
+                git checkout --detach "refs/tags/$BRANCH"
+            else
+                return "$branch_ref_status"
             fi
 
             if [ -n "$autostash_ref" ]; then

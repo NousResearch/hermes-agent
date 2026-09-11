@@ -234,6 +234,64 @@ class _KanbanDispatcher:
                         conn.close()
         return False
 
+    def ready_breakdown(self) -> dict:
+        """Classify why ready tasks are not becoming workers (for the stuck alarm).
+
+        Returns ``{"total": n, "capacity_capped": n, "spawn_rejected": n,
+        "provider_failed": n, "unclassified": n, "samples": {...}}``. On
+        2026-09-10 the raw alarm fired every 5 min for two hours while the
+        real causes were three malformed worktree cards (spawn rejected),
+        workers dying on Azure 429 (provider failure) and the per-profile cap;
+        a raw count hides which one it is. Capacity and provider lanes are not
+        "stuck": the caller excludes them from the alarm streak.
+        """
+        out = {"total": 0, "capacity_capped": 0, "spawn_rejected": 0, "provider_failed": 0,
+               "unclassified": 0, "samples": {}}
+        per_profile_cap = self.settings.max_in_progress_per_profile
+        global_cap = self.settings.max_in_progress
+        for slug in self._board_slugs():
+            conn = None
+            try:
+                conn = _kbc().connect(board=slug)
+                running = {}
+                for row in conn.execute(
+                    "SELECT assignee, COUNT(*) AS n FROM tasks WHERE status = 'running' GROUP BY assignee"
+                ):
+                    running[row["assignee"] or ""] = row["n"]
+                running_total = sum(running.values())
+                rows = conn.execute(
+                    "SELECT id, assignee, last_failure_error FROM tasks "
+                    "WHERE status = 'ready' AND assignee IS NOT NULL AND assignee != '' "
+                    "AND claim_lock IS NULL"
+                ).fetchall()
+                for row in rows:
+                    out["total"] += 1
+                    err = (row["last_failure_error"] or "").lower()
+                    assignee = row["assignee"] or ""
+                    if global_cap is not None and running_total >= global_cap:
+                        kind = "capacity_capped"
+                    elif per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+                        kind = "capacity_capped"
+                    elif any(m in err for m in ("workspace", "worktree", "unknown skill", "forced skill",
+                                                 "spawn_failed", "not installed for assignee")):
+                        kind = "spawn_rejected"
+                    elif any(m in err for m in ("429", "rate limit", "rate-limited", "quota",
+                                                 "connection error", "upstream unavailable", "503")):
+                        kind = "provider_failed"
+                    else:
+                        kind = "unclassified"
+                    out[kind] += 1
+                    out["samples"].setdefault(kind, []).append(f"{row['id']}@{assignee}")
+            except Exception:
+                continue
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+        for kind, ids in out["samples"].items():
+            out["samples"][kind] = ids[:3]
+        return out
+
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
 

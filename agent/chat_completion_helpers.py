@@ -1872,7 +1872,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
             fb_base_url = str(fb_client.base_url)
-            if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+            from hermes_cli.providers import is_actual_route
+            if is_actual_route(fb_provider, fb_base_url):
+                fb_api_mode = "chat_completions"
+            elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                 fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
@@ -2704,6 +2707,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
+        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)

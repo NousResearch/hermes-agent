@@ -66,7 +66,7 @@ export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(op
 export const openUpdateOverlayFor = (target: UpdateTarget) => {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? checkBackendUpdates() : checkUpdates())
+  void (target === 'backend' ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
 }
 
 export const resetUpdateApplyState = () => {
@@ -100,7 +100,7 @@ function isUpdateToastSnoozed(): boolean {
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
-//     read-only in Settings → Plugins).
+//     read-only in Capabilities → Plugins).
 const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
@@ -386,7 +386,19 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   }
 }
 
-export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
+/**
+ * `force` bypasses every cache (Electron's 24h on-disk cache, the backend's
+ * `.update_check`). Only user-initiated checks pass it — the menu item,
+ * Settings "Check now", opening the overlay. The background poller never does:
+ * each forced check is a real GitHub round trip from every running client.
+ */
+export interface UpdateCheckOptions {
+  force?: boolean
+}
+
+export async function checkBackendUpdates({
+  force = false
+}: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   if (!isRemoteMode() || $backendUpdateChecking.get()) {
     return $backendUpdateStatus.get()
   }
@@ -394,7 +406,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
   $backendUpdateChecking.set(true)
 
   try {
-    const status = mapBackendCheck(await checkHermesUpdate(true))
+    const status = mapBackendCheck(await checkHermesUpdate(force))
     $backendUpdateStatus.set(status)
     maybeNotifyUpdateAvailable(status, 'backend')
 
@@ -415,7 +427,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
   }
 }
 
-export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
+export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge || $updateChecking.get()) {
@@ -425,7 +437,7 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   $updateChecking.set(true)
 
   try {
-    const status = await bridge.check()
+    const status = await bridge.check({ force })
     $updateStatus.set(status)
     maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
@@ -562,7 +574,7 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
-    void checkBackendUpdates()
+    void checkBackendUpdates({ force: true })
     // The update restarted the gateway process, which strands this window's
     // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies
     // without a close event, so connectionState still reads 'open' while every
@@ -823,7 +835,7 @@ async function maybeNudgeClientAfterBackendUpdate(): Promise<void> {
     return
   }
 
-  const status = (await checkUpdates().catch(() => null)) ?? $updateStatus.get()
+  const status = (await checkUpdates({ force: true }).catch(() => null)) ?? $updateStatus.get()
 
   if (!status || status.error || (!status.updateAvailable && (status.behind ?? 0) <= 0)) {
     return
@@ -941,12 +953,12 @@ async function runEverythingUpdate(): Promise<void> {
     // 3. The client last — its apply relaunches or hands off the app, so it
     //    must come after every dispatch above. Skipped when already current.
     //    Re-check rather than trusting `$updateStatus`: the cached value can be
-    //    up to a poll interval (30 min) old and was captured BEFORE the backend
+    //    up to a poll interval (24h) old and was captured BEFORE the backend
     //    update above, so a cached `behind: 0` would skip the client leg and
     //    leave the app stale — the exact failure this flow exists to prevent.
     //    `checkUpdates()` resolves with an error-status rather than rejecting,
     //    so fall back to the pre-flow snapshot when the live check can't answer.
-    const freshClientStatus = await checkUpdates().catch(() => null)
+    const freshClientStatus = await checkUpdates({ force: true }).catch(() => null)
     const clientStatus = freshClientStatus?.error ? cachedClientStatus : (freshClientStatus ?? cachedClientStatus)
 
     if ((clientStatus?.behind ?? 0) > 0 || clientStatus?.updateAvailable) {
@@ -985,9 +997,28 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
-let lastFocusAt = 0
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
+
+// Passive checks run at most once per day per client. The main process and the
+// backend each keep a 24h cache, so a tick or focus that lands inside the window
+// is answered locally — the interval just decides how often we ask.
+export const BACKGROUND_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000
+// Focus re-checks are bounded by the same day-long cadence, tracked here so a
+// user who alt-tabs every minute never turns focus into a poll.
+const FOCUS_RECHECK_KEY = 'hermes.updates.last-passive-check'
+
+function passiveCheckDue(now: number): boolean {
+  const last = Number(storedString(FOCUS_RECHECK_KEY) ?? 0)
+
+  return !Number.isFinite(last) || now - last >= BACKGROUND_UPDATE_CHECK_MS
+}
+
+function runPassiveChecks(): void {
+  persistString(FOCUS_RECHECK_KEY, String(Date.now()))
+  void checkUpdates()
+  void checkBackendUpdates()
+}
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -1002,8 +1033,7 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  void checkUpdates()
-  void checkBackendUpdates()
+  runPassiveChecks()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
@@ -1023,13 +1053,7 @@ export function startUpdatePoller(): void {
   })
 
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(
-    () => {
-      void checkUpdates()
-      void checkBackendUpdates()
-    },
-    30 * 60 * 1000
-  )
+  backgroundTimer = setInterval(runPassiveChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
 
 export function stopUpdatePoller(): void {
@@ -1046,14 +1070,9 @@ export function stopUpdatePoller(): void {
 }
 
 function onFocus() {
-  const now = Date.now()
-
-  if (now - lastFocusAt < 5 * 60 * 1000) {
-    return
-  }
-
-  lastFocusAt = now
-  void checkUpdates()
-  void checkBackendUpdates()
   void refreshDesktopVersion()
+
+  if (passiveCheckDue(Date.now())) {
+    runPassiveChecks()
+  }
 }

@@ -46,7 +46,7 @@ dependencies = [
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
+  "requests==2.34.2",  # CVE-2026-25645; 2.33.0 aarch64 wheel missing _types.py
   "jinja2==3.1.6",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
   # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.

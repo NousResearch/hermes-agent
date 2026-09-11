@@ -3273,6 +3273,9 @@ export const ar = defineLocale({
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
     resumeStrandedBody:
       'فشل الاتصال بهذه الجلسة وتوقفت إعادة المحاولة التلقائية. تأكد من تشغيل البوابة، ثم حاول مجددا.',
+    poolSlotTimeoutBody:
+      'جميع خانات الواجهات الخلفية المحلية للملفات الشخصية مشغولة. زد عدد Warm Bot Backends من الإعدادات ← متقدم، أو أعد المحاولة بعد إزالة واجهة خلفية خاملة.',
+    poolSlotTimeoutOpenSettings: 'فتح الإعدادات المتقدمة',
     resumeRetry: 'إعادة المحاولة',
     nothingToBranch: 'لا يوجد ما يمكن تفريعه',
     branchNeedsChat: 'يحتاج التفريع إلى محادثة',

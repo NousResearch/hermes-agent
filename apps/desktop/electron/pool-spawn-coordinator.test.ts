@@ -114,7 +114,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
   const limit = 12
   const coordinator = new LocalBackendSpawnCoordinator(limit)
   const livePids = new Set<number>()
-  const seenPids = new Set<number>()
+  let completedChildren = 0
   let maxLive = 0
 
   await Promise.all(
@@ -128,7 +128,6 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
 
         assert.ok(child.pid)
         livePids.add(child.pid)
-        seenPids.add(child.pid)
         maxLive = Math.max(maxLive, livePids.size)
 
         await new Promise<void>((resolve, reject) => {
@@ -142,6 +141,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
           })
         })
 
+        completedChildren += 1
         livePids.delete(child.pid)
       } finally {
         release()
@@ -149,7 +149,9 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
     })
   )
 
-  assert.equal(seenPids.size, 100)
+  // Windows may recycle a PID after a short-lived child exits; completion
+  // count, not PID uniqueness, is the invariant this concurrency test owns.
+  assert.equal(completedChildren, 100)
   assert.equal(maxLive, limit)
   assert.equal(livePids.size, 0)
   assert.equal(coordinator.activeCount, 0)

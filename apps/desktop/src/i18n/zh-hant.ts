@@ -3555,6 +3555,9 @@ export const zhHant = defineLocale({
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    poolSlotTimeoutBody:
+      '所有本機設定檔後端插槽目前都在使用中。請在「設定」→「進階」中增加 Warm Bot Backends，或等待閒置後端被移除後重試。',
+    poolSlotTimeoutOpenSettings: '開啟進階設定',
     resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',

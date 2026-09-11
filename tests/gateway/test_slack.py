@@ -227,6 +227,118 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", [
+    "exact", "root_then_exact", "root_only", "empty", "failed", "no_text",
+    "other_author", "missing_author", "conflicting_author", "typed",
+])
+@pytest.mark.parametrize("handoff", [False, True])
+async def test_reaction_target_reaches_inbound_context(adapter, lookup, handoff):
+    """Only the exact fetched message supplies approval text and author provenance."""
+    draft = (
+        ":memo: REVIEW DRAFT\n\n*Repository:* example/project\n"
+        + "Review evidence & validation.\n" * 45
+        + "Draft ID: 12345678-1234-1234-1234-123456789abc\n"
+        + "Literal references: @/tmp/approval-target.md @file:/tmp/approval-target.md\n"
+        + ":white_check_mark: Publish"
+    )
+    target = {
+        "ts": "2000.000002", "thread_ts": "1000.000001", "user": "U_BOT",
+        "text": draft.replace("&", "&amp;") + "\u200b",
+        "blocks": [{"type": "section", "text": {
+            "type": "mrkdwn", "text": draft.replace("*Repository:*", "Repository:"),
+        }}],
+    }
+    root = {"ts": "1000.000001", "user": "U_OTHER", "text": "Parent notification"}
+    if lookup == "no_text":
+        target.pop("text")
+        target.pop("blocks")
+    if lookup in {"other_author", "conflicting_author"}:
+        target["user"] = "U_OTHER"
+    if lookup == "missing_author":
+        target.pop("user")
+    messages = [target]
+    if lookup == "root_then_exact":
+        messages = [root, target]
+    elif lookup == "root_only":
+        messages = [root]
+    elif lookup == "empty":
+        messages = []
+    client = adapter._app.client
+    client.conversations_replies = AsyncMock(return_value={"messages": messages})
+    if lookup == "failed":
+        client.conversations_replies.side_effect = RuntimeError("lookup unavailable")
+    adapter._team_clients = {"T1": client}
+    adapter._team_bot_user_ids = {"T1": "U_BOT"}
+    adapter._channel_team = {"C123": "T1"}
+    adapter.config.extra["reaction_triggers"] = ["white_check_mark"]
+    if handoff:
+        adapter.config.extra["reaction_trigger_target"] = "C_HANDOFF"
+    # Keep the real reaction -> Slack message -> MessageEvent pipeline, with network I/O stubbed.
+    adapter._fetch_thread_context = AsyncMock(return_value="")
+    adapter._fetch_thread_parent_text = AsyncMock(return_value="Parent notification")
+    adapter._collect_thread_root_images = AsyncMock(return_value=([], []))
+    reaction = {
+        "type": "reaction_added", "user": "U123", "reaction": "white_check_mark",
+        "item": {"type": "message", "channel": "C123", "ts": target["ts"]},
+        "event_ts": "3000.000003",
+    }
+    if lookup == "conflicting_author":
+        reaction["item_user"] = "U_BOT"
+    if lookup == "typed":
+        await adapter._handle_slack_message({
+            "type": "message", "user": "U123", "channel": "D123", "channel_type": "im",
+            "text": "reaction:added:✅", "ts": reaction["event_ts"],
+        })
+    else:
+        await adapter._handle_slack_reaction(reaction)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.call_args.args[0]
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {}
+    runner._model = "test-model"
+    runner._base_url = None
+    runner._expand_inbound_context_references = AsyncMock(return_value="[Expanded source text]")
+    result = await runner._prepare_inbound_message_text(
+        event=event, source=event.source, history=[{"role": "assistant", "content": draft}],
+    )
+
+    runner._expand_inbound_context_references.assert_not_awaited()
+    if lookup == "typed":
+        assert result == "reaction:added:✅"
+        assert "Reacted-to message" not in result
+        assert "REVIEW DRAFT" not in result
+        client.conversations_replies.assert_not_awaited()
+        return
+    assert event.reply_to_message_id == target["ts"]
+    assert result.endswith("reaction:added:✅")
+    assert f"message id: {target['ts']}" in result
+    assert "Parent notification" not in result
+    found = lookup not in {"root_only", "empty", "failed"}
+    assert event.source.chat_id == ("C_HANDOFF" if handoff else "C123")
+    assert event.source.thread_id == (None if handoff else target["thread_ts"] if found else target["ts"])
+    if found and lookup != "no_text":
+        assert result.count("REVIEW DRAFT") == 1
+        assert result.count("Draft ID:") == 1
+        assert result.count("Review evidence") == 45
+        assert "@/tmp/approval-target.md @file:/tmp/approval-target.md" in result
+        assert "[Expanded source text]" not in result
+        assert "untrusted source text" in result
+        assert "[End of reacted-to message]" in result
+    else:
+        assert "Reacted-to message unavailable" in result
+        assert "[End of reacted-to message]" not in result
+    own = found and lookup not in {"other_author", "missing_author", "conflicting_author"}
+    assert ("author: this Hermes bot;" in result) == (own and lookup != "no_text")
+    assert event.reply_to_is_own_message is own
+    client.conversations_replies.assert_awaited_once_with(
+        channel="C123", ts=target["ts"], oldest=target["ts"], latest=target["ts"],
+        limit=1, inclusive=True,
+    )
+
+
 class TestBotEventDiagnostics:
     """#30091 — surface upstream filters that drop bot events."""
 
@@ -4761,11 +4873,12 @@ class TestThreadImageContext:
         assert "[image: shelf.jpg]" in rendered
         assert "[file: specs.pdf (application/pdf)]" in rendered
 
+    @pytest.mark.parametrize("suffix", ["", "\u200b"])
     def test_render_message_text_deduplicates_main_section_and_keeps_quote(
-        self, adapter
+        self, adapter, suffix
     ):
         msg = {
-            "text": "<@U_BOT> review `src/app`",
+            "text": "<@U_BOT> review `src/app`" + suffix,
             "blocks": _rich_text_blocks(
                 _rich_text_section(
                     {"type": "user", "user_id": "U_BOT"},
@@ -4780,11 +4893,12 @@ class TestThreadImageContext:
                         )
                     ],
                 },
-            ),
+            ) + [{"type": "section", "text": {"type": "mrkdwn", "text": "*review* src/app"}}],
+            "attachments": [{"text": "review src/app"}],
         }
 
         assert adapter._render_message_text(msg, bot_uid="U_BOT") == (
-            "review `src/app`\n> quoted context"
+            "review `src/app`" + suffix + "\n> quoted context"
         )
 
     def test_render_message_text_deduplicates_compact_fenced_code(self, adapter):

@@ -19,6 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.reply_context import reaction_metadata
 from gateway.session import SessionSource, _session_key_namespace
 from typing import Any, Dict, Optional, Union
 
@@ -291,7 +292,9 @@ class GatewayBusySessionMixin:
         # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
+            reaction_metadata(existing.raw_message) is None
+            and reaction_metadata(event.raw_message) is None
+            and getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)
             and all(
@@ -688,6 +691,10 @@ class GatewayBusySessionMixin:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
+        if reaction_metadata(event.raw_message) is not None:
+            # Text-only steering and debounce merging lose the exact approval target.
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).

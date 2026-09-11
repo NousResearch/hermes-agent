@@ -295,6 +295,17 @@ def _anthropic_token_or_raise() -> str:
     return token
 
 
+_STALE_MINIMAX_V1_TO_ANTHROPIC = {
+    "https://api.minimax.io/v1": "https://api.minimax.io/anthropic",
+    "https://api.minimaxi.com/v1": "https://api.minimaxi.com/anthropic",
+}
+
+
+def _minimax_anthropic_url_for_stale_v1(base_url: str) -> str:
+    """Return the Anthropic twin of a persisted MiniMax /v1 catalog default."""
+    return _STALE_MINIMAX_V1_TO_ANTHROPIC.get((base_url or "").strip().rstrip("/"), "")
+
+
 def _host_derived_api_key(base_url: str) -> str:
     """``<VENDOR>_API_KEY`` from the env, vendor = registrable hostname label (``api.deepseek.com``
     → ``deepseek``). Lookalike hosts pick the ATTACKER's label (api.deepseek.com.attacker.test →
@@ -472,6 +483,12 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+    # hermes setup / models.dev persist the OpenAI-style /v1 default. MiniMax's transport is
+    # anthropic_messages, so that path 404s (#84838). Remap only the known stale catalog URLs.
+    if provider in {"minimax", "minimax-cn"}:
+        remapped = _minimax_anthropic_url_for_stale_v1(base_url)
+        if remapped:
+            base_url = remapped
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
 
 
@@ -736,6 +753,13 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
     base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
+    # hermes setup / models.dev persist the OpenAI-style /v1 default. MiniMax's transport is
+    # anthropic_messages, so that path 404s (#84838). Remap only the known stale catalog URLs;
+    # a user-set China or custom host is left alone.
+    if provider in {"minimax", "minimax-cn"}:
+        remapped = _minimax_anthropic_url_for_stale_v1(base_url)
+        if remapped:
+            base_url = remapped
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)

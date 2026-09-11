@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
+from collections import OrderedDict
 from contextlib import suppress
 import logging
 import mimetypes
@@ -37,7 +38,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
 try:
     from mautrix.types import (
@@ -62,7 +63,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,7 @@ class _MatrixApprovalPrompt:
     requester_user_id: str | None = None
     expires_at: float | None = None
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
+    choices: dict[str, str] = field(default_factory=lambda: {"✅": "once", "❌": "deny", "❎": "deny"})
 
 
 @dataclass
@@ -799,6 +801,85 @@ class MatrixAdapter(BasePlatformAdapter):
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _reply_event_cache_max = 2048
+    _reply_lookup_max_hops = 16
+    _reply_lookup_timeout = 3.0
+
+    def _remember_reply_event(self, room_id: str, event_id: str, sender: str,
+                              relates_to: dict, thread_id: str | None = None) -> None:
+        """Bounded, room-keyed routing facts only; never retain message bodies."""
+        if not event_id:
+            return
+        if not hasattr(self, "_reply_events"):
+            self._reply_events = OrderedDict()
+        key = (room_id, event_id)
+        self._reply_events[key] = (sender, dict(relates_to), thread_id)
+        self._reply_events.move_to_end(key)
+        while len(self._reply_events) > self._reply_event_cache_max:
+            self._reply_events.popitem(last=False)
+        if sender == self._user_id:
+            root = (relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread"
+                    else thread_id)
+            if root:
+                if not hasattr(self, "_bot_reply_roots"):
+                    self._bot_reply_roots = OrderedDict()
+                self._bot_reply_roots[(room_id, root)] = True
+                self._bot_reply_roots.move_to_end((room_id, root))
+                while len(self._bot_reply_roots) > self._reply_event_cache_max:
+                    self._bot_reply_roots.popitem(last=False)
+
+    async def _resolve_reply_target(self, room_id: str, event_id: str) -> tuple[str | None, str | None]:
+        """Bound the whole recovery chain, including decryption, not each hop."""
+        try:
+            return await asyncio.wait_for(
+                self._walk_reply_target(room_id, event_id), self._reply_lookup_timeout)
+        except Exception:
+            # Fetch/decryption failures must never grant mention bypass. Task
+            # cancellation still propagates (CancelledError is a BaseException).
+            return None, None
+
+    async def _walk_reply_target(self, room_id: str, event_id: str) -> tuple[str | None, str | None]:
+        """Resolve the target's canonical root and its own sender, never the quote's claimed author."""
+        seen = set()
+        target_sender = None
+        for _ in range(self._reply_lookup_max_hops):
+            if not event_id or event_id in seen:
+                return None, None
+            seen.add(event_id)
+            record = getattr(self, "_reply_events", {}).get((room_id, event_id))
+            if record is None:
+                try:
+                    event = await self._client.get_event(RoomID(room_id), EventID(event_id))
+                    if str(event.room_id) != room_id or str(event.event_id) != event_id:
+                        return None, None
+                    if str(event.type) == "m.room.encrypted":
+                        sender = str(event.sender)
+                        event = await self._client.crypto.decrypt_megolm_event(event)
+                        if (str(event.room_id) != room_id or str(event.event_id) != event_id
+                                or str(event.sender) != sender):
+                            return None, None
+                    content = event.content
+                    if hasattr(content, "serialize"):
+                        content = content.serialize()
+                    if str(event.type) != "m.room.message" or not isinstance(content, dict):
+                        return None, None
+                    self._remember_reply_event(room_id, event_id, str(event.sender), content.get("m.relates_to") or {})
+                    record = self._reply_events[(room_id, event_id)]
+                except Exception:
+                    return None, None
+            sender, relation, root = record
+            if target_sender is None:
+                target_sender = sender
+            if relation.get("rel_type") == "m.thread" and relation.get("event_id"):
+                return str(relation["event_id"]), target_sender
+            if root:
+                return root, target_sender
+            parent = (relation.get("event_id") if relation.get("rel_type") == "m.replace"
+                      else (relation.get("m.in_reply_to") or {}).get("event_id"))
+            if not parent:
+                return event_id, target_sender
+            event_id = str(parent)
+        return None, None
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -846,20 +927,22 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
-        self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
+
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
-        self._auto_thread: bool = _env_truthy("MATRIX_AUTO_THREAD", "true")
+        self._auto_thread: bool = str(os.getenv(
+            "MATRIX_AUTO_THREAD", str(config.extra.get("auto_thread", "true")))).lower() in {"true", "1", "yes", "on", "threads"}
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
         self._dm_mention_threads: bool = _env_truthy("MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
+        raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", str(config.extra.get("session_scope", "auto"))).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = _env_truthy("MATRIX_PROCESS_NOTICES", "false")
-        self._reactions_enabled: bool = os.getenv("MATRIX_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        self._reactions_enabled: bool = os.getenv(
+            "MATRIX_REACTIONS", str(config.extra.get("reactions", "true"))).lower() not in {"false", "0", "no", "off"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -883,9 +966,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
-        # allowlist, which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
+        # Authz lists via the profile-scoped reader: under multiplex os.environ is the DEFAULT
+        # profile's allowlist, which must not decide who approves tool calls on a secondary bot.
+        # Single-profile: keep the original os.getenv(name, config) contract exactly (missing ->
+        # config.yaml / PlatformConfig.extra, explicitly-empty -> deny) so existing users see no
+        # behavior change. Multiplex: scoped reader only; an empty/absent scoped value fails closed
+        # instead of borrowing another profile's allowlist.
+        if is_multiplex_active():
+            allowed = _startup_env_secret("MATRIX_ALLOWED_USERS")
+        else:
+            allowed = os.getenv("MATRIX_ALLOWED_USERS", config.extra.get("allowed_users") or "")
+        self._allowed_user_ids: Set[str] = _csv_set(allowed)
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
@@ -1397,6 +1488,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+        self._remember_reply_event(chat_id, str(event_id), self._user_id, msg_content.get("m.relates_to") or {})
         return str(event_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -1619,6 +1711,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         if smart_denied:
+            allow_session = allow_permanent = False
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
         else:
             scope_choices = (
@@ -1629,10 +1722,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if allow_session:
             legend.append("🌀 = approve for this session")
             reactions.append("🌀")
-            if allow_permanent:
-                legend.append("♾️ = approve always")
-                reactions.append("♾️")
-        legend.append("❎ = deny")
+        if allow_permanent:
+            legend.append("♾️ = approve always")
+            reactions.append("♾️")
+        legend.append("❌ = deny")
         reactions.append("❌")
         text = (
             f"{self._format_exec_approval(command, description)}\n\n"
@@ -1646,7 +1739,9 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at,
+                choices={**{emoji: self._approval_reaction_map[emoji] for emoji in reactions},
+                         "❎": self._approval_reaction_map.get("❎", "deny")})
         return await self._send_reaction_prompt(
             chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
 
@@ -1771,7 +1866,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _send_content_event(self, room_id: str, msg_content: Dict[str, Any]) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
-            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            event_id = await self._send_room_message(room_id, msg_content)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -1992,20 +2087,40 @@ class MatrixAdapter(BasePlatformAdapter):
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
         thread_id = relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
+        reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
+        recover_reply = reply_to and (thread_id or self._matrix_session_scope != "room")
+        reply_root, reply_sender = await self._resolve_reply_target(room_id, reply_to) if recover_reply else (None, None)
+        reply_to_self = bool(self._user_id and reply_sender == self._user_id
+                             and (not thread_id or thread_id == reply_root))
+        if not thread_id and reply_root and self._matrix_session_scope != "room":
+            thread_id = reply_root
         formatted_body = source_content.get("formatted_body")
         mentions_block = source_content.get("m.mentions") or {}  # MSC3952: authoritative signal
         mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        # Explicit addressing wins over room broadcast and cached participation.
+        # Treat unknown @targets conservatively: the adapter cannot enumerate other bots.
+        explicit_targets = {target.rstrip(":") for target in re.findall(r"(?<![\w])@[\w.=-]+(?::[\w.:-]+)?", body)}
+        explicit_targets.update(re.findall(r"matrix\.to/#/(@[^\s\"'<>/]+)", formatted_body or ""))
+        if isinstance(mention_user_ids, list):
+            explicit_targets.update(uid for uid in mention_user_ids if isinstance(uid, str))
+        own_targets = {self._user_id, "@" + self._user_localpart()}
+        if not is_dm and explicit_targets and not (explicit_targets & own_targets):
+            return None
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
                 logger.debug(
                     "Matrix: ignoring message %s in %s — room not in MATRIX_ALLOWED_ROOMS whitelist", event_id, room_id)
                 return None
-            is_free_room = room_id in self._free_rooms
-            in_bot_thread = bool(thread_id and thread_id in self._threads)
-            if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+            # Free-response rooms exempt ordinary conversation, never commands.
+            is_free_room = room_id in self._free_rooms and not body.startswith("/")
+            in_bot_thread = bool(thread_id and (room_id, thread_id) in getattr(self, "_bot_reply_roots", {})) or reply_to_self
+            if body.startswith("/") and (thread_id or reply_to) and not (is_mentioned or in_bot_thread):
+                return None
+            broadcast_command = bool(re.match(r"^/[A-Za-z][\w-]*(?:\s|$)", body)) and not (thread_id or reply_to or is_mentioned)
+            if self._require_mention and not is_free_room and not in_bot_thread and not broadcast_command:
+                if not is_mentioned:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2017,16 +2132,24 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
                     event_id, thread_id)
                 return None
-        if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
+        if is_mentioned:
+            command_body = self._strip_command_address(body, formatted_body)
+            if command_body is not None:
+                body = command_body
+            elif self._require_mention:
+                body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:
             if is_dm:
+                # DMs are NOT threaded by session_scope:thread — that knob threads group rooms.
+                # DM threading is governed by the dedicated dm_auto_thread / dm_mention_threads knobs.
                 synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
             else:
                 synthetic = self._matrix_session_scope == "thread" or (
                     self._matrix_session_scope != "room" and self._auto_thread)
+            if not is_dm and re.match(r"^/(?:stop)(?:\s|$)", _normalize_matrix_bang_command(body), re.IGNORECASE):
+                synthetic = False  # A control command must never create its own empty thread.
             if synthetic:
                 thread_id = event_id
         display_name = await self._get_display_name(room_id, sender)
@@ -2034,8 +2157,10 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
-        if thread_id:
-            self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
+        # The gateway still receives unauthorized addressed messages for pairing,
+        # but they must not create trusted routing facts before that decision.
+        if self._is_authorized_user(sender):
+            self._remember_reply_event(room_id, event_id, sender, relates_to, thread_id)
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
@@ -2060,12 +2185,20 @@ class MatrixAdapter(BasePlatformAdapter):
         **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type."""
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
+            await self._extract_reply_context(room_id, body, relates_to))
+        # Only the actual reply may address us; quoted pills/HTML must not open the mention gate.
+        gate_content = dict(source_content)
+        if reply_to:
+            gate_content["formatted_body"] = re.sub(
+                r"(?is)^\s*<mx-reply\b[^>]*>.*?(?:</mx-reply\s*>|$)", "",
+                source_content.get("formatted_body") or "")
+        if extra.get("media_msgtype") is None:
+            body = _normalize_matrix_bang_command(body)
+        ctx = await self._resolve_message_context(room_id, sender, event_id, body, gate_content, relates_to)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
-        body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
-            await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
         if media_msgtype is None:
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
@@ -2089,6 +2222,18 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
+            return
+        if (msg_event.get_command() == "stop" and msg_event.source.chat_type != "dm"
+                and not msg_event.source.thread_id
+                and self._matrix_session_scope != "room"
+                and (self._matrix_session_scope == "thread" or self._auto_thread)
+                and self._is_authorized_user(sender)):
+            # No stable adapter API enumerates the runner's active thread sources.
+            # Do not guess a session key or claim that a room-wide interrupt occurred.
+            await self.send(room_id,
+                "This bot cannot stop all active threads from a top-level /stop. "
+                "Reply to this bot's message or send /stop in each active thread. "
+                "No work was stopped by this command.", reply_to=event_id)
             return
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
@@ -2341,7 +2486,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return True, prompt, None
         if not await self._validate_matrix_prompt_reactor(room_id, reacts_to, sender, prompt, label):
             return True, prompt, None
-        selection = (prompt.choices if choices is None else choices).get(key)
+        # Presentation selectors are the only equivalence we allow. Do not fold
+        # skin tones, ZWJ sequences, whitespace, or visually similar emoji.
+        normalize = lambda value: value.replace("\ufe0e", "").replace("\ufe0f", "")
+        offered = prompt.choices if choices is None else choices
+        matches = [value for emoji, value in offered.items() if normalize(emoji) == normalize(key)]
+        # Ambiguous normalized keys must never select the more privileged option.
+        selection = matches[0] if matches and all(value == matches[0] for value in matches) else None
         if selection is None:
             await self._send_invalid_reaction_feedback(room_id, reacts_to, invalid_text)
         return True, prompt, selection
@@ -2350,8 +2501,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
         handled, prompt, choice = await self._claim_reaction_prompt(
             self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
-            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
-            choices=self._approval_reaction_map)
+            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt)
         if choice is None:
             return handled
         try:
@@ -2780,6 +2930,35 @@ class MatrixAdapter(BasePlatformAdapter):
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""
         return self._user_id.split(":")[0].lstrip("@") if self._user_id and ":" in self._user_id else ""
 
+    def _strip_command_address(self, body: str, formatted_body: Optional[str]) -> Optional[str]:
+        """Remove a leading own HTML pill only when followed by a command.
+
+        Match its visible label against plaintext; never promote prose containing
+        a slash or reconstruct command arguments from potentially different HTML.
+        """
+        from html import unescape
+        command_pattern = r"\s*[:,]?\s+((?:/|!)[A-Za-z][\w-]*(?:\s.*)?)$"
+        for token in (self._user_id, "@" + self._user_localpart()):
+            if token and token != "@":
+                match = re.match(re.escape(token) + command_pattern, body.lstrip(),
+                                 flags=re.IGNORECASE | re.DOTALL)
+                if match:
+                    return match.group(1)
+        if not self._user_id or not formatted_body:
+            return None
+        pill = re.match(
+            r'''\s*(?:<p>)?<a\s+href=["']https://matrix\.to/\#/'''
+            + re.escape(self._user_id) + r'''["'][^>]*>(.*?)</a>''',
+            formatted_body, flags=re.IGNORECASE | re.DOTALL)
+        if not pill:
+            return None
+        label = unescape(re.sub(r"<[^>]*>", "", pill.group(1)))
+        if not label:
+            return None
+        match = re.match(re.escape(label) + r"\s*[:,]?\s+((?:/|!)[A-Za-z][\w-]*(?:\s.*)?)$",
+                         body.lstrip(), flags=re.DOTALL)
+        return match.group(1) if match else None
+
     def _strip_mention(self, body: str) -> str:
         """Strip explicit ``@user:server`` / ``@localpart`` tokens only — never bare localpart
         words, or "Hermes Agent" would become "Agent"."""
@@ -3024,6 +3203,7 @@ def interactive_setup() -> None:
 
 
 _YAML_LOWER_KEYS = (
+    ("reactions", "MATRIX_REACTIONS"),
     ("require_mention", "MATRIX_REQUIRE_MENTION"), ("process_notices", "MATRIX_PROCESS_NOTICES"),
     ("session_scope", "MATRIX_SESSION_SCOPE"), ("auto_thread", "MATRIX_AUTO_THREAD"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS"))

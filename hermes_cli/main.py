@@ -197,6 +197,16 @@ def _set_process_title() -> None:
         return
     except ImportError:
         pass
+    except UnicodeDecodeError:
+        # A corrupt setproctitle .pyc raises this out of the import machinery, and an
+        # unhandled one here aborts startup entirely (#98593). Degrade to the ctypes
+        # fallback, but say so once — a silent permanent no-op is how this was found.
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "setproctitle import failed to decode (corrupt bytecode?); using the ctypes fallback",
+            exc_info=True,
+        )
 
     import ctypes
     import platform

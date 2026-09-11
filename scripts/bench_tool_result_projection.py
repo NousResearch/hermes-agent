@@ -71,8 +71,12 @@ def _agent(context_length: int, *, caching: bool):
         tool_result_projection_min_tokens=0,
         tool_result_projection_min_result_chars=4000,
         tool_result_projection_tail_ratio=0.025,
-        protect_last_n=20,          # drives the tail's message floor/cap
+        protect_last_n=20,          # NOT what bounds the tail: the message floor/cap are internal
     )
+    # ``_use_prompt_caching`` is the explicit marker policy, and it is what the two arms below turn
+    # on and off. A route with provider-side automatic caching is classified the same way the
+    # ``caching=True`` arm is — via the cached input tokens the provider reports — so read the
+    # "prompt caching on" numbers as what such a route gets, not only as the Anthropic-marker route.
     agent = SimpleNamespace(context_compressor=compressor, _use_prompt_caching=caching)
     agent._tool_result_projection_state = ProjectionState()
     return agent

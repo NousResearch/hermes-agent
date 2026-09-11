@@ -2315,8 +2315,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
         self._proactive_prune_rearm_tokens: int = 0
         # Wire-only projection knobs. Unlike the prune above these never rewrite the canonical
-        # transcript, so the defaults are on: the trigger and the cache-break gate (not an opt-in
-        # flag) are what keep a pass rare and profitable.
+        # transcript, but the default is still OFF: archiving a result is a semantic change to what
+        # the model can see, and it ships behind an explicit opt-in until task-success
+        # benchmarking exists. Once enabled, the trigger and the cache-break gate — not the flag —
+        # are what keep a pass rare and profitable.
         self.tool_result_projection = str(tool_result_projection or "off").strip().lower() or "off"
         self.tool_result_projection_min_tokens = max(0, int(tool_result_projection_min_tokens or 0))
         # Same 200-char floor rationale as proactive_prune_min_result_chars: a stub must stay

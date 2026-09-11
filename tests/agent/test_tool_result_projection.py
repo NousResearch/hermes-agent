@@ -232,6 +232,31 @@ def test_multimodal_tool_result_is_untouched():
     assert _content(msgs, "call_m") is content
 
 
+def test_terminal_failure_envelopes_are_never_projected():
+    """The real terminal result is ``{"output": ..., "exit_code": rc, "error": null}``: a non-zero
+    exit is a failure even though ``error`` is null, and a stale failure (red tests, a broken build,
+    an OOM kill) is often where the causal evidence the model needs later actually lives."""
+    cc = _compressor(tool_result_projection_min_tokens=2_000)
+    payloads = {
+        "call_rc1": json.dumps({"output": "x" * BIG_CHARS, "exit_code": 1, "error": None}),
+        "call_oom": json.dumps({"output": "y" * BIG_CHARS, "exit_code": 137, "error": None}),
+        "call_rctext": json.dumps({"output": "z" * BIG_CHARS, "exit_code": 2}),   # no "error" key
+        "call_unknown_rc": json.dumps({"output": "u" * BIG_CHARS, "exit_code": None, "error": None}),
+        "call_rc0": json.dumps({"output": "w" * BIG_CHARS, "exit_code": 0, "error": None}),
+    }
+    msgs = [{"role": "system", "content": "sys"}]
+    for cid, content in payloads.items():
+        msgs.append(_assistant_call(cid, name="terminal", args='{"command": "make test"}'))
+        msgs.append(_tool_msg(cid, content))
+    msgs = _with_buffer(msgs)
+
+    assert project_stale_tool_results(_agent(cc), msgs) == 2   # the two successes stay projectable
+    for cid in ("call_rc1", "call_oom", "call_rctext"):
+        assert _content(msgs, cid) == payloads[cid], cid
+    assert is_projected_tool_result(_content(msgs, "call_rc0"))
+    assert is_projected_tool_result(_content(msgs, "call_unknown_rc"))  # no exit code to judge by
+
+
 # ── invariant 1: canonical untouched, structure preserved ────────────────────
 
 
@@ -477,6 +502,27 @@ def test_tool_name_and_args_follow_occurrence_order():
     assert "tool=web_extract" in second and "https://x" in second
 
 
+def test_duplicate_ids_with_unequal_candidacy_stay_paired():
+    """A result that is NOT a candidate still owns its occurrence of the call id. Consuming lazily
+    made the small row skip the queue, so the large row inherited the small row's call and its stub
+    described a terminal command it never came from."""
+    cc = _compressor(tool_result_projection_min_tokens=2_000)
+    msgs = [{"role": "system", "content": "sys"}]
+    msgs.append(_assistant_call("dup", name="terminal", args='{"command":"pytest -q"}'))
+    msgs.append(_tool_msg("dup", "ok"))                     # small: never a candidate
+    msgs.append(_assistant_call("dup", name="web_extract", args='{"urls":["https://real.example"]}'))
+    msgs.append(_tool_msg("dup", "W" * BIG_CHARS))          # large: the one that gets projected
+    msgs = _with_buffer(msgs)
+
+    assert project_stale_tool_results(_agent(cc), msgs) == 1
+    # Both rows carry the same call id, so select them by position: small first, large second.
+    small, large = [m["content"] for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == "dup"]
+    assert small == "ok"
+    assert is_projected_tool_result(large)
+    assert "tool=web_extract" in large and "https://real.example" in large
+    assert "pytest -q" not in large, "the stub must not borrow the un-projected row's call"
+
+
 def test_recovery_instruction_never_invites_re_execution():
     stub = build_stub(
         tool_name="terminal", tool_args='{"command":"terraform apply"}', content_len=5000,
@@ -528,6 +574,30 @@ def test_cache_capable_routes_need_a_bigger_pile_of_stale_bytes():
     policy = resolve_policy(_agent(_compressor(tool_result_projection_min_tokens=0)))
     assert trigger_tokens(policy, WINDOW, True) > trigger_tokens(policy, WINDOW, False)
     assert trigger_tokens(policy, 8_000, True) > 0
+
+
+def test_a_provider_cached_route_takes_the_cached_path_without_marker_policy():
+    """``_use_prompt_caching`` means "Hermes emits cache-control markers", NOT "the destination
+    caches prefixes". A route that reports cached input tokens has a prefix cache worth protecting
+    even with the marker policy off, and it has to take the bigger trigger plus the break-cost gate
+    — otherwise a pass can invalidate an 80K-char cached prefix to reclaim 16K tokens."""
+    def _session():
+        msgs = _build(16, big_indices=set(range(10)))
+        msgs.append({"role": "user", "content": "t" * 200_000})   # makes the break uneconomical
+        return msgs
+
+    # No caching anywhere: the route is treated as uncached and the pass runs.
+    assert project_stale_tool_results(_agent(caching=False), _session()) >= 4
+    # Explicit marker policy: the pass declines.
+    assert project_stale_tool_results(_agent(caching=True), _session()) == 0
+
+    # Same route, marker policy off, but the provider's own usage accounting shows a warm prefix.
+    observed = _agent(caching=False)
+    observed.session_cache_read_tokens = 86_832
+    assert proj.destination_caches_prefixes(observed) is True
+    assert project_stale_tool_results(observed, _session()) == 0
+    # ...and the signal really is what changed, not the flag:
+    assert proj.destination_caches_prefixes(_agent(caching=False)) is False
 
 
 def test_recomputed_break_cost_declines_a_pass_that_verification_shrank():

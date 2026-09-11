@@ -284,6 +284,24 @@ def take_call(index: Dict[str, List[Tuple[str, str]]], msg: Dict[str, Any]) -> T
     return queue.pop(0) if queue else ("unknown", "")
 
 
+def tool_call_metadata(messages: Sequence[Dict[str, Any]]) -> Dict[int, Tuple[str, str]]:
+    """``message index -> (tool name, raw arguments)`` for every tool result row.
+
+    One recorded occurrence is consumed per tool result **regardless of whether that result ends
+    up projected**. Consuming lazily (only after a row passes the eligibility checks) breaks on
+    duplicate ids with unequal candidacy: with ``dup -> terminal (small)`` followed by
+    ``dup -> web_extract (large)``, the small row would leave the queue untouched and the large
+    row would inherit the FIRST call's name and arguments, so its stub would describe a terminal
+    call it never came from. Built before any filtering, the pairing is positional.
+    """
+    index = tool_call_index(messages)
+    out: Dict[int, Tuple[str, str]] = {}
+    for idx, msg in enumerate(messages):
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            out[idx] = take_call(index, msg)
+    return out
+
+
 def protected_tail_start(
     messages: Sequence[Dict[str, Any]], policy: ProjectionPolicy, window: Optional[int],
 ) -> int:
@@ -311,7 +329,7 @@ def _looks_like_error(content: str) -> bool:
     """Conservative error detector: JSON error envelopes, ``success: false``, text prefixes."""
     stripped = content.lstrip()
     if stripped[:1] in ("{", "["):
-        if '"error"' in stripped or '"success"' in stripped:
+        if '"error"' in stripped or '"success"' in stripped or '"exit_code"' in stripped:
             try:
                 parsed = json.loads(stripped)
             except Exception:
@@ -320,6 +338,13 @@ def _looks_like_error(content: str) -> bool:
                 if parsed.get("error") not in (None, "", False):
                     return True
                 if parsed.get("success") is False:
+                    return True
+                # The real terminal envelope is
+                # ``{"output": ..., "exit_code": rc, "error": null}`` — a non-zero exit is a
+                # failure even though ``error`` is null, and stale failures are exactly where the
+                # causal evidence lives (a failed build, a red test run, an OOM kill at 137).
+                exit_code = parsed.get("exit_code")
+                if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
                     return True
     return stripped.lower().startswith(_ERROR_PREFIXES)
 
@@ -378,6 +403,31 @@ def is_candidate(msg: Any, policy: ProjectionPolicy) -> bool:
 
 
 # ── backend / env resolution ─────────────────────────────────────────────────
+
+
+def destination_caches_prefixes(agent: Any) -> bool:
+    """Whether this request's destination has a cached prefix that a rewrite would invalidate.
+
+    ``agent._use_prompt_caching`` is only "Hermes emits explicit cache-control markers" (the
+    Anthropic-style policy). It is ``False`` on routes that cache prefixes perfectly well on the
+    provider side: OpenRouter reported 86,832 cached input tokens out of 86,835 for
+    ``gpt-5.6-luna`` under the policy-explicit arm of this PR's live measurement, where the marker
+    policy was off. Treating such a route as uncached would use the smaller stale-pile trigger and
+    skip the cache-break gate altogether — the economics argument inverted on the very route used
+    as evidence.
+
+    The strongest available signal for the destination's own behaviour is its own usage report,
+    which the session already accumulates: a provider that returns cached input tokens has a
+    prefix cache. On a session's first request nothing is cached yet, so "no evidence" and "no
+    cache to break" coincide. A session that mixes providers can only be over-conservative here
+    (a bigger trigger and a break-cost gate), which is the safe direction for an optimization.
+    """
+    if getattr(agent, "_use_prompt_caching", False):
+        return True
+    try:
+        return int(getattr(agent, "session_cache_read_tokens", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _backend_is_remote() -> Optional[bool]:
@@ -454,7 +504,10 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
         return 0
     cc = getattr(agent, "context_compressor", None)
     window = context_window_for(agent, cc)
-    cache_capable = bool(getattr(agent, "_use_prompt_caching", False))
+    # "Cache capable" is a property of the DESTINATION, not of whether Hermes emits cache-control
+    # markers: a route can cache prefixes provider-side with the marker policy off, and then the
+    # smaller trigger plus a skipped break-cost gate would be exactly the wrong economics.
+    cache_capable = destination_caches_prefixes(agent)
     if env == "auto":
         env = _resolve_active_env(agent)
     backend_remote = _backend_is_remote()
@@ -470,7 +523,9 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
 
     state = projection_state_for(agent)
     tail_start = protected_tail_start(api_messages, policy, window)
-    index = tool_call_index(api_messages)
+    # Positional pairing for every tool result, built before any eligibility filtering: see
+    # tool_call_metadata() for the duplicate-id case that lazy consumption gets wrong.
+    call_meta = tool_call_metadata(api_messages)
 
     # ── phase 1: discovery + economics on estimates, no disk writes ───────────
     planned: List[Dict[str, Any]] = []
@@ -488,7 +543,7 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
             continue
         if not is_candidate(msg, policy):
             continue
-        tool_name, tool_args = take_call(index, msg)
+        tool_name, tool_args = call_meta.get(idx, ("unknown", ""))
         estimate = build_stub(
             tool_name=tool_name, tool_args=tool_args, content_len=len(content),
             line_count=content.count("\n") + 1, digest=key.content_digest[:16],

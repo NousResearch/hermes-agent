@@ -57,3 +57,24 @@ def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, mon
     with pytest.raises(FileNotFoundError):
         with server._profile_db({"profile": "customer-data"}):
             pass
+
+
+@pytest.mark.parametrize("name", ["..", "../outside", "../../tmp", "a/b", "a\\b", ".hidden"])
+def test_profile_param_traversal_fails_closed(tmp_path, monkeypatch, name):
+    """A traversal-shaped ``profile`` param must never resolve outside profiles/."""
+    from tui_gateway import server
+
+    home = tmp_path / ".hermes"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)   # a real directory the traversal could land on
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  cwd: /launch\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", home)
+
+    with pytest.raises(FileNotFoundError):
+        server._profile_home(name)
+    with pytest.raises(FileNotFoundError):
+        with server._profile_db({"profile": name}):
+            pass

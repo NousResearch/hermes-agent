@@ -117,12 +117,11 @@ function TooltipContent({
         {/* bg-foreground/text-background auto-inverts per theme. leading-normal
             keeps lines readable; py-1 makes the cloned line-boxes overlap just
             enough to read as one continuous fill (no gaps between lines). */}
-        {/* [&>*]:!inline: this decoration only paints inline FLOW. A block child
-            collapses it to zero and Radix parks an empty chip in the corner
-            (#62022); an atomic inline child (`inline-flex`) sits on the baseline
-            and hangs its extra lines below the background, dark-on-dark. Force
-            direct children inline; break lines with `<br />`. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline">
+        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
+            this inline decoration's geometry, so Radix measures a zero-size chip
+            and parks an empty rectangle in the corner (#62022). Force any direct
+            child inline-flex so every call site stays safe. */}
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
           {children}
         </span>
       </TooltipPrimitive.Content>
@@ -155,6 +154,52 @@ interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Con
 // tried and reverted. `asChild` puts `data-slot="tooltip-trigger"` on the
 // child element itself, so arming REPLACES that node — which broke 18 tests
 // encoding that contract, and risks focus/ref identity at every call site.
+/** Any text a node would render, used to tell an icon-only trigger from one
+ *  that already says its own name. */
+function visibleText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(visibleText).join('')
+  }
+
+  if (React.isValidElement(node)) {
+    return visibleText((node.props as { children?: React.ReactNode }).children)
+  }
+
+  return ''
+}
+
+/**
+ * Give an icon-only trigger the tip's text as its accessible NAME.
+ *
+ * Radix makes tooltip content the trigger's `aria-describedby` — a description,
+ * which assumes the trigger is already named. An icon-only button has no name
+ * at all, so SenseReader read the three config actions in Settings as
+ * "버튼 Export config 버튼": the empty button, then its description, then the
+ * role again (2026-09-05). Naming the button turns that into "Export config
+ * 버튼".
+ *
+ * Applied only when the trigger renders no text of its own and does not already
+ * carry an `aria-label`, so a button that already says its name keeps it —
+ * a tip is often longer than the label and must not replace it.
+ */
+function nameIconOnlyTrigger(children: React.ReactNode, label: React.ReactNode): React.ReactNode {
+  if (typeof label !== 'string' || !React.isValidElement(children)) {
+    return children
+  }
+
+  const props = children.props as { 'aria-label'?: string; 'aria-labelledby'?: string; children?: React.ReactNode }
+
+  if (props['aria-label'] || props['aria-labelledby'] || visibleText(props.children).trim()) {
+    return children
+  }
+
+  return React.cloneElement(children, { 'aria-label': label } as Record<string, unknown>)
+}
+
 function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipProps) {
   // A component rendered in isolation (every unit test, and any surface
   // mounted outside the app root) has no provider above it, and Radix throws
@@ -169,7 +214,7 @@ function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipPro
 
   const tip = (
     <Tooltip delayDuration={delayDuration} disableHoverableContent>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger asChild>{nameIconOnlyTrigger(children, label)}</TooltipTrigger>
       <TooltipContent {...props}>{label}</TooltipContent>
     </Tooltip>
   )
@@ -266,8 +311,8 @@ interface TipHintLabelProps {
   hint?: string
 }
 
-/** Tooltip label with an optional trailing hotkey hint. Plain inline flow (no
- *  flex box) so Tip's per-line background wraps it — prefer this over a bespoke
+/** Tooltip label with an optional trailing hotkey hint. Uses `inline-flex` so it
+ *  stays safe inside Tip's decoration wrapper — prefer this over a bespoke
  *  flex/gap span at the call site (see #62022). */
 function TipHintLabel({ text, hint }: TipHintLabelProps) {
   if (!hint) {
@@ -275,10 +320,10 @@ function TipHintLabel({ text, hint }: TipHintLabelProps) {
   }
 
   return (
-    <>
-      {text}
-      <span className="ms-2 opacity-55">{hint}</span>
-    </>
+    <span className="inline-flex items-center gap-2">
+      <span>{text}</span>
+      <span className="opacity-55">{hint}</span>
+    </span>
   )
 }
 

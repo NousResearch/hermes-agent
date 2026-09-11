@@ -453,6 +453,7 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)
     return json.dumps({"todos": items, "revision": store.snapshot()["revision"],
+                       "generation": store.snapshot_state()["generation"],
                        "summary": summary}, ensure_ascii=False)
 
 

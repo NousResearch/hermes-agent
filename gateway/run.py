@@ -768,6 +768,34 @@ def _approval_send_outcome(future, timeout: float) -> str:
     return "failed"
 
 
+async def _send_gateway_clarify(
+    adapter,
+    *,
+    chat_id: str,
+    question: str,
+    choices,
+    clarify_id: str,
+    session_key: str,
+    metadata,
+    multi_select: bool,
+):
+    """Choose a render path that preserves the prompt's selection semantics."""
+    sender = (
+        getattr(adapter, "send_clarify_text_fallback", None)
+        if multi_select
+        else None
+    ) or adapter.send_clarify
+
+    return await sender(
+        chat_id=chat_id,
+        question=question,
+        choices=choices,
+        clarify_id=clarify_id,
+        session_key=session_key,
+        metadata=metadata,
+    )
+
+
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``.
 

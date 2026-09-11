@@ -115,6 +115,17 @@ def test_aggregator_route_gates_the_tier():
     assert not kwargs.get("request_overrides")
 
 
+@pytest.mark.parametrize("window_tier", ["auto", "cold"])
+def test_window_tiers_are_not_pinned_at_build_time(window_tier):
+    """auto/cold are bounded windows applied per request by ``agent.fast_mode`` —
+    pinning them at build time would bill a fixed tier the user never chose
+    (caught in review on #101524)."""
+    kwargs = _build(window_tier)
+
+    assert kwargs["service_tier"] == window_tier
+    assert not kwargs.get("request_overrides")
+
+
 def _mirror(agent, arg: str):
     """Run the typed-slash `/fast <arg>` mirror against a live agent."""
     session = {"agent": agent}

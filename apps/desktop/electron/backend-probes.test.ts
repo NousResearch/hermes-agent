@@ -32,7 +32,18 @@ import {
 const NODE_BIN = process.execPath
 
 test('execProbe keeps the parent event loop available to the child', async () => {
-  const server = net.createServer((socket) => socket.end('pong'))
+  let unexpectedSocketError: Error | undefined
+
+  const server = net.createServer((socket) => {
+    socket.on('error', (error) => {
+      // A successful child exits immediately after reading the sentinel. On
+      // Windows that peer close can surface as ECONNRESET on the server side.
+      if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
+        unexpectedSocketError ??= error
+      }
+    })
+    socket.end('pong')
+  })
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -63,6 +74,8 @@ test('execProbe keeps the parent event loop available to the child', async () =>
       server.close((error) => (error ? reject(error) : resolve()))
     })
   }
+
+  assert.ifError(unexpectedSocketError)
 })
 
 test('canImportHermesCli returns false when path is falsy', async () => {

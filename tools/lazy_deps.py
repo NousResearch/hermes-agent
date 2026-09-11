@@ -534,7 +534,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 return _InstallResult(False, "", f"pip not available and ensurepip failed: {e}")
         try:
-            return _finish(_run_installer(pip_cmd + ["install", *extra_args, *specs], timeout=timeout))
+            pip_extra = list(extra_args)
+            if sys.prefix == sys.base_prefix:
+                pip_extra.append("--break-system-packages")
+            return _finish(_run_installer(pip_cmd + ["install", *pip_extra, *specs], timeout=timeout))
         except subprocess.TimeoutExpired as e:
             return _InstallResult(False, "", f"pip install timed out: {e}")
         except Exception as e:

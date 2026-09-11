@@ -280,6 +280,12 @@ class ToolCallGuardrailController:
         self.config = config or ToolCallGuardrailConfig()
         self.reset_for_turn()
 
+    def reset_on_file_mutation(self) -> None:
+        """Reset failure and no-progress guardrail streaks when a file write lands."""
+        self._exact_failure_counts.clear()
+        self._same_tool_failure_counts.clear()
+        self._no_progress.clear()
+
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
@@ -302,6 +308,12 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+
+    def reset_on_file_mutation(self) -> None:
+        """Reset failure and no-progress guardrail streaks when a file write lands."""
+        self._exact_failure_counts.clear()
+        self._same_tool_failure_counts.clear()
+        self._no_progress.clear()
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -341,6 +353,9 @@ class ToolCallGuardrailController:
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
         *, failed: bool | None = None,
     ) -> ToolGuardrailDecision:
+        if file_mutation_result_landed(tool_name, result):
+            self.reset_on_file_mutation()
+
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:

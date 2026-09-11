@@ -374,6 +374,11 @@ class TestFailureAttribution:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        try:
+            monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+            monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+        except Exception:
+            pass
         # Keep host Anthropic/Claude credentials out of this fixture. load_pool()
         # auto-seeds ~/.claude/.credentials.json and env keys when anthropic is
         # explicitly configured on the machine, which turns a deliberate
@@ -505,10 +510,11 @@ class TestFailureAttribution:
 
         from agent.agent_runtime_helpers import recover_with_credential_pool
 
-        recovered, _ = recover_with_credential_pool(
+        recovered, ret_429 = recover_with_credential_pool(
             agent, status_code=401, has_retried_429=False
         )
 
+        print(f"\nDEBUG: recovered={recovered}, ret_429={ret_429}, pool_current={pool.current()}, entries={pool.entries()}")
         assert recovered is False
         assert self._statuses(pool)["cred-0"] != "exhausted"
         agent._swap_credential.assert_not_called()
@@ -562,4 +568,32 @@ class TestFailureAttribution:
 
         failed = {e.id: e for e in pool.entries()}["cred-1"]
         assert failed.failure_reason != "billing"
+
+    def test_overloaded_rotates_on_second_attempt(self, tmp_path, monkeypatch):
+        """Overloaded errors allow 1 retry on same key, then rotate pool on 2nd attempt."""
+        from agent.error_classifier import FailoverReason
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-a")
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        # Attempt 1: retry same key
+        recovered, has_retried = recover_with_credential_pool(
+            agent, status_code=503, has_retried_429=False, classified_reason=FailoverReason.overloaded
+        )
+        assert recovered is False
+        assert has_retried is True
+
+        # Attempt 2: rotates to key-b (cred-1)
+        recovered, has_retried = recover_with_credential_pool(
+            agent, status_code=503, has_retried_429=True, classified_reason=FailoverReason.overloaded
+        )
+        assert recovered is True
+        assert has_retried is False
+        agent._swap_credential.assert_called_once()
+        swapped = agent._swap_credential.call_args[0][0]
+        assert swapped.id == "cred-1"
 

@@ -59,6 +59,21 @@ describe('media protocol helpers', () => {
 })
 
 describe('createMediaProtocolHandler', () => {
+  it('recovers native refresh outages through a live cookie without turning an empty jar into auth failure', async () => {
+    for (const cookieStatus of [206, 401, 403, 503]) {
+      const deps = dependencies({
+        ensureRemoteBearer: async () => {
+          throw new Error('refresh timed out')
+        },
+        resolveRemoteConnection: async () => ({ authMode: 'oauth', baseUrl: 'https://gw.test', mode: 'remote' }),
+        fetchRemoteWithCookies: async () => new Response('cookie', { status: cookieStatus })
+      })
+
+      const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+      expect(response.status).toBe(cookieStatus === 401 || cookieStatus === 403 ? 502 : cookieStatus)
+    }
+  })
+
   it('streams local media through the resolved local-file dependency', async () => {
     const deps = dependencies()
 

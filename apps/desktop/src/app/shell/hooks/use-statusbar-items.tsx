@@ -10,6 +10,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
@@ -33,6 +34,8 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
+import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
+import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
@@ -100,6 +103,7 @@ export function useStatusbarItems({
 }: StatusbarItemsOptions) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
+  const freeTierCopy = t.freeTier
   const fileMenu = t.fileMenu
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
@@ -132,6 +136,9 @@ export function useStatusbarItems({
     Object.values(bySession).reduce((sum, items) => sum + failedSubagentCount(items), 0)
   )
 
+  // Backend truth for the free-tier chip. Refreshed on the ambient status
+  // cadence (use-status-snapshot), never polled from here.
+  const freeTier = useStore($freeTierStatus)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -269,6 +276,8 @@ export function useStatusbarItems({
       contextBreakdown
         ? {
             ...currentUsage,
+            context_estimated: contextBreakdown.context_estimated,
+            context_source: contextBreakdown.context_source,
             context_max: contextBreakdown.context_max,
             context_percent: contextBreakdown.context_percent,
             context_used: contextBreakdown.context_used
@@ -451,6 +460,34 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
+        // The model id is the quiet part; the sign-in is the action, so it is
+        // solid and set off by a gap instead of touching the label.
+        detail: (
+          <span className="inline-flex items-center gap-2">
+            <span className="font-mono text-[0.625rem] text-muted-foreground/70">
+              {freeTier?.model ?? FREE_TIER_MODEL}
+            </span>
+            {/* The class merger drops Badge's own leading-none behind the size's
+                font-size class, so the badge grows to the inherited 1.5 leading and
+                overhangs an 11px label. Restating it here keeps it 11.6px tall. */}
+            <Badge className="leading-none" size="xs" variant="solid">
+              {freeTierCopy.signIn}
+            </Badge>
+          </span>
+        ),
+        // Shown while a free-tier identity exists and the tier is on: it names the
+        // identity that carries the connectors (and inference when nothing else
+        // does), and it is the persistent way in to the sign-in.
+        hidden: !freeTier?.available,
+        icon: <Codicon name="account" size="0.75rem" />,
+        id: 'free-tier',
+        label: freeTierCopy.providerName,
+        onSelect: () => openFreeTierSignIn(),
+        title: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
+        toggleLabel: copy.toggleFreeTier,
+        variant: 'action'
+      },
+      {
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
@@ -533,9 +570,12 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      freeTierCopy,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
+      freeTier?.available,
+      freeTier?.model,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,

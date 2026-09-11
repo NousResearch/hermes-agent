@@ -136,8 +136,11 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
 
 
-def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
+def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_path):
     """A claimed attempt is consumed even when the job pipeline reports failure."""
+    import cron.executions as executions
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     prov, fake = chronos
     claimed = {"id": "j1", "fire_claim": {"by": "owner-1"}}
     persisted = {
@@ -147,10 +150,6 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
     }
 
     monkeypatch.setattr("cron.jobs.claim_job_for_fire", lambda jid, **kw: claimed)
-    monkeypatch.setattr(
-        "cron.executions.create_execution",
-        lambda jid, source: {"id": "exec-1"},
-    )
     monkeypatch.setattr("cron.scheduler.run_one_job", lambda *args, **kwargs: False)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)
 
@@ -204,16 +203,11 @@ def test_chronos_is_split_fire_capable(chronos):
     fire webhook uses durable claim admission (not the legacy fire_due path).
     Chronos deliberately has NO fire_due override — its re-arm logic lives in
     fire_claimed, which the split path invokes."""
-    from cron.scheduler_provider import (
-        provider_supports_fire_cancel,
-        provider_supports_force_fire,
-        provider_supports_split_fire,
-    )
+    from cron.scheduler_provider import provider_supports_force_fire, provider_supports_split_fire
 
     prov, _fake = chronos
     assert provider_supports_split_fire(prov) is True
     assert provider_supports_force_fire(prov) is True
-    assert provider_supports_fire_cancel(prov) is True
 
 
 def test_fire_claimed_no_rearm_when_run_failed(chronos, monkeypatch):

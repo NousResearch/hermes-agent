@@ -45,6 +45,10 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     # build_subprocess_env legitimately snapshot os.environ — everything else
     # delegates to them.
     "tools/environments/local.py",
+    # Bang-shell (`!cmd` in the CLI) goes through build_subprocess_env(); the
+    # only raw copy is the except-fallback for when the tools package itself
+    # cannot be imported, so the user's typed command still runs.
+    "hermes_cli/bang_shell.py",
 }
 
 

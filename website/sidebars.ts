@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
+        'user-guide/free-tier',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
         {
@@ -88,6 +89,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skins',
             'user-guide/features/plugins',
             'user-guide/features/built-in-plugins',
+            'user-guide/features/plugin-catalog',
           ],
         },
         {
@@ -118,6 +120,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/web-search',
             'user-guide/features/x-search',
             'user-guide/features/browser',
+            'user-guide/features/credential-vault',
             'user-guide/features/computer-use',
             'user-guide/features/vision',
             'user-guide/features/image-generation',
@@ -239,6 +242,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-collective-wisdom-install',
                     'user-guide/skills/bundled/productivity/productivity-box',
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
@@ -351,6 +355,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ascii-art',
+                    'user-guide/skills/optional/creative/creative-archify',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
@@ -538,6 +543,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
+                    'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
@@ -562,6 +568,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-pinecone-research',
                     'user-guide/skills/optional/research/research-qmd',
                     'user-guide/skills/optional/research/research-research-paper-writing',
+                    'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',
                     'user-guide/skills/optional/research/research-searxng-search',
                   ],
@@ -587,6 +594,15 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/smart-home/smart-home-openhue',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-reddit-reading',
                   ],
                 },
                 {
@@ -762,6 +778,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/prompt-assembly',
             'developer-guide/context-compression-and-caching',
             'developer-guide/gateway-internals',
+            'developer-guide/completion-backlog-delivery',
             'developer-guide/session-storage',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',

@@ -209,3 +209,113 @@ def test_init_session_skips_launch_db_when_profile_store_unopenable(homes, monke
     finally:
         with server._sessions_lock:
             server._sessions.pop(sid, None)
+
+
+def _stub_rebuild_env(monkeypatch, server, launch) -> list[str]:
+    """Neutralize the rebuild's side paths; returns the HERMES_HOME seen by each _make_agent call."""
+    homes_seen: list[str] = []
+
+    def fake_make_agent(_sid, _key, *, session_db=None, **_kw):
+        from hermes_constants import get_hermes_home
+
+        homes_seen.append(str(get_hermes_home()))
+        return SimpleNamespace(_session_db=session_db, _owns_session_db=False)
+
+    monkeypatch.setattr(server, "_get_db", lambda: launch)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **kw: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("m", ""))
+    return homes_seen
+
+
+def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
+    """A Bot Chat capability refresh must not migrate the session onto the launch profile.
+
+    ``_sync_bot_capabilities`` swaps in a fresh agent for a LIVE session at turn start. It used to call
+    ``_make_agent`` with neither the session's ``state.db`` handle nor its HERMES_HOME, so the replacement
+    agent bound the launch ``_get_db()`` handle and built its prompt/skills from the launch profile: every
+    later turn of a named-profile bot appended to ``~/.hermes/state.db`` under the same session id while the
+    desktop replayed ``profiles/<bot>/state.db`` and showed a stale transcript (#104079).
+    """
+    root, profile = homes
+    from tui_gateway import server
+
+    launch = SessionDB(db_path=root / "state.db")
+    profile_db = server._open_profile_session_db(str(profile))
+    homes_seen = _stub_rebuild_env(monkeypatch, server, launch)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: str(root))
+    monkeypatch.setattr(server, "_session_source", lambda _s: "desktop")
+    monkeypatch.setattr("tools.bot_mode_probe.capability_fingerprint", lambda _home: "caps-v2")
+
+    old_agent = SimpleNamespace(
+        _session_db=profile_db, _owns_session_db=True, _session_title_hint="Bot Chat")
+    session = {
+        "session_key": "key-bot",
+        "profile_home": str(profile),
+        "agent": old_agent,
+        "bot_caps_seen": "caps-v1",  # a CHANGED fingerprint is what triggers the rebuild
+    }
+    try:
+        server._sync_bot_capabilities("sid-bot", session)
+
+        new_agent = session["agent"]
+        assert new_agent is not old_agent, "capability change must have rebuilt the agent"
+        # The rebuilt agent writes to the SAME store as the session it continues...
+        assert new_agent._session_db is profile_db
+        # ...and was built with that profile's home bound, not the launch home.
+        assert homes_seen == [str(profile)]
+        # Ownership moves with the handle, so teardown still releases it exactly once.
+        assert new_agent._owns_session_db is True
+        assert old_agent._owns_session_db is False
+
+        new_agent._session_db.create_session("20260906_bot", "tui", profile_name="worker")
+        assert _ids(profile / "state.db") == {"20260906_bot"}
+        assert _ids(root / "state.db") == set()
+    finally:
+        profile_db.close()
+        launch.close()
+
+
+def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
+    """The tools.configure session reset must retain the same profile binding."""
+    root, profile = homes
+    from tui_gateway import server
+
+    launch = SessionDB(db_path=root / "state.db")
+    profile_db = server._open_profile_session_db(str(profile))
+    homes_seen = _stub_rebuild_env(monkeypatch, server, launch)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    old_agent = SimpleNamespace(_session_db=profile_db, _owns_session_db=True)
+    session = {
+        "session_key": "key-reset",
+        "profile_home": str(profile),
+        "agent": old_agent,
+        "source": "desktop",
+        "cwd": str(root),
+        "explicit_cwd": True,
+        "history": ["old"],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+    try:
+        server._reset_session_agent("sid-reset", session)
+
+        new_agent = session["agent"]
+        assert new_agent is not old_agent
+        assert new_agent._session_db is profile_db
+        assert homes_seen == [str(profile)]
+        assert new_agent._owns_session_db is True
+        assert old_agent._owns_session_db is False
+
+        new_agent._session_db.create_session("20260906_reset", "tui", profile_name="worker")
+        assert _ids(profile / "state.db") == {"20260906_reset"}
+        assert _ids(root / "state.db") == set()
+    finally:
+        profile_db.close()
+        launch.close()

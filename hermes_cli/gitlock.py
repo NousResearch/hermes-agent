@@ -143,6 +143,110 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
         return []
 
 
+def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
+    """Return local commit objects whose parent objects are missing."""
+    if not candidates:
+        return set()
+    try:
+        parents_by_commit = {}
+        parents = set()
+        request = "\n".join(candidates) + "\n"
+        result = subprocess.run(
+            ["git", "cat-file", "--batch"],
+            cwd=str(repo_root),
+            input=request.encode(),
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return set()
+        data = result.stdout
+        cursor = 0
+        for candidate in candidates:
+            header_end = data.find(b"\n", cursor)
+            if header_end < 0:
+                return set()
+            header = data[cursor:header_end].split()
+            cursor = header_end + 1
+            if len(header) >= 3 and header[1] == b"commit":
+                size = int(header[2])
+                body = data[cursor:cursor + size]
+                cursor += size
+                if data[cursor:cursor + 1] != b"\n":
+                    return set()
+                cursor += 1
+                decoded = body.decode(errors="replace")
+                commit_parents = {
+                    fields[1]
+                    for line in decoded.splitlines()
+                    for fields in [line.split()]
+                    if len(fields) >= 2 and fields[0] == "parent"
+                }
+                parents_by_commit[candidate] = commit_parents
+                parents.update(commit_parents)
+            elif len(header) < 2 or header[1] != b"missing":
+                return set()
+        if not parents:
+            return set()
+        check = subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            cwd=str(repo_root),
+            input=("\n".join(sorted(parents)) + "\n").encode(),
+            capture_output=True,
+            timeout=10,
+        )
+        missing = {
+            line.split()[0]
+            for line in check.stdout.decode(errors="replace").splitlines()
+            if line.endswith(" missing")
+        }
+        return {commit for commit, commit_parents in parents_by_commit.items() if commit_parents & missing}
+    except Exception:
+        logger.debug("parent-object probe failed for %s", repo_root, exc_info=True)
+        return set()
+
+
+def repair_broken_shallow_boundaries(repo_root: Path) -> int:
+    """Repair reflog-only shallow boundaries dropped by #108286's prune bug.
+
+    This complements the prevention fix in PR #108290: existing corrupted installs need
+    boundaries reconstructed because their broken history prevents the reflogs from expiring.
+    """
+    try:
+        shallow_rel = _git_stdout_lines(repo_root, ["rev-parse", "--git-path", "shallow"])
+        if not shallow_rel:
+            return 0
+        shallow_path = Path(shallow_rel[0])
+        if not shallow_path.is_absolute():
+            shallow_path = Path(repo_root) / shallow_path
+        if not shallow_path.is_file():
+            return 0
+        original = shallow_path.read_text(encoding="utf-8")
+        existing = {line for line in original.splitlines() if line}
+        if not existing:
+            return 0
+        candidates = _git_stdout_lines(repo_root, ["cat-file", "--batch-all-objects", "--batch-check"])
+        candidates = sorted({line.split()[0] for line in candidates
+                             if len(line.split()) >= 2 and line.split()[1] == "commit"})
+        candidates = sorted(set(candidates + _git_stdout_lines(
+            repo_root, ["reflog", "show", "--all", "--format=%H"])))
+        broken = _batch_missing_parents(repo_root, candidates)
+        repaired = broken - existing
+        if not repaired:
+            return 0
+        tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-repair")
+        tmp_path.write_text("\n".join(sorted(existing | repaired)) + "\n", encoding="utf-8")
+        os.replace(tmp_path, shallow_path)
+        if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
+            shallow_path.write_text(original, encoding="utf-8")
+            return 0
+        logger.info("Restored %d broken shallow boundary(ies) in %s", len(repaired), repo_root)
+        return len(repaired)
+    except Exception:
+        logger.debug("shallow boundary repair failed for %s", repo_root, exc_info=True)
+        return 0
+
+
 def prune_stale_shallow_grafts(repo_root: Path) -> int:
     """Drop ``.git/shallow`` graft lines no live ref still points at (#105951).
 

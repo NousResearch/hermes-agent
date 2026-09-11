@@ -82,6 +82,14 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def _gemini_model_resource_name(model: str) -> str:
+    """Return the Gemini REST resource name for a bare or native model id."""
+    model_name = bare_gemini_model_id(model)
+    if model_name.startswith(("models/", "tunedModels/")):
+        return model_name
+    return f"models/{model_name}"
+
+
 def gemini_requires_tool_call_ids(model: str) -> bool:
     """Gemini 3+ needs explicit functionCall/functionResponse ids so replayed parallel tool calls
     pair with their responses; 2.x rejects the field.
@@ -114,7 +122,12 @@ def probe_gemini_tier(
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
+            resp = client.post(
+                f"{base}/{_gemini_model_resource_name(model)}:generateContent",
+                params={"key": key},
+                json=payload,
+                headers=headers,
+            )
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
         return "unknown"
@@ -662,7 +675,7 @@ class GeminiNativeClient:
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
         )
         model = bare_gemini_model_id(model)
-        url = f"{self.base_url}/models/{model}:"
+        url = f"{self.base_url}/{_gemini_model_resource_name(model)}:"
         if stream:
             return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)

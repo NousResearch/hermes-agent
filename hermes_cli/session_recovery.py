@@ -511,8 +511,15 @@ class _RowidRangeSalvage:
         if not self._keep([value]):
             result["excluded_rows"] += 1
             return True
-        with _immediate_transaction(self.destination):
-            self.destination.execute(self.insert_sql, value)
+        try:
+            with _immediate_transaction(self.destination):
+                self.destination.execute(self.insert_sql, value)
+        except sqlite3.IntegrityError as exc:
+            # A phantom row from a damaged page (NULL in a NOT NULL column, FK to nothing) is rejected
+            # by the destination schema; report it as a skipped singleton instead of aborting the table.
+            result["destination_rejected_rows"] += 1
+            self._skip(rowid, rowid, f"destination constraint rejected row: {exc}")
+            return True
         result["copied_rows"] += 1
         result["exact_lookup_recovered"] += 1
         return True
@@ -568,7 +575,8 @@ def _copy_table_salvage(
     """Best-effort rowid-range copy that continues past damaged source pages."""
     result: dict[str, Any] = {
         "mode": "rowid_range_salvage", "source_rows": source_rows, "copied_rows": 0, "excluded_rows": 0,
-        "columns": [], "range_queries": 0, "exact_lookup_recovered": 0, "skipped_rowid_ranges": [],
+        "columns": [], "range_queries": 0, "exact_lookup_recovered": 0, "destination_rejected_rows": 0,
+        "skipped_rowid_ranges": [],
     }
     columns = _compatible_columns(source, destination, table, result)
     if columns is None:

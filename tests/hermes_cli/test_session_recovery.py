@@ -834,3 +834,45 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
         lf_conn.close()
         dest.close()
     assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]
+
+
+
+def test_partial_recovery_skips_phantom_row_rejected_by_destination_schema(
+    tmp_path: Path,
+) -> None:
+    """#102240: a phantom ``sessions`` row with NULL ``started_at`` must be reported as a skipped
+    singleton, not abort the whole ``--allow-partial`` run at the exact-lookup boundary."""
+    source = tmp_path / "phantom-state.db"
+    output = tmp_path / "phantom-recovered.db"
+    _make_source(source)
+
+    # Relax the source's NOT NULL in place (schema text only, the pages stay identical) so the
+    # source can hold a row the destination's canonical schema rejects.
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql = replace(sql, 'started_at REAL NOT NULL', 'started_at REAL') "
+            "WHERE type = 'table' AND name = 'sessions'"
+        )
+        version = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version={version + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, title) VALUES ('phantom', 'cli', NULL, 'Phantom')"
+        )
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 4
+
+    report = recover_session_database(source, output, work_dir=tmp_path, chunk_size=16, allow_partial=True)
+
+    copied = report["copy"]["sessions"]
+    assert copied["status"] == "partial"
+    assert copied["copied_rows"] == 3
+    assert copied["destination_rejected_rows"] == 1
+    assert [item["error"] for item in copied["skipped_rowid_ranges"]] == [
+        "destination constraint rejected row: NOT NULL constraint failed: sessions.started_at",
+    ]
+    assert report["verified"] is True
+    with sqlite3.connect(str(output)) as conn:
+        assert conn.execute("SELECT count(*) FROM sessions WHERE id = 'phantom'").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 21

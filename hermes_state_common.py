@@ -374,6 +374,21 @@ CREATE TABLE IF NOT EXISTS messages (
     display_order INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS session_display_events (
+    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    command TEXT NOT NULL,
+    output TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_display_events_order
+    ON session_display_events(session_id, created_at, ordinal);
+CREATE TRIGGER IF NOT EXISTS session_display_events_immutable
+BEFORE UPDATE ON session_display_events BEGIN
+    SELECT RAISE(ABORT, 'display events are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

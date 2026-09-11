@@ -58,7 +58,9 @@ def _patch_gateway_discovery():
     UNPATCHED copy of the module — silently discarding every mock here and
     letting real gateway discovery (and real ``os.kill``) run on the dev box.
     """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+    # launchd enumerates profile labels independently of PID/systemd discovery.
+    with patch("hermes_cli.update_cmd_fleet._restart_macos_launchd_gateways"), \
+         patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
          patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
@@ -86,6 +88,11 @@ def _patch_gateway_discovery():
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
+    # Fleet-wide profile/skill work also reads HOME, not just HERMES_HOME.
+    home = tmp_path / "account"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("HOME", str(home))
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)

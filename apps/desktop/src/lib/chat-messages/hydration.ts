@@ -295,7 +295,14 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
+    const displayEventId = [message.row_id, message.id].find(
+      value => typeof value === 'string' && value.startsWith('display:')
+    )
+
+    const isCommandResult = message.display_kind === 'command_result' || typeof displayEventId === 'string'
+
     const displayRole =
+      isCommandResult ||
       message.display_kind === 'model_switch' ||
       message.display_kind === 'async_delegation_complete' ||
       message.display_kind === 'auto_continue' ||
@@ -400,14 +407,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
+
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
-    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const rowId =
+      typeof message.row_id === 'number' ? message.row_id : typeof message.id === 'number' ? message.id : undefined
 
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      id:
+        typeof displayEventId === 'string'
+          ? displayEventId
+          : `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
+      ...(isCommandResult ? { displayKind: 'command_result' as const } : {}),
       parts,
       ...(message.display_kind === 'async_delegation_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }

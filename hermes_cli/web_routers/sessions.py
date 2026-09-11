@@ -197,7 +197,7 @@ def get_sessions(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
                 min_message_count=min_message_count, include_archived=include_archived,
-                archived_only=archived_only)
+                archived_only=archived_only, include_display_events=True)
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
@@ -441,7 +441,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
 async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     """Delete every empty, ended, non-archived session in one transaction.
 
-    "Empty" means NO ``messages`` rows at all — a rewound/compacted chat reads
+    "Empty" means NO message or command-display rows — a rewound/compacted chat reads
     ``message_count == 0`` while its soft-archived rows are the only transcript
     copy (see :meth:`SessionDB.delete_empty_sessions`).
 
@@ -529,7 +529,7 @@ def _project_for_display(messages: list) -> list:
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False)):
+    include_compacted: bool = Query(False), include_display_events: bool = Query(False)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
@@ -543,7 +543,8 @@ async def get_session_messages(
         default_page = limit is None
         latest_page = order == "latest" or (order is None and default_page)
         _limit = 500 if default_page else min(limit, 500)
-        return sid, _limit, db.get_messages(
+        read_messages = db.get_display_messages if include_display_events is True else db.get_messages
+        return sid, _limit, read_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted)
 

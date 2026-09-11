@@ -42,9 +42,19 @@ export interface FileAttachResponse {
   name?: string
 }
 
+export interface CommandDisplayEvent {
+  id: string
+  role: 'system'
+  content: string
+  timestamp: number
+  display_kind: 'command_result'
+}
+
 export interface SlashExecResponse {
   output?: string
   warning?: string
+  display_event?: CommandDisplayEvent
+  persistence_error?: string
 }
 
 export interface BrowserManageResponse {
@@ -122,9 +132,8 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
+export interface ExecCommandDispatchResponse extends SlashExecResponse {
   type: 'exec' | 'plugin'
-  output?: string
 }
 
 export interface AliasCommandDispatchResponse {

@@ -97,15 +97,20 @@ def _branch_head_suffix(git_cmd=None, cwd=None) -> str:
     return f" [{label}]" if label else ""
 
 
-def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str) -> tuple[bool, str]:
+def _assess_parked_branch_switch(
+    git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str,
+    *, allow_dirty_in_place: bool = False,
+) -> tuple[bool, str]:
     """Decide whether a parked feature branch may be auto-switched back to the update target.
 
     - (True, "") — tree clean and every parked commit is in ``origin/<target>`` (no ``git cherry +``).
     - (True, "unmerged:<n>") — tree clean but commits not in target; switching is safe (checkout keeps
       committed work) but caller must print a LOUD notice. Non-interactive callers (desktop, gateway
       /update, cron) can't resolve a skip, so a clean checkout must reach target.
-    - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
-      genuinely unsafe case: uncommitted work riding an autostash across branches.
+    - A dirty tree can proceed only for an explicitly configured in-place update with
+      unique local commits: the caller then autostashes without switching branches.
+    - (False, "disabled"|"dirty"|"conflicted"|"unverifiable") — caller must NOT touch the branch. Dirty is the
+      genuinely unsafe case when uncommitted work would ride an autostash across branches.
     A config read failure must not disable the safety checks: fall through with the default."""
     from hermes_cli.update_cmd import _git_run
     try:
@@ -118,17 +123,24 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     status = _git_run(git_cmd, ["status", "--porcelain"], cwd)
     if status.returncode != 0:
         return False, "unverifiable"
-    if status.stdout.strip():
+    if any(line[:2] in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+           for line in status.stdout.splitlines()):
+        return False, "conflicted"
+    dirty = bool(status.stdout.strip())
+    if dirty and not allow_dirty_in_place:
         return False, "dirty"
     cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
     if cherry.returncode != 0:
         return False, "unverifiable"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
+    if dirty and not unmerged:
+        return False, "dirty"
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""
 
 
 _PARKED_SKIP_WHY = {
     "dirty": "the working tree has uncommitted changes",
+    "conflicted": "the index has unresolved conflicts; finish or abort the existing merge/rebase first",
     "disabled": "updates.auto_switch_parked_branch is set to false in config.yaml",
 }
 

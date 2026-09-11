@@ -86,6 +86,11 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
+def _command_display_result(rid, params, session, command, payload):
+    from tui_gateway.command_display import persist_command_output
+    return _ok(rid, persist_command_output(session, params, command, payload))
+
+
 _stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
 _nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
 _NAME = (("name", _stripped),)
@@ -804,6 +809,8 @@ def _(rid, params: dict) -> dict:
         if res is not None:
             if name in _SESSION_CONTROL_SLASHES and "error" not in res:
                 _publish_session_control_snapshot(params.get("session_id", ""), session)
+            if "result" in res and isinstance(res["result"], dict) and "output" in res["result"]:
+                return _command_display_result(rid, params, session, name, res["result"])
             return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
@@ -824,21 +831,25 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
-        return _ok(rid, {"output": live_output or "(no output)"})
+        return _command_display_result(rid, params, session, base, {"output": live_output or "(no output)"})
     if base in _WORKER_BLOCKED_COMMANDS and _is_snapshot_restore(arg):
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
     target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
-        return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
+        return _methods["command.dispatch"](rid, {
+            "name": target.lstrip("/"), "arg": arg, "session_id": sid,
+            **({"display_event_id": params["display_event_id"]} if params.get("display_event_id") else {})})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+    with _session_profile_runtime_scope(session):
+        if plugin_handler := _plugin_command_handler(base) if base else None:
+            try:
+                output = _run_plugin_command(plugin_handler, arg) or "(no output)"
+            except Exception:
+                output = "Plugin command failed; no automatic retry was performed."
+            return _command_display_result(rid, params, session, base, {"output": output})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
@@ -861,7 +872,7 @@ def _(rid, params: dict) -> dict:
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)
-        return _ok(rid, payload)
+        return _command_display_result(rid, params, session, base, payload)
     except Exception as e:
         with contextlib.suppress(Exception):
             worker.close()

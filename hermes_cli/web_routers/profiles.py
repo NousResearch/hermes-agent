@@ -385,7 +385,7 @@ def get_profiles_sessions(
     filters = dict(
         source=source or None, sources=_csv_list(sources) or None,
         exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
-        include_archived=archived == "include", archived_only=archived == "only")
+        include_archived=archived == "include", archived_only=archived == "only", include_display_events=True)
     # Over-fetch per profile so the merged+sorted window is correct for the requested page.
     # Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -452,7 +452,7 @@ def get_profiles_sessions_sidebar(
         return db.list_sessions_rich(
             source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
-            order_by_last_active=True, compact_rows=True, include_pinned=True)
+            order_by_last_active=True, compact_rows=True, include_pinned=True, include_display_events=True)
 
     def _build_slices(db, cache_key):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a

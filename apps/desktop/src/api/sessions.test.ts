@@ -11,14 +11,47 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions,
+  getSessionMessages
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
+})
+
+it('opts into paginated display rows without changing the profile or page', async () => {
+  vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'work', connectionId: 'local' })
+  hermesApi.mockResolvedValue({ messages: [], total: 0 } as never)
+  await getSessionMessages(
+    'session/id',
+    { profile: 'work', connectionId: 'local' },
+    {
+      limit: 20,
+      offset: 40,
+      order: 'oldest',
+      includeCompacted: true
+    }
+  )
+  const request = hermesApi.mock.calls[0][0]
+  const url = new URL(request.path, 'http://unit.invalid')
+  expect(url.pathname).toBe('/api/sessions/session%2Fid/messages')
+  expect(Object.fromEntries(url.searchParams)).toEqual({
+    include_display_events: 'true',
+    profile: 'work',
+    limit: '20',
+    offset: '40',
+    order: 'oldest',
+    include_compacted: 'true'
+  })
+  expect(request).toMatchObject({ profile: 'work', connectionId: 'local' })
 })
 
 describe('deleteSession profile scoping', () => {

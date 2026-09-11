@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession } from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
@@ -532,7 +532,11 @@ describe('usePromptActions slash session targeting', () => {
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'slash.exec'])
     expect(calls[0]?.params).toMatchObject({ session_id: STORED_SESSION_ID })
     // The command lands on the recovered runtime that owns the goal.
-    expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
+    expect(calls[1]?.params).toEqual({
+      command: 'goal status',
+      session_id: RECOVERED_SESSION_ID,
+      display_event_id: expect.any(String)
+    })
   })
 
   it('does not fork the chat when the routed session cannot be rebound', async () => {
@@ -1273,6 +1277,149 @@ describe('usePromptActions exec fallback error reporting', () => {
   })
 })
 
+describe('command report persistence', () => {
+  beforeEach(() => {
+    $busy.set(false)
+    $connection.set(null)
+    setSessions(() => [sessionInfo()])
+    clearNotifications()
+  })
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it.each(['slash.exec', 'command.dispatch'])(
+    'keeps stable live output through %s and shares one logical id',
+    async path => {
+      const seeds: Record<string, unknown>[] = []
+
+      const persistedEvent = {
+        role: 'system' as const,
+        content: 'slash:/canonical-report\nOriginal report',
+        timestamp: 100,
+        display_kind: 'command_result' as const
+      }
+
+      const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'slash.exec' && path === 'command.dispatch') {
+          throw new Error('use command.dispatch')
+        }
+
+        if (method === path) {
+          return {
+            type: 'plugin',
+            output: 'Original report',
+            display_event: {
+              ...persistedEvent,
+              id: `display:${params?.display_event_id}`
+            }
+          } as never
+        }
+
+        return {} as never
+      })
+
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          onSeedState={s => seeds.push(s)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+      await handle!.submitText('/report')
+
+      const calls = requestGateway.mock.calls.filter(
+        ([method]) => method === 'slash.exec' || method === 'command.dispatch'
+      )
+
+      const id = calls[0][1]?.display_event_id
+      expect(id).toMatch(/^[0-9a-f-]{36}$/)
+      expect(calls.every(([, params]) => params?.display_event_id === id)).toBe(true)
+      expect(calls).toHaveLength(path === 'slash.exec' ? 1 : 2)
+      const rows = seeds.at(-1)!.messages as ChatMessage[]
+      expect(rows.filter(row => row.id === `display:${id}`)).toHaveLength(1)
+      const liveText = chatMessageText(rows.find(row => row.id === `display:${id}`)!)
+      expect(liveText).toBe(persistedEvent.content)
+      expect(liveText).toBe(chatMessageText(toChatMessages([{ ...persistedEvent, id: `display:${id}` }])[0]))
+      expect(rows.find(row => row.id === `display:${id}`)).toMatchObject({
+        timestamp: 100,
+        displayKind: 'command_result'
+      })
+      await handle!.submitText('/report')
+      const invocations = requestGateway.mock.calls.filter(([method]) => method === 'slash.exec')
+      expect(invocations[1][1]?.display_event_id).not.toBe(id)
+    }
+  )
+
+  it.each(['slash.exec', 'command.dispatch'])(
+    'shows persistence failure from %s without losing output or re-executing',
+    async path => {
+      const seeds: Record<string, unknown>[] = []
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'slash.exec' && path === 'command.dispatch') {
+          throw new Error('use command.dispatch')
+        }
+
+        return {
+          ...(path === 'command.dispatch' ? { type: 'plugin' } : {}),
+          output: 'Complete original report',
+          persistence_error: 'Report was not saved; disk is full.'
+        } as never
+      })
+
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          onSeedState={s => seeds.push(s)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+      await handle!.submitText('/report')
+      expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(
+        path === 'slash.exec' ? ['slash.exec'] : ['slash.exec', 'command.dispatch']
+      )
+      expect(renderedSeedTexts(seeds)).toContain('slash:/report\nComplete original report')
+      expect(
+        $notifications
+          .get()
+          .some(row => row.kind === 'warning' && row.message === 'Report was not saved; disk is full.')
+      ).toBe(true)
+    }
+  )
+
+  it('does not append a duplicate when hydrate arrived before the command response', async () => {
+    const event = {
+      id: 'display:already-stored',
+      role: 'system' as const,
+      content: 'slash:/report\nOriginal report',
+      timestamp: 100,
+      display_kind: 'command_result'
+    }
+
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({ output: 'Original report', display_event: event }) as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={toChatMessages([event])}
+      />
+    )
+    await handle!.submitText('/report')
+    expect((seeds.at(-1)!.messages as ChatMessage[]).filter(row => row.id === event.id)).toHaveLength(1)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('usePromptActions slash.exec dispatch payloads', () => {
   afterEach(() => {
     cleanup()
@@ -1319,7 +1466,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', {
       command: 'approvals off',
-      session_id: focusedSessionId
+      session_id: focusedSessionId,
+      display_event_id: expect.any(String)
     })
     expect(persistedModes.get(focusedProfile)).toBe('off')
     expect(persistedModes.has('default')).toBe(false)
@@ -1358,7 +1506,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
       command: 'goal write the implementation plan',
-      session_id: RUNTIME_SESSION_ID
+      session_id: RUNTIME_SESSION_ID,
+      display_event_id: expect.any(String)
     })
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
@@ -1807,7 +1956,8 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
       command: 'goal Write a Python script\nthat prints Hello World',
-      session_id: RUNTIME_SESSION_ID
+      session_id: RUNTIME_SESSION_ID,
+      display_event_id: expect.any(String)
     })
 
     const renderedText = states

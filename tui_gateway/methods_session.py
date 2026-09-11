@@ -528,7 +528,10 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display)
+        if self.omit_messages:
+            return []
+        from tui_gateway.command_display import with_display_events
+        return with_display_events(_history_to_messages(display), self.db, self.target)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -1697,6 +1700,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
     history = list(session.get("history", []))
+    messages = None
     if session.get("session_key"):
         with _session_db(session) as db:
             if db is not None:
@@ -1708,7 +1712,10 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history)})
+                from tui_gateway.command_display import with_display_events
+                messages = with_display_events(_history_to_messages(history), db, session["session_key"])
+    messages = messages if messages is not None else _history_to_messages(history)
+    return _ok(rid, {"count": len(messages), "messages": messages})
 
 
 @_session_method("session.undo", live=True)

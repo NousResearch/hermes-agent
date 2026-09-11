@@ -86,7 +86,11 @@ def _load_config_passthrough() -> frozenset[str]:
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
     from hermes_constants import hermes_home_key
 
-    home_key = hermes_home_key()
+    try:
+        home_key = hermes_home_key()
+    except (RuntimeError, OSError):
+        # No resolvable home (stripped environ in a sandbox child): nothing to scope by.
+        home_key = ""
     cached = _config_passthrough.get(home_key)
     if cached is not None:
         return cached

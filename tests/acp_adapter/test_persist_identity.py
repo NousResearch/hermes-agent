@@ -38,6 +38,25 @@ def _state(agent, model="claude-opus-5"):
     )
 
 
+def test_persist_auto_keeps_resolved_provider():
+    ident = persist_identity(_state(_agent(
+        model="anthropic/claude-sonnet-4.5",
+        provider="openrouter",
+        requested_provider="auto",
+        base_url=None,
+        _primary_runtime={
+            "model": "anthropic/claude-sonnet-4.5",
+            "provider": "openrouter",
+            "requested_provider": "auto",
+            "base_url": None,
+            "api_mode": "chat_completions",
+        },
+    ), model="anthropic/claude-sonnet-4.5"))
+    assert ident["model"] == "anthropic/claude-sonnet-4.5"
+    assert ident["provider"] == "openrouter"
+    assert ident["requested_provider"] == "auto"
+
+
 def test_persist_keeps_named_custom_provider():
     ident = persist_identity(_state(_agent()))
     assert ident["model"] == "claude-opus-5"

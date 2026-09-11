@@ -31,7 +31,11 @@ def _plain_str(value: Any) -> Optional[str]:
 
 
 def _named_provider_identity(provider: Any, requested_provider: Any) -> str:
-    """Prefer ``custom:<name>`` over the flattened runtime provider ``custom``."""
+    """Prefer ``custom:<name>`` over the flattened runtime provider ``custom``.
+
+    ``auto`` is a resolution sentinel, not a durable identity — keep the already
+    resolved runtime provider so ACP choice ids stay ``openrouter:...`` (#101946).
+    """
     requested = _plain_str(requested_provider) or ""
     flattened = _plain_str(provider) or ""
     requested_l = requested.lower()
@@ -48,6 +52,8 @@ def _named_provider_identity(provider: Any, requested_provider: Any) -> str:
             return durable
     except Exception:
         pass
+    if requested_l in {"", "auto"}:
+        return flattened
     return requested or flattened
 
 
@@ -114,11 +120,14 @@ def persist_identity(state: "SessionState") -> Dict[str, Optional[str]]:
             else None
         )
 
+    live_requested = requested_provider
     provider, model = _split_prefixed_model(model, provider or requested_provider)
-    requested_provider = (
-        _named_provider_identity(provider, requested_provider) or requested_provider or provider
-    )
-    provider = _named_provider_identity(provider, requested_provider) or provider
+    durable = _named_provider_identity(provider, requested_provider) or provider
+    if (live_requested or "").strip().lower() == "auto":
+        requested_provider = live_requested
+    else:
+        requested_provider = durable or live_requested or provider
+    provider = durable or provider
 
     return {
         "model": model,

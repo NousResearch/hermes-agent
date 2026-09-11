@@ -135,6 +135,8 @@ def _search_filter_clauses(
     rewind/undo rows (active=0, compacted=0) are hidden."""
     if not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
+    # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
+    where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)

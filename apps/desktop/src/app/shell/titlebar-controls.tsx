@@ -251,6 +251,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       <Slot area="titleBar.right" />
     </>
   )
+
   const leftClusterClass = cn(
     titlebarToolClusterClass,
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'

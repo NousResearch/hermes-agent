@@ -5,9 +5,177 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
+import type { WisdomMuteCopy, WisdomSyncCopy } from '@hermes/shared'
+
 import type { TipId } from '@/lib/tips/catalog'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+
+export interface WisdomTranslations {
+  syncRecovery?: WisdomSyncCopy
+  notificationPreferences: WisdomMuteCopy
+  title: string
+  loading: string
+  unavailable: string
+  setup: string
+  setupDisclosure: string
+  setupAction: string
+  settingUp: string
+  scanLocal: string
+  orgWide: string
+  sharedSkills: (count: number) => string
+  localCandidates: (count: number) => string
+  contributionWorkflow: string
+  potential: string
+  potentialHelp: string
+  noSuggestions: string
+  browseLocal: (count: number) => string
+  browseLocalHelp: string
+  ownerReview: string
+  ownerReviewHelp: string
+  noDrafts: string
+  noShared: string
+  noDescription: string
+  serverScanPassed: string
+  localOnly: string
+  qualifiedLocally: string
+  qualificationFirst: (organizationName?: string | null) => string
+  qualificationReturning: string
+  savedLocally: string
+  prepare: string
+  continueDraft: string
+  reviewExact: string
+  runSetupStep: string
+  confirmSetupPrerequisite: string
+  setupCommand: string
+  setupStepApprovalNotice: string
+  openDraft: string
+  draftState: (state: string) => string
+  authoritative: string
+  versionHistory: string
+  versions: string
+  versionDetails: (version: number) => string
+  immutableVersion: string
+  published: (date: string) => string
+  releaseExplanation: string
+  viewInPortal: string
+  backToSkill: string
+  backToVersions: string
+  prepareTitle: string
+  prepareNotice: string
+  ownerDescription: string
+  systemSpecification: string
+  cancel: string
+  submit: string
+  submitting: string
+  readEvery: string
+  publishToTeam: string
+  submitForApproval: string
+  publishLocalNotice: string
+  submitLocalNotice: string
+  reloadReview: string
+  editReview: string
+  editOwnerDescription: string
+  unsavedChanges: string
+  saveAndRescan: string
+  savingRevision: string
+  resetChanges: string
+  reviewedHashes: string
+  ownerReviewExact: string
+  localOverlay: string
+  close: string
+  approve: string
+  publishing: string
+  proposalTitle: string
+  localSuggestion: string
+  preparingLocal: string
+  whySuggested: string
+  sharePrompt: string
+  reviewFirst: string
+  notNow: string
+  yes: string
+  share: string
+  sharePreparationNotice: string
+  reviewPreviousPage: string
+  reviewNextPage: string
+  muteNotificationsSoon: string
+  unmuteNotificationsSoon: string
+  openCollective: string
+  prepareExact: string
+  skillName: string
+  whatItDoes: string
+  editDefaultsNotice: string
+  detailedRequirements: string
+  hideDetailedRequirements: string
+  specificationNotice: string
+  openFullReview: string
+  sendPrivateReview: string
+  saveLocal: string
+  savingLocal: string
+  source: string
+  preview: string
+  localDraft: string
+  serverReviewed: string
+  serverEnforced: string
+  localAdvisory: string
+  qualificationLabel: string
+  scanPassed: string
+  reviewFindings: string
+  scanAvailable: string
+  scanUnavailable: string
+  reviewed: string
+  contentHash: string
+  authorDescriptionHash: string
+  packageManifestHash: string
+  serverReviewNotice: string
+  decline: string
+  approvePublish: string
+  checkUpdates: (count: number) => string
+  checking: string
+  refreshShared: string
+  refreshingShared: string
+  installReferenceLabel: string
+  installReferencePlaceholder: string
+  installReferenceHelp: string
+  reviewInstall: string
+  planningInstall: string
+  updateModeLabel: string
+  updateModeDefault: string
+  updateModeManual: string
+  updateModeAutomatic: string
+  updateModeRequired: string
+  updateModeHelp: string
+  updateModePlan: (mode: string) => string
+  install: string
+  uninstall: string
+  checkSkill: string
+  updateAvailable: (version?: number) => string
+  reviewUpdate: string
+  installed: (version: number, mode: string) => string
+  confirmAction: (action: string) => string
+  acceptCompatibility: string
+  acceptSensitive: string
+  preserveModified: string
+  alreadyCurrent: string
+  ownerCopyLabel: string
+  serverFactsLabel: string
+  notifications: string
+  activityReady: (count: number) => string
+  aSkill: string
+  decisionPublished: (skill: string) => string
+  decisionChanges: (skill: string) => string
+  decisionDeclined: (skill: string) => string
+  decisionChanged: (skill: string, state: string) => string
+  installedNotice: (skill: string, version?: string) => string
+  updatedNotice: (skill: string, version?: string) => string
+  updateNotice: (skill: string, version?: string) => string
+  newSkillNotice: (skill: string) => string
+  unavailableNotice: (skill: string) => string
+  archivedNotice: (skill: string) => string
+  takedownNotice: (skill: string) => string
+  viewSkill: string
+  markSeen: string
+}
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -382,6 +550,7 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
+      vault: string
     }
     plugins: {
       title: string
@@ -443,6 +612,76 @@ export interface Translations {
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string
+      }
+    }
+    vault: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      loadFailed: string
+      empty: string
+      emptyDesc: string
+      add: string
+      addTitle: string
+      addDescription: string
+      added: string
+      adding: string
+      addConfirm: string
+      kindField: string
+      kinds: Record<'address' | 'login' | 'payment', string>
+      labelField: string
+      labelPlaceholder: string
+      labelRequired: string
+      originField: string
+      originPlaceholder: string
+      originPlaceholderCheckout: string
+      originInvalid: string
+      identifierTypeField: string
+      identifierTypes: Record<'email' | 'phone' | 'username', string>
+      identifierField: string
+      identifierShown: (identifier: string) => string
+      passwordField: string
+      loginFieldsRequired: string
+      cardNumberField: string
+      cardNameField: string
+      expMonthField: string
+      expYearField: string
+      cvcField: string
+      postalField: string
+      addressLine1Field: string
+      addressLine2Field: string
+      cityField: string
+      stateField: string
+      countryField: string
+      optional: string
+      createdOn: (date: string) => string
+      deleteAction: string
+      otpField: string
+      otpPlaceholder: string
+      otpHint: string
+      twoFactorBadge: string
+      deleteTitle: string
+      deleteDescription: (label: string) => string
+      deleteConfirm: string
+      sources: {
+        title: string
+        blurb: string
+        toggleFailed: string
+        notInstalled: (name: string) => string
+        disabledDesc: string
+        lockedDesc: string
+        unlockedDesc: string
+        statusLocked: string
+        statusNotDetected: string
+        statusOff: string
+        statusUnlocked: string
+        unlock: string
+        unlocking: string
+        lock: string
+        unlocked: (name: string) => string
+        unlockTitle: (name: string) => string
+        unlockDescription: string
+        masterPasswordPlaceholder: string
       }
     }
     notifications: {
@@ -1270,13 +1509,16 @@ export interface Translations {
   }
 
   skills: {
+    collective: WisdomTranslations
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
     tabMcp: string
+    tabCollective: string
     all: string
     searchSkills: string
     searchToolsets: string
+    searchCollective: string
     refresh: string
     refreshing: string
     loading: string
@@ -2734,6 +2976,53 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
+  freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
+    // First-launch introduction (ready screen + composer strip).
+    readyTitle: string
+    readyCaption: string
+    begin: string
+    signInInstead: string
+    otherProviders: string
+    stripTitle: string
+    stripBody: string
+    openModelPicker: string
+    dismiss: string
+    // Statusbar chip.
+    statusLabel: (model: string) => string
+    // Sign-in dialog.
+    signIn: string
+    signInHeading: string
+    settingUp: string
+    codeBody: string
+    copyLink: string
+    doNotShare: string
+    waiting: string
+    finishingHeading: string
+    finishingBody: string
+    signedInAs: (email: string) => string
+    signedIn: string
+    completedBody: string
+    defaultModel: string
+    change: string
+    done: string
+    notNow: string
+    tryAgain: string
+    startAgain: string
+    didNotComplete: string
+    rejectedBody: string
+    supersededBody: string
+    timedOutHeading: string
+    timedOutBody: string
+    retiredBody: string
+    errorBody: string
+    alreadySignedInHeading: string
+    alreadySignedInBody: string
+  }
+
   modelPicker: {
     title: string
     current: string
@@ -2858,6 +3147,7 @@ export interface Translations {
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
+      toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
@@ -3316,6 +3606,28 @@ export interface Translations {
     secretTitle: string
     secretDesc: string
     secretPlaceholder: string
+    vaultUnlockSendFailed: string
+    vaultUnlockTitle: (name: string) => string
+    vaultUnlockDesc: (name: string) => string
+    vaultSaveSendFailed: string
+    vaultSaveTitle: (site: string) => string
+    vaultSaveDesc: (origin: string) => string
+    vaultSaveIdentifierLabel: string
+    vaultSaveIdentifierPlaceholder: string
+    vaultSavePasswordPlaceholder: string
+    vaultSaveFootnote: string
+    vaultSaveDecline: string
+    vaultSaveConfirm: string
+    vaultCodeSendFailed: string
+    vaultCodeTitle: (site: string) => string
+    vaultCodeDesc: (site: string) => string
+    vaultCodeLabel: string
+    vaultCodeFootnote: string
+    vaultCodeSkip: string
+    vaultCodeConfirm: string
+    vaultUnlockPlaceholder: string
+    vaultUnlockKeepLocked: string
+    vaultUnlockConfirm: string
   }
 
   desktop: {

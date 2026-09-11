@@ -34,6 +34,8 @@
 //     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
+import { readStatusCode } from './api-transport'
+
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
@@ -121,7 +123,7 @@ function isGatewayAuthRejection(error) {
     return true
   }
 
-  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+  const statusCode = readStatusCode(error)
 
   return statusCode === 401 || statusCode === 403
 }
@@ -132,6 +134,15 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
+    // A rejected ticket mint is a CONFIRMED reauth failure, not a hint. The
+    // cookie path only sees a 401/403 after the gateway's transparent AT/RT
+    // rotation has already failed, and the native-bearer path only after
+    // mintGatewayWsTicket's forced /auth/native/refresh has. Nothing will
+    // change until the user signs in, so tag it the way startHermes latches
+    // (isReauthRequiredError): the boot is marked non-retryable and the
+    // overlay's Sign in button stops flickering away under the renderer's
+    // transient-boot retry loop (#95701).
+    ;(err as any).isReauthRequired = true
   }
 
   // Preserve structured HTTP context when the source error carried an integer
@@ -140,7 +151,7 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
   // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
   // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
   // failure, everything else keeps current behavior.
-  const sourceStatus = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+  const sourceStatus = readStatusCode(error)
 
   if (Number.isInteger(sourceStatus)) {
     ;(err as any).statusCode = sourceStatus

@@ -503,7 +503,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
-    images: list[str], display_kind: str | None, display_metadata: dict | None) -> None:
+    images: list[str], display_kind: str | None, display_metadata: dict | None,
+    turn_author: dict | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
 
@@ -539,6 +540,8 @@ def _invoke_agent(
     if display_kind and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
         run_kwargs["persist_user_display_metadata"] = display_metadata
+    if turn_author and "turn_author" in run_params:
+        run_kwargs["turn_author"] = turn_author
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -782,7 +785,17 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    turn_author: dict | None = None) -> bool:
+    if display_kind is None and not str(rid).startswith("__"):
+        session["_wisdom_user_activity"] = time.time()
+        if session.get("_wisdom_activity_tracking"):
+            try:
+                from tui_gateway.wisdom_mediation import note_activity
+
+                note_activity(session, profile_scope=_session_profile_runtime_scope)
+            except Exception:
+                logger.debug("Wisdom user activity unavailable", exc_info=True)
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -825,7 +838,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata)
+                display_metadata, turn_author)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

@@ -69,6 +69,7 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
     _report_port_in_use,
     _start_parent_death_watchdog,
     _warm_gateway_module,
+    _wisdom_checker_loop,
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
@@ -809,6 +810,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     mcp as _mcp_routes,
     ops as _ops_routes,
     skills as _skills_routes,
+    wisdom as _wisdom_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
@@ -839,6 +841,7 @@ app.include_router(_ops_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
+app.include_router(_wisdom_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)

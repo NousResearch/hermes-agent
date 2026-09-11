@@ -15,6 +15,7 @@ import json
 import pytest
 
 import tui_gateway.server as srv
+from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
 
 
@@ -138,3 +139,51 @@ def test_reply_roundtrip_and_id_validation(home):
 
     err = srv._methods["bot_relay.reply"](2, {"id": "../evil"})
     assert "error" in err
+
+
+class _Client:
+    def __init__(self, auth_identity=None):
+        self.auth_identity = auth_identity
+
+    def write(self, obj):
+        return True
+
+    def close(self):
+        return None
+
+
+@pytest.fixture
+def bound_client(monkeypatch):
+    """Bind a fake calling transport for the handler; yields a setter for its ``auth_identity``."""
+    client = _Client()
+    token = srv.bind_transport(client)
+    try:
+        yield client
+    finally:
+        srv.reset_transport(token)
+
+
+SENDER = {"from_profile": "scout", "from_handle": "scout", "from_connection": "cloud-1"}
+SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
+
+
+@pytest.mark.parametrize("identity, refused", [
+    (None, False),
+    ({"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}, False),
+    ({"user_id": "alice", "provider": "google"}, True),
+])
+def test_relay_sender_attribution_obeys_transport_identity(home, monkeypatch, bound_client, identity, refused):
+    from tools import bot_live_delivery as live
+    forwarded = []
+    monkeypatch.setattr(live, "authority_delivery",
+                        lambda home, params: forwarded.append(params) or {"status": "queued"})
+    bound_client.auth_identity = identity
+    result = srv._methods["bot_relay.deliver"](1, {
+        "id": "f" * 32, "profile": "ops", "message": "ping", **SENDER})
+    if refused:
+        assert result["error"]["code"] == 4095
+        assert not forwarded
+    else:
+        assert _result(result)["status"] == "queued"
+        assert forwarded[0]["author"] == SENDER_AUTHOR
+        assert not any(key in forwarded[0] for key in SENDER)

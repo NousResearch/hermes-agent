@@ -236,6 +236,7 @@ class TestCrossPlatformDelivery:
         mock_runner = MagicMock()
         mock_runner._profile_name_for_source.return_value = None
         mock_runner.adapters = {Platform.TELEGRAM: mock_tg_adapter}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config = GatewayConfig(
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
         )
@@ -336,6 +337,7 @@ class TestGitHubCommentDelivery:
             encoding="utf-8",
             errors="replace",
             timeout=30,
+            env=None,
         )
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).

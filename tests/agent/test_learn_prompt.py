@@ -59,6 +59,11 @@ class TestBuildLearnPrompt:
             assert tool in std
         # #6 scripts/references/templates layout.
         assert "scripts/" in _AUTHORING_STANDARDS
+        # New skills carry separate human-facing copy without weakening the
+        # terse agent-routing name and description contract.
+        assert "metadata.hermes.editorial_name" in _AUTHORING_STANDARDS
+        assert "metadata.hermes.editorial_description" in _AUTHORING_STANDARDS
+        assert "does not replace" in std
 
     def test_teaches_the_knowledge_base_layout(self):
         # Expansive sources (books, paper stacks, specs) must produce a lean

@@ -252,16 +252,21 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
-    persists or restores a session's provider override must run the resolved provider through this
-    so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
-    (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
-    was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
-    (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    """Recover the durable menu identity for a bare custom provider. Match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model or
+    provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+        # The managed server has no custom-provider config entry. Recover its menu key
+        # from the ownership-checked endpoint, never from a model name or a fixed port.
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+            return "llamacpp"
+    identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
     candidate = str(config_provider or "").strip()

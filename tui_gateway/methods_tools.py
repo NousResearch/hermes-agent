@@ -330,7 +330,7 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
-@_rpc("commands.catalog", 5020)
+@_scoped_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     from tui_gateway.command_discovery import command_catalog
     return _ok(rid, command_catalog(_load_cfg, _tools_mod))
@@ -355,10 +355,11 @@ def _(rid, params: dict) -> dict:
         env=hermes_subprocess_env(inherit_credentials=True))
 
 
-@_rpc("command.resolve", 5012)
+@_scoped_rpc("command.resolve", 5012)
 def _(rid, params: dict) -> dict:
-    r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
-    if r:
+    commands = _tools_mod("hermes_cli.commands")
+    r = commands.resolve_command(params.get("name", ""))
+    if r and commands.command_available(r):
         return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
@@ -705,6 +706,12 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
+    commands = _tools_mod("hermes_cli.commands")
+    command = commands.resolve_command(name)
+    with _session_profile_runtime_scope(session or {}):
+        if command is not None and not commands.command_available(command):
+            return _err(rid, 4030, f"command unavailable: /{name}")
+
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in.
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
     for stage in filter(None, stages):
@@ -729,6 +736,11 @@ def _(rid, params: dict) -> dict:
     parts = cmd.lstrip("/").split(maxsplit=1)
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
+    commands = _tools_mod("hermes_cli.commands")
+    command = commands.resolve_command(base)
+    with _session_profile_runtime_scope(session):
+        if command is not None and not commands.command_available(command):
+            return _err(rid, 4030, f"command unavailable: /{base}")
     sid = params.get("session_id", "")
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:

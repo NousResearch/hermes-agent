@@ -116,3 +116,16 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
         assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == "tip"
     finally:
         db.close()
+
+
+def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
+    author = {"id": "bot:coder", "name": "coder", "is_bot": True}
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author)
+    assert queued["author"] == author
+    assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author) == queued
+    with pytest.raises(ValueError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
+    assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)

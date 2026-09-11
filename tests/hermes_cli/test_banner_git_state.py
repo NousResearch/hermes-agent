@@ -177,13 +177,12 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
 
     def spy_run(args, **kwargs):
         calls.append((list(args), kwargs))
-        if args[1] == "ls-remote":
-            return MagicMock(returncode=0, stdout=f"{head_sha}\trefs/heads/main\n")
-        if args[1] == "fetch":
-            return MagicMock(returncode=1, stdout="")
+        if args[1] in {"ls-remote", "fetch"}:
+            raise AssertionError(f"a GitHub origin must be probed via the API, not git {args[1]}")
         return real_run(args, **kwargs)
 
     monkeypatch.setattr(banner.subprocess, "run", spy_run)
+    monkeypatch.setattr(banner, "_github_branch_tip", lambda slug, branch: head_sha)
 
     behind = banner._check_via_local_git(repo_dir)
 

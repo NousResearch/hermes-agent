@@ -139,7 +139,7 @@ def _write(path: Path, record: dict[str, Any]) -> None:
 
 def deliver_to_live_owner(
     profile_home: Path | str, owner: dict[str, Any], message: str,
-    *, delivery_id: str | None = None,
+    *, delivery_id: str | None = None, author: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return durable admission immediately, without waiting for the owner.
 
@@ -147,10 +147,13 @@ def deliver_to_live_owner(
     state. Reusing an id with a different payload is an error, never an overwrite.
     """
     pinned = _owner(profile_home, owner)
+    if not isinstance(message, str):
+        raise ValueError("message must be a string")
     home = Path(profile_home).resolve()
-    return authority_delivery(home, dict(id=_delivery_id(delivery_id or uuid.uuid4().hex),
+    return authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
         profile=home.name if home.parent.name == "profiles" else "default",
-        message=message, session_id=pinned["session_id"]))
+        message=message, session_id=pinned["session_id"],
+        **({"author": dict(author)} if author else {})))
 
 
 def claim_pending_delivery(profile_home, owner):

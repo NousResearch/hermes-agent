@@ -429,6 +429,14 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 # --- Post payload builders and parsers ---
 
+# Auto-card threshold: replies at or above this length are rendered as an
+# interactive card instead of a ``post`` payload. Deployment-opt-in — the
+# default (0) keeps every reply on the existing ``post``/``text`` paths, so
+# nothing changes unless ``FEISHU_CARD_MIN_CHARS`` is set (80 matches the
+# OpenClaw-style card rendering).
+_DEFAULT_CARD_MIN_CHARS = 0
+
+
 def _optimize_card_markdown(text: str) -> str:
     """Light markdown polish for card rendering, adapted from the OpenClaw
     Lark plugin's markdown-style rules: heading downgrade (H1 -> H4,
@@ -2069,7 +2077,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         _chat_id_ts = getattr(message, "chat_id", None)
         if _chat_id_ts:
-            self._chat_inbound_ts[_chat_id_ts] = time.time()
+            # Lazily created: adapters constructed without ``__init__``
+            # (tests, fixtures) must not crash on the inbound path.
+            _ts_map = getattr(self, "_chat_inbound_ts", None)
+            if _ts_map is None:
+                _ts_map = self._chat_inbound_ts = {}
+            _ts_map[_chat_id_ts] = time.time()
         await self._process_inbound_message(
             data=data, message=message, sender_id=getattr(sender, "sender_id", None),
             chat_type=getattr(message, "chat_type", "p2p"), message_id=message_id, is_bot=_is_bot_sender(sender),
@@ -3540,6 +3553,23 @@ class FeishuAdapter(BasePlatformAdapter):
         return lock
 
     # --- Outbound payload construction and send pipeline ---
+    def _card_min_chars(self) -> int:
+        """Auto-card threshold for outbound replies; 0 (the default) disables cards.
+
+        ``FEISHU_CARD_MIN_CHARS`` opts a deployment into automatic card
+        rendering and sets the reply length at which it kicks in (80 matches
+        the OpenClaw-style rendering). Unset, invalid, or negative values keep
+        replies on the existing ``post``/``text`` paths — the default is a
+        no-op for every existing deployment.
+        """
+        raw = os.environ.get("FEISHU_CARD_MIN_CHARS", "")
+        if not str(raw).strip():
+            return _DEFAULT_CARD_MIN_CHARS
+        try:
+            return max(0, int(str(raw).strip()))
+        except ValueError:
+            return _DEFAULT_CARD_MIN_CHARS
+
     def _load_card_model(self) -> str:
         """Best-effort model display name from Hermes config.yaml."""
         try:
@@ -3555,7 +3585,9 @@ class FeishuAdapter(BasePlatformAdapter):
     def _card_footer(self, chat_id: str | None) -> str:
         """Footer meta line: elapsed · model (replaces the static signature)."""
         parts = []
-        ts = self._chat_inbound_ts.get(chat_id) if chat_id else None
+        inbound_ts = getattr(self, "_chat_inbound_ts", None) or {}
+        model = getattr(self, "_card_model", "") or ""
+        ts = inbound_ts.get(chat_id) if chat_id else None
         if ts:
             secs = time.time() - ts
             if secs < 60:
@@ -3567,8 +3599,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     m += 1
                     s = 0
                 parts.append(f"⏱ {m}m{s:02d}s")
-        if self._card_model:
-            parts.append(self._card_model)
+        if model:
+            parts.append(model)
         return " · ".join(parts)
 
     def _build_outbound_payload(
@@ -3579,10 +3611,13 @@ class FeishuAdapter(BasePlatformAdapter):
         # take the common markdown path (no text downgrade). ``prefer_post`` lets ``send`` keep every
         # chunk of a split markdown reply as ``post`` even when a chunk alone looks like prose.
         #
-        # Structured/long markdown replies (>= 80 chars) render as OpenClaw-style interactive
-        # cards; ``force_post`` (edit_message) keeps updates as plain post messages.
+        # Structured/long markdown replies render as OpenClaw-style interactive
+        # cards once they reach ``_card_min_chars()`` (``FEISHU_CARD_MIN_CHARS``,
+        # 0 disables); ``force_post`` (edit_message) keeps updates as plain post
+        # messages.
         if force_post or prefer_post or _MARKDOWN_HINT_RE.search(content):
-            if not force_post and len(content) >= 80:
+            threshold = self._card_min_chars()
+            if not force_post and threshold and len(content) >= threshold:
                 return "interactive", _build_markdown_card_payload(
                     content, footer=self._card_footer(chat_id),
                 )

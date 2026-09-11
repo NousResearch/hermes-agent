@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { useComposerAttachmentProviders } from './contrib'
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
 
@@ -39,6 +40,9 @@ export function ContextMenu({
   // window (composer "+" anchor), so we promoted it to a real Dialog —
   // easier to grow with search / descriptions, and no positioning math.
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+  // `composer.attachments` contributions — plugin/core-registered rows that
+  // extend this menu through the same registry as every other surface.
+  const attachmentProviders = useComposerAttachmentProviders()
 
   return (
     <>
@@ -90,6 +94,18 @@ export function ContextMenu({
             {c.promptSnippets}
           </ContextMenuItem>
 
+          {attachmentProviders.length > 0 && <DropdownMenuSeparator />}
+          {attachmentProviders.map(provider => (
+            <DropdownMenuItem
+              className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
+              key={provider.key}
+              onSelect={() => void provider.run({ insertText: onInsertText })}
+            >
+              <Codicon name={provider.icon ?? 'plug'} size="0.875rem" />
+              <span>{provider.label}</span>
+            </DropdownMenuItem>
+          ))}
+
           <DropdownMenuSeparator />
 
           <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
@@ -111,7 +127,7 @@ function PromptSnippetsDialog({ onInsertText, onOpenChange, open }: PromptSnippe
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md gap-3">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{c.snippetsTitle}</DialogTitle>
           <DialogDescription>{c.snippetsDesc}</DialogDescription>

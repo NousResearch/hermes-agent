@@ -82,6 +82,22 @@ Hermes 按会话键跟踪正在运行的 agent。
 
 本指南将引导你完成完整的设置流程——从在 Discord 开发者门户创建机器人到发送第一条消息。
 
+### Discord Gateway WebSocket 健康
+
+Discord REST 与 Gateway WebSocket 是独立传输。REST 请求成功不代表机器人仍能接收 Gateway 事件。Hermes 会组合检查 ready 状态、client/socket 关闭状态、socket 是否打开、heartbeat ACK 年龄和有限 heartbeat latency。
+
+连续异常达到阈值后，适配器只上报一次可重试失败；现有 Gateway 重连器创建新适配器，不会启动第二个无限重连循环。
+
+```yaml
+discord:
+  websocket_liveness_interval_seconds: 15
+  websocket_liveness_failure_threshold: 2
+  websocket_heartbeat_ack_max_age_seconds: 60
+  websocket_max_latency_seconds: 30
+```
+
+旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。
+
 ## 第一步：创建 Discord 应用
 
 1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) 并使用你的 Discord 账号登录。
@@ -114,7 +130,7 @@ Hermes 按会话键跟踪正在运行的 agent。
 在 **Bot** 页面，向下滚动到 **Privileged Gateway Intents**。你会看到三个开关：
 
 | Intent | 用途 | 是否必需？ |
-|--------|---------|-----------| 
+|--------|---------|-----------|
 | **Presence Intent** | 查看用户在线/离线状态 | 可选 |
 | **Server Members Intent** | 访问成员列表、解析用户名 | **必需** |
 | **Message Content Intent** | 读取消息的文本内容 | **必需** |
@@ -170,7 +186,7 @@ Token 只显示一次。如果丢失，你需要重置并生成新的 token。�
 你可以使用以下格式直接构建邀请 URL：
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237763136
 ```
 
 将 `YOUR_APP_ID` 替换为第一步中的 Application ID。
@@ -188,6 +204,7 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 ### 推荐的附加权限
 
 - **Send Messages in Threads** — 在线程对话中响应
+- **Create Public Threads** - create threads
 - **Add Reactions** — 对消息添加反应以示确认
 
 ### 权限整数
@@ -195,7 +212,7 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 | 级别 | 权限整数 | 包含内容 |
 |-------|-------------------|-----------------|
 | 最低 | `117760` | View Channels、Send Messages、Read Message History、Attach Files |
-| 推荐 | `274878286912` | 以上所有权限，加上 Embed Links、Send Messages in Threads、Add Reactions |
+| 推荐 | `309237763136` | 以上所有权限，加上 Embed Links、Send Messages in Threads、Add Reactions, Create Public Threads |
 
 ## 第六步：邀请到你的服务器
 
@@ -315,6 +332,12 @@ discord:
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
   history_backfill: true          # 在提及时前置最近的频道滚动历史（默认：true）
   history_backfill_limit: 50      # 向后扫描的最大消息数（默认：50）
+  missed_message_backfill:        # 重新处理断线期间遗漏的消息（需主动启用）
+    enabled: false
+    channels: []                  # 留空时使用 free_response_channels
+    window_seconds: 21600         # 最多回溯 6 小时
+    limit: 100                    # 每次重连的全局扫描上限
+    max_dispatches: 10            # 每次重连的恢复分发上限
   channel_prompts: {}             # 每个频道的临时系统 prompt（提示词）
   allow_mentions:                 # 机器人允许 ping 的内容（安全默认值）
     everyone: false               # @everyone / @here ping（默认：false）
@@ -484,6 +507,24 @@ discord:
   history_backfill_limit: 50
 ```
 
+#### `discord.missed_message_backfill`
+
+**类型：** 对象 — **默认值：** 禁用
+
+Discord 的 WebSocket 恢复窗口可能在重启或网络中断时过期。在此期间发送的消息不会作为实时网关事件交付。启用后，Hermes 会在 Discord 重连后扫描一组有界的频道与线程历史记录，并将尚未处理的消息交给与实时事件相同的授权、提及、频道、去重和分发流程。
+
+```yaml
+discord:
+  missed_message_backfill:
+    enabled: true
+    channels: ["123456789012345678"]
+    window_seconds: 3600
+    limit: 100
+    max_dispatches: 10
+```
+
+如果 `channels` 留空，Hermes 会使用 `discord.free_response_channels`。只有当机器人确实需要检查所有可访问的服务器文字频道时才设置为 `"*"`。恢复账本按配置文件存储在 `gateway/discord_message_recovery.db`，避免已成功回复的消息在后续重启时再次执行。
+
 #### `group_sessions_per_user`
 
 **类型：** 布尔值 — **默认值：** `true`
@@ -583,7 +624,7 @@ Hermes 自动将已安装的技能注册为**原生 Discord 应用命令**。这
 - 每个技能成为一个 Discord 斜杠命令（例如 `/code-review`、`/ascii-art`）
 - 技能接受一个可选的 `args` 字符串参数
 - Discord 每个机器人有 100 个应用命令的限制——如果你的技能数量超过可用槽位，多余的技能会被跳过并在日志中显示警告
-- 技能在机器人启动时与内置命令（如 `/model`、`/reset` 和 `/background`）一起注册
+- 技能在机器人启动时与内置命令（如 `/model`、`/reset` 和 `/bg`）一起注册
 
 无需额外配置——通过 `hermes skills install` 安装的任何技能都会在下次网关重启时自动注册为 Discord 斜杠命令。
 

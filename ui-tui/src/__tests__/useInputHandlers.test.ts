@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import {
   applyVoiceRecordResponse,
+  dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
+  shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -54,6 +58,44 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('shouldDetachEditedHistoryInput', () => {
+  const history = ['older message', 'line one\nline two']
+
+  it('detaches a recalled entry as soon as the user edits it', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one edited\nline two')).toBe(true)
+  })
+
+  it('keeps unchanged recalled entries in history navigation', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one\nline two')).toBe(false)
+  })
+
+  it('does not detach an ordinary current draft', () => {
+    expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
+  })
+})
+
+describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
+  it('clears a non-empty composer even while the agent is streaming', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('interrupts a running turn when the composer is empty', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears an idle composer instead of exiting', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('exits when idle with an empty composer', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: false, hasSession: true })).toBe('exit')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
   })
 })
 
@@ -110,5 +152,35 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('dismissSensitivePrompt', () => {
+  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().sudo).toBeNull()
+    expect(sys).toHaveBeenCalledWith('sudo cancelled')
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    await pending
+  })
+
+  it('clears a secret overlay before a stale cancel RPC resolves', async () => {
+    resetOverlayState()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().secret).toBeNull()
+    expect(sys).toHaveBeenCalledWith('secret entry cancelled')
+    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
   })
 })

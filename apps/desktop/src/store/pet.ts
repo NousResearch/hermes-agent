@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $busy } from '@/store/session'
 
@@ -36,6 +37,53 @@ export interface PetInfo {
   loopMs?: number
   scale?: number
   stateRows?: string[]
+}
+
+export interface PetInfoMeta {
+  enabled: boolean
+  slug?: string
+  displayName?: string
+  scale?: number
+  spritesheetRevision?: string
+}
+
+export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
+  return (
+    meta.enabled &&
+    info.enabled &&
+    Boolean(info.spritesheetBase64) &&
+    info.slug === meta.slug &&
+    Boolean(info.spritesheetRevision) &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  )
+}
+
+export function mergePetInfoMeta(info: PetInfo, meta: PetInfoMeta): PetInfo {
+  if (!meta.enabled) {
+    return info.enabled ? { enabled: false } : info
+  }
+
+  // Fast-path: nothing changed — return the same reference so callers can
+  // skip the store update (nanostores fires on .set() regardless of deep
+  // equality; returning `info` avoids a redundant re-render on every poll).
+  if (
+    info.enabled &&
+    info.slug === meta.slug &&
+    info.displayName === meta.displayName &&
+    info.scale === meta.scale &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  ) {
+    return info
+  }
+
+  return {
+    ...info,
+    enabled: true,
+    slug: meta.slug,
+    displayName: meta.displayName,
+    scale: meta.scale,
+    spritesheetRevision: meta.spritesheetRevision
+  }
 }
 
 export interface PetActivity {
@@ -91,6 +139,9 @@ export function derivePetState(activity: PetActivity): PetState {
 export const $petInfo = atom<PetInfo>({ enabled: false })
 export const $petActivity = atom<PetActivity>({})
 
+/** Pet installed + enabled with a loaded spritesheet (ready to show/react). */
+export const $petActive = computed($petInfo, info => info.enabled && Boolean(info.spritesheetBase64))
+
 /**
  * Profile the pet RPCs should resolve against. Pets are per-profile — the active
  * pet (`display.pet.*`) and the installed sprites live under each profile's
@@ -134,15 +185,15 @@ export const flashPetActivity = (next: Partial<PetActivity>, ms = 1600) => {
 export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
 
 /**
- * The live pet state. Derives from the dedicated activity atom, falling back to
- * the always-present `$busy` chat signal so the pet reacts out of the box.
+ * Resolve the live activity state from the dedicated activity atom, falling back
+ * to the always-present `$busy` chat signal so the pet reacts out of the box.
  *
  * `awaitingInput` (a clarify/approval blocking on the user) is an explicit flag
  * on `$petActivity` — set by the controller from `$attentionSessionIds` and
  * mirrored to the pop-out overlay through the same atom, so both surfaces agree
  * without the overlay needing the session list.
  */
-export const $petState = computed([$petActivity, $busy], (activity, busy): PetState => {
+function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
   const live = activity.busy ?? busy
 
   return derivePetState({
@@ -156,4 +207,53 @@ export const $petState = computed([$petActivity, $busy], (activity, busy): PetSt
     justCompleted: activity.justCompleted,
     celebrate: activity.celebrate
   })
+}
+
+/**
+ * Opt-in: let the floating mascot wander around the window on its own while
+ * idle. Pure desktop-client behavior (no agent/config dependency), so it lives
+ * in localStorage like the pet's drag position — per-device, not per-profile.
+ */
+const ROAM_KEY = 'hermes.desktop.pet-roam.v1'
+export const $petRoam = atom<boolean>(storedBoolean(ROAM_KEY, false))
+
+export const setPetRoam = (on: boolean) => {
+  $petRoam.set(on)
+  persistBoolean(ROAM_KEY, on)
+}
+
+/**
+ * The pose the roam loop is currently driving: `run` while walking a surface,
+ * `jump` while hopping/falling between surfaces, or `null` at rest. Surfaced
+ * through `$petState` (below) so the canvas animates the wander without any prop
+ * change or re-render — it already subscribes to `$petState`.
+ */
+export const $petMotion = atom<PetState | null>(null)
+
+/**
+ * Horizontal travel direction while roaming: -1 left, 1 right, 0 not walking.
+ * The floating pet maps this to the directional run row + mirror, keeping the
+ * wander loop free of sprite-row knowledge.
+ */
+export const $petRoamDir = atom<-1 | 0 | 1>(0)
+
+/**
+ * Whether the agent-driven state is at rest (plain `idle`). The roam loop gates
+ * on this — never on `$petState` itself, which would feed back on its own
+ * `$petMotion`-driven pose and stall the wander.
+ */
+export const $petAtRest = computed(
+  [$petActivity, $busy],
+  (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
+)
+
+/**
+ * The live pet state. Activity always wins; only when the agent is at rest does
+ * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
+ * reads as deliberate movement.
+ */
+export const $petState = computed([$petActivity, $busy, $petMotion], (activity, busy, motion): PetState => {
+  const base = deriveLivePetState(activity, busy)
+
+  return base === 'idle' && motion ? motion : base
 })

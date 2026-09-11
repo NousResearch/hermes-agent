@@ -1,27 +1,27 @@
 ---
-title: "Meme Generation — Generate real meme images by picking a template and overlaying text with Pillow"
+title: "Meme Generation — Create meme PNGs from templates with Pillow text overlay"
 sidebar_label: "Meme Generation"
-description: "Generate real meme images by picking a template and overlaying text with Pillow"
+description: "Create meme PNGs from templates with Pillow text overlay"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Meme Generation
 
-Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files.
+Create meme PNGs from templates with Pillow text overlay.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/meme-generation` |
-| Path | `optional-skills/creative/meme-generation` |
+| Path | `optional-skills/creative\meme-generation` |
 | Version | `2.0.0` |
 | Author | adanaleycio |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `creative`, `memes`, `humor`, `images` |
-| Related skills | [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art), `generative-widgets` |
+| Related skills | [`ascii-art`](/docs/user-guide/skills/optional/creative/creative-ascii-art) |
 
 ## Reference: full SKILL.md
 

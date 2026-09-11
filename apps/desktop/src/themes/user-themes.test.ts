@@ -1,15 +1,27 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
-import { $userThemes, installUserTheme, isUserTheme, listAllThemes, removeUserTheme, resolveTheme } from './user-themes'
+import {
+  $marketplaceInstalls,
+  $userThemes,
+  installUserTheme,
+  isUserTheme,
+  listAllThemes,
+  marketplaceIdOf,
+  removeUserTheme,
+  resolveTheme
+} from './user-themes'
 import { convertVscodeColorTheme } from './vscode'
 
-const makeTheme = (label: string) =>
-  convertVscodeColorTheme({
-    name: label,
-    type: 'dark',
-    colors: { 'editor.background': '#101014', 'editor.foreground': '#fafafa', focusBorder: '#7aa2f7' }
-  }).theme
+const makeTheme = (label: string, source?: string) =>
+  convertVscodeColorTheme(
+    {
+      name: label,
+      type: 'dark',
+      colors: { 'editor.background': '#101014', 'editor.foreground': '#fafafa', focusBorder: '#7aa2f7' }
+    },
+    source ? { source } : undefined
+  ).theme
 
 describe('user theme registry', () => {
   beforeEach(() => {
@@ -59,5 +71,35 @@ describe('user theme registry', () => {
     broken.colors = { background: '#000000' }
 
     expect(() => installUserTheme(broken)).toThrow(/colors/)
+  })
+})
+
+describe('marketplace install tracking', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $userThemes.set({})
+  })
+
+  it('recovers the extension id only from Marketplace-sourced themes', () => {
+    expect(marketplaceIdOf(makeTheme('Dracula', 'dracula-theme.theme-dracula'))).toBe('dracula-theme.theme-dracula')
+    // A pasted (non-Marketplace) import has no extension id to report.
+    expect(marketplaceIdOf(makeTheme('Pasted'))).toBeNull()
+  })
+
+  it('maps installed Marketplace extension ids to their theme, reactively', () => {
+    expect($marketplaceInstalls.get().size).toBe(0)
+
+    const theme = installUserTheme(makeTheme('Dracula', 'dracula-theme.theme-dracula'))
+    const map = $marketplaceInstalls.get()
+
+    expect(map.get('dracula-theme.theme-dracula')).toEqual(theme)
+
+    removeUserTheme(theme.name)
+    expect($marketplaceInstalls.get().has('dracula-theme.theme-dracula')).toBe(false)
+  })
+
+  it('omits pasted imports (no extension id) from the map', () => {
+    installUserTheme(makeTheme('Pasted'))
+    expect($marketplaceInstalls.get().size).toBe(0)
   })
 })

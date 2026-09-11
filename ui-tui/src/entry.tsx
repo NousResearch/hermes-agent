@@ -55,6 +55,8 @@ gw.start()
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
   `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? dump?.diagPath ?? '(failed)'}\n`
 
+let consecutiveDeadStreamErrors = 0
+
 setupGracefulExit({
   cleanups: [
     () => {
@@ -67,7 +69,31 @@ setupGracefulExit({
     const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
     recordParentLifecycle(`${scope}: ${message.split('\n')[0]?.slice(0, 400) ?? ''}`)
-    process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+
+    // A dead PTY (terminal tab closed, SSH dropped without SIGHUP) turns every
+    // stdout/stderr write into EIO/EPIPE. Swallowing those here made the parent
+    // a zombie: Ink's render loop throws once a second, each throw lands back
+    // in this handler, and the crash log fills with `write EIO` forever while
+    // the gateway child keeps running. Bail out for real after a few in a row.
+    const code = (err as NodeJS.ErrnoException)?.code
+
+    if (code === 'EIO' || code === 'EPIPE') {
+      if (++consecutiveDeadStreamErrors >= 5) {
+        recordParentLifecycle(`dead output stream (${code} x${consecutiveDeadStreamErrors}) → exiting`)
+        void gw.kill('dead-output-stream')
+        process.exit(1)
+      }
+
+      return
+    }
+
+    consecutiveDeadStreamErrors = 0
+
+    try {
+      process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+    } catch {
+      // stderr may be the dead stream itself.
+    }
   },
   onSignal: signal => {
     // The next line in the crash log is the child's `=== SIGTERM received ===`

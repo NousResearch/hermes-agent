@@ -3,7 +3,7 @@
 Companion to test_plugins_cmd_category_discovery.py. That file covers the
 *listing* side of nested category plugins (issue #41066). These tests cover
 the *mutation* side: `hermes plugins enable/disable` must resolve a bare name
-OR a full path-derived key (e.g. `observability/nemo_relay`) to the canonical
+OR a full path-derived key (e.g. `observability/trace_sink`) to the canonical
 registry key and write THAT — the same string PluginManager gates on — so a
 nested bundled plugin can actually be toggled.
 """
@@ -32,8 +32,8 @@ def _make_category_plugin(parent: Path, category: str, name: str, manifest: dict
 def nested_plugin_env(tmp_path):
     """A user-plugins dir containing one nested and one flat plugin, with the
     bundled dir pointed at an empty path. Returns the tmp_path."""
-    _make_category_plugin(tmp_path, "observability", "nemo_relay", {
-        "name": "nemo_relay", "version": "1.0.0", "description": "relay obs"
+    _make_category_plugin(tmp_path, "observability", "trace_sink", {
+        "name": "trace_sink", "version": "1.0.0", "description": "trace sink"
     })
     _make_plugin_dir(tmp_path, "disk-cleanup", {
         "name": "disk-cleanup", "version": "1.0.0"
@@ -53,24 +53,8 @@ class TestResolvePluginKey:
         from hermes_cli.plugins_cmd import _resolve_plugin_key
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        assert _resolve_plugin_key("observability/nemo_relay") == "observability/nemo_relay"
+        assert _resolve_plugin_key("observability/trace_sink") == "observability/trace_sink"
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_bare_leaf_name_resolves_to_key(self, mock_user, mock_bundled, nested_plugin_env):
-        from hermes_cli.plugins_cmd import _resolve_plugin_key
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        # "nemo_relay" (bare) must normalize to the path-derived key.
-        assert _resolve_plugin_key("nemo_relay") == "observability/nemo_relay"
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_flat_plugin_resolves_to_name(self, mock_user, mock_bundled, nested_plugin_env):
-        from hermes_cli.plugins_cmd import _resolve_plugin_key
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        assert _resolve_plugin_key("disk-cleanup") == "disk-cleanup"
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -114,55 +98,14 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("nemo_relay")  # bare name
+        cmd_enable("trace_sink", allow_tool_override=False)  # bare name
 
         saved = mock_save_en.call_args[0][0]
         # The canonical key — NOT the bare name — must be persisted, because
         # that is what PluginManager matches when deciding to load.
-        assert "observability/nemo_relay" in saved
-        assert "nemo_relay" not in saved or "observability/nemo_relay" in saved
+        assert "observability/trace_sink" in saved
+        assert "trace_sink" not in saved or "observability/trace_sink" in saved
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_enable_full_key_writes_key(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-
-        cmd_enable("observability/nemo_relay")
-        saved = mock_save_en.call_args[0][0]
-        assert "observability/nemo_relay" in saved
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_disable_bare_name_writes_key_and_clears_alias(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        from hermes_cli.plugins_cmd import cmd_disable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        # Simulate an existing config where the plugin was enabled under the
-        # legacy bare name — disabling must clear that too, or the plugin would
-        # keep loading (PluginManager accepts the bare name as well).
-        mock_en.return_value = {"nemo_relay"}
-
-        cmd_disable("nemo_relay")
-        saved_dis = mock_save_dis.call_args[0][0]
-        saved_en = mock_save_en.call_args[0][0]
-        assert "observability/nemo_relay" in saved_dis
-        assert "nemo_relay" not in saved_en  # stale bare alias dropped
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -188,6 +131,102 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("disk-cleanup")
+        cmd_enable("disk-cleanup", allow_tool_override=False)
         saved = mock_save_en.call_args[0][0]
         assert "disk-cleanup" in saved
+
+
+# ---------------------------------------------------------------------------
+# cmd_enable — built-in tool override consent (issue #29249)
+# ---------------------------------------------------------------------------
+
+
+class TestEnableToolOverrideConsent:
+    """Enabling a non-bundled plugin must surface a consent decision about the
+    privileged ``allow_tool_override`` capability, and persist the operator's
+    choice under ``plugins.entries.<key>.allow_tool_override``."""
+
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_interactive_eof_defaults_to_deny(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """Non-interactive stdin (EOFError) must fail closed to deny."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", side_effect=EOFError):
+            cmd_enable("disk-cleanup")
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", False
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_bundled_plugin_never_prompts_or_writes_entry(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, tmp_path,
+    ):
+        """Bundled plugins are trusted — no consent prompt, no entry write."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        # Bundled dir holds the plugin; user dir is empty.
+        _make_plugin_dir(tmp_path / "bundled", "trusted_bundled", {
+            "name": "trusted_bundled", "version": "1.0.0",
+        })
+        mock_user.return_value = tmp_path / "empty"
+        mock_bundled.return_value = tmp_path / "bundled"
+
+        # Console.input would raise if called — proving no prompt fired.
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
+            cmd_enable("trusted_bundled")
+
+        mock_set_flag.assert_not_called()
+
+
+class TestCompositeMenuWritesCanonicalKey:
+    """#40190 follow-up: the interactive `hermes plugins` menu must persist
+    the CANONICAL KEY (``web/firecrawl``), never the bare manifest name
+    (``web-firecrawl``), so its disabled-list entries stay aligned with what
+    ``cmd_enable`` clears and what PluginManager gates on. Writing the bare
+    name is what silently vetoed a bundled backend forever (pi314).
+    """
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_unchecked_plugin_disables_by_key_not_name(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        # key differs from the manifest name, mirroring web/firecrawl.
+        plugin_keys = ["web/firecrawl"]
+        plugin_labels = ["web-firecrawl — firecrawl [bundled]"]
+        plugin_selected = set()  # unchecked → should be disabled
+
+        # First input() toggles nothing (blank Enter confirms immediately),
+        # second (category prompt) is skipped with blank Enter.
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                plugin_keys, plugin_labels, plugin_selected,
+                set(), [], Console(),
+            )
+
+        saved_dis = mock_save_dis.call_args[0][0]
+        assert "web/firecrawl" in saved_dis      # canonical key persisted
+        assert "web-firecrawl" not in saved_dis   # never the bare name

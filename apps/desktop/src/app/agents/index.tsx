@@ -3,10 +3,12 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -19,7 +21,7 @@ import {
   type SubagentStreamEntry
 } from '@/store/subagents'
 
-import { OverlayView } from '../overlays/overlay-view'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -86,18 +88,16 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
-    <OverlayView
-      closeLabel={t.agents.close}
-      contentClassName="px-5 pt-5 pb-4 sm:px-6"
-      onClose={onClose}
-      rootClassName="mx-auto max-w-3xl"
-    >
-      <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
-        <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
-      </header>
-      <SubagentTree tree={tree} />
-    </OverlayView>
+    <Panel closeLabel={t.agents.close} onClose={onClose}>
+      {tree.length === 0 ? (
+        <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
+      ) : (
+        <>
+          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
+          <SubagentTree tree={tree} />
+        </>
+      )}
+    </Panel>
   )
 }
 
@@ -116,14 +116,11 @@ const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => 
   return a.durationMinutes(m, s)
 }
 
-const fmtTokens = (value: number | undefined, a: Translations['agents']) => {
-  if (!value) {
-    return ''
-  }
+const fmtTokens = (value: number | undefined, a: Translations['agents']) =>
+  value ? a.tokens(compactNumber(value)) : ''
 
-  return value >= 1000 ? a.tokensK((value / 1000).toFixed(1)) : a.tokens(value)
-}
-
+// Distinct contract from coarseElapsed: rounds to the second (this ticks live),
+// and hours are unbounded ("25h", never "1d"). Kept local on purpose.
 const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => {
   const s = Math.max(0, Math.round((nowMs - updatedAt) / 1000))
 
@@ -137,11 +134,7 @@ const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => 
 
   const m = Math.floor(s / 60)
 
-  if (m < 60) {
-    return a.ageMinutes(m)
-  }
-
-  return a.ageHours(Math.floor(m / 60))
+  return m < 60 ? a.ageMinutes(m) : a.ageHours(Math.floor(m / 60))
 }
 
 const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>
@@ -159,10 +152,36 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   let n = 0
 
   for (const node of roots) {
+    // Exact grouping when the backend tags workers with their batch id —
+    // concurrent or nested fan-outs of the same shape must not merge.
+    if (node.delegationId) {
+      const byId = groups.find(g => g.id === `delegation:${node.delegationId}`)
+
+      if (byId) {
+        byId.nodes.push(node)
+
+        continue
+      }
+
+      n += 1
+      groups.push({
+        id: `delegation:${node.delegationId}`,
+        delegationIndex: n,
+        nodes: [node],
+        taskCount: node.taskCount
+      })
+
+      continue
+    }
+
+    // Older backends (no delegation_id): heuristic grouping by shape + time.
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
-    const sameShape = prev && node.taskCount > 1 && prev.taskCount === node.taskCount
+
+    const sameShape =
+      prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
+
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
     if (prev && sameShape && closeInTime && uniqueStep) {
@@ -197,15 +216,17 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
   const cost = flat.reduce((sum, n) => sum + (n.costUsd ?? 0), 0)
 
+  const visible = usePaneVisible()
+
   useEffect(() => {
-    if (active <= 0 || typeof window === 'undefined') {
+    if (active <= 0 || !visible || typeof window === 'undefined') {
       return
     }
 
     const id = window.setInterval(() => setNowMs(Date.now()), 500)
 
     return () => window.clearInterval(id)
-  }, [active])
+  }, [active, visible])
 
   if (tree.length === 0) {
     return (
@@ -299,10 +320,10 @@ function StreamLine({
   )
 }
 
-function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
-  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)
+  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
 
   const durationSeconds =
     typeof node.durationSeconds === 'number' ? Math.max(0, Math.round(node.durationSeconds)) : elapsed

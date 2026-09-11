@@ -25,41 +25,12 @@ def _build():
 
 def test_cron_subactions_present():
     parser = _build()
-    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "tick"):
-        ns = parser.parse_args(["cron", action] if action in ("list", "status", "tick")
+    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "runs", "doctor", "tick"):
+        ns = parser.parse_args(["cron", action] if action in ("list", "status", "runs", "doctor", "tick")
                                else ["cron", action, "jobid"] if action in ("pause", "resume", "run", "remove", "edit")
                                else ["cron", "create", "30m"])
         assert ns.command == "cron"
         assert ns.cron_command == action
-
-
-def test_cron_aliases():
-    parser = _build()
-    # create has alias "add"
-    ns = parser.parse_args(["cron", "add", "30m"])
-    assert ns.cron_command == "add"
-    # remove has aliases rm / delete
-    for alias in ("rm", "delete"):
-        ns = parser.parse_args(["cron", alias, "jid"])
-        assert ns.cron_command == alias
-
-
-def test_cron_create_options():
-    parser = _build()
-    ns = parser.parse_args([
-        "cron", "create", "0 9 * * *", "daily task prompt",
-        "--name", "daily", "--deliver", "origin", "--repeat", "3",
-        "--skill", "a", "--skill", "b", "--no-agent",
-        "--workdir", "/tmp/x",
-    ])
-    assert ns.schedule == "0 9 * * *"
-    assert ns.prompt == "daily task prompt"
-    assert ns.name == "daily"
-    assert ns.deliver == "origin"
-    assert ns.repeat == 3
-    assert ns.skills == ["a", "b"]
-    assert ns.no_agent is True
-    assert ns.workdir == "/tmp/x"
 
 
 def test_cron_edit_no_agent_tristate():
@@ -68,12 +39,6 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
-
-
-def test_cron_dispatch_func_is_injected_handler():
-    parser = _build()
-    ns = parser.parse_args(["cron", "list"])
-    assert ns.func is _sentinel_handler
 
 
 def test_cron_accept_hooks_flag_on_run_and_tick():

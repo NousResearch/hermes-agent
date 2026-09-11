@@ -15,7 +15,7 @@ Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/axolotl` |
-| Path | `optional-skills/mlops/training/axolotl` |
+| Path | `optional-skills/mlops\training\axolotl` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -35,7 +35,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 Expert guidance for fine-tuning LLMs with Axolotl — YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support.
 
-Comprehensive assistance with axolotl development, generated from official documentation.
+Assistance with axolotl development, generated from official documentation.
 
 ## When to Use This Skill
 

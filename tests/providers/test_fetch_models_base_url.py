@@ -58,42 +58,47 @@ class TestFetchModelsBaseUrlOverride:
         finally:
             server.shutdown()
 
-    def test_fallback_to_self_base_url(self):
-        """When base_url is None, falls back to self.base_url."""
-        server, port = _start_server([{"id": "default-model"}])
-        try:
-            profile = ProviderProfile(
-                name="test",
-                base_url=f"http://127.0.0.1:{port}",
-            )
-            result = profile.fetch_models(api_key="test-key")
-            assert result == ["default-model"]
-        finally:
-            server.shutdown()
-
-    def test_no_base_url_returns_none(self):
-        """When both base_url and self.base_url are empty, returns None."""
-        profile = ProviderProfile(name="test", base_url="")
-        result = profile.fetch_models(api_key="test-key", base_url="")
-        assert result is None
-
-    def test_base_url_override_with_models_url_set(self):
-        """When self.models_url is set, base_url override is ignored (models_url wins)."""
-        server, port = _start_server([{"id": "from-models-url"}])
+    def test_custom_base_url_beats_models_url(self):
+        """A caller base_url differing from the profile default overrides
+        models_url — a user-configured proxy must win over the profile's
+        hardcoded catalog endpoint (Discord report: CommandCode picker)."""
+        server, port = _start_server([{"id": "proxy-model-b"}])
         try:
             profile = ProviderProfile(
                 name="test",
                 base_url="http://127.0.0.1:1",
-                models_url=f"http://127.0.0.1:{port}/models",
+                models_url="http://127.0.0.1:1/models",  # unreachable
             )
-            # base_url override should NOT be used because models_url takes priority
             result = profile.fetch_models(
                 api_key="test-key",
-                base_url="http://127.0.0.1:1",
+                base_url=f"http://127.0.0.1:{port}",
             )
-            assert result == ["from-models-url"]
+            assert result == ["proxy-model-b"]
         finally:
             server.shutdown()
+
+    def test_default_base_url_does_not_shadow_models_url(self):
+        """Callers pass base_url unconditionally (profile default when the
+        user configured nothing). Equality with self.base_url means "not
+        customised" and must keep models_url as the endpoint."""
+        server, port = _start_server([{"id": "catalog-model"}])
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url="http://127.0.0.1:1",  # inference URL, unreachable
+                models_url=f"http://127.0.0.1:{port}/models",
+            )
+            # Caller echoes the profile default back — models_url must win.
+            result = profile.fetch_models(
+                api_key="test-key",
+                base_url="http://127.0.0.1:1/",  # same default, trailing slash
+            )
+            assert result == ["catalog-model"]
+        finally:
+            server.shutdown()
+
+
+
 
 
 class TestCustomProviderBaseUrlPassthrough:
@@ -115,6 +120,73 @@ class TestCustomProviderBaseUrlPassthrough:
             assert result == ["ollama-model"]
         finally:
             server.shutdown()
+
+
+class _RedirectingHandler(BaseHTTPRequestHandler):
+    """Redirects /models to a configurable target and records received headers."""
+
+    redirect_to = ""  # full URL to redirect /models to (set per test)
+    received_headers: dict = {}
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/models":
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+        else:
+            _RedirectingHandler.received_headers = dict(self.headers)
+            body = json.dumps({"data": [{"id": "redirected-model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+class TestFetchModelsRedirectCredentialStripping:
+    """Credential headers must not follow a redirect outside the original origin."""
+
+    def _run(self, redirect_to):
+        """redirect_to is a callable (first_port, second_port) -> Location URL."""
+        _RedirectingHandler.received_headers = {}
+        server = HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+        second_server = HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
+        port = server.server_address[1]
+        second_port = second_server.server_address[1]
+        _RedirectingHandler.redirect_to = redirect_to(port, second_port)
+        Thread(target=server.serve_forever, daemon=True).start()
+        Thread(target=second_server.serve_forever, daemon=True).start()
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url=f"http://127.0.0.1:{port}",
+                default_headers={"x-api-key": "default-header-secret"},
+            )
+            result = profile.fetch_models(api_key="bearer-secret")
+        finally:
+            server.shutdown()
+            second_server.shutdown()
+        headers = {k.lower(): v for k, v in _RedirectingHandler.received_headers.items()}
+        return result, headers
+
+    def test_cross_host_redirect_strips_credentials(self):
+        result, headers = self._run(
+            lambda port, _: f"http://localhost:{port}/redirected"
+        )
+        assert result == ["redirected-model"]  # fetch itself still works
+        assert "authorization" not in headers
+        assert "x-api-key" not in headers
+
+
+    def test_same_origin_redirect_keeps_credentials(self):
+        result, headers = self._run(
+            lambda port, _: f"http://127.0.0.1:{port}/redirected"
+        )
+        assert result == ["redirected-model"]
+        assert headers.get("authorization") == "Bearer bearer-secret"
+        assert headers.get("x-api-key") == "default-header-secret"
 
 
 class TestModelPickerBaseUrlIntegration:

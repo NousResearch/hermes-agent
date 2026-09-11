@@ -68,7 +68,7 @@ Entries can optionally include:
 | `--resume` | `false` | Resume from checkpoint |
 | `--verbose` | `false` | Enable verbose logging |
 | `--max_samples` | all | Only process first N samples from dataset |
-| `--max_tokens` | model default | Maximum tokens per model response |
+
 
 ### Provider Routing (OpenRouter)
 
@@ -83,7 +83,7 @@ Entries can optionally include:
 
 | Parameter | Description |
 |-----------|-------------|
-| `--reasoning_effort` | Effort level: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `--reasoning_effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `--reasoning_disabled` | Completely disable reasoning/thinking tokens |
 
 ### Advanced Options

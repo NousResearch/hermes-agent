@@ -50,9 +50,17 @@ const buttonVariants = cva(
         'icon-sm': 'size-8 rounded-[4px]',
         'icon-lg': 'size-10 rounded-[4px]',
         'icon-titlebar':
-          'h-(--titlebar-control-height) w-(--titlebar-control-size) rounded-[4px] [&_.codicon]:text-[0.875rem]'
+          'titlebar-icon-button h-(--titlebar-control-height) w-(--titlebar-control-size) rounded-[4px] [&_svg:not([class*="size-"])]:size-(--titlebar-icon-size)'
       }
     },
+    compoundVariants: [
+      // textStrong is a boxless link — size variants still inject px-*; strip
+      // inline padding so the underline sits flush with the label.
+      {
+        variant: 'textStrong',
+        class: 'px-0 has-[>svg]:px-0'
+      }
+    ],
     defaultVariants: {
       variant: 'default',
       size: 'default'

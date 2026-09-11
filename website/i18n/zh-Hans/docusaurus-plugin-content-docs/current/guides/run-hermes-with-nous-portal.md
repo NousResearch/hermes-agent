@@ -47,8 +47,8 @@ OAuth 需要浏览器，但 loopback 回调运行在 Hermes 所在的机器上�
 ssh -N -L 8642:127.0.0.1:8642 user@remote-host    # 在本地终端执行
 hermes setup --portal                              # 在远程机器上执行，在本地浏览器中打开打印出的 URL
 
-# 方案 B：手动粘贴（适用于 Cloud Shell、Codespaces、EC2 Instance Connect）
-hermes auth add nous --type oauth --manual-paste
+# 方案 B：设备码登录（适用于 Cloud Shell、Codespaces、EC2 Instance Connect）
+hermes auth add nous --type oauth
 # 然后重新运行 `hermes setup --portal` 以连接 provider + gateway
 ```
 
@@ -120,7 +120,7 @@ hermes config set model.default anthropic/claude-sonnet-4.6
 
 ### 不要在 agent 任务中使用 Hermes-4
 
-Hermes-4-70B 和 Hermes-4-405B 在 Portal 上以大幅折扣提供，但它们是**对话/推理模型**，并非针对工具调用优化的模型。它们在多步骤 agent 循环中表现不佳。请通过 [Nous Chat](https://chat.nousresearch.com) 将它们用于对话/研究工作，或通过[订阅代理](/user-guide/features/subscription-proxy)从非 agent 工具中使用。对于 Hermes Agent 本身，请坚持使用上述前沿 agentic 模型。
+Hermes-4-70B 和 Hermes-4-405B 在 Portal 上以大幅折扣提供，但它们是**对话/推理模型**，并非针对工具调用优化的模型。它们在多步骤 agent 循环中表现不佳。请通过[订阅代理](/user-guide/features/subscription-proxy)从非 agent 工具中将它们用于对话或研究工作。对于 Hermes Agent 本身，请坚持使用上述前沿 agentic 模型。
 
 Portal 的[信息页面](https://portal.nousresearch.com/info)也有此说明——这是 Nous 官方指导，并非仅代表 Hermes 一方的意见。
 
@@ -183,7 +183,7 @@ OAuth 流程未完成。重新运行：
 hermes portal
 ```
 
-如果浏览器未打开或回调失败，你可能在远程/无头主机上——参见 [OAuth over SSH](/guides/oauth-over-ssh) 了解端口转发和手动粘贴的解决方案。
+如果浏览器未打开或回调失败，你可能在远程/无头主机上——参见 [OAuth over SSH](/guides/oauth-over-ssh) 了解端口转发的解决方案。
 
 ### "Model: currently openrouter"（或其他 provider）而非"using Nous as inference provider"
 
@@ -225,7 +225,7 @@ hermes auth add nous
 
 ### 我想要的模型不在 `/model` 选择器中
 
-Portal 目录镜像了 OpenRouter 的模型列表（300+ 个）。如果某个模型缺失，尝试直接输入 OpenRouter 风格的 slug：
+Portal 目录基于 OpenRouter 的模型列表（300+ 个），并补充了通过专有或备用提供商提供的模型。如果某个模型缺失，尝试直接输入 OpenRouter 风格的 slug：
 
 ```bash
 /model anthropic/claude-opus-4.6

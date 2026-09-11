@@ -22,7 +22,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 
 ## 常见贡献路径
 
-- 构建自定义/本地工具而不修改 Hermes 核心？从 [构建 Hermes 插件](../guides/build-a-hermes-plugin.md) 开始
+- 构建自定义/本地工具而不修改 Hermes 核心？从 [构建 Hermes 插件](../developer-guide/plugins/index.md) 开始
 - 为 Hermes 本身构建新的内置核心工具？从 [添加工具](./adding-tools.md) 开始
 - 构建新的 skill？从 [创建 Skill](./creating-skills.md) 开始
 - 构建新的推理提供商？从 [添加提供商](./adding-providers.md) 开始
@@ -34,7 +34,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 | 要求 | 说明 |
 |-------------|-------|
 | **Git** | 需安装 `git-lfs` 扩展 |
-| **Python 3.11+** | 若未安装，uv 会自动安装 |
+| **Python 3.11–3.13** | 若未安装，uv 会自动安装 |
 | **uv** | 高速 Python 包管理器（[安装](https://docs.astral.sh/uv/)） |
 | **Node.js 20+** | 可选 — 浏览器工具和 WhatsApp bridge 需要（与根目录 `package.json` engines 字段一致） |
 
@@ -132,24 +132,7 @@ Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（通过 PowerSh
 - **使用 `pathlib.Path` / `os.path.join`，不得手动用 `/` 拼接路径。** 这对我们构造后传给子进程的字符串尤为重要，而非 OS 返回给我们的字符串。
 
 关键模式：
-
-### 1. `termios` 和 `fcntl` 仅适用于 Unix
-
-始终同时捕获 `ImportError` 和 `NotImplementedError`：
-
-```python
-try:
-    from simple_term_menu import TerminalMenu
-    menu = TerminalMenu(options)
-    idx = menu.show()
-except (ImportError, NotImplementedError):
-    # 回退：编号菜单
-    for i, opt in enumerate(options):
-        print(f"  {i+1}. {opt}")
-    idx = int(input("Choice: ")) - 1
-```
-
-### 2. 文件编码
+### 1. 文件编码
 
 某些环境可能以非 UTF-8 编码保存 `.env` 文件：
 
@@ -160,7 +143,7 @@ except UnicodeDecodeError:
     load_dotenv(env_path, encoding="latin-1")
 ```
 
-### 3. 进程管理
+### 2. 进程管理
 
 `os.setsid()`、`os.killpg()` 以及信号处理在各平台间存在差异：
 
@@ -170,7 +153,7 @@ if platform.system() != "Windows":
     kwargs["preexec_fn"] = os.setsid
 ```
 
-### 4. 路径分隔符
+### 3. 路径分隔符
 
 使用 `pathlib.Path` 代替用 `/` 进行字符串拼接。
 
@@ -254,7 +237,7 @@ fix(security): prevent shell injection in sudo password piping
 ## 报告问题
 
 - 使用 [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 请包含：操作系统、Python 版本、Hermes 版本（`hermes version`）、完整错误堆栈
+- 请包含：操作系统、Python 版本、Hermes 版本（`hermes --version`）、完整错误堆栈
 - 包含复现步骤
 - 创建前请检查是否已有重复 issue
 - 安全漏洞请私下报告

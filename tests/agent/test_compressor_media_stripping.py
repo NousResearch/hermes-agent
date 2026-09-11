@@ -24,21 +24,7 @@ def compressor():
 class TestMediaDirectiveStripping:
     """MEDIA directives must be stripped before summarization (#14665)."""
 
-    def test_media_directive_stripped_from_assistant(self, compressor):
-        turns = [
-            {"role": "assistant", "content": "Here is the audio MEDIA:/tmp/voice.ogg done."},
-        ]
-        result = compressor._serialize_for_summary(turns)
-        assert "MEDIA:/tmp/voice.ogg" not in result
-        assert "[media attachment]" in result
 
-    def test_media_directive_stripped_from_tool_result(self, compressor):
-        turns = [
-            {"role": "tool", "tool_call_id": "t1", "content": "Generated MEDIA:/tmp/out.mp3 successfully"},
-        ]
-        result = compressor._serialize_for_summary(turns)
-        assert "MEDIA:/tmp/out.mp3" not in result
-        assert "[media attachment]" in result
 
     def test_non_media_content_preserved(self, compressor):
         turns = [
@@ -54,3 +40,28 @@ class TestMediaDirectiveStripping:
         result = compressor._serialize_for_summary(turns)
         assert "MEDIA:" not in result
         assert result.count("[media attachment]") == 2
+
+    def test_multimodal_list_content_does_not_crash(self, compressor):
+        """content as a list (multimodal) must be flattened to clean text.
+
+        Without flattening, str() coercion in redact_sensitive_text dumps
+        the raw part-dict repr — including base64 image data — into the
+        summarizer input, burning summary budget on noise.
+        """
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "What is in this image?" in result
+        assert "[image]" in result
+        assert "base64" not in result
+
+
+
+

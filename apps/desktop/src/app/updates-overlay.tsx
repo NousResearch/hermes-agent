@@ -4,13 +4,20 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  preventCloseButtonAutoFocus
+} from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import { Progress } from '@/components/ui/progress'
+import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
+import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
@@ -73,6 +80,8 @@ export function UpdatesOverlay() {
             ? 'error'
             : 'idle'
 
+  const updateBlockers = !isBackend && apply.error === 'venv-blocked' && apply.blockers?.length ? apply.blockers : null
+
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
       return
@@ -94,8 +103,12 @@ export function UpdatesOverlay() {
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
+      {/* This dialog has no inputs, so Radix's default autofocus would land on
+          the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+        bodyClassName="overflow-hidden p-0 gap-0"
+        className="max-w-sm"
+        onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
@@ -106,9 +119,17 @@ export function UpdatesOverlay() {
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
-        {phase === 'error' && (
+        {phase === 'error' && updateBlockers ? (
+          <BlockerView
+            blockers={updateBlockers}
+            onDismiss={() => handleClose(false)}
+            onStopAndUpdate={() => void applyUpdates({ stopSafeBlockers: true })}
+          />
+        ) : null}
+
+        {phase === 'error' && !updateBlockers ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
         {phase === 'idle' && (
           <IdleView
@@ -117,7 +138,7 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void check()}
+            onRetryCheck={() => void check({ force: true })}
             status={status}
             target={target}
             updateAvailable={updateAvailable}
@@ -204,7 +225,7 @@ function IdleView({
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+        icon={<BrandMark className="size-12" />}
         title={u.allSetTitle}
       />
     )
@@ -229,7 +250,7 @@ function IdleView({
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+      <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
             <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
@@ -304,26 +325,25 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
       </div>
 
       <button
-        className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        className={cn(
+          'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
+          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+        )}
         onClick={handleCopy}
         type="button"
       >
-        <code className="select-all font-mono text-sm text-foreground">
-          <span className="text-muted-foreground">$ </span>
+        <code className="min-w-0 flex-1 truncate select-all font-mono text-sm text-foreground">
+          <span className="select-none text-muted-foreground">$ </span>
           {command}
         </code>
-        <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-          {copied ? (
-            <>
-              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              {u.copied}
-            </>
-          ) : (
-            <>
-              <Copy className="size-3.5" />
-              {u.copy}
-            </>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+            copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
           )}
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? u.copied : u.copy}
         </span>
       </button>
 
@@ -388,15 +408,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         ) : null}
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            percent === null && 'w-1/3 animate-pulse'
-          )}
-          style={percent !== null ? { width: `${percent}%` } : undefined}
-        />
-      </div>
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
 
       {recentLog.length > 1 ? (
         <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
@@ -409,6 +426,106 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
       ) : null}
 
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+    </div>
+  )
+}
+
+const BLOCKER_COMMAND_LINE_LIMIT = 500
+
+const SENSITIVE_ARGUMENT_NAME =
+  '(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|x[-_]?plex[-_]?token|token|password|passwd|client[-_]?secret|secret|authorization)'
+
+const SENSITIVE_COMMAND_TAIL = new RegExp(
+  `((?:^|\\s)(?:(?:--?)${SENSITIVE_ARGUMENT_NAME}(?:\\s*=\\s*|\\s+)|${SENSITIVE_ARGUMENT_NAME}\\s*(?:=|:)\\s*)).*$`,
+  'i'
+)
+
+const SENSITIVE_QUERY_ARGUMENT = new RegExp(`([?&]${SENSITIVE_ARGUMENT_NAME}=)[^&#\\s]+`, 'gi')
+
+export function formatBlockerCommandLine(commandLine: string): string {
+  const redacted = commandLine
+    .replace(SENSITIVE_QUERY_ARGUMENT, '$1[REDACTED]')
+    .replace(SENSITIVE_COMMAND_TAIL, '$1[REDACTED]')
+
+  const characters = Array.from(redacted)
+
+  return characters.length > BLOCKER_COMMAND_LINE_LIMIT
+    ? `${characters.slice(0, BLOCKER_COMMAND_LINE_LIMIT - 1).join('')}…`
+    : redacted
+}
+
+export function BlockerView({
+  blockers,
+  onDismiss,
+  onStopAndUpdate
+}: {
+  blockers: readonly DesktopUpdateBlocker[]
+  onDismiss: () => void
+  onStopAndUpdate: () => void
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  const safeBlockers = blockers.filter(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
+  const hasForeignBlockers = safeBlockers.length !== blockers.length
+  const title = hasForeignBlockers ? u.foreignBlockerTitle : u.blockerTitle
+
+  const body = hasForeignBlockers
+    ? safeBlockers.length > 0
+      ? u.mixedBlockerBody
+      : u.foreignBlockerBody
+    : u.blockerBody
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
+          <AlertCircle aria-hidden className="size-6" />
+        </div>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{title}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {body}
+        </DialogDescription>
+      </div>
+
+      <div className="grid gap-2">
+        {blockers.map(blocker => {
+          const isSafePreview = blocker.kind === 'local-preview' && blocker.safeToStop
+
+          return (
+            <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
+              <div className="text-sm font-medium">
+                {isSafePreview ? blocker.label || u.localPreview : blocker.name}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {isSafePreview && blocker.port ? u.portLabel(blocker.port) : u.pidLabel(blocker.pid)}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <details className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium">{u.technicalDetails}</summary>
+        <div className="mt-2 grid gap-2 font-mono text-[11px] leading-4">
+          {blockers.map(blocker => (
+            <div className="break-all" key={blocker.pid}>
+              PID {blocker.pid} · {formatBlockerCommandLine(blocker.cmdline)}
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="grid gap-1">
+        {safeBlockers.length > 0 ? (
+          <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
+            {hasForeignBlockers ? u.closePreviewsAndCheckAgain : u.closePreviewsAndUpdate}
+          </Button>
+        ) : null}
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </div>
     </div>
   )
 }

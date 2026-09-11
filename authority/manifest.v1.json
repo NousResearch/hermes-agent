@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "policy_version": "2026.08.25-v2",
+  "domains": {
+    "github.operation": {
+      "sinks": {
+        "github.issue.metadata.write": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "issues.addLabels",
+            "issues.removeLabel",
+            "issues.update"
+          ]
+        },
+        "github.comment.write": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "issues.createComment",
+            "pulls.createReview",
+            "pulls.createReviewComment"
+          ]
+        },
+        "github.contents.write": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "repos.createOrUpdateFileContents",
+            "repos.deleteFile"
+          ]
+        },
+        "github.gitdata.write": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "git.createBlob",
+            "git.createCommit",
+            "git.createRef",
+            "git.createTree",
+            "git.updateRef"
+          ]
+        },
+        "github.pull_request.create": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "pulls.create"
+          ]
+        },
+        "github.actions.dispatch": {
+          "broker": "githubMutationBroker",
+          "direct_symbols": [
+            "actions.createWorkflowDispatch"
+          ]
+        }
+      },
+      "operation_classes": {
+        "github.issue.metadata.write": {
+          "sink_class": "github.issue.metadata.write",
+          "required_capabilities": [
+            "issues:metadata:write"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "open",
+            "closed"
+          ]
+        },
+        "github.comment.write": {
+          "sink_class": "github.comment.write",
+          "required_capabilities": [
+            "comments:write"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "open",
+            "closed"
+          ]
+        },
+        "github.contents.write": {
+          "sink_class": "github.contents.write",
+          "required_capabilities": [
+            "contents:write"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "current"
+          ]
+        },
+        "github.gitdata.write": {
+          "sink_class": "github.gitdata.write",
+          "required_capabilities": [
+            "git_objects:write",
+            "refs:write"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "current"
+          ]
+        },
+        "github.pull_request.create": {
+          "sink_class": "github.pull_request.create",
+          "required_capabilities": [
+            "pull_requests:create"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "current"
+          ]
+        },
+        "github.actions.dispatch": {
+          "sink_class": "github.actions.dispatch",
+          "required_capabilities": [
+            "actions:dispatch"
+          ],
+          "allowed_actor_classes": [
+            "human",
+            "github_app",
+            "workflow",
+            "automation"
+          ],
+          "allowed_resource_states": [
+            "current"
+          ]
+        }
+      }
+    }
+  }
+}

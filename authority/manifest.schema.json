@@ -1,0 +1,10 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://hermes-agent.nousresearch.com/schemas/authority-manifest-v1.json",
+  "title":"Hermes Authority Policy Manifest v1",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","policy_version","domains"],
+  "properties":{"schema_version":{"const":1},"policy_version":{"$ref":"#/$defs/nonBlankString"},"domains":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"github.operation":{"$ref":"#/$defs/domain"},"sandbox.execution":{"$ref":"#/$defs/domain"},"child_process.operation":{"$ref":"#/$defs/domain"},"gateway.mutation":{"$ref":"#/$defs/domain"}}}},
+  "$defs":{"nonBlankString":{"type":"string","minLength":1,"pattern":"\\S"},"domain":{"type":"object","additionalProperties":false,"required":["sinks","operation_classes"],"properties":{"sinks":{"type":"object","minProperties":1,"propertyNames":{"$ref":"#/$defs/nonBlankString"},"additionalProperties":{"$ref":"#/$defs/sink"}},"operation_classes":{"type":"object","minProperties":1,"propertyNames":{"$ref":"#/$defs/nonBlankString"},"additionalProperties":{"$ref":"#/$defs/operation"}}}},"sink":{"type":"object","additionalProperties":false,"required":["broker","direct_symbols"],"properties":{"broker":{"$ref":"#/$defs/nonBlankString"},"direct_symbols":{"type":"array","items":{"$ref":"#/$defs/nonBlankString"},"uniqueItems":true}}},"operation":{"type":"object","additionalProperties":false,"required":["sink_class","required_capabilities","allowed_actor_classes","allowed_resource_states"],"properties":{"sink_class":{"$ref":"#/$defs/nonBlankString"},"required_capabilities":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/nonBlankString","not":{"pattern":"\\*"}},"uniqueItems":true},"allowed_actor_classes":{"type":"array","minItems":1,"items":{"enum":["human","github_app","workflow","automation","external_bot"]},"uniqueItems":true},"allowed_resource_states":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/nonBlankString"},"uniqueItems":true}}}}
+}

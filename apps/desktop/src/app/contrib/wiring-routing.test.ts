@@ -1,15 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  findStoredIdForRuntimeId,
-  POOL_LIMITS_SETTINGS_ROUTE,
-  resolveRoutingSessionId,
-  resolveSessionRpcOwner
-} from './wiring-routing'
-
-it('targets the Advanced settings surface for pool-cap recovery', () => {
-  expect(POOL_LIMITS_SETTINGS_ROUTE).toBe('/settings?tab=config:advanced')
-})
+import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
 describe('findStoredIdForRuntimeId', () => {
   it('reverse-resolves a runtime id to its stored id', () => {

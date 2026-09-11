@@ -20,7 +20,9 @@ def test_usage_analytics_buckets_by_activity_day_and_matches_totals(tmp_path, mo
         monkeypatch.setattr(hermes_state_usage.time, "time", lambda: _timestamp(1))
         db.update_token_counts("long-running", input_tokens=100, output_tokens=10, api_call_count=1)
         monkeypatch.setattr(hermes_state_usage.time, "time", lambda: _timestamp(10))
-        db.update_token_counts("long-running", input_tokens=200, output_tokens=20, api_call_count=2)
+        db.update_token_counts(
+            "long-running", input_tokens=300, output_tokens=30, api_call_count=3, absolute=True,
+        )
     finally:
         db.close()
 

@@ -314,3 +314,110 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+
+# =========================================================================
+# read_file line counting for files without a trailing newline
+# =========================================================================
+
+
+class _RealShellEnv:
+    """Minimal env that runs commands through bash for end-to-end read_file tests."""
+
+    def __init__(self, cwd):
+        self.cwd = cwd
+
+    def execute(self, command, cwd=None, **kwargs):
+        import subprocess
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            cwd=cwd or self.cwd,
+            capture_output=True,
+            text=True,
+        )
+        return {"output": proc.stdout, "returncode": proc.returncode}
+
+
+# ``read_file`` reaches a file three different ways and each one counts lines on
+# its own: the single-round-trip compound probe, the sequential fallback that
+# asks one question per call, and the native reader that never starts a shell.
+# Every case below runs against all three, so a count fix landing in one of them
+# cannot leave the others behind.
+READ_PATHS = ("compound", "sequential", "native")
+
+
+def _read_by_path(ops, path, *, offset, limit, via):
+    """``read_file`` through one named path. ``path`` is absolute and the
+    pagination already normalized, which is what the two inner entry points
+    expect (``read_file`` does both before it dispatches)."""
+    if via == "compound":
+        return ops.read_file(path, offset=offset, limit=limit)
+    if via == "sequential":
+        return ops._read_file_sequential(path, offset, limit)
+    return ops._read_file_native(path, offset, limit)
+
+
+@pytest.mark.parametrize("via", READ_PATHS)
+class TestReadFileTrailingNewlineCount:
+    """``read_file`` must count a final line that lacks a trailing newline."""
+
+    def _ops(self, tmp_path):
+        return ShellFileOperations(_RealShellEnv(str(tmp_path)))
+
+    def test_total_lines_counts_final_unterminated_line(self, tmp_path, via):
+        # 3 real lines, no trailing newline.
+        path = tmp_path / "a.txt"
+        path.write_text("l1\nl2\nl3")
+        result = _read_by_path(self._ops(tmp_path), str(path), offset=1, limit=500, via=via)
+        assert result.error is None
+        assert result.total_lines == 3
+        assert "3|l3" in result.content
+
+    def test_final_line_at_page_boundary_is_not_lost(self, tmp_path, via):
+        # 3 real lines, no trailing newline, page size 2: line 3 lands just
+        # past the first page. Counting newlines reported 2, so truncated came
+        # out False and the continuation hint was suppressed. The page had
+        # already stopped at line 2, so line 3 was never read and the caller was
+        # told the file was complete.
+        path = tmp_path / "c.txt"
+        path.write_text("x1\nx2\nx3")
+        ops = self._ops(tmp_path)
+        result = _read_by_path(ops, str(path), offset=1, limit=2, via=via)
+        assert result.error is None
+        assert result.total_lines == 3
+        assert result.truncated is True
+        assert result.hint and "offset=3" in result.hint
+        # And the final line is reachable on the next page.
+        page2 = _read_by_path(ops, str(path), offset=3, limit=2, via=via)
+        assert page2.error is None
+        assert "3|x3" in page2.content
+
+    def test_trailing_newline_file_count_unchanged(self, tmp_path, via):
+        # Control: a file that ends in a newline still counts correctly.
+        path = tmp_path / "b.txt"
+        path.write_text("l1\nl2\nl3\n")
+        result = _read_by_path(self._ops(tmp_path), str(path), offset=1, limit=500, via=via)
+        assert result.error is None
+        assert result.total_lines == 3
+
+
+class TestNativeReadTrailingLineAcrossChunks:
+    """The native reader stops per-line work and bulk-counts newlines once the
+    page is behind it; the trailing unterminated line must survive that switch."""
+
+    def test_unterminated_tail_counted_past_the_page(self, tmp_path):
+        line = b"x" * 63 + b"\n"   # 64 bytes, so exactly 16384 lines per 1 MiB chunk
+        lines = 16400              # enough to push the tail into a second chunk
+        path = tmp_path / "big.txt"
+        path.write_bytes(line * lines + b"tail")
+        assert path.stat().st_size > (1 << 20)
+        ops = ShellFileOperations(_RealShellEnv(str(tmp_path)))
+
+        result = ops._read_file_native(str(path), 1, 2)
+        assert result.error is None
+        assert result.total_lines == lines + 1
+        assert result.truncated is True
+
+        last = ops._read_file_native(str(path), lines + 1, 2)
+        assert last.error is None
+        assert f"{lines + 1}|tail" in last.content

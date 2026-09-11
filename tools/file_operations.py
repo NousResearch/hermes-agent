@@ -735,9 +735,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                         pos = nl + 1
         except OSError:
             return self._read_file_sequential(path, offset, limit)
-        if have_partial and offset <= lineno <= end_line:
-            # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
-            page.append(bytes(kept) + b"\n")
+        if have_partial:
+            # A final line with no trailing newline is still a line. Counting
+            # newlines (what ``wc -l`` does, and what the loop above does) misses
+            # it, so add it here: see ``_line_count_cmd`` for why that matters.
+            total_lines += 1
+            if offset <= lineno <= end_line:
+                # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
+                page.append(bytes(kept) + b"\n")
 
         read_output = _strip_terminal_fence_leaks(b"".join(page).decode("utf-8", errors="replace"))
         return self._assemble_read_result(
@@ -753,11 +758,24 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "Image file detected. Automatically redirected to vision_analyze tool. "
                 "Use vision_analyze with this file path to inspect the image contents."))
 
+    @staticmethod
+    def _line_count_cmd(arg: str) -> str:
+        """The line count every shell read path uses. ``wc -l`` counts newline
+        characters, so a file whose last line has no trailing newline comes back one
+        short: ``total_lines`` is wrong, and when that line falls exactly on a page
+        boundary (real lines == end_line + 1) ``truncated`` stays False, no
+        continuation hint is emitted, and ``sed`` has already stopped at end_line, so
+        the line is never read and the model is told the file was read in full. ``awk``
+        counts records, and a final unterminated record is still a record. ``arg`` is
+        already shell-escaped and is fed on stdin, so a name like ``a=b.txt`` can never
+        be taken for an awk variable assignment (which would leave awk reading stdin)."""
+        return f"awk 'END {{ print NR }}' < {arg}"
+
     def _read_probe_cmd(self, path: str, offset: int, end_line: int,
                         line_clamp_bytes: int, sentinel: str) -> str:
         """One shell command answering every question ``read_file`` asks: six
         segments each closed by a ``sentinel`` line — byte size, base64 of the first
-        1000 bytes, the ``sed | cut`` page, ``wc -l``, whether the last byte is a
+        1000 bytes, the ``sed | cut`` page, the line count, whether the last byte is a
         newline, then the base64 and page pipeline statuses. Probes run only inside
         ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
         reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` (a compound
@@ -772,7 +790,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
             f" | cut -b1-{line_clamp_bytes} 2>/dev/null; __hr=$?; {mark}; "
-            f"wc -l < {arg} 2>/dev/null; {mark}; "
+            f"{self._line_count_cmd(arg)} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
             f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
@@ -845,9 +863,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         read_output = _strip_terminal_fence_leaks(read_result.stdout)
 
-        wc_result = self._exec(f"wc -l < {self._escape_shell_arg(path)}")
+        count_result = self._exec(self._line_count_cmd(self._escape_shell_arg(path)))
         try:
-            total_lines = int(_strip_terminal_fence_leaks(wc_result.stdout).strip())
+            total_lines = int(_strip_terminal_fence_leaks(count_result.stdout).strip())
         except ValueError:
             total_lines = 0
 

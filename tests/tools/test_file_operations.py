@@ -347,7 +347,7 @@ class TestShellFileOpsHelpers:
         )
         assert "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64" in probe
         assert "sed -n '1,2000p' '/c/Users/alice/notes.txt' 2>/dev/null | cut -b1-8001" in probe
-        assert "wc -l < '/c/Users/alice/notes.txt'" in probe
+        assert "awk 'END { print NR }' < '/c/Users/alice/notes.txt'" in probe
         assert (
             "elif [ -e '/c/Users/alice/notes.txt' ]; "
             "then echo __hermes_not_regular__; "

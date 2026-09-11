@@ -88,7 +88,9 @@ class TestReadFileOneRoundTrip:
         # ``cut`` newline-terminates the last line; the artifact is stripped
         # from the same reply that used to need a fifth ``tail -c 1`` call.
         assert r.content == "1|a\n2|b"
-        assert r.total_lines == 1  # wc -l semantics, unchanged
+        # The final line has no trailing newline: counting newlines would
+        # report 1 and lose it at a page boundary, so it is counted as a line.
+        assert r.total_lines == 2
 
     def test_pagination_window_and_hint(self, shell, tmp_path):
         ops, calls = shell

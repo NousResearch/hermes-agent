@@ -271,6 +271,8 @@ test('POSIX managed launcher is detached, correlation-scoped, and never publishe
   )
 
   assert.match(command, /setsid/)
+  assert.match(command, /managed-update start pid=/)
+  assert.match(command, /managed-update exit rc=/)
   assert.match(command, /update --yes/)
   assert.doesNotMatch(command, /update --yes --gateway/)
   assert.match(command, new RegExp(`HERMES_UPDATE_CORRELATION_ID=.*${CORRELATION}`))

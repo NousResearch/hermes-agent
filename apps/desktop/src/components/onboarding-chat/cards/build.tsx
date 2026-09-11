@@ -49,8 +49,17 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
   // The pick lives with the other answers, not in component state: the
   // visible submit rebuilds the transcript and a local flag came back null,
-  // leaving every chip clickable after one had already been sent.
-  const picked = useStore($onboardingAnswers).committed.find(step => step.startsWith('first:'))?.slice(6) ?? null
+  // leaving every chip clickable after one had already been sent. A typed
+  // reply in the composer closes the card the same way a chip does.
+  const messageId = useAuiState(state => state.message.id)
+
+  const answeredInComposer = useStore(view.$messages).some(
+    (message, index, all) =>
+      message.role === 'user' && !message.hidden && index > all.findIndex(candidate => candidate.id === messageId)
+  )
+
+  const committed = useStore($onboardingAnswers).committed.find(step => step.startsWith('first:'))?.slice(6) ?? null
+  const picked = committed ?? (answeredInComposer ? '' : null)
 
   // Parse + validate the model's options: up to 4, each short enough to sit on
   // a chip, deduped case-insensitively (models repeat themselves). Garbage in
@@ -77,7 +86,7 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   const options = parsed.length < 2 ? [FALLBACK_OPTION] : parsed
 
   const pick = (option: string) => {
-    if (picked || locked) {
+    if (picked !== null || locked) {
       return
     }
 

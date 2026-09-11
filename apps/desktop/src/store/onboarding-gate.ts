@@ -28,7 +28,13 @@ function loadGate(): OnboardingGateState {
 
   const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
-  return { phase, guideQueued: phase === 'cinematic' && hasSeenIntroReveal() }
+  // Two phases owe a kickoff at boot. `cinematic` with the film already seen
+  // is the film-to-guide seam. `guided` is a relaunch mid-guide: without a
+  // kickoff the normal app boots around the persisted solo layout — the
+  // connected splash, the stock composer and model picker, a small window
+  // whose sidebars cannot open — while the gate still says the guide is on.
+  // The kickoff adopts the existing guide chat by title, so nothing is lost.
+  return { phase, guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided' }
 }
 
 export const $onboardingGate = atom<OnboardingGateState>(loadGate())

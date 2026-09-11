@@ -60,7 +60,7 @@ def _result(authority, record):
         status = record['status']
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
-        admission_id=record['admission_id'], reply=reply).items()}
+        admission_id=record['admission_id'], message=record['message'], reply=reply).items()}
 
 
 async def _record_reply(authority, home, key, future):

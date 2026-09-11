@@ -1415,6 +1415,13 @@ def _refuse_unexplained_shrink(
     """
     if replace:
         return
+    # Same stamp fast-path the shrink-merge honors (#80703): a matching load
+    # stamp means disk provably hasn't changed since our last read, so there is
+    # nothing on disk to reconcile — return without peeking (a save inside a
+    # healthy load->save critical section must not re-read jobs.json).
+    stamp = getattr(_jobs_lock_state, "load_stamp", None)
+    if stamp is not None and _jobs_file_stamp(_current_cron_store().jobs_file) == stamp:
+        return
     try:
         disk_jobs = _peek_jobs_unlocked()
     except Exception:
@@ -1444,9 +1451,6 @@ def _save_jobs_unlocked(
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
     ``replace=True`` skips the shrink-merge guard (wholesale rewrite for tests/disaster
     recovery)."""
-    # Structural guard against silent store wipes — runs BEFORE shrink-merge so TOCTOU
-    # deletes are caught explicitly rather than silently merged.
-    _refuse_unexplained_shrink(jobs, removed_ids, replace)
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
@@ -1472,6 +1476,13 @@ def _save_jobs_unlocked(
                 _unlink_quiet(tmp_path)
                 tmp_path = None
                 continue
+            # Structural anti-wipe, AFTER recovery's last word: a disk job still
+            # missing from the (post-merge) payload and not in removed_ids means
+            # the bounded merge could not account for it (e.g. a job landing on
+            # the final attempt). Refuse rather than silently drop it (#99022).
+            # Runs on the merged payload so concurrent creates the shrink-merge
+            # recovered are NOT vetoed (#80624). replace=True opts out (D3 path).
+            _refuse_unexplained_shrink(jobs, removed_ids, replace)
             atomic_replace(tmp_path, jobs_file)
             tmp_path = None
             _secure_file(jobs_file)

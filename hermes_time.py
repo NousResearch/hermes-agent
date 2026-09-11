@@ -71,12 +71,19 @@ def get_timezone() -> Optional[ZoneInfo]:
     # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of the
     # same identity converge on one ZoneInfo object.
     name = _resolve_timezone_name()
+    if not name:
+        # Nothing resolved (no env var, no config value yet). Never cache this as a
+        # permanent server-local verdict: a config.yaml read before it is fully written
+        # (fresh installs, container/service startup racing the first resolve) would
+        # otherwise pin the process to server-local time forever, silently drifting any
+        # recurring cron schedule by the local UTC offset (#103904). Leaving it uncached
+        # is cheap: read_raw_config() already caches the parsed file by mtime.
+        return None
     tz = None
-    if name:
-        try:
-            tz = ZoneInfo(name)
-        except Exception as exc:
-            logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
+    try:
+        tz = ZoneInfo(name)
+    except Exception as exc:
+        logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
     with _cache_lock:
         return _tz_cache.setdefault(cache_identity, (name, tz))[1]
 

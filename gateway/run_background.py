@@ -114,7 +114,11 @@ class GatewayBackgroundMixin:
                 agent.daybreak_surface = self._daybreak_surface(source) is True
                 agent.daybreak = self._load_daybreak(source) is True
                 try:
-                    return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
+                    return agent.run_conversation(
+                        user_message=enriched_prompt,
+                        task_id=task_id,
+                        message_timestamp_handling="disabled",
+                    )
                 finally:
                     self._cleanup_agent_resources(agent)
 

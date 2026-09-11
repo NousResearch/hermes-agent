@@ -34,7 +34,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
-from session_rules.turns import _msg_has_payload, repair_message_sequence
+from session_rules.turns import _UNMERGEABLE, _merge_user_content, _msg_has_payload, repair_message_sequence
 logger = logging.getLogger(__name__)
 
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall")
@@ -772,23 +772,6 @@ def try_recover_primary_transport(
     except Exception as e:
         logger.warning("Primary transport recovery failed: %s", e)
         return False
-
-
-def _merge_user_content(prev_content: Any, cur_content: Any) -> Any:
-    """Merged content for two adjacent user messages (``_UNMERGEABLE`` for unknown shapes):
-    string+string joins with a blank line; list sides append as separate blocks."""
-    if isinstance(prev_content, str) and isinstance(cur_content, str):
-        return prev_content + ("\n\n" if prev_content and cur_content else "") + cur_content
-    if isinstance(prev_content, list) and isinstance(cur_content, list):
-        return list(prev_content) + list(cur_content)
-    if isinstance(prev_content, list) and isinstance(cur_content, str):
-        return list(prev_content) + ([{"type": "text", "text": cur_content}] if cur_content else [])
-    if isinstance(prev_content, str) and isinstance(cur_content, list):
-        return ([{"type": "text", "text": prev_content}] if prev_content else []) + list(cur_content)
-    return _UNMERGEABLE
-
-
-_UNMERGEABLE = object()
 
 
 def drop_thinking_only_and_merge_users(

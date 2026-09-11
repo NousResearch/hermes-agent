@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from gateway import message_timestamps
+from agent import message_timestamps
 from gateway.message_timestamps import (
     coerce_message_timestamp,
     format_message_timestamp,
@@ -182,6 +182,19 @@ def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embed
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_gateway_timestamp_setting_ignores_global_conflicts():
+    from gateway.run import _message_timestamps_enabled
+
+    assert _message_timestamps_enabled({
+        "message_timestamps": {"enabled": False},
+        "gateway": {"message_timestamps": {"enabled": True}},
+    }) is True
+    assert _message_timestamps_enabled({
+        "message_timestamps": {"enabled": True},
+        "gateway": {"message_timestamps": {"enabled": False}},
+    }) is False
 
 
 def test_build_history_injects_only_when_enabled():

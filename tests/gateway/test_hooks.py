@@ -60,6 +60,57 @@ class TestDiscoverAndLoad:
 
 
 class TestEmit:
+    @pytest.mark.asyncio
+    async def test_agent_lifecycle_is_published_to_plugins_as_plain_data(self, monkeypatch):
+        reg = HookRegistry()
+        published = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.emit_core_event",
+            lambda event, payload: published.append((event, payload)) or 1,
+        )
+
+        await reg.emit("agent:start", {
+            "platform": "discord",
+            "user_id": "u-1",
+            "chat_id": "c-1",
+            "thread_id": "t-1",
+            "chat_type": "forum",
+            "profile": "default",
+            "session_id": "s-1",
+            "message": "hello",
+            "adapter": object(),
+        })
+
+        assert published == [(
+            "gateway_agent_lifecycle",
+            {
+                "lifecycle_schema_version": "hermes.gateway_agent_lifecycle.v1",
+                "event_type": "agent:start",
+                "platform": "discord",
+                "user_id": "u-1",
+                "chat_id": "c-1",
+                "thread_id": "t-1",
+                "chat_type": "forum",
+                "profile": "default",
+                "session_id": "s-1",
+                "message": "hello",
+            },
+        )]
+
+    @pytest.mark.asyncio
+    async def test_non_agent_events_are_not_published_to_plugins(self, monkeypatch):
+        reg = HookRegistry()
+        published = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.emit_core_event",
+            lambda event, payload: published.append((event, payload)) or 1,
+        )
+
+        await reg.emit("command:status", {"session_id": "s-1"})
+
+        assert published == []
+
 
     @pytest.mark.asyncio
     async def test_emit_calls_async_handler(self, tmp_path):

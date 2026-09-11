@@ -480,8 +480,7 @@ default**: every call re-checks the `gateway.platform_actions` capability
 (legacy key `plugins.entries.<id>.allow_platform_actions`), and an ungranted
 call returns a structured error instead of acting.
 
-v1 verbs (both `async`, both return a plain dict, and neither ever raises into
-hook dispatch):
+v1 verbs are `async`, return a plain dict, and never raise into hook dispatch:
 
 ```python
 result = await ctx.platform_actions.add_reaction(
@@ -489,6 +488,10 @@ result = await ctx.platform_actions.add_reaction(
 )
 result = await ctx.platform_actions.set_thread_title(
     platform="discord", chat_id="123", thread_id="456", title="New title",
+)
+result = await ctx.platform_actions.set_thread_lifecycle_emoji(
+    platform="discord", chat_id="123", thread_id="456", emoji="✅",
+    profile="default",  # preserve a multiplexed gateway's source-bot identity
 )
 if not result["ok"]:
     print(result["error"], result.get("detail"))

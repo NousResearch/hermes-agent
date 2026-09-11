@@ -64,9 +64,16 @@ async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
     return _err("action_failed", "discord thread rename failed")
 
 
+async def _discord_set_thread_lifecycle_emoji(adapter, chat_id, thread_id, emoji):
+    if await adapter.rename_thread(thread_id, "", lifecycle_emoji=emoji):
+        return _ok(action="set_thread_lifecycle_emoji")
+    return _err("action_failed", "discord thread lifecycle emoji update failed")
+
+
 _VERBS = {
     "add_reaction": {"telegram": _telegram_add_reaction, "discord": _discord_add_reaction},
     "set_thread_title": {"telegram": _telegram_set_thread_title, "discord": _discord_set_thread_title},
+    "set_thread_lifecycle_emoji": {"discord": _discord_set_thread_lifecycle_emoji},
 }
 
 
@@ -93,7 +100,7 @@ class PlatformActions:
             logger.debug("platform_actions capability check failed for %s", self._plugin_id, exc_info=True)
             return False
 
-    def _resolve_adapter(self, platform: str):
+    def _resolve_adapter(self, platform: str, *, profile: str | None = None):
         """Return ``(adapter, error_dict)``; exactly one is non-None."""
         try:
             from gateway.run import _gateway_runner_ref
@@ -116,21 +123,26 @@ class PlatformActions:
         # _authorization_adapter (defensive, not expected).
         resolve_fn = getattr(runner, "_authorization_adapter", None)
         if callable(resolve_fn):
-            try:
-                from hermes_cli.profiles import get_active_profile_name
+            if profile is not None:
+                profile_name = str(profile).strip()
+                if not profile_name:
+                    return None, _err("invalid_argument", "profile must be a non-empty string when supplied")
+            else:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
 
-                profile_name = get_active_profile_name()
-            except Exception:
-                # Fail closed: an unresolvable profile must not degrade to the default profile's bot.
-                logger.debug(
-                    "platform_actions: profile resolution failed for %s",
-                    self._plugin_id, exc_info=True,
-                )
-                return None, _err(
-                    "adapter_not_registered",
-                    f"no {platform_enum.value} adapter is registered "
-                    "(active profile could not be resolved)",
-                )
+                    profile_name = get_active_profile_name()
+                except Exception:
+                    # Fail closed: an unresolvable profile must not degrade to the default profile's bot.
+                    logger.debug(
+                        "platform_actions: profile resolution failed for %s",
+                        self._plugin_id, exc_info=True,
+                    )
+                    return None, _err(
+                        "adapter_not_registered",
+                        f"no {platform_enum.value} adapter is registered "
+                        "(active profile could not be resolved)",
+                    )
             adapter = resolve_fn(platform_enum, profile_name)
         else:
             adapter = getattr(runner, "adapters", {}).get(platform_enum)
@@ -144,7 +156,7 @@ class PlatformActions:
             return None, _err("adapter_disconnected", f"the {platform_enum.value} adapter is not connected")
         return adapter, None
 
-    def _gate(self, platform: str, **required: Any):
+    def _gate(self, platform: str, *, profile: str | None = None, **required: Any):
         """Run the shared gate chain. Returns ``(adapter, error_dict)``."""
         if not self._capability_granted():
             return None, _err(
@@ -156,11 +168,13 @@ class PlatformActions:
         for name, value in required.items():
             if not isinstance(value, str) or not value.strip():
                 return None, _err("invalid_argument", f"{name} must be a non-empty string")
-        return self._resolve_adapter(platform)
+        return self._resolve_adapter(platform, profile=profile)
 
-    async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> Dict[str, Any]:
+    async def _run(
+        self, verb: str, platform: str, *args: str, profile: str | None = None, **required: Any,
+    ) -> Dict[str, Any]:
         """Gate, dispatch *verb* to the adapter's platform implementation, audit, return."""
-        adapter, error = self._gate(platform, **required)
+        adapter, error = self._gate(platform, profile=profile, **required)
         if error is None and adapter is not None:
             try:
                 impl = _VERBS[verb].get(getattr(adapter.platform, "value", None))
@@ -177,18 +191,31 @@ class PlatformActions:
 
     # -- v1 verbs -----------------------------------------------------------
 
-    async def add_reaction(self, platform: str, chat_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
+    async def add_reaction(
+        self, platform: str, chat_id: str, message_id: str, emoji: str, *, profile: str | None = None,
+    ) -> Dict[str, Any]:
         """Add/set an emoji reaction on a platform message."""
         return await self._run(
             "add_reaction", platform, chat_id, message_id, emoji,
-            chat_id=chat_id, message_id=message_id, emoji=emoji,
+            chat_id=chat_id, message_id=message_id, emoji=emoji, profile=profile,
         )
 
-    async def set_thread_title(self, platform: str, chat_id: str, thread_id: str, title: str) -> Dict[str, Any]:
+    async def set_thread_title(
+        self, platform: str, chat_id: str, thread_id: str, title: str, *, profile: str | None = None,
+    ) -> Dict[str, Any]:
         """Rename a thread / forum topic."""
         return await self._run(
             "set_thread_title", platform, chat_id, thread_id, title,
-            chat_id=chat_id, thread_id=thread_id, title=title,
+            chat_id=chat_id, thread_id=thread_id, title=title, profile=profile,
+        )
+
+    async def set_thread_lifecycle_emoji(
+        self, platform: str, chat_id: str, thread_id: str, emoji: str, *, profile: str | None = None,
+    ) -> Dict[str, Any]:
+        """Set a platform thread's lifecycle marker without changing its title."""
+        return await self._run(
+            "set_thread_lifecycle_emoji", platform, chat_id, thread_id, emoji,
+            chat_id=chat_id, thread_id=thread_id, emoji=emoji, profile=profile,
         )
 
     def _audit(self, verb: str, platform: str, result: Dict[str, Any]) -> None:

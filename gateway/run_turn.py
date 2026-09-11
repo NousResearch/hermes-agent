@@ -1497,7 +1497,7 @@ class GatewayTurnMixin:
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
-            "provider": agent_result.get("provider", ""),
+            "provider": agent_result.get("provider", ""), "failed": bool(agent_result.get("failed")),
         })
 
         # Pending process watchers (check_interval on background processes)
@@ -1954,6 +1954,7 @@ class GatewayTurnMixin:
                 "chat_id": source.chat_id or "",
                 "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
                 "chat_type": getattr(source, "chat_type", "") or "",
+                "profile": getattr(source, "profile", "") or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }

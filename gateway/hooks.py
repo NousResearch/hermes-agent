@@ -122,4 +122,42 @@ class HookRegistry:
                     results.append(result)
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+        self._publish_agent_lifecycle_to_plugins(event_type, context)
         return results
+
+    @staticmethod
+    def _publish_agent_lifecycle_to_plugins(event_type: str, context: Dict[str, Any]) -> None:
+        """Queue the stable, adapter-free lifecycle envelope for standalone plugins.
+
+        Gateway hooks may keep their richer local context. Plugin subscribers receive only this documented
+        primitive-data contract and run on the plugin event worker, so lifecycle decoration cannot block a
+        gateway turn.
+        """
+        if event_type not in {"agent:start", "agent:step", "agent:end"}:
+            return
+        payload: Dict[str, Any] = {
+            "lifecycle_schema_version": "hermes.gateway_agent_lifecycle.v1",
+            "event_type": event_type,
+            "platform": str(context.get("platform") or ""),
+            "user_id": str(context.get("user_id") or ""),
+            "chat_id": str(context.get("chat_id") or ""),
+            "thread_id": str(context.get("thread_id") or ""),
+            "chat_type": str(context.get("chat_type") or ""),
+            "profile": str(context.get("profile") or ""),
+            "session_id": str(context.get("session_id") or ""),
+            "message": str(context.get("message") or "")[:500],
+        }
+        if event_type == "agent:step":
+            payload["iteration"] = context.get("iteration")
+            payload["tool_names"] = list(context.get("tool_names") or ())
+        elif event_type == "agent:end":
+            payload["response"] = str(context.get("response") or "")[:500]
+            payload["model"] = str(context.get("model") or "")
+            payload["provider"] = str(context.get("provider") or "")
+            payload["failed"] = bool(context.get("failed"))
+        try:
+            from hermes_cli.plugins import emit_core_event
+
+            emit_core_event("gateway_agent_lifecycle", payload)
+        except Exception as exc:
+            print(f"[hooks] Plugin lifecycle delivery error: {exc}", flush=True)

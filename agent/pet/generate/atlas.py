@@ -56,7 +56,6 @@ class CollapsedRowError(ValueError):
     """
 
 
-
 _ALPHA_FLOOR = 16  # alpha at/below which a pixel is "background"
 _CELL_PAD = 10  # padding kept around a fitted sprite
 _NORMALIZE_PAD = 14  # normalized cells fill like real petdex pets (~5px from the edges)
@@ -490,7 +489,6 @@ def silhouette_box(image) -> tuple[int, int] | None:
     rgba = _load_rgba(image)
     box = rgba.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0).getbbox()
     return (box[2] - box[0], box[3] - box[1]) if box else None
-
 
 
 def _validate_extracted_frames(frames: list, frame_count: int) -> None:

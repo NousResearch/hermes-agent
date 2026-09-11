@@ -103,14 +103,17 @@ def _execute(command: str, **ctx_kwargs):
 
 
 def _restart_notify_payload(event: MessageEvent) -> dict:
-    """Requester routing info so the new gateway process can notify them once back online."""
+    """Requester routing info so the new gateway process can notify them once back online.
+    ``profile`` is persisted so the notice leaves through the requester's own profile bot after the
+    restart (a bare platform lookup would resolve the default profile's adapter)."""
     source = event.source
     data = {"platform": source.platform.value if source.platform else None,
             "chat_id": source.chat_id, "chat_type": source.chat_type}
     if source.delivered_via_upstream_relay is True:
         data["delivered_via_upstream_relay"] = True
         data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
-    optional = (("thread_id", source.thread_id), ("message_id", event.message_id))
+    optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
+                ("profile", getattr(source, "profile", None)))
     data.update({k: v for k, v in optional if v})
     return data
 
@@ -208,10 +211,11 @@ class GatewaySlashCommandsMixin(
         return self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
     def _adapter_and_key_for(self, event: MessageEvent):
-        """``(adapter, session_key)`` for the event's source, either None when no source."""
+        """``(adapter, session_key)`` for the event's source, either None when no source. The source's
+        OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self.adapters.get(event.source.platform), self._session_key_for_source(event.source)
+        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -255,7 +259,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self.adapters.get(source.platform)
+        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -1234,7 +1238,10 @@ class GatewaySlashCommandsMixin(
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat()}
-        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id)) if v})
+        # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
+        # requester's own profile bot, not the default profile's adapter for the same platform.
+        pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
+                                          ("profile", getattr(src, "profile", None))) if v})
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)

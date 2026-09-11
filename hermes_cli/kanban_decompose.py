@@ -137,8 +137,9 @@ def _load_config() -> dict:
 def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
     """``kanban.<key>`` if it names an existing profile, else the active
     default profile — so a task is never stranded for lack of an owner.
-    ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
-    catches children the decomposer can't route."""
+    ``orchestrator_profile`` is the fallback owner for an unassigned root after
+    fan-out (callers with an explicit task assignee should prefer that);
+    ``default_assignee`` catches children the decomposer can't route."""
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get(key) or "").strip()
     if explicit:
@@ -201,12 +202,16 @@ class _Routing:
     valid_names: set[str]
 
 
-def _load_routing() -> _Routing:
+def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     cfg = _load_config()
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
+    # An assignee chosen when the triage task was created is explicit routing
+    # intent. Only unassigned roots fall back to the configured/active
+    # orchestrator profile.
+    orchestrator = root_assignee or _resolve_profile_from_cfg(cfg, "orchestrator_profile")
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile"),
+        orchestrator=orchestrator,
         default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee"),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
@@ -309,7 +314,7 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    routing = _load_routing()
+    routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

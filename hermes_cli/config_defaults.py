@@ -1713,8 +1713,12 @@ DEFAULT_CONFIG = {
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
-        # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
-        # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
+        # Fallback profile assigned to the root/orchestration task after
+        # Triage decomposition when the task has no assignee. An existing
+        # assignee takes precedence. When unset, falls back to the default
+        # profile (the one `hermes` launches with no -p flag). This does not
+        # control the decomposer prompt, model, or skills; configure that LLM
+        # path under auxiliary.kanban_decomposer.
         "orchestrator_profile": "",
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.

@@ -19,6 +19,12 @@ import io
 import json
 import sys
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 
 def parse_pages(spec: str, page_count: int) -> list[int]:
     pages: set[int] = set()

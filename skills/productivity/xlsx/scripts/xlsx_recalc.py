@@ -32,10 +32,20 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 
 def count_cached(path):
     """Number of formula cells with a cached value present."""
-    from openpyxl import load_workbook
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+        sys.exit(2)
     wb_f = load_workbook(path, data_only=False)
     wb_v = load_workbook(path, data_only=True)
     formulas = cached = 0

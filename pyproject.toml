@@ -336,6 +336,21 @@ google = [
   "httplib2==0.32.0",
   "pyasn1==0.6.4",
 ]
+documents = [
+  # Required by the bundled office skills: skills/productivity/{docx,xlsx,pdf,powerpoint}.
+  # Declared here so dev environments and the skills' own test suites can
+  # eager-install them; `tools/lazy_deps.py` installs the same pins at first
+  # use (skill.docx / skill.xlsx / skill.powerpoint / skill.pdf), so the
+  # office skills work on a fresh install without a manual pip step.
+  # Pins MUST match the LAZY_DEPS entries — tests/test_packaging_metadata.py
+  # asserts the two stay in lockstep.
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "reportlab==5.0.1",
+  "pypdf==6.18.0",
+  "pypdfium2==5.13.0",
+]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -377,6 +392,7 @@ all = [
   "hermes-agent[acp]",
   "hermes-agent[google]",
   "hermes-agent[web]",
+  "hermes-agent[documents]",
   "hermes-agent[youtube]",
 ]
 
@@ -511,6 +527,7 @@ nemo-relay = false
 numpy = false
 onnxruntime = false
 openai = false
+openpyxl = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false
 openwakeword = false
@@ -524,14 +541,19 @@ pvporcupine = false
 pyasn1 = false
 pydantic = false
 pyjwt = false
+pypdf = false
+pypdfium2 = false
 pytest = false
 pytest-asyncio = false
+python-docx = false
 python-dotenv = false
 python-multipart = false
 python-olm = false
+python-pptx = false
 python-telegram-bot = false
 pyyaml = false
 qrcode = false
+reportlab = false
 requests = false
 rich = false
 ruamel-yaml = false
@@ -539,7 +561,6 @@ ruff = false
 sentencepiece = false
 setuptools = false
 setuptools-rust = false
-wheel = false
 sherpa-onnx = false
 slack-bolt = false
 slack-sdk = false
@@ -554,8 +575,8 @@ unpaddedbase64 = false
 uvicorn = false
 vercel = false
 websockets = false
+wheel = false
 youtube-transcript-api = false
-
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

@@ -9,6 +9,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 
 def available_backends() -> list[str]:
     """Names of usable rasterizer backends, in preference order."""

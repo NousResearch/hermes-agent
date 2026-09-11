@@ -38,12 +38,22 @@ import copy
 import json
 import sys
 
-from pptx import Presentation
-from pptx.chart.data import CategoryChartData
-from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.util import Inches, Pt
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from pptx import Presentation
+    from pptx.chart.data import CategoryChartData
+    from pptx.dml.color import RGBColor
+    from pptx.enum.chart import XL_CHART_TYPE
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches, Pt
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-pptx'", file=sys.stderr)
+    sys.exit(2)
 
 LAYOUTS = {"title": 0, "title_content": 1, "section": 2,
            "two_content": 3, "title_only": 5, "blank": 6}

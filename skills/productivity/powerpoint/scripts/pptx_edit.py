@@ -44,12 +44,22 @@ import copy
 import json
 import sys
 
-from lxml import etree
-from pptx import Presentation
-from pptx.chart.data import CategoryChartData
-from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.oxml.ns import qn
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from lxml import etree
+    from pptx import Presentation
+    from pptx.chart.data import CategoryChartData
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.oxml.ns import qn
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-pptx'", file=sys.stderr)
+    sys.exit(2)
 
 R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 

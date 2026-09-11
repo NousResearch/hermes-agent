@@ -16,7 +16,17 @@ import argparse
 import json
 import sys
 
-from pptx import Presentation
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from pptx import Presentation
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install python-pptx'", file=sys.stderr)
+    sys.exit(2)
 
 
 def fill_tokens(prs, values):

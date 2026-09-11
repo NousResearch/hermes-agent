@@ -35,10 +35,20 @@ import json
 import re
 import sys
 
-from openpyxl import load_workbook
-from openpyxl.formatting.formatting import ConditionalFormattingList
-from openpyxl.utils import (column_index_from_string, get_column_letter,
-                            range_boundaries)
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
+try:
+    from openpyxl import load_workbook
+    from openpyxl.formatting.formatting import ConditionalFormattingList
+    from openpyxl.utils import (column_index_from_string, get_column_letter,
+                                range_boundaries)
+except ImportError:
+    print("Missing dependency: install with 'python3 -m pip install openpyxl'", file=sys.stderr)
+    sys.exit(2)
 
 # A1-style reference, optionally sheet-qualified, optionally a range.
 # Guards: not preceded by a word char/$/. (avoids ABC123 identifiers) and

@@ -475,17 +475,6 @@ def _dispatch_quick(rid, params, session, name, arg):
     return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
-def _plugin_command_handler(name: str):
-    try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
-    except Exception:
-        return None
-
-
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
-
-
 def _is_profile_skill_command(session: dict, base: str) -> bool:
     """True when ``/base`` is a skill command of the session's profile (HERMES_HOME bound to it so
     get_skill_commands() sees its skills.external_dirs; nothing upstream binds it). False on failure."""
@@ -502,11 +491,26 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
         return False
 
 
+def _dispatch_tui_plugin_command(name: str, arg: str):
+    """Use the host-owned dispatcher for every TUI plugin-command route."""
+    plugins = _tools_mod("hermes_cli.plugins")
+    return plugins.resolve_plugin_command_result(
+        plugins._dispatch_plugin_command(name, arg)
+    )
+
+
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
-    return None
+    try:
+        dispatched = _dispatch_tui_plugin_command(name, arg)
+        if not dispatched.found:
+            return None
+        if dispatched.failed:
+            return _err(rid, 5030, dispatched.error_message)
+        if dispatched.denied:
+            return _err(rid, 4013, dispatched.denial_message)
+        return _ok(rid, {"type": "plugin", "output": str(dispatched.output or "")})
+    except Exception:
+        return _err(rid, 5030, "Plugin command failed.")
 
 
 def _bundle_key_for(name: str):
@@ -834,11 +838,17 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
+    if base:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+            dispatched = _dispatch_tui_plugin_command(base, arg)
+            if dispatched.found:
+                if dispatched.failed:
+                    return _err(rid, 5030, dispatched.error_message)
+                if dispatched.denied:
+                    return _err(rid, 4013, dispatched.denial_message)
+                return _ok(rid, {"output": str(dispatched.output or "(no output)")})
+        except Exception:
+            return _err(rid, 5030, "Plugin command failed.")
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

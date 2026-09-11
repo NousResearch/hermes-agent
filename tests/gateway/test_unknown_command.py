@@ -5,9 +5,12 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+from gateway.run import GatewayRunner
 
 import pytest
 
@@ -43,7 +46,6 @@ def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -215,8 +217,11 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     )
     monkeypatch.setattr(
         _plugins_mod,
-        "get_plugin_command_handler",
-        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
+        "_get_plugin_command_entry",
+        lambda name: (
+            {"handler": lambda args: f"metrics {args}", "authenticated_context": False}
+            if name == "metricas" else None
+        ),
     )
 
     result = await runner._handle_message(_make_event("/status"))
@@ -225,3 +230,108 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+def test_plugin_command_dispatch_passes_authenticated_source_context_to_opted_in_handler(monkeypatch):
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    seen = []
+
+    async def handler(raw_args, *, command_context):
+        seen.append((raw_args, command_context))
+        return "handled"
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins._get_plugin_command_entry",
+        lambda _name: {"handler": handler, "authenticated_context": True},
+    )
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="user-42",
+        chat_id="chat-42",
+        chat_type="channel",
+        scope_id="guild-42",
+        profile="profile-42",
+    )
+    event = MessageEvent(text="/probe exact args", source=source, message_id="m42")
+
+    handled, result, command = asyncio.run(
+        runner._hm_dispatch_quick_and_plugin_commands(event, source, "probe")
+    )
+
+    assert (handled, result, command) == (True, "handled", "probe")
+    assert len(seen) == 1
+    raw_args, context = seen[0]
+    assert raw_args == "exact args"
+    assert context is not None
+    assert context.platform == "discord"
+    assert context.user_id == "user-42"
+    assert context.chat_id == "chat-42"
+    assert context.chat_type == "channel"
+    assert context.scope_id == "guild-42"
+    assert context.profile == "profile-42"
+
+
+def test_plugin_command_dispatch_checks_slash_access_before_handler(monkeypatch):
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+
+    def deny(source, canonical_cmd):
+        return "not allowed"
+
+    runner._check_slash_access = deny
+    seen = []
+
+    async def handler(raw_args, *, command_context):
+        seen.append((raw_args, command_context))
+        return "secret result"
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins._get_plugin_command_entry",
+        lambda _name: {"handler": handler, "authenticated_context": True},
+    )
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="staff-user",
+        chat_id="direct-chat",
+        chat_type="dm",
+        scope_id="firm-workspace",
+        profile="lilly",
+    )
+    event = MessageEvent(text="/probe exact args", source=source, message_id="m-denied")
+
+    handled, result, command = asyncio.run(
+        runner._hm_dispatch_quick_and_plugin_commands(event, source, "probe")
+    )
+
+    assert (handled, result, command) == (True, "not allowed", "probe")
+    assert seen == []
+
+
+def test_plugin_registry_failure_is_handled_without_detail_or_fallthrough(monkeypatch, caplog):
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+
+    def broken_lookup(_name):
+        raise RuntimeError("sensitive registry detail")
+
+    monkeypatch.setattr("hermes_cli.plugins._get_plugin_command_entry", broken_lookup)
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="staff-user",
+        chat_id="direct-chat",
+        chat_type="dm",
+        scope_id="firm-workspace",
+        profile="lilly",
+    )
+    event = MessageEvent(text="/possibly-secure secret args", source=source, message_id="m-fail")
+
+    handled, result, command = asyncio.run(
+        runner._hm_dispatch_quick_and_plugin_commands(event, source, "possibly-secure")
+    )
+
+    assert (handled, result, command) == (True, "Plugin command failed.", "possibly-secure")
+    assert "sensitive registry detail" not in caplog.text

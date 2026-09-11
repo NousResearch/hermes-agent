@@ -2044,9 +2044,14 @@ class TestPluginCommands:
 
         ctx.register_command("lcm", lambda a: a, description="LCM", args_hint="<prompt>")
         ctx.register_command("ping", lambda a: a, description="Ping")
+        ctx.register_command(
+            "auth-probe", lambda a, *, command_context: a, authenticated_context=True
+        )
 
         assert mgr._plugin_commands["lcm"]["argument_mode"] == "text"
         assert mgr._plugin_commands["ping"]["argument_mode"] is None
+        assert mgr._plugin_commands["lcm"]["authenticated_context"] is False
+        assert mgr._plugin_commands["auth-probe"]["authenticated_context"] is True
 
 
 

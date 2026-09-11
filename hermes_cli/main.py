@@ -2505,7 +2505,9 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # dashboard_auth, …).
     try:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()
+        # Dashboard auth settings may have changed after an earlier discovery
+        # pass in this process. Refresh before the fail-closed gate reads them.
+        discover_plugins(force=True)
     except Exception as exc:
         # Must not block startup; the gate's fail-closed branch surfaces a
         # missing provider if it matters.

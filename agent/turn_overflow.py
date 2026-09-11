@@ -9,15 +9,17 @@ estimators that tests patch on the loop module are imported lazily inside the ha
 
 from __future__ import annotations
 
+from agent.compression_status import (
+    compression_retry_messages_status, compression_retry_tokens_status, compression_retry_too_large_status, compression_retry_payload_too_large_status, compression_retry_bytes_status, compression_retry_retained_vision_status,
+)
+
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import (
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, compression_blocked_transiently,
-    compression_skipped_due_to_lock, context_compression_timed_out,
+    compression_blocked_transiently, compression_skipped_due_to_lock, context_compression_timed_out,
 )
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
@@ -146,7 +148,9 @@ class _Recovery(OverflowVerdict):
         ``fail_on_timeout`` a host timeout (recovery spent its wait budget with no
         committed summary) ends the turn via the typed contract, since re-sending would
         hit the same overflow."""
-        from agent.conversation_compression import conversation_history_after_compression
+        from agent.conversation_compression import (
+            conversation_history_after_compression,
+        )
         from agent.conversation_loop import _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _compression_deferred_result
 
         agent = self.agent
@@ -202,9 +206,9 @@ class _Recovery(OverflowVerdict):
         new_tokens = estimate_messages_tokens_rough(messages)
         shrank_tokens = new_tokens > 0 and new_tokens < original_tokens * 0.95
         if len(messages) < original_len:
-            self.agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            self.agent._buffer_status(compression_retry_messages_status(before=original_len, after=len(messages)))
         elif shrank_tokens:
-            self.agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+            self.agent._buffer_status(compression_retry_tokens_status(before=original_tokens, after=new_tokens))
         return None, len(messages) < original_len or shrank_tokens, new_tokens
 
     def request_tokens(self) -> int:
@@ -226,8 +230,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     if exhausted is not None:
         return exhausted
     agent._buffer_status(
-        f"⚠️  Request payload too large (413) — compression attempt "
-        f"{st.compression_attempts}/{st.max_compression_attempts}..."
+        compression_retry_payload_too_large_status(st.compression_attempts, st.max_compression_attempts)
     )
 
     messages = st.messages
@@ -251,10 +254,10 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     new_bytes = serialized_messages_bytes(messages)
     if len(messages) < original_len or (new_bytes > 0 and new_bytes < original_bytes * 0.95):
         if len(messages) < original_len:
-            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            agent._buffer_status(compression_retry_messages_status(before=original_len, after=len(messages)))
         else:
             agent._buffer_status(
-                f"🗜️ Compressed {original_bytes:,} → {new_bytes:,} " f"payload bytes, retrying..."
+                compression_retry_bytes_status(original_bytes, new_bytes)
             )
         time.sleep(2)  # Brief pause between compression retries
         _retry.restart_with_compressed_messages = True
@@ -262,8 +265,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
 
     if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
         agent._buffer_status(
-            "📐 Compression could not reduce the request further — "
-            "removed retained vision payloads and retrying..."
+            compression_retry_retained_vision_status()
         )
         return st.done("continue")
 
@@ -389,7 +391,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     exhausted = st.count_attempt()
     if exhausted is not None:
         return exhausted
-    agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(
+    agent._buffer_status(compression_retry_too_large_status(
         tokens=st.approx_tokens, attempt=st.compression_attempts, cap=st.max_compression_attempts,
     ))
 

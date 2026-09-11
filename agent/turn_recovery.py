@@ -9,6 +9,10 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 
 from __future__ import annotations
 
+from agent.compression_status import (
+    compression_retry_context_reduced_status,
+)
+
 import logging
 import math
 import re
@@ -16,7 +20,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason
@@ -1314,7 +1317,9 @@ def route_classified_error(
     (immediately) and transport failures (after 1 retry) unless credential-pool rotation may
     still recover (upstream-aggregator 429s always fall back); persistent 401/403 → fallback
     chain once; genuine Nous 429 → cross-session breaker + re-enter the loop exactly once."""
-    from agent.conversation_compression import conversation_history_after_compression
+    from agent.conversation_compression import (
+        conversation_history_after_compression,
+    )
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
 
@@ -1395,7 +1400,7 @@ def route_classified_error(
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:
                 agent._buffer_status(
-                    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
+                    compression_retry_context_reduced_status(
                         new_ctx=_LONG_CONTEXT_TIER_CAP, old_ctx=old_ctx
                     )
                 )

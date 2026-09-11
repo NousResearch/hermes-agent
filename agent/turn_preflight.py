@@ -9,15 +9,17 @@ overflow warnings. Nothing here imports ``agent.conversation_loop`` at module le
 
 from __future__ import annotations
 
+from agent.compression_status import (
+    pre_api_compression_status,
+)
+
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
-    compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression,
+    compression_blocked_transiently, compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -127,7 +129,7 @@ def run_preflight_compression(
         _pre_api_status = automatic_compaction_status_message(
             compressor,
             phase="pre_api",
-            default_message=PRE_API_COMPRESSION_STATUS_TEMPLATE.format(
+            default_message=pre_api_compression_status(
                 tokens=request_pressure_tokens
             ),
             approx_tokens=request_pressure_tokens,

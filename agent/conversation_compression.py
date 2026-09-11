@@ -10,6 +10,8 @@ one pass per session at a time (durable lock) but sessions run concurrently, so 
 
 from __future__ import annotations
 
+from agent import compression_status
+
 import concurrent.futures
 import contextlib
 import copy
@@ -85,7 +87,7 @@ def _emit_compaction_done(agent: Any) -> None:
     if not status_callback:
         return
     with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", compression_status.compaction_done_status())
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -143,6 +145,9 @@ def is_compaction_progress_status(text: str | None) -> bool:
     body = text.strip() if isinstance(text, str) else ""
     if not body:
         return False
+    localized_kind = compression_status.compression_status_kind(body)
+    if localized_kind:
+        return localized_kind == "compacting"
     if COMPACTION_STATUS_MARKER in body:
         return True
     if body == COMPACTION_DONE_STATUS:
@@ -1533,6 +1538,8 @@ class _CompressionActivityHeartbeat:
         # routine start status was emitted) keeps it alive with heartbeats;
         # quiet context engines emit neither (#98371 follow-up).
         self._emit_client_status = emit_client_status
+        # The heartbeat worker has no routed profile context; capture the visible phase language.
+        self._client_status_message = compression_status.compaction_heartbeat_status() if emit_client_status else ""
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-activity-heartbeat", daemon=True)
 
@@ -1600,7 +1607,7 @@ class _CompressionActivityHeartbeat:
         if not callable(emit):
             return
         try:
-            emit(COMPACTION_HEARTBEAT_STATUS)
+            emit(self._client_status_message)
         except Exception:
             logger.debug(
                 "status emit error in compression heartbeat", exc_info=True
@@ -3544,7 +3551,7 @@ def _announce_compression_start(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r", agent.session_id or "none",
         message_count, f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic,
     )
-    status = COMPACTION_STATUS
+    status = compression_status.compaction_status()
     if not force:
         status = automatic_compaction_status_message(
             agent.context_compressor, phase="compress", default_message=status, approx_tokens=approx_tokens,
@@ -3804,7 +3811,7 @@ def _compress_context_via_codex_app_server(
         return messages, _existing_system_prompt(agent, system_message)
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
-        agent._emit_status(COMPACTION_STATUS)
+        agent._emit_status(compression_status.compaction_status())
     _activity_heartbeat = _CompressionActivityHeartbeat(agent, emit_client_status=True).start()
     try:
         result = codex_session.compact_thread()

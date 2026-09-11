@@ -2,16 +2,16 @@
  * The rotation's clock: a few minutes into a launch, then hours apart, offer a
  * tip if the app happens to be quiet.
  *
- * Off unless the user turned it on (Settings → Appearance) — this is the half
- * of the feature that talks unprompted, so it is the half that has to be asked
- * for. An agent tip doesn't come through here at all.
+ * On unless the user turned it off (Settings → Appearance). An agent tip
+ * doesn't come through here at all.
  *
  * The pacing is a loading-screen tip's, not a notification's. Two clocks have
  * to agree: a per-launch settling delay, so opening the app is never met with a
  * bubble, and a six-hour cooldown persisted across launches, so quitting and
  * reopening isn't a way to farm them. In practice that lands around one tip per
  * day of use and takes weeks to walk the catalog, which is the point — ten tips
- * in an afternoon is how a nicety turns into a thing people switch off.
+ * in an afternoon is how a nicety turns into a thing people switch off. And the
+ * walk is one lap: a tip shown once is never offered again (`nextTip`).
  *
  * Then "quiet" does the rest. A tip is still the app interrupting, so it waits
  * for a moment that is genuinely idle — nothing streaming, no dialog, menu or
@@ -21,13 +21,17 @@
  */
 
 import { useEffect } from 'react'
+import { useNavigate } from 'react-router'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
 import type { Translations } from '@/i18n/types'
 import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, showTip } from '@/store/tips'
+
+import { offerLocalSetupTip } from './local-setup-offer'
 
 const TICK_MS = 30_000
 /** Nothing in the first stretch of a launch, however long the cooldown says
@@ -61,6 +65,8 @@ function appIsQuiet(lastTypedAt: number): boolean {
 
 /** Drive the ambient rotation for as long as the host is mounted. */
 export function useTipRotation(copy: Translations['tips']) {
+  const navigate = useNavigate()
+
   useEffect(() => {
     let lastTypedAt = 0
     let settledAt = Date.now() + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
@@ -76,11 +82,23 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
-      if (!$tipRotationEnabled.get() || $activeTip.get()) {
+      if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }
 
       if (!isDue() || !appIsQuiet(lastTypedAt)) {
+        return
+      }
+
+      // Campaigns outrank the walk: a conditional, actionable tip that is
+      // live right now (the local-setup CTA) says something about THIS
+      // machine, which beats the catalog's standing introduction. It shares
+      // the cooldown, so taking the moment still costs it the usual hours.
+      if (
+        offerLocalSetupTip(copy, () => {
+          navigate(`${SETTINGS_ROUTE}?tab=providers&pview=local`)
+        })
+      ) {
         return
       }
 
@@ -91,7 +109,9 @@ export function useTipRotation(copy: Translations['tips']) {
       const chosen = nextTip(
         TIP_CATALOG.map(tip => tip.id),
         onScreen.map(tip => tip.id),
-        { lastShownId: $lastTipId.get(), retired: $retiredTips.get() }
+        // `$tipShownAt` is the seen ledger: every tip that reached the screen
+        // is in it, so a tip the timer closed is as done as one the ✕ closed.
+        { lastShownId: $lastTipId.get(), retired: $retiredTips.get(), seen: Object.keys($tipShownAt.get()) }
       )
 
       const tip = onScreen.find(candidate => candidate.id === chosen)
@@ -110,10 +130,10 @@ export function useTipRotation(copy: Translations['tips']) {
       })
     }
 
-    // Turning the rotation on is its own kind of settled: the delay guards a
+    // Turning tips on is its own kind of settled: the delay guards a
     // launch you came into with a purpose, and has nothing to say about someone
     // who just asked for tips and is owed the sight of one working.
-    const unbindSwitch = $tipRotationEnabled.listen(enabled => {
+    const unbindSwitch = $tipsEnabled.listen(enabled => {
       if (enabled) {
         settledAt = Date.now()
         offer()
@@ -129,5 +149,5 @@ export function useTipRotation(copy: Translations['tips']) {
       window.clearInterval(timer)
       window.removeEventListener('keydown', noteTyping, true)
     }
-  }, [copy])
+  }, [copy, navigate])
 }

@@ -12,18 +12,104 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+elevenlabs = false
 setuptools = false
-h2 = false
-vercel = false
-pillow = false
-unpaddedbase64 = false
-defusedxml = false
+modal = false
+pyyaml = false
+maturin = false
+numpy = false
+pvporcupine = false
+google-auth = false
 aiohttp = false
-cryptography = false
+starlette = false
+mistralai = false
+firecrawl-py = false
+parallel-web = false
+markdown = false
+opentelemetry-sdk = false
+prompt-toolkit = false
+fastapi = false
+anthropic = false
+pathspec = false
+openwakeword = false
+defusedxml = false
+ruff = false
+exa-py = false
 mcp = false
 python-olm = false
-nemo-relay = false
+wheel = false
+websockets = false
+pytest = false
+pillow = false
+setuptools-rust = false
+tenacity = false
+pyjwt = false
+slack-bolt = false
+fal-client = false
+asyncpg = false
+boto3 = false
+ruamel-yaml = false
+sherpa-onnx = false
 huggingface-hub = false
+pytest-asyncio = false
+slack-sdk = false
+unpaddedbase64 = false
+discord-py = false
+honcho-ai = false
+faster-whisper = false
+certifi = false
+debugpy = false
+packaging = false
+rich = false
+supermemory = false
+youtube-transcript-api = false
+h2 = false
+edge-tts = false
+microsoft-teams-apps = false
+aiohttp-socks = false
+ai-edge-litert = false
+onnxruntime = false
+croniter = false
+opentelemetry-exporter-otlp-proto-http = false
+azure-identity = false
+lark-oapi = false
+sentencepiece = false
+firecrawl-anydoc = false
+google-api-python-client = false
+brotlicffi = false
+mem0ai = false
+qrcode = false
+vercel = false
+aiosqlite = false
+tzdata = false
+python-dotenv = false
+daytona = false
+uvicorn = false
+nemo-relay = false
+requests = false
+httplib2 = false
+httpx = false
+pyasn1 = false
+snowballstemmer = false
+concurrent-log-handler = false
+cryptography = false
+pydantic = false
+agent-client-protocol = false
+fire = false
+httpx2 = false
+google-auth-oauthlib = false
+python-multipart = false
+ty = false
+openai = false
+mautrix = false
+google-auth-httplib2 = false
+python-telegram-bot = false
+psutil = false
+jinja2 = false
+hindsight-client = false
+sounddevice = false
+alibabacloud-dingtalk = false
+dingtalk-stream = false
 
 [manifest]
 overrides = [
@@ -562,22 +648,22 @@ wheels = [
 
 [[package]]
 name = "brotlicffi"
-version = "1.2.0.1"
+version = "1.2.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cffi" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/b6/017dc5f852ed9b8735af77774509271acbf1de02d238377667145fcee01d/brotlicffi-1.2.0.1.tar.gz", hash = "sha256:c20d5c596278307ad06414a6d95a892377ea274a5c6b790c2548c009385d621c", size = 478156, upload-time = "2026-03-05T19:54:11.547Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/97/7845739a36828ffe751a1c6b240692f552fd7ecf65026c51326c0a4aa369/brotlicffi-1.2.0.2.tar.gz", hash = "sha256:5e0fbd13644cf1f6015e75fa5e0ad8fdce1048d9c9ff90b0ce826174b249ee35", size = 478755, upload-time = "2026-08-21T17:29:18.415Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/9f/b98dcd4af47994cee97aebac866996a006a2e5fc1fd1e2b82a8ad95cf09c/brotlicffi-1.2.0.1-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:91ba5f0ccc040f6ff8f7efaf839f797723d03ed46acb8ae9408f99ffd2572cf4", size = 432608, upload-time = "2026-03-05T19:53:56.736Z" },
-    { url = "https://files.pythonhosted.org/packages/b1/7a/ac4ee56595a061e3718a6d1ea7e921f4df156894acffb28ed88a1fd52022/brotlicffi-1.2.0.1-cp38-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:be9a670c6811af30a4bd42d7116dc5895d3b41beaa8ed8a89050447a0181f5ce", size = 1534257, upload-time = "2026-03-05T19:53:58.667Z" },
-    { url = "https://files.pythonhosted.org/packages/99/39/e7410db7f6f56de57744ea52a115084ceb2735f4d44973f349bb92136586/brotlicffi-1.2.0.1-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6f3314a3476f59e5443f9f72a6dff16edc0c3463c9b318feaef04ae3e4683f5a", size = 1536838, upload-time = "2026-03-05T19:54:00.705Z" },
-    { url = "https://files.pythonhosted.org/packages/a6/75/6e7977d1935fc3fbb201cbd619be8f2c7aea25d40a096967132854b34708/brotlicffi-1.2.0.1-cp38-abi3-win32.whl", hash = "sha256:82ea52e2b5d3145b6c406ebd3efb0d55db718b7ad996bd70c62cec0439de1187", size = 343337, upload-time = "2026-03-05T19:54:02.446Z" },
-    { url = "https://files.pythonhosted.org/packages/d8/ef/e7e485ce5e4ba3843a0a92feb767c7b6098fd6e65ce752918074d175ae71/brotlicffi-1.2.0.1-cp38-abi3-win_amd64.whl", hash = "sha256:da2e82a08e7778b8bc539d27ca03cdd684113e81394bfaaad8d0dfc6a17ddede", size = 379026, upload-time = "2026-03-05T19:54:04.322Z" },
-    { url = "https://files.pythonhosted.org/packages/7f/53/6262c2256513e6f530d81642477cb19367270922063eaa2d7b781d8c723d/brotlicffi-1.2.0.1-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:e015af99584c6db1490a69a210c765953e473e63adc2d891ac3062a737c9e851", size = 402265, upload-time = "2026-03-05T19:54:05.858Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/d9/d5340b43cf5fbe7fe5a083d237e5338cc1caa73bea523be1c5e452c26290/brotlicffi-1.2.0.1-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:37cb587d32bf7168e2218c455e22e409ad1f3157c6c71945879a311f3e6b6abf", size = 406710, upload-time = "2026-03-05T19:54:07.272Z" },
-    { url = "https://files.pythonhosted.org/packages/a3/82/dbced4c1e0792efdf23fd90ff6d2a320c64ff4dfef7aacc85c04fde9ddd2/brotlicffi-1.2.0.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9d6ba65dd528892b4d9960beba2ae011a753620bcfc66cf6fa3cee18d7b0baa4", size = 402787, upload-time = "2026-03-05T19:54:08.73Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/6f/534205ba7590c9a8716a614f270c5c2ec419b5b7079b3f9cd31b7b5580de/brotlicffi-1.2.0.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:f2a5575653b0672638ba039b82fda56854934d7a6a24d4b8b5033f73ab43cbc1", size = 375108, upload-time = "2026-03-05T19:54:10.079Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/71/c27f24b8334f65f2492601c7764338f156cb904d2ffe0061e6004a76d9cc/brotlicffi-1.2.0.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:d5a8ffa154f16660ab818d78045b55fa6f9970f1ca4c38998766e99c672071cb", size = 438885, upload-time = "2026-08-21T17:29:04.113Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/22/d8fd1a4d09b7ab563b89380395e09151d2ef1344be31594df6a6987d4028/brotlicffi-1.2.0.2-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ec6b1af7b7a8ce788354f2c603651ada0fba166ec31ab879e2eec462a3e6dbf4", size = 1534365, upload-time = "2026-08-21T17:29:05.878Z" },
+    { url = "https://files.pythonhosted.org/packages/06/78/076419ed6c2c6aa3eaac6fd6b076502b4be89d50625fcdc513cd4aeca718/brotlicffi-1.2.0.2-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:22916101de0e7ff535f2edf54b52a85591853b8ae9a98737643defdd3c063a3a", size = 1536851, upload-time = "2026-08-21T17:29:07.599Z" },
+    { url = "https://files.pythonhosted.org/packages/35/dd/31ae9945cbd605339fb51c9a609f7dbb182cd361adeabc1d470142357206/brotlicffi-1.2.0.2-cp39-abi3-win32.whl", hash = "sha256:df1d34c4ad9adbf7f63a6b42f7d0e4dfd259c88141b85145b57abecc1abc3b24", size = 342379, upload-time = "2026-08-21T17:29:09.05Z" },
+    { url = "https://files.pythonhosted.org/packages/95/ae/afd54e744df93b51cc29f6a19beccf9998b25743d7177697390de10479d1/brotlicffi-1.2.0.2-cp39-abi3-win_amd64.whl", hash = "sha256:489ca4da3ee65926d72bf01584b61088a9da6bdd1bb01b2040901e1beaffa8f0", size = 379761, upload-time = "2026-08-21T17:29:10.687Z" },
+    { url = "https://files.pythonhosted.org/packages/37/da/a5b65a86725d772504a348193cf1fab5ad6410794b422bf81faa17a96a66/brotlicffi-1.2.0.2-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:cf500bb9e02e1474ced1ecf22f74c568de2816b3627af6352ec51ac5e09e60ee", size = 407459, upload-time = "2026-08-21T17:29:12.385Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/c7/a253288e66ee340f2f6320eda7022daa723f2918438d586a59e9c998aa27/brotlicffi-1.2.0.2-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:dbb81489562dd5363bf86d9a8edb0ec8c97049b0819ba4936fc023e8847248bc", size = 406825, upload-time = "2026-08-21T17:29:13.992Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/6c/ea8e3d34e1d64c5e5a920bb0c89bf9e92badf973937a60922820395e622d/brotlicffi-1.2.0.2-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fc7647657e4f3d73eab591910dbecb57d1ecaea7aa3dd04e6d704a2756fe0c59", size = 402903, upload-time = "2026-08-21T17:29:15.524Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/17/17c22d48819001ca08cadab63b09b00e0c56a7579478aa7c2623f4280de6/brotlicffi-1.2.0.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:5eb5563173afb92c9111b180349ff17d7c83c79febabadca5de983b552565c3c", size = 378395, upload-time = "2026-08-21T17:29:16.857Z" },
 ]
 
 [[package]]
@@ -1269,6 +1355,21 @@ wheels = [
 ]
 
 [[package]]
+name = "firecrawl-anydoc"
+version = "0.2.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/54/ee43b1661a954e53eaed85878a7ccc37ed73e02e6577bb26437ec5f9de94/firecrawl_anydoc-0.2.4.tar.gz", hash = "sha256:3e29460272fea81cde08fd5af11f6b0f1ff05919214ddc939867f72362c83032", size = 270706, upload-time = "2026-08-27T19:13:58.156Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/f1/5616b8d703b2bf5688eda86ede4b35620356d9c60346fe2d3efbec2a872d/firecrawl_anydoc-0.2.4-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:e3745a8b108d6575beafd37bcefe52e3f6c7ab44138e05cbdf4c6adf63caba84", size = 3441281, upload-time = "2026-08-27T19:13:43.408Z" },
+    { url = "https://files.pythonhosted.org/packages/59/7d/4b2a466c8953af3b9d94471081b04ce8636680111402d2140105f98c02e5/firecrawl_anydoc-0.2.4-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:b2a01eecaa0b99f99ff6749a098f8c7a5250d41db9c53673eb93536ad575bfed", size = 3262365, upload-time = "2026-08-27T19:13:46.362Z" },
+    { url = "https://files.pythonhosted.org/packages/77/b5/5784fc514f58ca19328faee701d2cc2e25961389c2d4908b2a51a1071ee4/firecrawl_anydoc-0.2.4-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:17720ba093820654162891d7995fd2dbae948b16fe1c174ba799bddfc0b92ad6", size = 3265363, upload-time = "2026-08-27T19:13:48.425Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/16/feeca9705bfdb237f1cb69ede0b373b144c0d51df4297e595a74b815557e/firecrawl_anydoc-0.2.4-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0e5aed01bf6d4e5c588d3363888293f2ceeb9feb00449a32e0ba993797cf0bd3", size = 3506751, upload-time = "2026-08-27T19:13:50.372Z" },
+    { url = "https://files.pythonhosted.org/packages/14/28/b4d0d3c5345cdd65c0b9113c6e6ff1b717fe360dccb658db2a9952315f9c/firecrawl_anydoc-0.2.4-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:dd162b5eb64478fcf02f53abe7765e26f4350ba657f36c25f055c4cc3dbade0a", size = 3443075, upload-time = "2026-08-27T19:13:52.417Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/29/50c52b0ea5dd645aea6d195da913c8d9e136601eec465bd9a590edd250c7/firecrawl_anydoc-0.2.4-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e57c79093c1592929dd8dfaf6c60b49eefe631721d96fb833c3f465472b37b9f", size = 3742860, upload-time = "2026-08-27T19:13:54.474Z" },
+    { url = "https://files.pythonhosted.org/packages/65/34/6d54fed906055e5507dd94efd63f4a05021f103dc684ea62a3b0876b7595/firecrawl_anydoc-0.2.4-cp310-abi3-win_amd64.whl", hash = "sha256:7c9ffc81946e6954c124560ed1d395e0103a1a08fdc0f6be382e2f35daf6dbc9", size = 3583555, upload-time = "2026-08-27T19:13:56.698Z" },
+]
+
+[[package]]
 name = "firecrawl-py"
 version = "4.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1569,7 +1670,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.20.6"
+version = "0.21.1"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -1578,6 +1679,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "fire" },
+    { name = "firecrawl-anydoc" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "markdown" },
@@ -1826,7 +1928,7 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
-    { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },
+    { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
     { name = "certifi", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
@@ -1844,6 +1946,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'web'", specifier = "==0.133.1" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = "==1.2.1" },
     { name = "fire", specifier = "==0.7.1" },
+    { name = "firecrawl-anydoc", specifier = "==0.2.4" },
     { name = "firecrawl-py", marker = "extra == 'firecrawl'", specifier = "==4.17.0" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = "==2.194.0" },
     { name = "google-auth", marker = "extra == 'google'", specifier = "==2.55.1" },
@@ -1887,7 +1990,7 @@ requires-dist = [
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
-    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.7.1,<0.8" },
+    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.8.3,<0.9" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
     { name = "onnxruntime", marker = "extra == 'wake'", specifier = "==1.27.0" },
@@ -2751,17 +2854,17 @@ wheels = [
 
 [[package]]
 name = "nemo-relay"
-version = "0.7.2"
+version = "0.8.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/58/81/a7a545ac3a2f8c670d261c89df599aa8fbf49d8be45fd1f52efb36b489eb/nemo_relay-0.7.2.tar.gz", hash = "sha256:828d9f6c7d7e4e42276bb7192bd44202c761e0c76fa4943d84e051b5a99028e5", size = 1295616, upload-time = "2026-08-08T01:54:00.953Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/73/ac90ccb08faca19b2c8470bdd4d5b9bae89fc5edfde8dae72ee7b1a2d8df/nemo_relay-0.8.3.tar.gz", hash = "sha256:3670c0689f0709354068a1460131e6f01ea44cd7c2b2186930dd20b23cd079ff", size = 1615748, upload-time = "2026-09-02T03:32:45.828Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/cd/f50440257f01bc5ab3d668331c90e06cf4edcc84dc7dc582d322ad05b622/nemo_relay-0.7.2-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e7c7977f0903793cc34c5542bf2b2e44d107def8a5ae9f1b28f06dd61ddec4ed", size = 9246341, upload-time = "2026-08-08T01:53:19.832Z" },
-    { url = "https://files.pythonhosted.org/packages/ed/9f/4041446dd134218799a34b5b5fad3a62d3e1d0a6c322ba2ca4b896ba1393/nemo_relay-0.7.2-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b4ae77c1f3d58eabda264e82ffaca54548df80caede7dd6af8cbd8f72b4a82ed", size = 8454070, upload-time = "2026-08-08T01:53:22.524Z" },
-    { url = "https://files.pythonhosted.org/packages/11/83/90230c2e9fae1aee39f768d4a9ef57e9f2716bcaed1a5923cce8b526c66b/nemo_relay-0.7.2-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0ce7103aec546766649c182619d16aa6ad07439e4d0ebd16d95c5004afb3e56a", size = 8954377, upload-time = "2026-08-08T01:53:25.267Z" },
-    { url = "https://files.pythonhosted.org/packages/71/e7/463fa461d0801146fec6a00cbc02e8961b30089d65ba170f9dfa9e6e3dcd/nemo_relay-0.7.2-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:2e7d0c2629ade7313aaed71d2272dca96a2fafad0248d0f87cf40a7720b252a0", size = 10322132, upload-time = "2026-08-08T01:53:27.991Z" },
-    { url = "https://files.pythonhosted.org/packages/32/8c/e20ec9c52bd1edd953157aaf24d0d9f9ab8afcbf108fc2356f398e252da8/nemo_relay-0.7.2-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b841c92395d7686c7f233036008294b9d362af1ec5123ab0babbfd11cbb04054", size = 10704141, upload-time = "2026-08-08T01:53:30.453Z" },
-    { url = "https://files.pythonhosted.org/packages/5a/c1/92a73961ea759b433b1f897b225662d499123cb962b48dc8ece19f610a09/nemo_relay-0.7.2-cp311-abi3-win_amd64.whl", hash = "sha256:0cdcc5e09d6d62d5c1d385dc62c9233eb714a25f36a09da81e5b9731e3c67903", size = 8803938, upload-time = "2026-08-08T01:53:33.437Z" },
-    { url = "https://files.pythonhosted.org/packages/9d/ec/2de114dab437431173988b9b11f46e8d377e12d57e1b4903258f3e03c2df/nemo_relay-0.7.2-cp311-abi3-win_arm64.whl", hash = "sha256:ca5f66e617311f836a10d96f120f3f32a99b4267d65048453b31951de3419a9d", size = 8438997, upload-time = "2026-08-08T01:53:36.12Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/6a/199c2061358684550780bfc3184e588cea6533ec697ae6fa2f36f8881412/nemo_relay-0.8.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:2b0a59b8a95d6ed9de099e471318af672b51426a89c2019766ac889b1e23f1d4", size = 10200865, upload-time = "2026-09-02T03:32:15.373Z" },
+    { url = "https://files.pythonhosted.org/packages/df/90/3486d10c2003cda3bd4ce98d34e40f283faf87dcb1292cddca356a86c6be/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0c84a93ad0d4bea9a7bf67917874cd4eee24694764456a5f94c9609b1df42904", size = 9199160, upload-time = "2026-09-02T03:32:17.467Z" },
+    { url = "https://files.pythonhosted.org/packages/18/00/15705b941df64443e50c49139140dd84603f23125ab48f9c122942911439/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:10b08a939678d8f54ad02e5fb086454ffad15f269eae4854e9597956dc96b176", size = 9760299, upload-time = "2026-09-02T03:32:19.255Z" },
+    { url = "https://files.pythonhosted.org/packages/00/d3/2dac6a938713cfb6f59d8f3e82e991a1635a666f25f8d7fed8a3fa9c56b7/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:c2fba57f39100068244f8fcaffbdd801a0a8ccc7b9dbee330bb087f3970d8ccc", size = 11287368, upload-time = "2026-09-02T03:32:21.359Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/d2/f61379d244139306c3832082d446ad6167f50108969b3e8720e62e1b2ae5/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ae6804050b309a12dae5a7afc8c85b29b601c2c4a4257d365a998b774a2e7d16", size = 11717569, upload-time = "2026-09-02T03:32:23.321Z" },
+    { url = "https://files.pythonhosted.org/packages/db/96/333f62b4176450154a8908f619e3323b70b43c3b733a0a0752ba3b9232b1/nemo_relay-0.8.3-cp311-abi3-win_amd64.whl", hash = "sha256:b1f006e50e44967821f3a77a2e0001eed8154db01168abcc0681891f9c339fed", size = 9656294, upload-time = "2026-09-02T03:32:25.904Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/bd/37ab6038111d3cdec1858e584ef9e8fdfe0db07aa6073d66d1303b18d791/nemo_relay-0.8.3-cp311-abi3-win_arm64.whl", hash = "sha256:0d3db4f0a9d1f909acbf659612bfb9859e304b53cd425ef8e0f60ca851e85173", size = 9235572, upload-time = "2026-09-02T03:32:28.042Z" },
 ]
 
 [[package]]

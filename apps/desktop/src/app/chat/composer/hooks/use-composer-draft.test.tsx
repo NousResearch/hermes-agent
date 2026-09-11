@@ -2,12 +2,14 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
 import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
@@ -292,5 +294,151 @@ describe('useComposerDraft — a closing composer hands the focus-bus key back',
     unmount()
 
     expect(getActiveComposer()).toBe('tile:other')
+  })
+})
+
+describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its composer', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    markActiveComposer('main')
+  })
+
+  function renderScopedHidden(target: ComposerTarget, hidden: boolean) {
+    const scope: ComposerScope = { ...MAIN_COMPOSER_SCOPE, target }
+
+    return render(
+      <PaneVisibleContext.Provider value={!hidden}>
+        <ComposerScopeProvider value={scope}>
+          <ProbeHarness
+            activeQueueSessionKey="session-tile"
+            onLayoutSnapshot={() => undefined}
+            sessionId="session-tile"
+          />
+        </ComposerScopeProvider>
+      </PaneVisibleContext.Provider>
+    )
+  }
+
+  it('does not claim the focus bus when the composer mounts inside a hidden pane', () => {
+    renderScopedHidden('tile:bg', true)
+
+    expect(getActiveComposer()).toBe('main')
+  })
+
+  it('still claims the bus when the same composer becomes visible', () => {
+    const { rerender } = renderScopedHidden('tile:fg', true)
+
+    expect(getActiveComposer()).toBe('main')
+
+    rerender(
+      <PaneVisibleContext.Provider value={true}>
+        <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: 'tile:fg' }}>
+          <ProbeHarness
+            activeQueueSessionKey="session-tile"
+            onLayoutSnapshot={() => undefined}
+            sessionId="session-tile"
+          />
+        </ComposerScopeProvider>
+      </PaneVisibleContext.Provider>
+    )
+
+    expect(getActiveComposer()).toBe('tile:fg')
+  })
+
+  it('claims the bus on mount when visible', () => {
+    renderScopedHidden('tile:vis', false)
+
+    expect(getActiveComposer()).toBe('tile:vis')
+  })
+
+  function renderHiddenDraftHarness() {
+    let hiddenDraft!: ReturnType<typeof useComposerDraft>
+
+    function HiddenDraftHarness() {
+      hiddenDraft = useComposerDraft({
+        activeQueueSessionKey: 'session-hidden',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null as QueueEditState | null },
+        sessionId: 'session-hidden'
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={hiddenDraft.editorRef} />
+    }
+
+    render(
+      <PaneVisibleContext.Provider value={false}>
+        <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: 'tile:hidden' }}>
+          <HiddenDraftHarness />
+        </ComposerScopeProvider>
+      </PaneVisibleContext.Provider>
+    )
+
+    return () => hiddenDraft
+  }
+
+  function createForegroundSelection() {
+    const visibleEditor = globalThis.document.createElement('div')
+    const visibleText = globalThis.document.createTextNode('foreground draft')
+    visibleEditor.contentEditable = 'true'
+    visibleEditor.tabIndex = 0
+    visibleEditor.appendChild(visibleText)
+    globalThis.document.body.appendChild(visibleEditor)
+    visibleEditor.focus()
+    expect(globalThis.document.activeElement).toBe(visibleEditor)
+
+    const range = globalThis.document.createRange()
+    range.setStart(visibleText, visibleText.textContent?.length ?? 0)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    return {
+      editor: visibleEditor,
+      startContainer: range.startContainer,
+      startOffset: range.startOffset,
+      endContainer: range.endContainer,
+      endOffset: range.endOffset
+    }
+  }
+
+  function expectForegroundSelectionPreserved(foreground: ReturnType<typeof createForegroundSelection>) {
+    const selection = window.getSelection()
+    expect(globalThis.document.activeElement).toBe(foreground.editor)
+    expect(selection?.rangeCount).toBe(1)
+
+    const range = selection!.getRangeAt(0)
+    expect(range.startContainer).toBe(foreground.startContainer)
+    expect(range.startOffset).toBe(foreground.startOffset)
+    expect(range.endContainer).toBe(foreground.endContainer)
+    expect(range.endOffset).toBe(foreground.endOffset)
+  }
+
+  it('does not move the document selection when a hidden composer reloads or clears its draft', () => {
+    const getHiddenDraft = renderHiddenDraftHarness()
+    const foreground = createForegroundSelection()
+
+    act(() => getHiddenDraft().loadIntoComposer('background update', []))
+
+    expect(composerPlainText(getHiddenDraft().editorRef.current!)).toBe('background update')
+    expectForegroundSelectionPreserved(foreground)
+
+    act(() => getHiddenDraft().clearDraft())
+
+    expect(getHiddenDraft().editorRef.current?.textContent).toBe('')
+    expectForegroundSelectionPreserved(foreground)
+    foreground.editor.remove()
+  })
+
+  it('does not move the document selection when hidden composer refs are requested', () => {
+    const getHiddenDraft = renderHiddenDraftHarness()
+    const foreground = createForegroundSelection()
+
+    act(() => getHiddenDraft().insertInlineRefs(['@file:`src/background.ts`']))
+
+    expect(composerPlainText(getHiddenDraft().editorRef.current!)).toContain('@file:`src/background.ts`')
+    expectForegroundSelectionPreserved(foreground)
+    foreground.editor.remove()
   })
 })

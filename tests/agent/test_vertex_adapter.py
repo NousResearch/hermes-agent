@@ -52,6 +52,12 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
             c.project_id = sa_project
             return c
 
+        @staticmethod
+        def from_service_account_info(info, scopes=None):
+            c = _Creds()
+            c.project_id = sa_project
+            return c
+
     gsa.Credentials = _SA
     go.service_account = gsa
     gp.auth = ga
@@ -159,3 +165,121 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
 
 
 
+
+
+# --- Pattern D: credential-file rotation invalidates the cache ---
+
+
+def test_sa_file_rotation_invalidates_creds_cache(vertex_adapter, monkeypatch, tmp_path):
+    """Rotating the service-account file on disk must be picked up on the
+    next call — the pre-signature cache served tokens minted from the OLD
+    identity for the life of the process (Pattern D: stale cache after an
+    out-of-band change)."""
+    import os as _os
+
+    sa_file = tmp_path / "sa.json"
+    sa_file.write_text('{"project_id": "first-identity"}')
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(sa_file)
+    )
+
+    token1, project1 = vertex_adapter.get_vertex_credentials()
+    assert token1 == "ya29.FAKE"
+    assert len(vertex_adapter._creds_cache) == 1
+
+    # Same file untouched: cache hit (same Credentials object).
+    (key1,) = vertex_adapter._creds_cache
+    creds_obj_1 = vertex_adapter._creds_cache[key1][0]
+    vertex_adapter.get_vertex_credentials()
+    (key1b,) = vertex_adapter._creds_cache
+    assert key1b == key1
+    assert vertex_adapter._creds_cache[key1b][0] is creds_obj_1
+
+    # Rotate: rewrite the file with different content and a bumped mtime.
+    sa_file.write_text('{"project_id": "second-identity", "rotated": true}')
+    st = _os.stat(sa_file)
+    _os.utime(sa_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    vertex_adapter.get_vertex_credentials()
+    # New signature key replaced the old entry — not appended beside it.
+    (key2,) = vertex_adapter._creds_cache
+    assert key2 != key1
+    assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1
+
+
+def test_creds_cache_read_failure_falls_back_to_path_key(vertex_adapter, monkeypatch):
+    """If the credentials file cannot be read the key degrades to the bare
+    path (no bytes) — same behavior as the pre-signature cache, never an
+    exception."""
+    raw, key = vertex_adapter._sa_snapshot("/nonexistent/sa.json")
+    assert raw is None
+    assert key == ("/nonexistent/sa.json",)
+
+
+def test_adc_cache_key_is_stable_sentinel(vertex_adapter):
+    """ADC has no file to fingerprint; both None and empty resolve to the
+    same sentinel so repeated ADC calls share one cache entry."""
+    assert vertex_adapter._sa_snapshot(None) == (None, ("__adc__",))
+    assert vertex_adapter._sa_snapshot("") == (None, ("__adc__",))
+
+
+def test_adc_failure_retries_with_late_added_sa_file(vertex_adapter, monkeypatch, tmp_path):
+    """ADC failure must fall back to a service-account file that appeared
+    after startup. The signature-keyed cache turned keys into tuples and the
+    old `cache_key == "__adc__"` string comparison silently disabled this
+    retry (caught in review); the guard is now `not resolved_path`."""
+    sa_file = tmp_path / "late_sa.json"
+    sa_file.write_text('{"project_id": "late-identity"}')
+
+    calls = {"n": 0}
+
+    def _resolve(explicit=None):
+        # First resolution (entry): nothing configured -> ADC attempt.
+        # Second resolution (retry after ADC failure): the file has appeared.
+        calls["n"] += 1
+        return None if calls["n"] == 1 else str(sa_file)
+
+    monkeypatch.setattr(vertex_adapter, "_resolve_credentials_path", _resolve)
+    # Make the ADC attempt itself raise.
+    monkeypatch.setattr(
+        vertex_adapter.google.auth, "default",
+        lambda scopes=None: (_ for _ in ()).throw(RuntimeError("ADC expired")),
+    )
+
+    token, project = vertex_adapter.get_vertex_credentials()
+    assert token == "ya29.FAKE"
+    assert project == "sa-project"
+    assert calls["n"] >= 2
+
+
+def test_metadata_preserving_rotation_invalidates_creds_cache(vertex_adapter, monkeypatch, tmp_path):
+    """Atomic replacement that keeps SIZE and MTIME identical (deployment
+    tools that restore metadata; equal-length JSON) must still be picked up.
+    Review finding on #97701: a (path, mtime_ns, size) stat signature keyed
+    the cache, so this replacement served the old private key; the key is
+    now a content digest."""
+    import os as _os
+
+    sa_file = tmp_path / "sa.json"
+    sa_file.write_text('{"project_id": "AAAA-identity"}')
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(sa_file)
+    )
+
+    vertex_adapter.get_vertex_credentials()
+    (key1,) = vertex_adapter._creds_cache
+    creds_obj_1 = vertex_adapter._creds_cache[key1][0]
+
+    # Same-length content, mtime restored, atomic replace.
+    st = _os.stat(sa_file)
+    new = tmp_path / "sa.json.new"
+    new.write_text('{"project_id": "BBBB-identity"}')  # equal length
+    _os.utime(new, ns=(st.st_atime_ns, st.st_mtime_ns))
+    _os.replace(new, sa_file)
+    st2 = _os.stat(sa_file)
+    assert st2.st_size == st.st_size and st2.st_mtime_ns == st.st_mtime_ns
+
+    vertex_adapter.get_vertex_credentials()
+    (key2,) = vertex_adapter._creds_cache
+    assert key2 != key1, "content change must produce a new cache key"
+    assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1

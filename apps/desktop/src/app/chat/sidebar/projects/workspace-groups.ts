@@ -30,6 +30,9 @@ export interface SidebarSessionGroup {
   isKanban?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
+  // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
+  connectionId?: null | string
+  profile?: string
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */
@@ -428,6 +431,31 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return repoRoot
 }
 
+/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+  return liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
+/**
+ * The ONE row-level project-filter rule the flat list and the project lanes
+ * narrow by. Detached (cwd-less) rows belong to the Home bucket
+ * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under
+ * `''` meant filtering to Home hid Home's own rows.
+ */
+export function sessionMatchesProjectFilter(
+  session: SessionInfo,
+  filter: readonly string[],
+  explicitProjects: ProjectInfo[]
+): boolean {
+  if (!filter.length) {
+    return true
+  }
+
+  const id = sessionBucketId(session, explicitProjects)
+
+  return id !== null && filter.includes(id)
+}
+
 /**
  * The color a session inherits from its owning project — the explicit project
  * whose folder is the longest prefix of the session's cwd/repo-root, when that
@@ -741,6 +769,26 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
+/**
+ * Keep the project drill-in consistent with the overview while its separate
+ * full-tree request is stale or still loading. The live cache remains the
+ * freshest copy when both sources contain a row; overview previews only fill
+ * sessions that are missing from that cache.
+ */
+export function reconcileEnteredProjectSessions(
+  live: SessionInfo[],
+  previewSessions: SessionInfo[] | undefined
+): SessionInfo[] {
+  if (!previewSessions?.length) {
+    return live
+  }
+
+  const liveIds = new Set(live.map(session => session.id))
+  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+
+  return missingPreviews.length ? [...live, ...missingPreviews] : live
+}
+
 interface PreviewOverlayOptions {
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */
@@ -762,8 +810,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue

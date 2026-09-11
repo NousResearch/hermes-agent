@@ -73,6 +73,28 @@ handoff. It no longer selects packages by a GitHub workflow run. Explicit
 non-publishing desktop builds retain no downloadable job artifacts. Unrelated
 CI diagnostics and tested Docker image handoffs keep their existing storage.
 
+## Canary and one-off desktop identities
+
+`release.py --canary` builds the separate canary application. Its package
+identity and CLI command (`hermes-canary`) differ from stable; the existing
+canary feed updates that application only. One-off builds use
+`release.py --build-commit REV --remote REMOTE` (add `--publish` to dispatch).
+Their application identity and CLI command (`hermes-<7-character-sha>`) include
+the pinned commit. Two different commit builds do not replace each other.
+
+Branding is selected from those build inputs, not from runtime settings:
+canary uses yellow/dark-yellow icons; one-off builds use red icons bearing
+the short SHA. All desktop icon formats derive from the same artwork.
+
+One-off stamps use `source: commit-build`. No app update feed or App Installer
+subscription is published for them, and both the GUI and bundled CLI refuse
+update requests. They direct the recipient to ask the developer for a new
+build. Source checkout channels are separate: `hermes update --set-channel`
+remains available there and selects the published release's source commit.
+
+Store submission retains its fixed official stable identity. Nonstable
+packages must not be submitted under that identity.
+
 ## Signed-package baseline
 
 The last successful stable release records

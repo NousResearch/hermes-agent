@@ -1315,6 +1315,12 @@ class GatewayStartupMixin:
         # marker (prior-instantiation markers are ignored via epoch).
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
+        # Start background resume-control watcher — applies pending
+        # ".miniapp_resume_requests.json" entries (the Telegram Mini App's
+        # "make this the active session" button) by performing the same
+        # switch /resume does, in-process.
+        asyncio.create_task(self._resume_control_watcher())
+
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
         logger.info("Starting Hermes Gateway...")

@@ -11,7 +11,7 @@ import contextlib
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
@@ -205,6 +205,396 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
     return bool(check_ids & allowed_ids)
 
 
+def _no_adapter_is_upstream(platform: Optional[Platform], profile: Optional[str]) -> bool:
+    return False
+
+
+def _no_adapter_enforces_own_policy(platform: Optional[Platform], profile: Optional[str]) -> bool:
+    return False
+
+
+def _no_adapter_dm_policy(platform: Optional[Platform], profile: Optional[str]) -> str:
+    return ""
+
+
+def _no_adapter_group_policy(platform: Optional[Platform], profile: Optional[str]) -> str:
+    return ""
+
+
+def _no_adapter_group_sender_allowlist(
+    platform: Optional[Platform], chat_id: Optional[str], profile: Optional[str]
+) -> bool:
+    return False
+
+
+def _no_adapter_group_allowed_chats(platform: Optional[Platform], profile: Optional[str]) -> set[str]:
+    return set()
+
+
+def _no_adapter_allow_from(platform: Optional[Platform], profile: Optional[str], is_group: bool) -> set[str]:
+    return set()
+
+
+def _no_adapter_dm_is_allowed(
+    platform: Optional[Platform], profile: Optional[str], user_id: str
+) -> Optional[bool]:
+    return None
+
+
+def _no_adapter_resolved_allowlist_user_ids(
+    platform: Optional[Platform], profile: Optional[str]
+):
+    return None
+
+
+def is_authorized(
+    source: SessionSource,
+    *,
+    pairing_is_approved: Callable[[str, str], bool],
+    allow_adapter_delegation: bool = True,
+    adapter_authorization_is_upstream: Callable[[Optional[Platform], Optional[str]], bool] = _no_adapter_is_upstream,
+    adapter_enforces_own_access_policy: Callable[[Optional[Platform], Optional[str]], bool] = _no_adapter_enforces_own_policy,
+    adapter_dm_policy: Callable[[Optional[Platform], Optional[str]], str] = _no_adapter_dm_policy,
+    adapter_group_policy: Callable[[Optional[Platform], Optional[str]], str] = _no_adapter_group_policy,
+    adapter_group_has_sender_allowlist: Callable[[Optional[Platform], Optional[str], Optional[str]], bool] = _no_adapter_group_sender_allowlist,
+    adapter_group_allowed_chats: Callable[[Optional[Platform], Optional[str]], "set[str]"] = _no_adapter_group_allowed_chats,
+    adapter_allow_from: Callable[[Optional[Platform], Optional[str], bool], "set[str]"] = _no_adapter_allow_from,
+    adapter_dm_is_allowed: Callable[[Optional[Platform], Optional[str], str], Optional[bool]] = _no_adapter_dm_is_allowed,
+    adapter_resolved_allowlist_user_ids: Callable[[Optional[Platform], Optional[str]], Optional[object]] = _no_adapter_resolved_allowlist_user_ids,
+    on_legacy_group_users_warning: Optional[Callable[[str], None]] = None,
+    env_get: Callable[[str, str], str] = os.getenv,
+    platform_gate_env: Callable[[str, str], str] = _platform_gate_env,
+) -> bool:
+    """Pure authorization decision for an inbound (or Mini-App-asserted) sender.
+
+    Mechanically lifted out of ``GatewayAuthorizationMixin._is_user_authorized``
+    — same checks, same order, same env vars — with every ``self._adapter_*``
+    call replaced by an injected callable so this function has no dependency on
+    a live ``GatewayRunner``/adapter registry. The five ``adapter_*`` callables
+    default to "no live adapter for this platform" (mirrors
+    ``_authorization_adapter`` returning ``None``), so a caller with no adapter
+    to consult — e.g. the Telegram Mini App dashboard, which authorizes a
+    ``initData``-verified user_id with no inbound-message adapter in the
+    picture — can omit them entirely and get the same env-allowlist /
+    pairing-store decision a live Telegram adapter's DM traffic would get.
+
+    Deliberately does NOT read ``_HERMES_HOME_OVERRIDE`` or resolve
+    config/profile itself — every profile-scoped fact (adapter policy, the
+    pairing store lookup) is passed in by the caller. Authorization here is
+    process-global by construction, not because of a check that could be
+    forgotten; there is nothing profile-aware left to accidentally add.
+
+    ``pairing_is_approved`` is a callable, not a ``PairingStore`` instance,
+    so it is only invoked (and any attribute on the caller's store only
+    touched) once the checks above it actually require a pairing-store
+    lookup — matching the original method, which never touched
+    ``self.pairing_store`` for a request an earlier branch already resolved
+    (e.g. the chat-scoped ``TELEGRAM_GROUP_ALLOWED_CHATS`` allowlist above).
+
+    ``on_legacy_group_users_warning``, if given, is invoked at most once per
+    call with the comma-joined legacy chat-ID string when the
+    ``TELEGRAM_GROUP_ALLOWED_USERS`` backward-compat shim (#15027) fires; the
+    caller owns any "warn once" state (was ``self._warned_telegram_group_users_legacy``).
+
+    ``env_get`` replaces every internal ``os.getenv`` call (default: real
+    ``os.getenv``, so the live gateway's behavior is bit-for-bit unchanged).
+    A caller with its own process — one whose ``os.environ`` was populated
+    once at import time and never refreshed, e.g. a long-lived dashboard
+    process checking Telegram Mini App tier access — can pass a callable
+    that re-reads the relevant vars fresh per call instead of trusting a
+    stale process-wide snapshot, without this function mutating
+    ``os.environ`` itself or knowing anything about where those fresh
+    values come from.
+
+    ``platform_gate_env`` reads the two boolean/allowlist "gate" vars
+    (chat-scoped allowlist, ``{PLATFORM}_ALLOW_BOTS``) upstream hardened to
+    ``_platform_gate_env`` rather than the plain ``env_get`` every other read
+    here still uses: under multiplex, a key absent from the profile's secret
+    scope must return ``default`` rather than falling through to
+    ``os.environ``, which can hold ANOTHER profile's first-writer-bridged
+    value for the same var name (#72348) -- a false affirmative on a gate
+    check leaks profile A's allowlist into profile B, unlike the other
+    ``env_get`` reads here where that fallthrough is comparatively benign.
+    Defaults to the real ``_platform_gate_env``, matching ``env_get``'s
+    real-``os.getenv`` default, so live behavior is unchanged.
+
+    ``adapter_group_allowed_chats`` and ``adapter_allow_from`` cover the two
+    config.yaml-only allowlist fallbacks some adapters (e.g. Telegram) support
+    via ``platforms.<platform>.extra.group_allowed_chats`` / ``allow_from`` /
+    ``group_allow_from`` — configured access that has no env var equivalent.
+    Both default to "nothing configured" (empty set) when there is no live
+    adapter to consult, same rationale as the other ``adapter_*`` defaults.
+
+    ``adapter_dm_is_allowed`` re-checks a DM sender against the *live* adapter's
+    allowlist before honoring an ``allowlist`` intake policy (#34515): a pairing
+    revoke can clear the env allowlist while a construction-time snapshot on the
+    adapter would otherwise keep authorizing until restart. It returns ``None``
+    for an adapter that exposes no such helper (and by default, when there is no
+    live adapter at all), which preserves the historical "reached the gateway
+    under allowlist policy is enough" behavior for those adapters rather than
+    failing closed on callers that have no adapter to consult.
+
+    ``adapter_resolved_allowlist_user_ids`` unions the live adapter's own
+    resolved numeric allowlist (e.g. Discord's ``resolved_allowlist_user_ids()``)
+    into the env-derived allowlist. Adapters that resolve username-shaped
+    allowlist entries to numeric IDs at connect time keep the authoritative
+    resolved set in adapter memory and mirror it into the process env, but a
+    per-turn env hot-reload can restore the raw username strings from disk —
+    from the second turn onward the env-derived allowlist then holds usernames
+    while ``source.user_id`` is numeric, and the operator is wrongly dropped as
+    unauthorized. Only consulted when an env allowlist is configured (never a
+    widening of the empty-allowlist fail-closed default) and duck-typed +
+    isinstance-guarded so a caller with no adapter, or a mock one, gets the
+    historical env-only behavior unchanged.
+    """
+    # Home Assistant events are system-generated (state changes), not
+    # user-initiated messages.  The HASS_TOKEN already authenticates the
+    # connection, so HA events are always authorized.
+    # Webhook events are authenticated via HMAC signature validation in
+    # the adapter itself — no user allowlist applies.
+    if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        return True
+
+    # Relay (and any adapter whose authorization is enforced by a trusted
+    # authenticated upstream): the Team Gateway connector authenticates this
+    # gateway's WS with a per-instance secret and resolves owner-only author
+    # bindings BEFORE delivering, so an inbound relay event was already
+    # authorized as this instance's bound user (the author id is the one the
+    # connector observed, never gateway-asserted). There is no local
+    # RELAY_ALLOWED_USERS env allowlist to consult, and default-denying for
+    # its absence is the bug this branch fixes. This is delegation to a
+    # trusted upstream, NOT a fail-open: it fires only for an event that was
+    # actually delivered over the authenticated relay WS (the transport
+    # stamps ``delivered_via_upstream_relay``), or whose platform's adapter
+    # explicitly declares ``authorization_is_upstream=True``; every direct
+    # network-exposed adapter leaves the flag False and its events unmarked,
+    # so the env-allowlist default-deny below still applies unchanged.
+    #
+    # The delivery marker is the PRIMARY signal: a relay *message* inbound
+    # carries the UNDERLYING platform (``source.platform`` == discord/…),
+    # NOT ``Platform.RELAY``, because that's what session-keying and egress
+    # need — so keying authz off ``source.platform`` would miss (the relay
+    # adapter is registered under ``Platform.RELAY``) and default-deny the
+    # user ("Unauthorized user <id> on discord"). The adapter-flag check is
+    # retained for events whose ``source.platform`` IS ``Platform.RELAY``
+    # (e.g. the interaction-passthrough path).
+    # ``is True`` (not just truthiness): the marker is a real bool on a
+    # SessionSource, and an explicit identity check refuses to authorize a
+    # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
+    # tests) — defensive against accidental fail-open.
+    if allow_adapter_delegation and (
+        source.delivered_via_upstream_relay is True
+        or adapter_authorization_is_upstream(source.platform, source.profile)
+    ):
+        return True
+
+    user_id = source.user_id
+    is_group = source.chat_type in _GROUP_CHAT_TYPES
+    is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
+
+    # Telegram (and similar) authorize entire group/forum/channel chats
+    # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+    # That allowlist is chat-scoped, so it must work even when
+    # source.user_id is None — Telegram emits anonymous-admin posts,
+    # sender_chat traffic, and channel broadcasts with no `from_user`,
+    # and an operator who explicitly listed the chat expects those to
+    # be honored. Run this check before the no-user-id guard below so
+    # documented behavior matches reality
+    # (website/docs/reference/environment-variables.md,
+    # website/docs/user-guide/messaging/telegram.md).
+    if is_group and source.chat_id:
+        chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
+        if chat_allowlist_env:
+            raw_chat_allowlist = platform_gate_env(chat_allowlist_env)
+            if raw_chat_allowlist and _allows(_coerce_allow_set(raw_chat_allowlist), source.chat_id):
+                return True
+
+        # Fallback: also check adapter-level config (config.yaml) for
+        # platforms.<platform>.extra.group_allowed_chats. The Telegram
+        # observe-unmentioned mode strips user_id from triggered group
+        # messages (_apply_telegram_group_observe_attribution), so the
+        # env-var-only check above misses config.yaml-configured allowlists.
+        adapter_group_chats = adapter_group_allowed_chats(source.platform, source.profile)
+        if adapter_group_chats and _allows(adapter_group_chats, source.chat_id):
+            return True
+
+    # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+    # Checked before the no-user-id guard below: some platforms deliver
+    # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
+    # Builder posts arrive as subtype=bot_message with user=None -- so
+    # deferring past the guard would reject them outright (the same reason
+    # the chat-scoped allowlist above runs early).
+    if getattr(source, "is_bot", False):
+        allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
+        if allow_bots_var and platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            return True
+
+    if not user_id:
+        return False
+
+    platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
+    platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
+    # Plugin platforms: check the registry for auth env var names.
+    if source.platform not in _ALLOWED_USERS_ENV:
+        entry = _registry_entry(source.platform)
+        if entry:
+            platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
+            platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
+
+    # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+    if platform_allow_all_var and env_get(platform_allow_all_var, "").lower() in _TRUTHY:
+        return True
+
+    # Adapter-verified role auth: the Discord adapter already confirmed the
+    # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
+    # Compare with ``is True`` so the real bool field authorizes while a
+    # MagicMock source (test fixtures using ``object.__new__`` runners with
+    # mock sources) does not auto-truthy through this gate (see pitfall #13).
+    if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
+        return True
+
+    # Check pairing store. A pairing entry is a first-class authorization
+    # grant, created only by a trusted operator approving a pairing code
+    # (hermes gateway pairing approve / the authenticated dashboard) — an
+    # inbound sender can never reach approve_code, so this is not an
+    # attacker-controlled path. Honored as a UNION with the allowlist: a
+    # paired user is authorized regardless of the allowlist, and when an
+    # allowlist IS configured, operator approval also writes the user into
+    # that allowlist (see PairingStore._approve_user), keeping a single
+    # operator-visible source of truth. (#23778: the original bypass was the
+    # inbound message/approval-button gate, not this grant; that gate is
+    # fixed separately.)
+    platform_name = source.platform.value if source.platform else ""
+    if pairing_is_approved(platform_name, user_id):
+        return True
+
+    # Check platform-specific and global allowlists
+    platform_allowlist = env_get(platform_allow_env, "").strip()
+    group_user_allowlist = ""
+    group_chat_allowlist = ""
+    if is_group_or_forum:
+        group_user_allowlist = env_get(_GROUP_USER_ENV.get(source.platform, ""), "").strip()
+        group_chat_allowlist = env_get(_GROUP_CHAT_ENV.get(source.platform, ""), "").strip()
+    global_allowlist = env_get("GATEWAY_ALLOWED_USERS", "").strip()
+
+    if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
+        # No env allowlist configured. Adapters that own their own
+        # config-driven access policy (dm_policy / group_policy /
+        # allow_from / group_allow_from) gate access at intake, so for those
+        # platforms we can honor the adapter's decision instead of the
+        # env-only default-deny below -- but ONLY when that decision was an
+        # actual allowlist restriction.
+        #
+        # The adapters default dm_policy / group_policy to "open", which
+        # forwards EVERY sender. Reading "reached the gateway" as
+        # authorization in that case would admit the whole external network
+        # with no operator-configured allowlist -- the fail-open SECURITY.md
+        # §2.6 forbids ("an allowlist is required for every enabled
+        # network-exposed adapter ... code paths that fail open when no
+        # allowlist is configured are code bugs"). "disabled" never
+        # forwards, and "pairing" forwards unpaired DMs only so the gateway
+        # can run its pairing handshake (the pairing-store check above
+        # already denied this sender). So trust the adapter only when its
+        # effective policy for THIS chat type is "allowlist"; for "open" /
+        # "pairing" / anything else, fall through to default-deny, where
+        # GATEWAY_ALLOW_ALL_USERS, the per-platform {PLATFORM}_ALLOW_ALL_USERS
+        # flag (checked above), and the pairing flow remain the explicit
+        # opt-ins to broader access. (#34515 follow-up: trusting "open" was a
+        # fail-open.)
+        if allow_adapter_delegation and adapter_enforces_own_access_policy(source.platform, source.profile):
+            if is_group:
+                effective_policy = adapter_group_policy(source.platform, source.profile)
+                if adapter_group_has_sender_allowlist(source.platform, source.chat_id, source.profile):
+                    return True
+            else:
+                effective_policy = adapter_dm_policy(source.platform, source.profile)
+            if effective_policy == "allowlist":
+                # Trust allowlist intake only when the live adapter still
+                # allowlists this sender. Pairing revoke can clear the env
+                # allowlist while a construction-time snapshot on the adapter
+                # would otherwise keep authorizing until restart; re-check
+                # when the adapter exposes a DM allowlist helper.
+                # ``adapter_dm_is_allowed`` returns None when it does not,
+                # which keeps the historical "reached the gateway under
+                # allowlist policy" rubber-stamp for those adapters (#34515).
+                if not is_group:
+                    dm_allowed = adapter_dm_is_allowed(source.platform, source.profile, user_id)
+                    if dm_allowed is not None:
+                        return bool(dm_allowed)
+                return True
+        # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
+        # group_allow_from at intake but do not override enforces_own_access_policy.
+        # Check their allowlist here so config.yaml-configured allow_from works
+        # without requiring a separate {PLATFORM}_ALLOWED_USERS env var.
+        adapter_allowed = adapter_allow_from(source.platform, source.profile, is_group)
+        if adapter_allowed and _allows(adapter_allowed, user_id):
+            return True
+        # No allowlists configured -- check global allow-all flag
+        return env_get("GATEWAY_ALLOW_ALL_USERS", "").lower() in _TRUTHY
+
+    # Telegram can optionally authorize group traffic by chat ID.
+    # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+    # the sender user ID for group/forum messages.
+    if is_group_or_forum and source.chat_id:
+        if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
+            return True
+
+        # Backward-compat shim for #15027: prior to PR #17686,
+        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
+        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
+        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
+        # as chat IDs and warn once. The correct var is now
+        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        if source.platform == Platform.TELEGRAM and group_user_allowlist:
+            legacy_chat_ids = {
+                v.strip() for v in group_user_allowlist.split(",") if v.strip().startswith("-")
+            }
+            if legacy_chat_ids:
+                if on_legacy_group_users_warning is not None:
+                    on_legacy_group_users_warning(",".join(sorted(legacy_chat_ids)))
+                if source.chat_id in legacy_chat_ids:
+                    return True
+
+    # Check if user is in any allowlist. In group/forum chats,
+    # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
+    # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
+    # allowlist and still works everywhere for backward compatibility.
+    allowed_ids = (
+        _coerce_allow_set(platform_allowlist)
+        | _coerce_allow_set(group_user_allowlist)
+        | _coerce_allow_set(global_allowlist)
+    )
+
+    # Adapters that resolve username-shaped allowlist entries to numeric
+    # IDs at connect time (Discord's ``_resolve_allowed_usernames``) keep
+    # the authoritative resolved set in adapter memory and mirror it into
+    # the process env. A per-turn .env hot-reload can restore the RAW
+    # username strings from the .env file into the env, so from the second
+    # agent turn onward ``platform_allowlist`` holds usernames while
+    # ``source.user_id`` is numeric — the operator is admitted by the
+    # adapter but dropped here as "Unauthorized user". Union in the
+    # adapter's resolved IDs so runtime resolution survives env reloads.
+    # This is a UNION of the resolution of entries already present in the
+    # configured allowlist — never a widening: the empty-allowlist
+    # fail-closed branch above has already returned, and adapters only
+    # resolve entries the operator wrote. Guarded on ``platform_allowlist``
+    # so group/global-only configurations never consult adapter memory,
+    # and duck-typed + isinstance-guarded so a caller with no adapter, or a
+    # mock one, cannot auto-truthy its way into an authorization.
+    if platform_allowlist:
+        resolved_ids = adapter_resolved_allowlist_user_ids(source.platform, source.profile)
+        if isinstance(resolved_ids, (set, frozenset, list, tuple)):
+            allowed_ids.update(
+                str(entry).strip()
+                for entry in resolved_ids
+                if isinstance(entry, (str, int)) and str(entry).strip()
+            )
+
+    # "*" in any allowlist means allow everyone (consistent with
+    # SIGNAL_GROUP_ALLOWED_USERS precedent)
+    return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -357,126 +747,6 @@ class GatewayAuthorizationMixin:
     def _adapter_extra_for_source(self, source) -> dict:
         return _adapter_config_extra(self._adapter_for_source(source))
 
-    def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
-        """Own-policy adapter verdict when no env allowlist exists; None = no verdict.
-
-        Trusted only when the effective policy for THIS chat type is ``allowlist``: ``open`` forwards
-        EVERY sender (the fail-open SECURITY.md §2.6 forbids), ``disabled`` never forwards, ``pairing``
-        forwards unpaired DMs for the handshake (already denied by the pairing-store check).
-        Anything else → default-deny.
-        """
-        if is_group and self._adapter_group_has_sender_allowlist(source.platform, source.chat_id, profile=adapter_profile):
-            return True
-        if self._adapter_policy(source.platform, "group" if is_group else "dm", adapter_profile) != "allowlist":
-            return None
-        # Re-check DMs via the live adapter's ``_is_dm_allowed`` when present: pairing revoke can clear
-        # WHATSAPP_ALLOWED_USERS while a construction-time snapshot would keep authorizing until
-        # restart. Others keep the historical rubber-stamp.
-        if not is_group:
-            adapter = self._authorization_adapter(source.platform, profile=adapter_profile)
-            dm_check = getattr(adapter, "_is_dm_allowed", None) if adapter is not None else None
-            if callable(dm_check):
-                return bool(dm_check(user_id))
-        return True
-
-    def _adapter_extra_allowlist_authorizes(self, source, user_id, is_group) -> bool:
-        """Adapters (e.g. Telegram) that gate via config.extra.allow_from / group_allow_from
-        without setting enforces_own_access_policy."""
-        adapter = self._adapter_for_source(source)
-        if adapter is None:
-            return False
-        extra = _adapter_config_extra(adapter)
-        adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
-        if not adapter_allow:
-            # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
-            # under multiplex only the default profile's list reaches the env (first-writer-wins
-            # bridge), so read the live adapter's.
-            entry = _registry_entry(source.platform)
-            if entry and entry.allowed_users_env:
-                # Buzz) carry the same operator-configured allowlist in
-                # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
-                # default-deny below still applies. See #82871, #98738.
-                adapter_allow = extra.get("allowed_users")
-        if not adapter_allow:
-            return False
-        allowed = _coerce_allow_set(adapter_allow)
-        normalize = getattr(adapter, "normalize_user_id", None)
-        if callable(normalize):
-            # Ids and entries may spell the same principal differently (Buzz hex vs npub).
-            allowed = {normalize(entry) or entry for entry in allowed}
-        return _allows(allowed, user_id)
-
-    def _adapter_resolved_allowlist_ids(self, source) -> set[str]:
-        """IDs an adapter resolved from username-shaped allowlist entries at connect time (Discord).
-
-        The per-turn .env hot-reload restores RAW usernames, so from the second turn on the env
-        allowlist holds usernames while user_id is numeric. Never a widening: the empty-allowlist
-        branch already returned and adapters only resolve operator-written entries. Only called with
-        a non-empty platform allowlist so group/global-only configs never consult adapter memory;
-        type-checked so mocks cannot auto-truthy in.
-        """
-        adapter = resolved_ids = None
-        with contextlib.suppress(Exception):
-            adapter = self._adapter_for_source(source)
-        resolver = getattr(adapter, "resolved_allowlist_user_ids", None)
-        if callable(resolver):
-            with contextlib.suppress(Exception):
-                resolved_ids = resolver()
-        if not isinstance(resolved_ids, (set, frozenset, list, tuple)):
-            return set()
-        return {s for e in resolved_ids if isinstance(e, (str, int)) and (s := str(e).strip())}
-
-    def _chat_scoped_grant(self, source, adapter_profile, is_group: bool, allow_adapter_delegation: bool) -> bool:
-        """Grants that need no ``user_id`` (checked before the no-user-id guard)."""
-        # Trusted-upstream delegation (relay): the connector authenticates this gateway's WS and
-        # resolves owner bindings BEFORE delivering, so there is no local RELAY_ALLOWED_USERS. Not a
-        # fail-open: fires only for events actually delivered over the relay WS
-        # (``delivered_via_upstream_relay``) or whose adapter declares ``authorization_is_upstream``.
-        # The delivery marker is PRIMARY because a relayed message carries the UNDERLYING platform,
-        # not ``Platform.RELAY``. ``is True``: a MagicMock stand-in must not auto-truthy into authz.
-        if allow_adapter_delegation and (
-            source.delivered_via_upstream_relay is True
-            or self._adapter_flag(source.platform, "authorization_is_upstream", adapter_profile)
-        ):
-            return True
-        # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
-        # sender_chat posts, channel broadcasts).
-        if is_group and source.chat_id:
-            chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
-            if chat_allowlist_env and _allows(_coerce_allow_set(_platform_gate_env(chat_allowlist_env)), source.chat_id):
-                return True
-            # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
-            # strips user_id, so the env-only check above misses it.
-            with contextlib.suppress(Exception):
-                adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
-                if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
-                    return True
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (Slack Workflow Builder
-        # posts arrive with user=None).
-        if getattr(source, "is_bot", False):
-            allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
-                return True
-        return False
-
-    def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:
-        """TELEGRAM_GROUP_ALLOWED_USERS was once (mis)used as a chat-ID allowlist; "-"-prefixed
-        values are chat IDs, honor them and warn once."""
-        from gateway.run import logger
-        legacy_chat_ids = {v.strip() for v in group_user_allowlist.split(",") if v.strip().startswith("-")}
-        if not legacy_chat_ids:
-            return False
-        if not getattr(self, "_warned_telegram_group_users_legacy", False):
-            logger.warning(
-                "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
-                "(%s). Treating them as chat IDs for backward compatibility. "
-                "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
-                "is now for sender user IDs.",
-                ",".join(sorted(legacy_chat_ids)),
-            )
-            self._warned_telegram_group_users_legacy = True
-        return source.chat_id in legacy_chat_ids
-
     def _bot_loop_guard_instance(self) -> BotLoopGuard:
         guard = getattr(self, "_bot_loop_guard", None)
         if guard is None:
@@ -521,72 +791,150 @@ class GatewayAuthorizationMixin:
         return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
-        """The allowlist verdict alone, before the bot loop guard."""
-        # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
-            return True
+        """The allowlist verdict alone, before the bot loop guard.
 
+        Thin wrapper around the module-level pure function :func:`is_authorized`
+        — this method's only job is to bind that function's injected
+        dependencies (the live adapter-policy lookups, this runner's
+        per-profile pairing store via :meth:`_pairing_store_for`, and the
+        one-time legacy-warning log) to ``self``. The actual decision logic
+        lives in :func:`is_authorized` so it can be called without a
+        ``GatewayRunner`` instance (e.g. by the Telegram Mini App dashboard
+        auth tier check).
+        """
+        from gateway.run import logger
+
+        # A routed/shared-adapter source's *transport* profile can differ from
+        # source.profile (one shared credential serving several routed
+        # runtimes -- see _adapter_profile_for_source's docstring). is_authorized()
+        # only receives source.profile from its caller, so this wrapper resolves
+        # the transport-owning profile once up front and passes it through
+        # explicitly to every adapter-policy lookup below instead of letting the
+        # lambdas use whatever profile is_authorized() happens to pass them (raw
+        # source.profile, which fails closed for a routed adapter with no
+        # same-named entry in _profile_adapters).
         adapter_profile = self._adapter_profile_for_source(source)
-        is_group = source.chat_type in _GROUP_CHAT_TYPES
-        is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
-        if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
-            return True
-        user_id = source.user_id
-        if not user_id:
-            return False
 
-        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
-        platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
-        if source.platform not in _ALLOWED_USERS_ENV:
-            entry = _registry_entry(source.platform)
+        def _warn_legacy_group_users(chat_ids: str) -> None:
+            if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                logger.warning(
+                    "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                    "(%s). Treating them as chat IDs for backward compatibility. "
+                    "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                    "is now for sender user IDs.",
+                    chat_ids,
+                )
+                self._warned_telegram_group_users_legacy = True
+
+        def _adapter_dm_is_allowed(
+            platform: Optional[Platform], profile: Optional[str], uid: str
+        ) -> Optional[bool]:
+            """Re-check a DM sender against the live adapter's allowlist.
+
+            Returns None when there is no live adapter or it exposes no
+            ``_is_dm_allowed`` helper, so is_authorized keeps the historical
+            allowlist-intake rubber-stamp for those adapters (#34515).
+            """
+            adapter = self._authorization_adapter(platform, profile=adapter_profile)
+            dm_check = getattr(adapter, "_is_dm_allowed", None) if adapter is not None else None
+            if not callable(dm_check):
+                return None
+            return bool(dm_check(uid))
+
+        def _adapter_group_allowed_chats(platform: Optional[Platform], profile: Optional[str]) -> set[str]:
+            """config.yaml ``extra.group_allowed_chats`` fallback: the Telegram
+            observe-unmentioned mode strips user_id from triggered group
+            messages, so the env-var-only check misses config.yaml-configured
+            allowlists."""
             with contextlib.suppress(Exception):
-                platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
-                platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
-        if platform_allow_all_var and _env_truthy(platform_allow_all_var):
-            return True
-        # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
-        if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
-            return True
-        # Pairing store: a first-class grant created only by an operator approving a code. Honored as
-        # a UNION with the allowlist (approval also mirrors into it).
-        pairing_store = self._pairing_store_for(source)
-        if pairing_store is not None and pairing_store.is_approved(source.platform.value if source.platform else "", user_id):
-            return True
+                return _coerce_allow_set(self._adapter_extra_for_source(source).get("group_allowed_chats"))
+            return set()
 
-        platform_allowlist = _auth_env(platform_allow_env)
-        group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
-        group_chat_allowlist = _auth_env(_GROUP_CHAT_ENV.get(source.platform, "")) if is_group_or_forum else ""
-        global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
+        def _adapter_allow_from(platform: Optional[Platform], profile: Optional[str], is_group: bool) -> set[str]:
+            """config.yaml-only allowlist fallback (``extra.allow_from`` /
+            ``group_allow_from``) for adapters (e.g. Telegram) that gate access
+            at intake without overriding ``enforces_own_access_policy``."""
+            adapter = self._adapter_for_source(source)
+            if adapter is None:
+                return set()
+            extra = _adapter_config_extra(adapter)
+            adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
+            if not adapter_allow:
+                # Plugin platforms whose registry entry declares
+                # ``allowed_users_env`` (e.g. Buzz) carry the same
+                # operator-configured allowlist in
+                # ``PlatformConfig.extra.allowed_users``. Under multiplex the
+                # YAML→env bridge is first-writer-wins, so only the default
+                # profile's list ever reaches the env var read elsewhere;
+                # fall back to the live (profile-routed) adapter's own config
+                # so a secondary profile's allowlist authorizes its users
+                # (#98738 / #82871).
+                entry = _registry_entry(platform)
+                if entry and getattr(entry, "allowed_users_env", None):
+                    adapter_allow = extra.get("allowed_users")
+            allowed = _coerce_allow_set(adapter_allow)
+            normalize = getattr(adapter, "normalize_user_id", None)
+            if callable(normalize):
+                # Ids and allowlist entries may use different spellings of the
+                # same principal (e.g. Buzz hex pubkeys vs npubs).
+                allowed = {normalize(entry) or entry for entry in allowed}
+            return allowed
 
-        if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
-            # No env allowlist: own-policy adapters gate at intake (see _own_policy_authorizes).
-            if allow_adapter_delegation and self._adapter_flag(source.platform, "enforces_own_access_policy", adapter_profile):
-                verdict = self._own_policy_authorizes(source, user_id, is_group, adapter_profile)
-                if verdict is not None:
-                    return verdict
-            if self._adapter_extra_allowlist_authorizes(source, user_id, is_group):
-                return True
-            return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
+        def _adapter_resolved_allowlist_user_ids(platform: Optional[Platform], profile: Optional[str]):
+            """Live adapter's resolved numeric allowlist, or None.
 
-        if is_group_or_forum and source.chat_id:
-            # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).
-            if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
-                return True
-            if (
-                source.platform == Platform.TELEGRAM and group_user_allowlist
-                and self._legacy_telegram_chat_grant(source, group_user_allowlist)
-            ):
-                return True
+            Best-effort: an adapter mid-reconnect (or any resolver error)
+            must not break authorization for senders the env allowlist
+            already covers, so a raise here is swallowed rather than
+            propagated.
+            """
+            adapter = None
+            with contextlib.suppress(Exception):
+                adapter = self._adapter_for_source(source)
+            resolver = getattr(adapter, "resolved_allowlist_user_ids", None)
+            if not callable(resolver):
+                return None
+            with contextlib.suppress(Exception):
+                return resolver()
+            return None
 
-        # TELEGRAM_GROUP_ALLOWED_USERS is group-scoped (no DM access); TELEGRAM_ALLOWED_USERS is platform-wide.
-        allowed_ids = (
-            _coerce_allow_set(platform_allowlist)
-            | _coerce_allow_set(group_user_allowlist)
-            | _coerce_allow_set(global_allowlist)
+        return is_authorized(
+            source,
+            # Route through the per-profile PairingStore lookup (multiplex
+            # gateways isolate each profile's whitelist) rather than a flat
+            # ``self.pairing_store`` -- and only evaluated lazily, once
+            # is_authorized() actually calls this callable, so a branch
+            # resolved earlier (e.g. the chat-scoped group allowlist) never
+            # touches ``self.pairing_store`` on a bare runner that never set it.
+            pairing_is_approved=lambda platform_name, uid: (
+                lambda store: store is not None and store.is_approved(platform_name, uid)
+            )(self._pairing_store_for(source)),
+            allow_adapter_delegation=allow_adapter_delegation,
+            adapter_authorization_is_upstream=lambda platform, profile: (
+                self._adapter_flag(platform, "authorization_is_upstream", adapter_profile)
+            ),
+            adapter_enforces_own_access_policy=lambda platform, profile: (
+                self._adapter_flag(platform, "enforces_own_access_policy", adapter_profile)
+            ),
+            adapter_dm_policy=lambda platform, profile: self._adapter_policy(platform, "dm", adapter_profile),
+            adapter_group_policy=lambda platform, profile: self._adapter_policy(platform, "group", adapter_profile),
+            adapter_group_has_sender_allowlist=lambda platform, chat_id, profile: (
+                self._adapter_group_has_sender_allowlist(platform, chat_id, profile=adapter_profile)
+            ),
+            adapter_group_allowed_chats=_adapter_group_allowed_chats,
+            adapter_allow_from=_adapter_allow_from,
+            adapter_dm_is_allowed=_adapter_dm_is_allowed,
+            adapter_resolved_allowlist_user_ids=_adapter_resolved_allowlist_user_ids,
+            on_legacy_group_users_warning=_warn_legacy_group_users,
+            # Preserve the profile-scoped secret_scope lookup on these env
+            # reads (``_auth_env`` / ``_platform_gate_env`` prefer the
+            # multiplex profile's secret_scope value over a bare
+            # ``os.getenv``) so live-gateway behavior stays identical to
+            # this wrapper's pre-extraction inline body instead of silently
+            # falling back to is_authorized's plain-``os.getenv`` default.
+            env_get=_auth_env,
+            platform_gate_env=_platform_gate_env,
         )
-        if platform_allowlist:
-            allowed_ids |= self._adapter_resolved_allowlist_ids(source)
-        return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:
         """How unauthorized DMs are handled ("pair" / "ignore") for a platform.

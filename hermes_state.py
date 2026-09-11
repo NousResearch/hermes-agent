@@ -1483,6 +1483,7 @@ _PLUGIN_COMPAT_LAZY = {
     'resolve_journal_mode': ('hermes_state_wal', 'resolve_journal_mode'),
     'resolve_synchronous_level': ('hermes_state_wal', 'resolve_synchronous_level'),
     'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
+    'session_row_is_own_dm': ('hermes_state_sessions', 'session_row_is_own_dm'),
     'sqlite_source_id': ('hermes_state_wal', 'sqlite_source_id'),
     'workspace_key': ('hermes_state_sessions', 'workspace_key'),
 }

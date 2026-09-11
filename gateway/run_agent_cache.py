@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session import SessionEntry, SessionSource, build_session_context_prompt
 from hermes_cli.config import cfg_get
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -228,6 +228,49 @@ class GatewayAgentCacheMixin:
         # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
+
+    async def _apply_session_switch(
+        self, session_key: str, target_id: str
+    ) -> Optional[SessionEntry]:
+        """Switch ``session_key`` to point at ``target_id``, mirroring /resume.
+
+        Extracted from ``SlashCommandsMixin._handle_resume_command`` (gateway/
+        slash_commands.py) so a second caller — ``_resume_control_watcher``,
+        which applies a Mini App-requested resume without a live
+        ``MessageEvent`` to hang the slash-command flow off of — can perform
+        the identical switch mechanics without duplicating them. The slash
+        command still owns its own already-on-this-session / not-found /
+        ownership checks (this only does the actual mutation); a caller here
+        is responsible for its own equivalent checks first.
+
+        Async (via ``async_session_store``, the ``asyncio.to_thread`` boundary
+        over the thread-safe sync ``SessionStore``) so the switch's blocking
+        SQLite I/O never runs directly on the event loop -- matches every
+        other session_store call site in this file post-async-migration.
+
+        Returns the new ``SessionEntry``, or ``None`` if
+        ``session_store.switch_session`` itself returned ``None`` (unknown
+        ``session_key`` — no prior entry to switch).
+        """
+        self._release_running_agent_state(session_key)
+
+        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        if not new_entry:
+            return None
+
+        # Conversation boundary: clear ALL conversation-scoped per-session
+        # state (model/reasoning overrides #10702, one-turn restores, model
+        # notes, last-resolved cache #58403, /queue overflow) + security
+        # state in one funnel call. See _CONVERSATION_SCOPED_STATE.
+        self._clear_conversation_scope(session_key, reason="resume")
+
+        # Evict any cached agent for this session so the next message
+        # rebuilds with the correct session_id end-to-end — mirrors /branch
+        # and /reset. Without this, the cached AIAgent (and its memory
+        # provider, which cached `_session_id` during initialize()) keeps
+        # writing into the wrong session's record. See #6672.
+        self._evict_cached_agent(session_key)
+        return new_entry
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None

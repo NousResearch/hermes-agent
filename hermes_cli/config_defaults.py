@@ -978,6 +978,30 @@ DEFAULT_CONFIG = {
         # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
         # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
+        # Telegram Mini App dashboard — read by the bundled
+        # ``dashboard_auth/telegram_miniapp`` plugin. Off by default: a
+        # no-op unless ``enabled: true`` AND ``TELEGRAM_BOT_TOKEN`` (.env)
+        # is set (fail-closed — there's nothing to verify Telegram's
+        # ``initData`` against without the bot token that signed it).
+        # Present here, disabled, so a fresh install shows this surface
+        # exists rather than requiring an operator to know to add it by
+        # hand. Two access tiers once enabled: paired/allowlisted Telegram
+        # users (read-only) and admin (full access, opt-in per user id via
+        # ``TELEGRAM_DASHBOARD_ADMIN_USERS`` in .env — also unset/empty by
+        # default, meaning enabling this section alone grants admin to
+        # nobody; see that .env key's own comment).
+        "telegram_miniapp": {
+            "enabled": False,
+            # How long an initData credential stays valid, in seconds. A
+            # SESSION-lifetime bound, not per-request: a Mini App reuses the
+            # single initData it's handed at open-time on every call for as
+            # long as it stays open, so this must cover the longest a user
+            # might keep it open or actions start failing mid-session. 60
+            # minutes is a deliberate middle ground (long enough for a
+            # normal session, meaningfully tighter than a full day); TLS is
+            # the real transport protection (see initdata.py).
+            "max_age_seconds": 3600,
+        },
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
         # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies

@@ -659,6 +659,59 @@ class GatewayShutdownMixin:
                 logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
+    # ------------------------------------------------------------------
+    # External resume control (Mini App "make active session" button,
+    # gateway/resume_control.py). Same reasoning as the drain watcher above:
+    # the dashboard cannot safely mutate this process's SessionStore
+    # directly (its routing table is loaded once at startup and a live
+    # _save() would silently clobber a direct external write), so it writes
+    # a marker and this watcher performs the switch in-process instead.
+    # ------------------------------------------------------------------
+    async def _resume_control_watcher(self, interval: float = 1.0) -> None:
+        """Background task: apply pending Mini App resume requests.
+
+        Polls ``.miniapp_resume_requests.json`` (gateway/resume_control.py).
+        Each entry is applied via ``_apply_session_switch`` (the same
+        mechanics ``/resume`` uses) and then cleared regardless of outcome —
+        a request that fails to apply (unknown session_key: this gateway
+        instance has never seen that chat) is not retried forever, since
+        nothing about a fixed retry changes that outcome. Best-effort: any
+        per-request or per-tick error is logged and the loop continues.
+        """
+        from gateway.resume_control import (
+            clear_resume_request,
+            pending_resume_requests,
+        )
+
+        while self._running:
+            try:
+                for session_key, target_id in pending_resume_requests().items():
+                    try:
+                        applied = await self._apply_session_switch(session_key, target_id)
+                        if applied:
+                            logger.info(
+                                "Mini App resume request applied: %s -> %s",
+                                session_key, target_id,
+                            )
+                        else:
+                            logger.info(
+                                "Mini App resume request could not be applied "
+                                "(unknown session_key %s on this gateway "
+                                "instance) — discarding.",
+                                session_key,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Mini App resume request for %s failed", session_key
+                        )
+                    finally:
+                        clear_resume_request(session_key)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Resume-control watcher tick error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+
     def _update_platform_runtime_status(
         self, platform: str, *, platform_state: Optional[str] = None,
         error_code: Optional[str] = None, error_message: Optional[str] = None,

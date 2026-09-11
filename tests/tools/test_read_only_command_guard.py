@@ -459,6 +459,36 @@ class TestRedTeamAZ:
         assert allowed("curl -H 'Accept: application/json' https://example.com")
         assert allowed("curl --header 'Accept: application/json' https://example.com")
 
+    def test_Q7_curl_url_scheme_restricted_to_http_https(self):
+        # Regression: every prior fix to this validator constrained FLAGS
+        # and the -X method, but never the URL's own scheme. curl
+        # understands file://, gopher://, dict://, smtp://, tftp://,
+        # ftp://, scp://, sftp://, telnet://, smb://, ldap:// — none of
+        # which are flags, so a denylist/allowlist of flags alone never
+        # touches them. `curl file:///home/x/.ssh/id_ed25519` reads an
+        # arbitrary local file, bypassing sensitive_path_guard entirely
+        # (curl is not one of the commands it inspects); `curl
+        # gopher://127.0.0.1:6379/_...` writes attacker-controlled raw
+        # bytes to any local TCP service (the gopher-to-Redis SSRF class).
+        # Both were live-proven ALLOWED before this fix.
+        assert denied("curl file:///home/nico/.ssh/id_ed25519")
+        assert denied("curl -s file:///etc/passwd")
+        assert denied("curl gopher://127.0.0.1:6379/_evil")
+        assert denied("curl dict://127.0.0.1:11211/")
+        assert denied("curl smtp://127.0.0.1:25/")
+        assert denied("curl tftp://127.0.0.1/x")
+        assert denied("curl ftp://127.0.0.1/x")
+        assert denied("curl scp://127.0.0.1/x")
+        assert denied("curl sftp://127.0.0.1/x")
+        assert denied("curl telnet://127.0.0.1:23/")
+        assert denied("curl smb://127.0.0.1/share/x")
+        assert denied("curl ldap://127.0.0.1/")
+        # http(s), including uppercase-scheme forms curl itself accepts,
+        # must remain allowed.
+        assert allowed("curl https://example.com")
+        assert allowed("curl http://example.com")
+        assert allowed("curl HTTPS://example.com")
+
     def test_R_curl_get_credential_url_still_allowed_but_output_must_be_redacted_elsewhere(self):
         # The guard's job is command classification, not output scrubbing —
         # a GET to a URL that happens to embed credentials is a read-only

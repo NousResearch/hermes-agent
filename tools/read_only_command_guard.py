@@ -34,6 +34,7 @@ guard needs that didn't previously exist anywhere in the codebase.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from tools.approval import (
@@ -306,6 +307,18 @@ _CURL_ALLOWED_LONG_BOOLEAN_FLAGS = frozenset({
 # request (never reads/writes a file, never sets a mutating HTTP method).
 _CURL_ALLOWED_VALUE_LONG_FLAGS = frozenset({"--header"})
 
+# curl understands far more URL schemes than http(s): file://, gopher://,
+# dict://, smtp://, tftp://, ftp://, scp://, sftp://, telnet://, smb://,
+# ldap:// among others. A positional (non-flag) argument is curl's URL —
+# every prior fix to this validator constrained FLAGS and never the URL
+# itself, so `curl file:///home/x/.ssh/id_ed25519` reads an arbitrary local
+# file (bypassing sensitive_path_guard entirely, since it never inspects
+# curl's arguments) and `curl gopher://127.0.0.1:6379/_...` writes
+# attacker-controlled raw bytes to any local TCP service (the classic
+# gopher-to-Redis SSRF class) — both found independently in review, both
+# ALLOWED despite the flag-only allowlist above being complete and correct.
+_CURL_URL_SCHEME_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
+
 
 def _validate_curl(argv: list[str]) -> GuardResult:
     """Allowlist-first, not a denylist. Three consecutive fix attempts at
@@ -335,6 +348,11 @@ def _validate_curl(argv: list[str]) -> GuardResult:
     by not being an exact match — with no need to track curl's own
     expansion/case rules at all. This mirrors `_validate_openssl` in this
     same module, which already used an allowlist rather than a denylist.
+
+    A fourth-round review found that none of the above ever touched the
+    URL argument's SCHEME, only its flags — closed below by requiring
+    every positional (non-flag) argument to start with `http://` or
+    `https://`.
     """
     args = argv[1:]
     method = "GET"
@@ -382,6 +400,13 @@ def _validate_curl(argv: list[str]) -> GuardResult:
                         return _deny("curl", "-X with no value")
                     break  # rest of the cluster is -X's value, not more flags
                 return _deny("curl", f"'-{c}' is not in the read-only curl allowlist")
+        else:
+            # A positional argument — curl's URL. Restrict to the same
+            # http(s)-only surface http_probe already uses; see
+            # `_CURL_URL_SCHEME_PATTERN`'s comment for why every other
+            # scheme is a real read-boundary bypass, not a style choice.
+            if not _CURL_URL_SCHEME_PATTERN.match(tok):
+                return _deny("curl", f"URL '{tok}' must use http:// or https:// — no other scheme is permitted")
         i += 1
     if method.upper() not in ("GET", "HEAD"):
         return _deny("curl", f"method '{method}' is not GET/HEAD")

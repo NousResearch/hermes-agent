@@ -829,6 +829,14 @@ def _handle_create(args: dict, **kw) -> str:
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
         _parse_bool_arg(args, "goal_mode"))
+    # Unlike skills/parents, a bare string is NOT coerced here: resources are
+    # exclusive identities, and a stringified key silently gating nothing is
+    # worse than a loud error. Arrays only; element types stay with
+    # _coerce_str_list/normalize_resources downstream.
+    raw_resources = args.get("resources")
+    _check(raw_resources is None or isinstance(raw_resources, list),
+           "resources must be an array of strings")
+    resources = _coerce_str_list(raw_resources, "resources", "resource keys")
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
@@ -855,6 +863,7 @@ def _handle_create(args: dict, **kw) -> str:
             creator_task_id=self_tid,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+            resources=resources,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),

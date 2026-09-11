@@ -104,6 +104,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
+            "skipped_resource_held": [
+                {"task_id": tid, "resource": key}
+                for (tid, key) in res.skipped_resource_held
+            ],
             "auto_assigned_default": res.auto_assigned_default,
         }, ascii=True)
         return 0
@@ -131,6 +135,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    for tid, key in res.skipped_resource_held:
+        print(f"Deferred (resource {key} held by a running card): {tid}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

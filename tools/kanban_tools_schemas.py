@@ -447,6 +447,21 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "assignee's profile."
             ),
         },
+        "resources": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Exclusive physical resource keys this task must hold "
+                "while running, each 'kind:identifier' — the kind before "
+                "the first ':' is lowercase ([a-z0-9._/-]), the identifier "
+                "after it is case-sensitive ([A-Za-z0-9._:/-], device "
+                "serials keep their case) — e.g. "
+                "['harmony-device:6HQ0226318000078'] pins the "
+                "task to one device. The dispatcher runs at most one "
+                "card per key: a ready task whose key is held by a "
+                "running card stays ready until the holder finishes."
+            ),
+        },
         "goal_mode": _prop("boolean", (
                 "Run the dispatched worker in a goal loop. When true, "
                 "after each turn an auxiliary judge checks the worker's "

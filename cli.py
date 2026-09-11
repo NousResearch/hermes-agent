@@ -297,7 +297,8 @@ _TERMINAL_ENV_MAPPINGS = {
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
         "docker_snap_compat",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
-        "sandbox_dir", "persistent_shell",
+        "bubblewrap_profile", "bubblewrap_binds", "bubblewrap_memory_mb", "bubblewrap_cpu_seconds",
+        "bubblewrap_max_procs", "sandbox_dir", "persistent_shell",
     )
 }
 _TERMINAL_ENV_MAPPINGS = {"env_type": "TERMINAL_ENV", **_TERMINAL_ENV_MAPPINGS, "sudo_password": "SUDO_PASSWORD"}
@@ -327,10 +328,10 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
 
-    # Local backend: cwd is always os.getcwd(). Non-local: a placeholder is popped so
-    # terminal_tool uses its per-backend default; an explicit path is kept.
+    # Host-path backends (local, bubblewrap): cwd is always os.getcwd(). Others: a placeholder
+    # is popped so terminal_tool uses its per-backend default; an explicit path is kept.
     effective_backend = terminal_config.get("env_type", "local")
-    if effective_backend == "local":
+    if effective_backend in ("local", "bubblewrap"):
         terminal_config["cwd"] = os.getcwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:

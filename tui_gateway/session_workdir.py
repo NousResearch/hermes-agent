@@ -55,7 +55,7 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     the global ``TERMINAL_CWD``/``terminal.cwd`` fallback — under per-session docker isolation that is a PREVIOUS
     session's launch artifact, so terminal_tool refuses it as a bind-mount source."""
     backend = _effective_terminal_backend()
-    if backend != "local":
+    if backend not in ("local", "bubblewrap"):
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
@@ -114,8 +114,9 @@ def _heal_dead_cwd(cwd: str) -> str:
 
 
 def _is_local_terminal_backend() -> bool:
+    """True for the host-path backends: local and bubblewrap."""
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    return not backend or backend == "local"
+    return not backend or backend in ("local", "bubblewrap")
 
 
 def _effective_terminal_backend() -> str:

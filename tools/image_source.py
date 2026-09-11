@@ -145,7 +145,7 @@ async def _download_to_bytes(url: str) -> bytes:
 
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``)."""
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "bubblewrap", "")
 
 
 # Host-side media caches: the only host paths vision may read under a non-local backend

@@ -572,7 +572,11 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     path is remapped to /workspace and tracked as host_cwd; otherwise host paths
     are discarded in favor of the backend default.
     """
-    default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
+    # local and bubblewrap are host-path backends: the default cwd is the host's current directory.
+    if env_type in ("local", "bubblewrap"):
+        default_cwd = _safe_getcwd()
+    else:
+        default_cwd = _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
@@ -967,6 +971,19 @@ def _plan_execution(
             raise _Rejected(_error_json(guidance, status="error"))
         if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
             promoted = timeout
+    if (background or promoted is not None) and env_type == "bubblewrap":
+        # Each bubblewrap command is its own sandbox that ends with the
+        # command, so a background job would die with it; spawn_local would
+        # run it unsandboxed. Refuse rather than either. An over-cap foreground
+        # timeout is promoted into that same background spawn, so it is refused
+        # on the same grounds instead of being promoted.
+        raise _Rejected(_error_json(
+            "The bubblewrap backend cannot run background processes: each command "
+            "runs in its own sandbox that ends with the command. Run it in the "
+            f"foreground within the {FOREGROUND_MAX_TIMEOUT}s cap, or use another "
+            "terminal backend.",
+            status="error",
+        ))
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,

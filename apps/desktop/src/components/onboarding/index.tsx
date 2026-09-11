@@ -458,7 +458,12 @@ function FreeTierReadyPanel({
         <Button onClick={() => void onDismiss(() => openFreeTierSignIn())} size="xs" type="button" variant="text">
           {copy.signInInstead}
         </Button>
-        <Button onClick={() => void onDismiss(() => startManualOnboarding(null))} size="xs" type="button" variant="text">
+        <Button
+          onClick={() => void onDismiss(() => startManualOnboarding(null))}
+          size="xs"
+          type="button"
+          variant="text"
+        >
           {copy.otherProviders}
         </Button>
       </div>

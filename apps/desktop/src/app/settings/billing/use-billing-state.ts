@@ -42,8 +42,7 @@ export interface BillingNoticeView {
    *  a discriminated pair, so a consumer never has to guard for "both" or
    *  "neither". */
   action?:
-    | { label: string; onSelect: () => void; url?: undefined }
-    | { label: string; onSelect?: undefined; url: string }
+    { label: string; onSelect: () => void; url?: undefined } | { label: string; onSelect?: undefined; url: string }
   message: string
   title: string
   /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */

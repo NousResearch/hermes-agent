@@ -4453,6 +4453,41 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_truncated_tool_call_give_up_logs_error_to_agent_log(self, agent, caplog):
+        """The give-up path after 4 silent retries must land an ERROR record on the
+        "agent.conversation_loop" logger (what feeds agent.log/errors.log), not just an
+        _vprint the CLI can suppress — otherwise a dead session shows only a gap between
+        the last tool result and nothing (#105771)."""
+        self._setup_agent(agent)
+        agent.session_id = "session-105771"
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("model_tools.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.ERROR, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        give_up_records = [
+            r for r in caplog.records
+            if r.name == "agent.conversation_loop" and r.levelno == logging.ERROR
+            and "Truncated tool call" in r.getMessage()
+        ]
+        assert len(give_up_records) == 1
+        message = give_up_records[0].getMessage()
+        assert "giving up after 4 retries" in message
+        assert "session-105771" in message
+
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
         (up to 3 times). If a retry succeeds (valid JSON args), tool execution

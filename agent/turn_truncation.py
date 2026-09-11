@@ -329,6 +329,14 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
+    # ERROR level (not just the _vprint below, which is stdout-only and suppressed by
+    # suppress_status_output) so a give-up after 4 silent retries is visible in agent.log
+    # and errors.log instead of leaving a gap between the last tool result and nothing (#105771).
+    logger.error(
+        "%sTruncated tool call: giving up after %d retries (stub_stall=%s, max_tokens=%s) session=%s",
+        agent.log_prefix, st.truncated_tool_call_retries, st.is_stub,
+        getattr(agent, "_ephemeral_max_output_tokens", None), agent.session_id or "none",
+    )
     if st.is_stub:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",

@@ -416,3 +416,49 @@ class TestExplicitCallableSurvivesCustomResolution:
         )
         assert seen.get("api_key") is self.TOK
 
+
+class TestAsyncWrapPreservesCallableKey:
+    """``_to_async_client`` must carry the callable key across the sync→async hop.
+
+    The OpenAI SDK stores a callable api_key as ``_api_key_provider`` and blanks
+    ``client.api_key`` until the first request refreshes it. Rebuilding the async
+    client from the (still empty) attribute silently sends no Authorization
+    header — every async auxiliary call (vision) 401s against a key_cmd provider.
+    The async SDK awaits the provider, so the bridge must be awaitable.
+    """
+
+    def test_async_client_keeps_a_working_key_provider(self):
+        import asyncio
+
+        import agent.auxiliary_client as ac
+
+        calls = []
+
+        def _provider():
+            calls.append(1)
+            return "tok-from-provider"
+
+        class _StubSync:
+            api_key = ""  # what the SDK leaves behind after callable init
+            base_url = "https://example.invalid/v1"
+            _api_key_provider = staticmethod(_provider)
+
+        async_client, _ = ac._to_async_client(_StubSync(), "m1")
+        bridge = getattr(async_client, "_api_key_provider", None)
+        assert bridge is not None, (
+            "a sync client with a callable key must rebuild the async client "
+            "with an api-key provider, not the empty api_key attribute"
+        )
+
+        async def _mint_via_bridge():
+            # Mirror one request: the async SDK calls _refresh_api_key() in
+            # _prepare_options before building auth headers.
+            await getattr(async_client, "_refresh_api_key")()
+            return getattr(async_client, "auth_headers")
+
+        assert asyncio.run(_mint_via_bridge()) == {
+            "Authorization": "Bearer " + "tok-from-provider"
+        }
+        assert calls == [1]
+
+

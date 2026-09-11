@@ -8,6 +8,7 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
 """
 
+import asyncio
 import contextlib
 import contextvars
 import functools
@@ -4283,7 +4284,16 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    # A callable api_key lives in the SDK's _api_key_provider (client.api_key is "" then);
+    # rebuilding with the empty string silently drops Authorization → every async aux call
+    # 401s. The async SDK awaits the provider, so bridge the (blocking) sync mint via a thread.
+    _key_provider = getattr(sync_client, "_api_key_provider", None)
+    if callable(_key_provider):
+        async def _async_key_provider(_provider=_key_provider):
+            return await asyncio.to_thread(_provider)
+        async_kwargs = {"api_key": _async_key_provider, "base_url": sync_base_url}
+    else:
+        async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):

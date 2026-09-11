@@ -10,8 +10,16 @@ export function markFirstBuildSession(storedId: string): void {
   writeKey('hermes.onboarding.first-build.v1', storedId)
 }
 
+export function endFirstBuildConnect(storedId: string): void {
+  writeKey('hermes.onboarding.first-build.done.v1', storedId)
+}
+
 export function isFirstBuildSession(storedId: string | null | undefined): boolean {
-  return !!storedId && readKey('hermes.onboarding.first-build.v1') === storedId
+  return (
+    !!storedId &&
+    readKey('hermes.onboarding.first-build.v1') === storedId &&
+    readKey('hermes.onboarding.first-build.done.v1') !== storedId
+  )
 }
 
 /** A navigation/submit receipt, never a copy of either profile's memory. */

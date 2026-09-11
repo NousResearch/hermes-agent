@@ -1,7 +1,7 @@
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 import { map } from 'nanostores'
 
-import { isFirstBuildSession } from '@/app/contrib/handoff-receipt'
+import { endFirstBuildConnect, isFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import {
   connectionRows,
   connectorAuthorizationUrl,
@@ -121,7 +121,7 @@ export function flushFirstBuildNote(
     return
   }
 
-  if (newestToolCallId !== state.toolCallId || submit(state.pendingNote)) {
+  if (!isFirstBuildSession(storedId) || newestToolCallId !== state.toolCallId || submit(state.pendingNote)) {
     $firstBuildConnections.setKey(storedId, { ...state, pendingNote: undefined })
   }
 }
@@ -142,6 +142,11 @@ export function watchFirstBuildWait(
 
   const output = recordOf(part.result)
   const polling = part.result === undefined || output.status === 'pending'
+
+  if (['connected', 'timeout', 'interrupted'].includes(String(output.status))) {
+    endFirstBuildConnect(storedId)
+  }
+
   const connected = new Set(
     (Array.isArray(output.connectors) ? output.connectors : []).flatMap(item => {
       const entry = recordOf(item)
@@ -242,6 +247,7 @@ export function startFirstBuild(storedId: string, submit: (text: string) => bool
 
   if (submit(buildConnectionStartMessage(state.rows))) {
     writeKey(key, '1')
+    endFirstBuildConnect(storedId)
     $firstBuildConnections.setKey(storedId, { ...state, started: true })
   }
 }

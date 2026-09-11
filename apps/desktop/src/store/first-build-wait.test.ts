@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { markFirstBuildSession } from '@/app/contrib/handoff-receipt'
+import { isFirstBuildSession, markFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { deferred } from '@/test/deferred'
 
-import { $firstBuildConnections, type FirstBuildConnectorPart, watchFirstBuildWait } from './first-build-connectors'
+import { $firstBuildConnections, type FirstBuildConnectorPart, openFirstBuildLinks, watchFirstBuildWait } from './first-build-connectors'
 
 const part: FirstBuildConnectorPart = {
   toolCallId: 'wait',
@@ -15,6 +15,27 @@ afterEach(() => {
   vi.useRealTimers()
   window.localStorage.clear()
   $firstBuildConnections.set({})
+})
+
+it.each(['connected', 'timeout', 'interrupted'])('ends first-build connections after a settled %s wait', async status => {
+  markFirstBuildSession('build')
+  const request = vi.fn()
+  watchFirstBuildWait('build', 'runtime', {
+    ...part,
+    result: { status, connectors: [{ connector: 'gmail', connected: true }], pending: ['notion'] }
+  }, request)
+
+  expect(isFirstBuildSession('build')).toBe(false)
+  expect(request).not.toHaveBeenCalled()
+  const open = vi.fn()
+  await openFirstBuildLinks('build', {
+    toolCallId: 'later-connect',
+    toolName: 'manage_connections',
+    args: { action: 'connect', connectors: ['notion'] },
+    result: { results: [{ connector: 'notion', status: 'initiated', connect_url: 'https://connect.example/notion' }] }
+  }, { open })
+  expect(open).not.toHaveBeenCalled()
+  expect($firstBuildConnections.get().build.toolCallId).toBe(part.toolCallId)
 })
 
 it('polls through a pending bounce, reconciles unavailable apps, and stops when the part is replaced', async () => {

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { markFirstBuildSession } from '@/app/contrib/handoff-receipt'
+import { isFirstBuildSession, markFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { readKey } from '@/lib/storage'
 import type { ConnectorFlowRow } from '@/store/connector-flow'
 import { $firstBuildConnections, startFirstBuild } from '@/store/first-build-connectors'
@@ -47,7 +47,10 @@ it('allows a pending wait to start once and retains that decision after rehydrat
   const state = { toolCallId: part.toolCallId, rows, started: false }
   $firstBuildConnections.setKey('build', state)
   const submit = vi.fn().mockReturnValue(true)
+  startFirstBuild('build', () => false)
+  expect(isFirstBuildSession('build')).toBe(true)
   startFirstBuild('build', submit)
+  expect(isFirstBuildSession('build')).toBe(false)
   expect(submit.mock.calls).toEqual([[buildConnectionStartMessage(rows)]])
   expect($firstBuildConnections.get().build.started).toBe(true)
   expect(readKey('hermes.onboarding.started.v1.build')).toBe('1')

@@ -4,7 +4,7 @@ Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --fields label=password --reveal``.
+username, and vault ID. Resolve: ``op item get <id> --vault <vault-id> ...``.
 """
 
 from __future__ import annotations
@@ -109,8 +109,12 @@ class OnePasswordLoginBackend(LoginBackend):
             if not origin:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
+            item_id = str(item.get("id") or "")
+            vault = item.get("vault") if isinstance(item.get("vault"), dict) else {}
+            vault_id = str(vault.get("id") or "")
+            opaque_id = f"{vault_id}:{item_id}" if vault_id else item_id
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origin),
+                id=f"{self.prefix}{opaque_id}", kind="login", label=str(item.get("title") or origin),
                 origin=origin, created_at=str(item.get("created_at") or ""),
                 identifier_type="username" if username else None, identifier=username))
         return out
@@ -119,16 +123,25 @@ class OnePasswordLoginBackend(LoginBackend):
         return next((m for m in self.list_items() if m.id == handle), None)
 
     def resolve_password(self, handle: str) -> str:
-        item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run("item", "get", *_item_selector(handle, self.prefix),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", *_item_selector(handle, self.prefix), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None
+
+
+def _item_selector(handle: str, prefix: str) -> List[str]:
+    """Recover the item and vault IDs carried by a model-opaque backend handle."""
+    opaque_id = handle[len(prefix):]
+    vault_id, separator, item_id = opaque_id.partition(":")
+    if separator and vault_id and item_id:
+        return [item_id, "--vault", vault_id]
+    return [opaque_id]
 
 
 def _first_origin(urls: List[str]) -> Optional[str]:

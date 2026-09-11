@@ -101,6 +101,67 @@ The dispatcher writes per-task worker stdout/stderr to `<board-root>/logs/<task_
 
 The dashboard renders run history with summaries, metadata blocks, and exit-status badges. CLI users can run `hermes kanban tail <task_id>` to follow live, or `hermes kanban runs <task_id>` for the historical attempt list.
 
+### Exact command-output evidence
+
+The worker log captures the CLI's display output, not the command's original
+stdout. Normal tool progress is a preview; quiet goal-mode workers suppress tool
+output. Verbose tool output redirected to a file preserves the result text
+without terminal-width wrapping, but that result may already be truncated,
+ANSI-stripped, redacted, or JSON-encoded by the terminal tool. It is not a
+byte-for-byte command capture.
+
+For reviews that need exact output, use a directly captured file as the primary
+evidence, with its command, exit code, byte count, and SHA-256 recorded in the
+handoff. Capture bytes before they pass through the CLI renderer. For example,
+save this as `capture_evidence.py` in the task workspace and run it with the
+worker's Python interpreter, replacing `command` with the command under review:
+
+```python
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+command = [sys.executable, "-c", "print('evidence ' * 1024)"]
+output = Path("command-output.bin")
+with output.open("wb") as stream:
+    result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT)
+receipt = {
+    "command": command,
+    "cwd": str(Path.cwd()),
+    "exit_code": result.returncode,
+    "bytes": output.stat().st_size,
+    "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+}
+Path("command-receipt.json").write_text(
+    json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
+)
+raise SystemExit(result.returncode)
+```
+
+This example combines stdout and stderr in arrival order. Use separate binary
+files if the review requires stdout alone. Attach the capture and receipt before
+completing a scratch task, since completion removes its workspace:
+
+```bash
+hermes kanban attach <task_id> command-output.bin
+hermes kanban attach <task_id> command-receipt.json
+hermes kanban attachments <task_id> --json
+```
+
+Use the same profile and board as the task. Attachments are limited to 25 MB each.
+For a remote terminal backend, transfer the files to the host running this CLI
+first, or use `kanban_attach` with their actual base64-encoded bytes. Do not ask
+the model to reconstruct the output from its displayed preview.
+
+The reviewer should retrieve the stored attachment, recompute its byte count and
+SHA-256, compare both with the receipt, and inspect its contents and exit code.
+This attachment is the primary capture; absence of a sentinel from the display
+log alone is not grounds to reject it. A matching hash verifies byte integrity,
+not that the command or its result satisfies the task. Direct captures bypass
+terminal-output redaction: inspect them for secrets before attaching or sharing.
+
 ## Existing lane shapes
 
 ### Hermes profile lane (default)

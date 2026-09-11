@@ -176,6 +176,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     On the ssh backend a leading ``~`` is returned untouched: expanding it here names
     the GATEWAY's home, but the path runs on the remote, whose ``$HOME`` differs
     (#71201). ``ShellFileOperations._expand_path`` expands it through the remote shell.
+    Container backends are NOT covered here — their ``~`` still expands host-side.
     """
     if filepath.startswith("~") and _terminal_env_type_for_task(task_id) == "ssh":
         return PurePosixPath(filepath)

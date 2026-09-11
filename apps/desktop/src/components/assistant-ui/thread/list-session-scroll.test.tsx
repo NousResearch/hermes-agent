@@ -2,6 +2,8 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { act, render } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { setActiveProfile } from '@/store/profile'
 import { saveThreadScrollPosition } from '@/store/thread-scroll'
@@ -129,6 +131,33 @@ describe('list session-scroll restore', () => {
       await settleScroll()
       expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H)
     }
+  })
+
+  it.each([0, 800])('restores a kept-alive pane after hidden layout drift (offset %i)', async offset => {
+    if (offset) saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
+    const messages = sessionMessages('a')
+    const pane = (visible: boolean) => (
+      <PaneVisibleContext.Provider value={visible}>
+        <PaneLifecycleContext.Provider value={visible ? 'visible' : 'hot-hidden'}>
+          <ScrollHarness messages={messages} sessionKey="a" />
+        </PaneLifecycleContext.Provider>
+      </PaneVisibleContext.Provider>
+    )
+    const { container, rerender } = render(pane(true))
+    await settleScroll()
+    const vp = viewportEl(container)
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H - offset)
+    rerender(pane(false))
+    // A hidden pane's smaller render budget / background refresh changes its
+    // layout. These browser scroll events are not a new reading position.
+    act(() => {
+      vp.scrollTop = 300
+      vp.dispatchEvent(new Event('scroll'))
+    })
+    await settleScroll()
+    rerender(pane(true))
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H - offset)
   })
 
   it('keeps a clamped cold offset parked until the transcript is tall enough', async () => {

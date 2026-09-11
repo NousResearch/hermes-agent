@@ -1,7 +1,6 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
-import { $connection } from '@/store/session'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -12,6 +11,7 @@ import type {
 } from '@/types/hermes'
 
 import {
+  ambientOwnerConnectionId,
   capabilityScoped,
   connectionScoped,
   getApiRequestConnection,
@@ -459,13 +459,8 @@ export function getLatestSessionMessages(
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
   const tailScope = { ...connectionScoped(), ...sessionScoped(profile) }
-  const ownerScope = { ...tailScope }
-
-  // Normalize only the lookup key: a local request pin would bypass Electron's
-  // legacy per-profile remote overrides. Backfill must retain the original route.
-  if (!ownerScope.connectionId && $connection.get()?.mode === 'local') {
-    ownerScope.connectionId = 'local'
-  }
+  // Normalize only the lookup key; backfill must replay the original route.
+  const ownerScope = { ...tailScope, connectionId: tailScope.connectionId || ambientOwnerConnectionId() }
 
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript

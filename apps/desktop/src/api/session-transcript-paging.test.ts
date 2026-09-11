@@ -6,11 +6,10 @@ import {
   transcriptBackfillAvailable
 } from '@/app/chat/transcript-backfill'
 import { toChatMessages } from '@/lib/chat-messages'
-import { $connection } from '@/store/session'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import type { SessionMessagesResponse } from '@/types/hermes'
 
-import { setApiRequestConnection, setApiRequestProfile } from './client'
+import { setApiRequestConnection, setApiRequestLocalMode, setApiRequestProfile } from './client'
 import { getLatestSessionMessages, LATEST_SESSION_MESSAGES_LIMIT } from './sessions'
 
 // Zero timestamps use the conversion-time clock for IDs; keep fixtures stable.
@@ -31,11 +30,11 @@ describe('session transcript pagination ownership', () => {
     $transcriptTailBySessionId.set({})
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
     setApiRequestProfile('default')
-    $connection.set({ mode: 'local' } as NonNullable<ReturnType<typeof $connection.get>>)
+    setApiRequestLocalMode(true)
   })
 
   afterEach(() => {
-    $connection.set(null)
+    setApiRequestLocalMode(false)
     setApiRequestConnection(null)
     setApiRequestProfile(null)
     Reflect.deleteProperty(window, 'hermesDesktop')

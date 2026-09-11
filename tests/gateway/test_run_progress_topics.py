@@ -1187,8 +1187,12 @@ async def test_slack_operator_tool_progress_off_disables_task_cards(monkeypatch,
     ],
     ids=["platform-null", "global-null", "legacy-null", "platform-null-over-global-all"],
 )
-async def test_slack_null_tool_progress_is_inheritance_not_explicit_off(monkeypatch, tmp_path, display_cfg):
+@pytest.mark.parametrize("env_mode", [None, "all", "new"])
+async def test_slack_null_tool_progress_is_inheritance_not_explicit_off(monkeypatch, tmp_path, display_cfg, env_mode):
     # A bare key with ``null`` inherits (the resolver skips None); it is not an operator saying "off".
+    monkeypatch.delenv("HERMES_TOOL_PROGRESS_MODE", raising=False)
+    if env_mode is not None:
+        monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", env_mode)
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,

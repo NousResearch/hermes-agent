@@ -82,6 +82,7 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
+import { CronRunRow } from './cron-run-row'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
@@ -291,11 +292,17 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
+  onDeleteSession: (sessionId: string, profile?: string) => Promise<boolean>
   onOpenSession?: (sessionId: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
+export function CronView({
+  onClose,
+  onDeleteSession,
+  onOpenSession,
+  setStatusbarItemGroup: _setStatusbarItemGroup
+}: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
   // Source of truth is the shared atom (also fed by the controller poll), so the
@@ -701,6 +708,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
+              onDeleteSession={onDeleteSession}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
@@ -781,6 +789,7 @@ function CronJobDetail({
   busy,
   c,
   job,
+  onDeleteSession,
   onOpenSession,
   onPauseResume,
   onTrigger
@@ -788,6 +797,7 @@ function CronJobDetail({
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  onDeleteSession: (sessionId: string, profile?: string) => Promise<boolean>
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
@@ -841,7 +851,7 @@ function CronJobDetail({
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns c={c} jobId={job.id} onDeleteSession={onDeleteSession} onOpenSession={onOpenSession} />
     </PanelDetail>
   )
 }
@@ -866,10 +876,12 @@ const RUNS_BACKSTOP_INTERVAL_MS = 60_000
 function CronJobRuns({
   c,
   jobId,
+  onDeleteSession,
   onOpenSession
 }: {
   c: Translations['cron']
   jobId: string
+  onDeleteSession: (sessionId: string, profile?: string) => Promise<boolean>
   onOpenSession?: (sessionId: string) => void
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
@@ -934,17 +946,15 @@ function CronJobRuns({
       ) : (
         <div className="flex flex-col gap-px">
           {runs.map(run => (
-            <button
-              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            <CronRunRow
               key={run.id}
-              onClick={() => onOpenSession?.(run.id)}
-              type="button"
-            >
-              <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
-              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
-                {formatRunTime(run.last_active || run.started_at)}
-              </span>
-            </button>
+              onDelete={onDeleteSession}
+              onDeleted={sessionId => setRuns(current => current?.filter(item => item.id !== sessionId) ?? [])}
+              onOpen={sessionId => onOpenSession?.(sessionId)}
+              run={run}
+              time={formatRunTime(run.last_active || run.started_at)}
+              variant="detail"
+            />
           ))}
         </div>
       )}

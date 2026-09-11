@@ -2409,7 +2409,7 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, explicitProfile?: string): Promise<boolean> => {
       clearNotifications()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
@@ -2425,8 +2425,9 @@ export function useSessionActions({
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to
       // the owning profile instead of the ambient one.
+      const requestedProfile = explicitProfile?.trim()
       const stampedProfile = removed?.profile?.trim()
-      const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      const profile = requestedProfile || stampedProfile || (await resolveSessionProfile(storedSessionId))
 
       // Listed profile-less row + multiple profiles + unresolved owner:
       // never fall through to the primary backend (fake already_absent).
@@ -2438,7 +2439,7 @@ export function useSessionActions({
       ) {
         notifyError(new Error('Session ownership could not be resolved'), copy.deleteFailed)
 
-        return
+        return false
       }
 
       // Selection and runtime refs are updated synchronously at routing
@@ -2510,6 +2511,8 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
         }
+
+        return true
       } catch (err) {
         if (listed?.session) {
           restoreListedSession(listed.session, listed.slice)
@@ -2541,6 +2544,8 @@ export function useSessionActions({
         }
 
         notifyError(err, copy.deleteFailed)
+
+        return false
       } finally {
         // Release the tombstone to the normal projects.tree prune now the RPC has
         // settled (kept on success — the backend has deleted it; cleared on the

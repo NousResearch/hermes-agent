@@ -103,6 +103,97 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
 
+    def test_list_skills_in_repo_nested_via_tree(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        tree = (
+            "main",
+            [
+                {"type": "blob", "path": "skills/software-development/web-design-inspiration-libs/SKILL.md"},
+                {"type": "blob", "path": "skills/homelab-pihole-dns/SKILL.md"},
+                {"type": "blob", "path": "skills/.hidden/should-ignore/SKILL.md"},
+                {"type": "tree", "path": "skills/software-development"},
+                {"type": "blob", "path": "README.md"},
+            ],
+        )
+
+        def mock_inspect(identifier):
+            if "web-design-inspiration-libs" in identifier:
+                return SkillMeta(
+                    name="web-design-inspiration-libs", description="d1", source="github",
+                    identifier=identifier, trust_level="community",
+                )
+            if "homelab-pihole-dns" in identifier:
+                return SkillMeta(
+                    name="homelab-pihole-dns", description="d2", source="github",
+                    identifier=identifier, trust_level="community",
+                )
+            return None
+
+        with patch("tools.skills_hub._read_index_cache", return_value=None), \
+             patch("tools.skills_hub._write_index_cache"), \
+             patch.object(src, "_get_repo_tree", return_value=tree), \
+             patch.object(src, "inspect", side_effect=mock_inspect):
+            skills = src._list_skills_in_repo("callacat/hermes-capabilities", "skills/")
+
+        assert len(skills) == 2
+        names = {s.name for s in skills}
+        assert names == {"web-design-inspiration-libs", "homelab-pihole-dns"}
+        nested_skill = next(s for s in skills if s.name == "web-design-inspiration-libs")
+        assert nested_skill.extra["category"] == "software-development"
+        assert nested_skill.identifier == "callacat/hermes-capabilities/skills/software-development/web-design-inspiration-libs"
+
+    def test_list_skills_in_repo_nested_via_contents_fallback(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        root_contents = [
+            {"type": "dir", "name": "software-development"},
+            {"type": "dir", "name": "homelab-pihole-dns"},
+            {"type": "file", "name": "README.md"},
+        ]
+        sub_contents = [
+            {"type": "dir", "name": "web-design-inspiration-libs"},
+        ]
+
+        def mock_github_get(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if url.endswith("/contents/skills"):
+                resp.json.return_value = root_contents
+                return resp
+            if url.endswith("/contents/skills/software-development"):
+                resp.json.return_value = sub_contents
+                return resp
+            return None
+
+        def mock_inspect(identifier):
+            if identifier.endswith("skills/homelab-pihole-dns"):
+                return SkillMeta(
+                    name="homelab-pihole-dns", description="d1", source="github",
+                    identifier=identifier, trust_level="community",
+                )
+            if identifier.endswith("skills/software-development/web-design-inspiration-libs"):
+                return SkillMeta(
+                    name="web-design-inspiration-libs", description="d2", source="github",
+                    identifier=identifier, trust_level="community",
+                )
+            return None
+
+        with patch("tools.skills_hub._read_index_cache", return_value=None), \
+             patch("tools.skills_hub._write_index_cache"), \
+             patch.object(src, "_get_repo_tree", return_value=None), \
+             patch.object(src, "_github_get", side_effect=mock_github_get), \
+             patch.object(src, "inspect", side_effect=mock_inspect):
+            skills = src._list_skills_in_repo("callacat/hermes-capabilities", "skills/")
+
+        assert len(skills) == 2
+        names = {s.name for s in skills}
+        assert names == {"web-design-inspiration-libs", "homelab-pihole-dns"}
+        nested_skill = next(s for s in skills if s.name == "web-design-inspiration-libs")
+        assert nested_skill.extra["category"] == "software-development"
+
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
@@ -646,6 +737,70 @@ class TestTapsManager:
         mgr.add("owner/repo")
         assert mgr.remove("owner/repo") is True
         assert mgr.load() == []
+
+    def test_refresh_single_and_all_taps(self, tmp_path):
+        cache_dir = tmp_path / "index-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "owner_repo1_skills_.json").write_text("{}", encoding="utf-8")
+        (cache_dir / "owner_repo2_skills_.json").write_text("{}", encoding="utf-8")
+        (cache_dir / "other_cache.json").write_text("{}", encoding="utf-8")
+
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        with patch("tools.skills_hub._index_cache_dir", return_value=cache_dir):
+            mgr.add("owner/repo1")
+            mgr.add("owner/repo2")
+            # Refresh non-existent tap
+            assert mgr.refresh("owner/nonexistent") is False
+
+            # Refresh specific tap
+            assert mgr.refresh("owner/repo1") is True
+            assert not (cache_dir / "owner_repo1_skills_.json").exists()
+            assert (cache_dir / "other_cache.json").exists()
+
+            # Refresh all taps
+            (cache_dir / "owner_repo1_skills_.json").write_text("{}", encoding="utf-8")
+            assert mgr.refresh() is True
+            assert not (cache_dir / "owner_repo1_skills_.json").exists()
+            assert not (cache_dir / "owner_repo2_skills_.json").exists()
+            assert (cache_dir / "other_cache.json").exists()
+
+    def test_add_and_remove_clears_cache(self, tmp_path):
+        cache_dir = tmp_path / "index-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "owner_repo_skills_.json").write_text("{}", encoding="utf-8")
+
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        with patch("tools.skills_hub._index_cache_dir", return_value=cache_dir):
+            # Adding tap invalidates stale cache
+            mgr.add("owner/repo")
+            assert not (cache_dir / "owner_repo_skills_.json").exists()
+
+            # Re-create cache file and remove tap
+            (cache_dir / "owner_repo_skills_.json").write_text("{}", encoding="utf-8")
+            assert mgr.remove("owner/repo") is True
+            assert not (cache_dir / "owner_repo_skills_.json").exists()
+
+    def test_clear_tap_cache_preserves_prefix_sharing_sibling_taps(self, tmp_path):
+        cache_dir = tmp_path / "index-cache"
+        cache_dir.mkdir(parents=True)
+        # Sibling tap sharing the same prefix (e.g. repo vs repo-extra)
+        base_cache = cache_dir / "callacat_hermes-capabilities_skills_.json"
+        sibling_cache = cache_dir / "callacat_hermes-capabilities-extra_skills_.json"
+        base_cache.write_text("{}", encoding="utf-8")
+        sibling_cache.write_text("{}", encoding="utf-8")
+
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        with patch("tools.skills_hub._index_cache_dir", return_value=cache_dir):
+            mgr.add("callacat/hermes-capabilities")
+            # Base cache was unlinked, but sibling tap cache was preserved
+            assert not base_cache.exists()
+            assert sibling_cache.exists()
+
+            # Refreshing base tap also preserves sibling cache
+            base_cache.write_text("{}", encoding="utf-8")
+            assert mgr.refresh("callacat/hermes-capabilities") is True
+            assert not base_cache.exists()
+            assert sibling_cache.exists()
 
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md

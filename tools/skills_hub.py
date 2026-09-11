@@ -262,6 +262,19 @@ class TapsManager(_JsonStateFile):
     def save(self, taps: List[dict]) -> None:
         self._write({"taps": taps})
 
+    def _clear_tap_cache(self, repo: str) -> None:
+        """Remove cached index-cache files for a given repo."""
+        cache_dir = _index_cache_dir()
+        if not cache_dir.exists():
+            return
+        sanitized = repo.replace("/", "_").replace(" ", "_")
+        for pattern in (f"{sanitized}.json", f"{sanitized}_*.json"):
+            for cache_file in cache_dir.glob(pattern):
+                try:
+                    cache_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
         taps = self.load()
@@ -269,6 +282,7 @@ class TapsManager(_JsonStateFile):
             return False
         taps.append({"repo": repo, "path": path})
         self.save(taps)
+        self._clear_tap_cache(repo)
         return True
 
     def remove(self, repo: str) -> bool:
@@ -278,6 +292,21 @@ class TapsManager(_JsonStateFile):
         if len(new_taps) == len(taps):
             return False
         self.save(new_taps)
+        self._clear_tap_cache(repo)
+        return True
+
+    def refresh(self, repo: Optional[str] = None) -> bool:
+        """Invalidate cached index files for a specific tap or all configured taps."""
+        taps = self.load()
+        if repo:
+            if not any(t["repo"] == repo for t in taps):
+                return False
+            self._clear_tap_cache(repo)
+            return True
+        if not taps:
+            return False
+        for t in taps:
+            self._clear_tap_cache(t["repo"])
         return True
 
     list_taps = load

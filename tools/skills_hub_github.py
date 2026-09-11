@@ -5,7 +5,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import quote
 
 import httpx
@@ -322,25 +322,91 @@ class GitHubSource(SkillSource):
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached
-        resp = self._github_get(f"{_API}/{repo}/contents/{path.rstrip('/')}")
+
+        prefix = path.strip("/")
+        groupings = self._get_skillsh_groupings(repo)
+
+        # 1. Try recursive git tree discovery (1 API call for all flat & nested skills)
+        tree = self._get_repo_tree(repo)
+        if tree is not None:
+            skills: List[SkillMeta] = []
+            seen_identifiers: Set[str] = set()
+            for entry in tree[1]:
+                if entry.get("type") != "blob":
+                    continue
+                epath = entry.get("path", "")
+                if not (epath.endswith("/SKILL.md") or epath == "SKILL.md"):
+                    continue
+                if prefix:
+                    if not (epath.startswith(f"{prefix}/") or epath == f"{prefix}/SKILL.md"):
+                        continue
+                    rel = epath[len(prefix):].lstrip("/")
+                else:
+                    rel = epath
+
+                parts = rel.split("/")
+                dir_parts = parts[:-1]
+                if any(p.startswith((".", "_")) for p in dir_parts):
+                    continue
+
+                skill_dir = epath[: -len("/SKILL.md")] if epath.endswith("/SKILL.md") else ""
+                identifier = f"{repo}/{skill_dir}" if skill_dir else repo
+                if identifier in seen_identifiers:
+                    continue
+                seen_identifiers.add(identifier)
+
+                meta = self.inspect(identifier)
+                if meta:
+                    dir_name = dir_parts[-1] if dir_parts else ""
+                    category_dir = dir_parts[0] if len(dir_parts) > 1 else None
+                    category = groupings and (
+                        groupings.get(meta.name) or groupings.get(dir_name) or (category_dir and groupings.get(category_dir))
+                    )
+                    if not category and category_dir:
+                        category = category_dir
+                    if category:
+                        meta.extra["category"] = category
+                    skills.append(meta)
+            _cache_metas(cache_key, skills)
+            return skills
+
+        # 2. Fallback to Contents API traversal (supports flat & category-nested directories)
+        resp = self._github_get(f"{_API}/{repo}/contents/{prefix}")
         if resp is None or resp.status_code != 200:
             return []
         entries = resp.json()
         if not isinstance(entries, list):
             return []
-        skills: List[SkillMeta] = []
-        groupings = self._get_skillsh_groupings(repo)
-        prefix = path.rstrip("/")
+        skills = []
         for entry in entries:
             if entry.get("type") != "dir" or entry["name"].startswith((".", "_")):
                 continue
             dir_name = entry["name"]
-            meta = self.inspect(f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}")
+            subpath = f"{prefix}/{dir_name}" if prefix else dir_name
+            meta = self.inspect(f"{repo}/{subpath}")
             if meta:
                 category = groupings and (groupings.get(meta.name) or groupings.get(dir_name))
                 if category:
                     meta.extra["category"] = category
                 skills.append(meta)
+            else:
+                # Subdirectory might be a category containing skill directories
+                sub_resp = self._github_get(f"{_API}/{repo}/contents/{subpath}")
+                if sub_resp is not None and sub_resp.status_code == 200:
+                    sub_entries = sub_resp.json()
+                    if isinstance(sub_entries, list):
+                        for sub_entry in sub_entries:
+                            if sub_entry.get("type") != "dir" or sub_entry["name"].startswith((".", "_")):
+                                continue
+                            sub_dir = sub_entry["name"]
+                            nested_path = f"{subpath}/{sub_dir}"
+                            nested_meta = self.inspect(f"{repo}/{nested_path}")
+                            if nested_meta:
+                                category = groupings and (
+                                    groupings.get(nested_meta.name) or groupings.get(sub_dir) or groupings.get(dir_name)
+                                )
+                                nested_meta.extra["category"] = category or dir_name
+                                skills.append(nested_meta)
         _cache_metas(cache_key, skills)
         return skills
 
@@ -351,13 +417,13 @@ class GitHubSource(SkillSource):
         if repo in self._tree_cache:
             return self._tree_cache[repo]
         repo_data = self._github_json(f"{_API}/{repo}")
-        if repo_data is None:
+        if not isinstance(repo_data, dict):
             return None
         default_branch = repo_data.get("default_branch", "main")
         tree_data = self._github_json(
             f"{_API}/{repo}/git/trees/{default_branch}", params={"recursive": "1"}, timeout=30.0,
         )
-        if tree_data is None:
+        if not isinstance(tree_data, dict):
             return None
         if tree_data.get("truncated"):
             logger.debug("Git tree truncated for %s, cannot cache", repo)

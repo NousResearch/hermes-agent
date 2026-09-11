@@ -680,6 +680,81 @@ async def test_restore_switches_store_immediately(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_failure_is_visible_and_rolls_back_binding(tmp_path):
+    """A failed store switch must not leave a committed restore binding behind.
+
+    Binding-then-switch with a suppressed switch error could leave the durable
+    binding on the restored session while the store kept the auto-reset
+    successor — the next heal would then treat the explicit restore as stale
+    and undo it. The command now rolls the binding back and reports failure.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.switch_session = MagicMock(
+        side_effect=RuntimeError("store unavailable")
+    )
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "Session restored" not in response
+    assert "restore failed" in response.lower()
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is None  # no prior binding → rollback removed the row
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_restores_previous_binding(tmp_path):
+    """When a prior binding existed, a failed restore puts it back verbatim."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="prev-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="prev-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.switch_session = MagicMock(
+        side_effect=RuntimeError("store unavailable")
+    )
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "restore failed" in response.lower()
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "prev-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
     """Stale topic bindings auto-heal to the compression child on next inbound.
 

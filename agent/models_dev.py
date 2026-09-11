@@ -525,6 +525,14 @@ _UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 81
 # Account-gated models may be usable before models.dev has indexed them.  Keep
 # their capabilities available for an explicitly selected/discovered model
 # without adding them to any picker catalog.
+_DEEPSEEK_FLASH_VISION: Dict[str, Any] = {
+    "limit": {"context": 1_000_000, "output": 384_000},
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+    "tool_call": True,
+    "reasoning": True,
+    "family": "deepseek-flash",
+}
+
 _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
     ("openai", "gpt-6-astra"): {
         "limit": {"context": 1_050_000, "output": 128_000},
@@ -533,6 +541,14 @@ _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
         "reasoning": True,
         "family": "gpt-6",
     },
+    # Native DeepSeek V4.1-Flash is multimodal (https://api-docs.deepseek.com/guides/vision).
+    # models.dev lagged the 2026-09-10 rename; without this, a cold/empty cache treats
+    # ``deepseek-flash`` as unknown → image_input_mode falls through to lossy text.
+    # ``deepseek-v4-pro`` stays catalog-only: vendor docs still mark it text-only.
+    ("deepseek", "deepseek-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4.1-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash-vision-exp"): _DEEPSEEK_FLASH_VISION,
 }
 
 

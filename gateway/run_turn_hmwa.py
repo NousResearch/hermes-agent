@@ -69,16 +69,6 @@ class GatewayTurnHmwaMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if not bool(getattr(event, "internal", False)):
-            try:
-                from gateway.wisdom_mediation import schedule as observe_wisdom_session
-
-                await observe_wisdom_session(
-                    self, self._adapter_for_source(source), source,
-                    str(session_entry.session_id), observe_only=True,
-                )
-            except Exception:
-                logger.debug("Wisdom session activity unavailable", exc_info=True)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner

@@ -745,8 +745,6 @@ class GatewayInboundHmMixin:
         )
 
     async def _hm_cmd_start(self, event, source, _quick_key):
-        if event.get_command_args().strip().startswith("wisdom_"):
-            return True, await self._continue_wisdom_start(event, source)
         logger.info("Ignoring /start platform ping for session %s", _quick_key)
         return True, ""
 

@@ -318,7 +318,6 @@ from typing import Optional
 
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
-from hermes_cli.subcommands.wisdom import build_wisdom_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -2643,7 +2642,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update", "wisdom",
+        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3242,7 +3241,6 @@ def _build_cli_parser():
     build_pause_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
-    build_wisdom_parser(subparsers)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     from hermes_cli.subcommands.peer import build_peer_parser

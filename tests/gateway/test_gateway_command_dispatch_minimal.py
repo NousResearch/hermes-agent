@@ -130,19 +130,39 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
 
 
 @pytest.mark.asyncio
-async def test_wisdom_dm_continuation_obeys_wisdom_slash_policy():
-    runner, adapter = _make_runner()
-    adapter.send_wisdom_continuation = AsyncMock()
-    checked: list[str] = []
+async def test_start_wisdom_payload_is_ignored_after_wisdom_removal():
+    runner, _adapter = _make_runner()
+    event = MagicMock()
+    event.get_command_args.return_value = "wisdom_demo"
 
-    def check_access(_source, command):
-        checked.append(command)
-        return "denied" if command == "wisdom" else None
+    result = await runner._hm_cmd_start(event, _make_source(), "quick-key")
 
-    runner._check_slash_access = check_access
+    assert result == (True, "")
 
-    result = await runner._handle_message(_make_event("/start wisdom_token-1"))
 
-    assert result == "denied"
-    assert checked == ["start", "wisdom"]
-    adapter.send_wisdom_continuation.assert_not_awaited()
+@pytest.mark.asyncio
+async def test_external_session_resolution_has_no_stale_wisdom_hook(monkeypatch):
+    import gateway.run_turn_hmwa as run_turn_hmwa
+
+    runner, _adapter = _make_runner()
+    entry = _session_entry()
+    runner._recover_telegram_topic_thread_id = lambda source: None
+    runner._session_key_for_source = lambda source: entry.session_key
+    runner.__dict__["_async_session_store"] = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=entry),
+    )
+    runner._cache_session_source = lambda session_key, source: None
+    runner._is_telegram_topic_lane = lambda source: False
+    monkeypatch.setattr(
+        "gateway.run_heartbeat_acceptance.resolve_heartbeat_owner",
+        AsyncMock(return_value=True),
+    )
+    debug = MagicMock()
+    monkeypatch.setattr(run_turn_hmwa.logger, "debug", debug)
+
+    event = SimpleNamespace(metadata={}, internal=False, source=_make_source())
+    result = await runner._hmwa_resolve_session(event, _make_source())
+
+    assert result == (_make_source(), entry, entry.session_key)
+    debug.assert_not_called()

@@ -46,10 +46,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
-    from .wisdom_adapter import SlackWisdomMixin
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
-    from wisdom_adapter import SlackWisdomMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -853,7 +851,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
+class SlackAdapter(BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -965,9 +963,6 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
-        # Retain the profile that rendered each opaque control.
-        self._wisdom_callback_profiles: Dict[Tuple[str, str, str], Tuple[Optional[str], float]] = {}
-        self._WISDOM_CALLBACK_PROFILE_MAX = 2000
         # Native streaming state per chat_id: {"ts", "draft_id", "sent", "started"}.
         # ``sent`` is raw pre-mrkdwn text; the API is append-only so deltas diff against it.
         self._active_streams: Dict[str, Dict[str, Any]] = {}
@@ -1533,7 +1528,6 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
         for _action_id in self._CONFIRM_CHOICES:
             self._app.action(_action_id)(self._handle_slash_confirm_action)
         self._app.action("hermes_feedback")(self._handle_feedback_action)
-        self._app.action(re.compile(r"^hermes_wisdom_(?:[a-z0-9_]+)$"))(self._handle_wisdom_action)
         # Clarify buttons (tools/clarify_gateway.py); indexed action IDs because
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)

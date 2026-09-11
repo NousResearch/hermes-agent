@@ -708,12 +708,20 @@ async def local_models_delete(model_id: str):
 
 # ── quickstart: one click from nothing to a working default ──
 def _quickstart_target(body: QuickstartBody, budget):
-    """(entry, variant) to set up: explicit id, else this machine's recommendation, else the first servable entry."""
+    """Resolve an explicit model, or start with the machine's automatic recommendation.
+
+    With no recommendation, require an explicit choice before starting setup.
+    """
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
         picked = catalog.recommended_entry(budget, _eligible_entries())
-        candidates = ([picked[0]] if picked else []) + [e for e in catalog.CATALOG if not picked or e.id != picked[0].id]
+        if picked is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No automatic recommendation for this machine — open Local Models to browse or choose a model explicitly",
+            )
+        candidates = [picked[0]] + [e for e in catalog.CATALOG if e.id != picked[0].id]
     for candidate in candidates:
         choice = catalog.select_variant(candidate, budget)
         if choice is not None and not _engine_too_old(candidate.min_engine):
@@ -725,8 +733,8 @@ def _quickstart_target(body: QuickstartBody, budget):
 @router.post("/api/local-models/quickstart")
 async def local_models_quickstart(body: QuickstartBody):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
-    missing), make it the default. Each leg is the same code the individual routes run, so 'Configure' and
-    quickstart can never disagree. Preflight rejects (no servable entry, engine too old) fail the POST
+    missing), make it the default. Each leg uses the same code as the individual setup routes.
+    Preflight rejects (no automatic recommendation or no servable choice) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
     tag, backend = _runtime_target()

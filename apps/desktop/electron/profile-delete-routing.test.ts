@@ -144,6 +144,23 @@ test('assertLocalProfileCanStart rejects a delayed retry after the profile direc
   assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
 })
 
+test('assertLocalProfileCanStart denormalizes a pool scope key before the directory check', () => {
+  const gate = new ProfileDeletionGate()
+
+  // D1: conn:local::default is a pool scope key, not a profile directory.
+  // After denormalize → default, which stays exempt even when exists() is false.
+  assert.doesNotThrow(() => assertLocalProfileCanStart('conn:local::default', gate, () => false))
+
+  // D1 CONTROL: a real missing bare profile still throws.
+  assert.throws(
+    () => assertLocalProfileCanStart('auditor', gate, () => false),
+    /Profile "auditor" no longer exists/
+  )
+
+  // D1 CONTROL: an existing local profile still starts.
+  assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
+})
+
 test('localProfilePoolKeys returns every local process scope for one profile', () => {
   assert.deepEqual(localProfilePoolKeys('Selena'), ['selena', 'conn:local::selena'])
   assert.deepEqual(localProfilePoolKeys(''), [])

@@ -610,6 +610,33 @@ export function rememberSshEnumeration(
   return enumeration
 }
 
+/**
+ * Inverse of a leaked pool scope key: `conn:<id>::<profile>` → the profile
+ * name. Bare names, empty, and whitespace keep parseBackendScopeKey's
+ * existing fail-open (empty → `default`).
+ */
+export function profileNameFromScope(value: unknown): string {
+  return parseBackendScopeKey(String(value ?? '')).profile
+}
+
+/**
+ * Whether Electron should schedule another forced-local spawn after a failure.
+ * Permanent: forced-local + locally absent + "no longer exists". Transient
+ * slot waits, crashes, and ECONNRESET stay retryable. Bare / non-forced
+ * paths fail open.
+ */
+export function shouldRetryForcedLocalSpawn(input: {
+  forceLocal: boolean
+  message: string
+  profileExistsLocally: boolean
+}): boolean {
+  if (!input.forceLocal || input.profileExistsLocally) {
+    return true
+  }
+
+  return !String(input.message ?? '').includes('no longer exists')
+}
+
 /** Whether an undialed SSH source should be inventoried again. Cached
  *  successes never retry. Failures retry after `retryAfterMs` so a cold box
  *  does not stay seeded as `default` until the user hits Test. */

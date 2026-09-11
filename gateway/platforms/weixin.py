@@ -82,9 +82,21 @@ _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
-def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
-    """ret/errcode=-2 with 'unknown error' is a stale-session signal (like -14), not a real rate limit."""
-    return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() == "unknown error"
+_STALE_SESSION_ERRMSGS = frozenset({"unknown error", "rate limited"})
+
+
+def _is_stale_session_ret(
+    ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
+) -> bool:
+    """True when iLink returns ret=-2 / errcode=-2 with an errmsg that iLink
+    reuses for stale ``context_token`` (same condition as errcode=-14) rather
+    than a genuine rate limit. iLink has been observed returning both
+    ``"unknown error"`` and ``"rate limited"`` for expired tokens; the caller's
+    one-shot tokenless retry guard keeps a real rate-limit from being retried
+    more than once before falling through to the rate-limit backoff branch."""
+    if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
+        return False
+    return (errmsg or "").strip().lower() in _STALE_SESSION_ERRMSGS
 
 
 def _is_session_expired(resp: Dict[str, Any], ret: Any, errcode: Any) -> bool:

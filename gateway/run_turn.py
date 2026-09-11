@@ -2118,6 +2118,11 @@ class GatewayTurnMixin:
         from agent.skill_utils import parse_config_string_list
         enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
+        adapter = self._adapter_for_source(source)
+        if adapter is not None and not getattr(adapter, "supports_interactive_clarification", True):
+            disabled = list(disabled or [])
+            if "clarify" not in disabled:
+                disabled.append("clarify")
         return enabled, disabled
 
     async def _run_background_task_inner(

@@ -26,6 +26,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
+from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -1129,6 +1130,12 @@ class SessionSchemaMixin:
         OPT-IN v23 boundary: a legacy v22 inline install keeps its inline schema + triggers
         (the v23 DDL would create the trigram source VIEW and leave a mixed state)."""
         legacy_fts = self._db_has_legacy_inline_fts(cursor)
+        # A `.recover`-restored image keeps the shadow tables but not the vtable rows; the DDL
+        # below would fail on the first shadow. Drop only orphaned families, then rebuild the
+        # recreated (empty) index like a missing-trigger repair (#103840).
+        orphan_repaired = _drop_orphan_fts_shadow_tables(
+            cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
+        )
         if not self._fts_stale:
             self._migrate_bounded_tool_fts_triggers(cursor, legacy=legacy_fts)
         if self._fts_stale:
@@ -1142,8 +1149,10 @@ class SessionSchemaMixin:
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
             # another process write through an index whose bootstrap/repair has no owner (#105790).
             base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or getattr(
-                self, "_fts_tool_prefix_migration_requires_rebuild", False)
-            trigram_triggers_missing = self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS)
+                self, "_fts_tool_prefix_migration_requires_rebuild", False) or "messages_fts" in orphan_repaired
+            trigram_triggers_missing = (
+                self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or "messages_fts_trigram" in orphan_repaired
+            )
 
             def ensure_and_rebuild() -> None:
                 self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)

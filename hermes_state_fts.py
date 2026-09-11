@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from typing import Sequence
 
 from hermes_constants import get_hermes_home
 from hermes_state_common import FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS
@@ -120,6 +121,47 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
     except Exception:
         logger.warning("fts5_cjk extension load failed (%s)", path, exc_info=True)
         return False
+
+
+# FTS5 shadow tables the virtual-table engine owns. `sqlite3 .recover` re-emits them
+# as ordinary tables but cannot re-emit the CREATE VIRTUAL TABLE row, so every later
+# CREATE VIRTUAL TABLE fails with "fts5: error creating shadow table <name>: table
+# already exists" until the orphans are dropped (#103840).
+_FTS5_SHADOW_SUFFIXES = ("content", "data", "docsize", "idx", "config")
+
+
+def _drop_orphan_fts_shadow_tables(cursor: sqlite3.Cursor, families: Sequence[str]) -> list[str]:
+    """Drop, per family, shadow tables whose virtual table row is absent from sqlite_master.
+
+    Matches exact shadow names only (never a prefix LIKE, so the base family cannot reach
+    ``messages_fts_trigram_*``) and leaves a family alone whenever its vtable is live. The
+    shadows are derived index state; the caller recreates and rebuilds from ``messages``.
+    Returns the families that were repaired.
+    """
+    repaired: list[str] = []
+    for family in families:
+        vtable_live = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? "
+            "AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+            (family,),
+        ).fetchone()
+        if vtable_live:
+            continue
+        shadows = [f"{family}_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES]
+        orphans = [row[0] for row in cursor.execute(
+            f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({','.join('?' for _ in shadows)})",
+            shadows,
+        ).fetchall()]
+        if not orphans:
+            continue
+        for name in orphans:
+            cursor.execute(f'DROP TABLE "{name}"')
+        logger.warning(
+            "Dropped orphan FTS5 shadow tables of %s (%s); the index is recreated from messages",
+            family, ", ".join(orphans),
+        )
+        repaired.append(family)
+    return repaired
 
 
 class SessionFtsSetupMixin:

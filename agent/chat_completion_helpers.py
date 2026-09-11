@@ -62,6 +62,11 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # billing reasons keep their own longer cooldown.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
+# Streaming 5xx unmask probe: one non-streaming re-issue per this window. Covers the
+# outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
+# double traffic every attempt, while later turns re-arm automatically.
+_STREAM_5XX_PROBE_WINDOW_S = 60.0
+
 
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
@@ -3504,17 +3509,29 @@ class _StreamingCall(StreamingWaitMonitor):
         Some gateways validate the request only on their non-streaming path and crash
         opaquely ("500 something went wrong") when streaming — the real 4xx, with its
         actionable message, never reaches the user through stream retries. One
-        non-streaming probe surfaces it: on success the response is delivered and the
-        session flips to non-streaming (the _adopt_final_response latch); on a probe 4xx
-        that error REPLACES the opaque 5xx. Any other probe failure keeps the original
-        error. True = handled (caller must not overwrite result); False = propagate ``e``.
+        non-streaming probe per TURN (latched on the agent: each outer retry builds a
+        fresh _StreamingCall, so an instance flag would re-probe every attempt) surfaces
+        it: on success the response is delivered for this turn WITHOUT latching
+        non-streaming (a transient gateway 500 must not permanently disable streaming);
+        on a probe 4xx that error REPLACES the opaque 5xx; any other probe failure keeps
+        the original error. Interrupts re-raise (the outer handler routes them). True =
+        handled (caller must not overwrite result); False = propagate ``e``.
         """
         status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
         if not isinstance(status, int) or status < 500 or self.deltas_were_sent["yes"]:
             return False
+        if getattr(self.agent, "api_mode", "") not in ("", "chat_completions"):
+            return False  # adoption replays chat-completions shapes only
+        now = time.time()
+        last_probe = getattr(self.agent, "_stream_5xx_probe_ts", 0.0) or 0.0
+        if now - last_probe < _STREAM_5XX_PROBE_WINDOW_S:
+            return False  # one probe per outer-retry cycle; later turns re-arm
+        self.agent._stream_5xx_probe_ts = now
         probe_kwargs = {k: v for k, v in self.api_kwargs.items() if k not in ("stream", "stream_options")}
         try:
             probe = interruptible_api_call(self.agent, probe_kwargs)
+        except (KeyboardInterrupt, InterruptedError):
+            raise  # the outer handler routes user interrupts; never swallow them
         except Exception as probe_err:
             probe_status = getattr(probe_err, "status_code", None) or getattr(
                 getattr(probe_err, "response", None), "status_code", None)
@@ -3525,12 +3542,14 @@ class _StreamingCall(StreamingWaitMonitor):
                 return True
             logger.info("Non-streaming unmask probe failed: %s", probe_err)
             return False
-        logger.info("Streaming 5xx re-issued non-streaming successfully; switching %s/%s to non-streaming.",
+        logger.info("Streaming 5xx re-issued non-streaming successfully for %s/%s "
+                    "(not latched: the 5xx may be transient).",
                     self.agent.provider or "unknown", self.agent.model or "unknown")
         self._quiet(self.agent._buffer_status,
-                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded. "
-                    "Disabling streaming for this session.")
+                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded.")
+        stream_pref = getattr(self.agent, "_disable_streaming", False)
         self.result["response"] = self._adopt_final_response(probe)
+        self.agent._disable_streaming = stream_pref  # one-turn recovery, not a session latch
         return True
 
     def _call_wire(self, stream_attempt_id: int):

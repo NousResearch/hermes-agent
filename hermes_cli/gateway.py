@@ -5386,7 +5386,8 @@ def _setup_signal():
         _print_info_lines(
             "  Signal requires signal-cli running as an HTTP daemon.", "  Install options:",
             "    Linux:  download from https://github.com/AsamK/signal-cli/releases",
-            "    macOS:  brew install signal-cli", "    Docker: bbernhard/signal-cli-rest-api",
+            "    macOS:  brew install signal-cli",
+            "    Use the native signal-cli HTTP daemon; REST wrappers are not compatible.",
         )
         print()
         _print_info_lines(

@@ -61,8 +61,8 @@ _GATEWAY_HEALTH_URL = LateState("_GATEWAY_HEALTH_URL")
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     key: {"description": description, "prompt": prompt, **extra}
     for key, description, prompt, extra in (
-        ("SIGNAL_HTTP_URL", "signal-cli REST API base URL, e.g. http://127.0.0.1:8080", "Signal bridge URL", {"url": "https://github.com/bbernhard/signal-cli-rest-api"}),
-        ("SIGNAL_ACCOUNT", "Signal account phone number registered with the bridge", "Signal account", {}),
+        ("SIGNAL_HTTP_URL", "Native signal-cli HTTP daemon URL, e.g. http://127.0.0.1:8080", "signal-cli HTTP URL", {"url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal"}),
+        ("SIGNAL_ACCOUNT", "Signal account phone number linked to signal-cli", "Signal account", {}),
         ("SIGNAL_ALLOWED_USERS", "Comma-separated Signal users allowed to use the bot", "Allowed Signal users", {}),
         ("WHATSAPP_ENABLED", "Enable the WhatsApp gateway adapter", "Enable WhatsApp", {"advanced": True}),
         ("WHATSAPP_MODE", "WhatsApp bridge mode", "WhatsApp mode", {"advanced": True}),

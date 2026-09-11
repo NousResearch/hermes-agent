@@ -3109,6 +3109,9 @@ export interface Translations {
     terminalNew: string
     terminalCloseOthers: string
     terminalCloseAll: string
+    terminalRename: string
+    terminalRenameTitle: string
+    terminalRenameLabel: string
     addToChat: string
   }
 

@@ -1,0 +1,1528 @@
+........................................................................ [  4%]
+........................................................................ [  9%]
+........................................................................ [ 14%]
+........................................................................ [ 18%]
+........................................................................ [ 23%]
+........................................................................ [ 28%]
+........................................................................ [ 32%]
+.....................................FFFFF.............................. [ 37%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 51%]
+........................................................................ [ 56%]
+........................................................................ [ 60%]
+........................................................................ [ 65%]
+...................................F.................................... [ 70%]
+........................................................................ [ 75%]
+........................................................................ [ 79%]
+........................................................................ [ 84%]
+........................................................................ [ 89%]
+......................................................................F. [ 93%]
+.F......FFFFFFFFFFFFFFFFF............................................... [ 98%]
+......F....F....F.......                                                 [100%]
+=================================== FAILURES ===================================
+___________________ TestRegistration.test_methods_registered ___________________
+
+self = <tests.tui_gateway.test_control_room_methods.TestRegistration object at 0x79e202eb9f50>
+
+    def test_methods_registered(self):
+        import tui_gateway.server as srv
+    
+>       assert "control.room.snapshot" in srv._methods
+E       AssertionError: assert 'control.room.snapshot' in {'gateway.capabilities': <function _ at 0x79e2034c0e00>, 'ping': <function _ at 0x79e2034c0ea0>, 'wake.start': <function _ at 0x79e2034c0f40>, 'wake.stop': <function _ at 0x79e2034c0fe0>, ...}
+E        +  where {'gateway.capabilities': <function _ at 0x79e2034c0e00>, 'ping': <function _ at 0x79e2034c0ea0>, 'wake.start': <function _ at 0x79e2034c0f40>, 'wake.stop': <function _ at 0x79e2034c0fe0>, ...} = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>._methods
+
+tests/tui_gateway/test_control_room_methods.py:30: AssertionError
+___________ TestRegistration.test_snapshot_returns_json_safe_payload ___________
+
+self = <tests.tui_gateway.test_control_room_methods.TestRegistration object at 0x79e202eba650>
+
+    def test_snapshot_returns_json_safe_payload(self):
+        import tui_gateway.server as srv
+    
+        with patch("control_room.service.ControlRoomService") as mock_cls:
+            from control_room.contract import ControlRoomSnapshot
+    
+            mock_service = mock_cls.return_value
+            mock_service.build_snapshot.return_value = ControlRoomSnapshot(
+                profile="kensei", counts={"needs_you": 0}
+            )
+>           result = _invoke(srv, "control.room.snapshot", {"profile": "kensei"})
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_control_room_methods.py:43: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method_name = 'control.room.snapshot', params = {'profile': 'kensei'}
+
+    def _invoke(server, method_name: str, params: dict) -> dict:
+>       handler = server._methods[method_name]
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'control.room.snapshot'
+
+tests/tui_gateway/test_control_room_methods.py:20: KeyError
+_ TestRegistration.test_snapshot_handles_provider_failure_as_typed_unavailable _
+
+self = <tests.tui_gateway.test_control_room_methods.TestRegistration object at 0x79e202ebad10>
+
+    def test_snapshot_handles_provider_failure_as_typed_unavailable(self):
+        import tui_gateway.server as srv
+    
+        # No mocking of the real service: the peer provider degrades to
+        # unavailable because the plugin is not loaded in this test process.
+>       result = _invoke(srv, "control.room.snapshot", {"profile": "default"})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_control_room_methods.py:54: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method_name = 'control.room.snapshot', params = {'profile': 'default'}
+
+    def _invoke(server, method_name: str, params: dict) -> dict:
+>       handler = server._methods[method_name]
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'control.room.snapshot'
+
+tests/tui_gateway/test_control_room_methods.py:20: KeyError
+_____________ TestRegistration.test_action_requires_action_object ______________
+
+self = <tests.tui_gateway.test_control_room_methods.TestRegistration object at 0x79e202ebb410>
+
+    def test_action_requires_action_object(self):
+        import tui_gateway.server as srv
+    
+>       result = _invoke(srv, "control.room.action", {})
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_control_room_methods.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method_name = 'control.room.action', params = {}
+
+    def _invoke(server, method_name: str, params: dict) -> dict:
+>       handler = server._methods[method_name]
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'control.room.action'
+
+tests/tui_gateway/test_control_room_methods.py:20: KeyError
+___________ TestRegistration.test_action_requires_confirmation_first ___________
+
+self = <tests.tui_gateway.test_control_room_methods.TestRegistration object at 0x79e202ebb510>
+
+    def test_action_requires_confirmation_first(self):
+        import tui_gateway.server as srv
+    
+        from control_room.actions import ControlRoomActionRouter
+        from control_room.contract import ControlRoomActionResult
+    
+        action = {
+            "id": "act-1",
+            "target": {"kind": "process", "id": "p1", "profile": "default"},
+            "parameters": {},
+            "confirmation": "required",
+            "expected_revision": None,
+        }
+    
+        class FakeRouter(ControlRoomActionRouter):
+            def __init__(self, **kwargs):
+                super().__init__(executors={}, scope_profile="default")
+                self.dispatch_called = False
+    
+            def dispatch(self, action, context=None, *, confirmed=False):
+                self.dispatch_called = True
+                return ControlRoomActionResult(status="confirmation_required", message="Confirm?")
+    
+        with patch("control_room.actions.ControlRoomActionRouter", FakeRouter):
+>           result = _invoke(srv, "control.room.action", {"action": action, "confirmed": False})
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_control_room_methods.py:90: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method_name = 'control.room.action'
+params = {'action': {'id': 'act-1', 'target': {'kind': 'process', 'id': 'p1', 'profile': 'default'}, 'parameters': {}, 'confirmation': 'required', ...}, 'confirmed': False}
+
+    def _invoke(server, method_name: str, params: dict) -> dict:
+>       handler = server._methods[method_name]
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'control.room.action'
+
+tests/tui_gateway/test_control_room_methods.py:20: KeyError
+________________ test_explicit_profile_target_never_falls_back _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-kensei/pytest-4603/test_explicit_profile_target_n0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x79e1d4a1d390>
+
+    def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
+        from tui_gateway import server
+        from hermes_state import SessionDB
+    
+        home = tmp_path / ".hermes"
+        worker = home / "profiles" / "worker"
+        worker.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(server, "_hermes_home", home)
+        for path, marker in ((home, "launch"), (worker, "worker")):
+            (path / "config.yaml").write_text(f"terminal:\n  cwd: /{marker}\n")
+            with SessionDB(db_path=path / "state.db") as db:
+                db.create_session(marker, "tui")
+        for name, marker in ((None, "launch"), ("default", "launch"), ("DEFAULT", "launch"), ("worker", "worker")):
+            with server._profile_db({"profile": name}) as db:
+>               assert db.get_session(marker)
+E               AssertionError: assert None
+E                +  where None = get_session('launch')
+E                +    where get_session = <hermes_state.SessionDB object at 0x79e1e4c34d90>.get_session
+
+tests/tui_gateway/test_profile_target_unavailable.py:23: AssertionError
+__________ test_snapshot_projects_only_this_sessions_runtime_records ___________
+
+runtime = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/serve...pace(write=<function runtime.<locals>.<lambda> at 0x79e1d6cd8a40>), <function runtime.<locals>.call at 0x79e1d6cda160>)
+
+    def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
+        from tools import async_delegation as bg
+        from tools.delegate_tool_child_run import _register_child
+        from tools.delegate_tool_registry import _unregister_subagent
+        from tools.delegate_tool_progress import _build_child_progress_callback
+    
+        server, owner, transport, call = runtime
+        release = threading.Event()
+        finished = threading.Event()
+    
+        def run():
+            try:
+                assert release.wait(10)
+                return {"results": []}
+            finally:
+                finished.set()
+    
+        dispatch = bg.dispatch_async_delegation_batch(
+            goals=["owned task"], context="private handoff", toolsets=None, role="leaf", model="test",
+            session_key="parent", origin_ui_session_id="ui-owner", runner=run)
+        did = dispatch["delegation_id"]
+        child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, _delegation_id=did, model="test")
+        _register_child(child, None, "owned task", owner_session_id="ui-owner",
+                             owner_transport=transport, owner_session_record=owner)
+        foreign = SimpleNamespace(_subagent_id="foreign", _delegate_depth=1, model="test")
+        _register_child(foreign, None, "foreign secret", owner_session_id="other",
+                             owner_transport=transport, owner_session_record={})
+        progress = _build_child_progress_callback(0, "owned task",
+            SimpleNamespace(tool_progress_callback=lambda *a, **kw: None), subagent_id="child")
+        progress("tool.started", "read_file")
+        progress("tool.completed", "read_file")
+        try:
+            snapshot = call("subagent.list")["result"]
+            assert [s["subagent_id"] for s in snapshot["subagents"]] == ["child"]
+>           assert snapshot["subagents"][0]["last_tool"] == "read_file"
+E           AssertionError: assert None == 'read_file'
+
+tests/tui_gateway/test_subagent_snapshot.py:63: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     tools.async_delegation:async_delegation.py:777 Dispatched async delegation batch deleg_64eb4249 (1 task(s), session_key=parent)
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+WARNING  hermes_state:hermes_state_wal.py:425 state.db: on-disk journal_mode was delete and has been switched to WAL. This rewrites the database header and persists after this process exits. If delete was a deliberate choice (for example the mitigation for the SQLite WAL-reset bug, or a WAL-unsafe filesystem), setting it with PRAGMA on the file will not survive -- every open re-applies the configured mode. Set `database.journal_mode: delete` in config.yaml to make it stick. This message fires once per process per database.
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+WARNING  tui_gateway.server:session_notifications.py:415 Dropping unowned async_delegation notification (origin='ui-owner' key='parent') instead of delivering to session sid-abc
+______ test_reattach_preserves_child_controls_including_late_registration ______
+
+runtime = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/serve...pace(write=<function runtime.<locals>.<lambda> at 0x79e1e4c29f80>), <function runtime.<locals>.call at 0x79e1e4c29ee0>)
+tmp_path = PosixPath('/tmp/pytest-of-kensei/pytest-4603/test_reattach_preserves_child_0')
+
+    def test_reattach_preserves_child_controls_including_late_registration(runtime, tmp_path):
+        from tools.delegate_tool_child_run import _register_child
+    
+        server, owner, old, call = runtime
+        new = type("Transport", (), {"write": lambda self, frame: True})()
+        transcript = tmp_path / "child.txt"
+        transcript.write_text("live child output")
+        steered, stopped = [], []
+    
+        def register(sid):
+            child = SimpleNamespace(_subagent_id=sid, _delegate_depth=1, model="test",
+                                    _live_transcript_path=str(transcript),
+                                    steer=lambda text: steered.append(text) or True,
+                                    hard_interrupt=lambda text: stopped.append(text))
+            _register_child(child, None, "owned", owner_session_id="ui-owner",
+                            owner_transport=old, owner_session_record=owner)
+    
+        register("before")
+        owner["transport"] = server._detached_ws_transport
+        owner["history_lock"] = threading.Lock()
+        with server._session_resume_lock, owner["history_lock"]:
+            assert server._reattach_refusal(1, "ui-owner", owner) is None
+            server._rebind_live_transport("ui-owner", owner, new)
+        # A dispatch captured before reload may not construct its child until afterwards.
+        register("after")
+        assert {row["subagent_id"] for row in call("subagent.list", via=new)["result"]["subagents"]} == {"before", "after"}
+        # Closing a second authenticated viewer hands control back to the survivor.
+        popup = type(new)()
+        with server._session_resume_lock, owner["history_lock"]:
+            server._rebind_live_transport("ui-owner", owner, popup)
+        for peer in (new, popup):
+>           assert {r["subagent_id"] for r in call("subagent.list", via=peer)["result"]["subagents"]} == {"before", "after"}
+E           AssertionError: assert set() == {'after', 'before'}
+E             
+E             Extra items in the right set:
+E             'after'
+E             'before'
+E             Use -v to get more diff
+
+tests/tui_gateway/test_subagent_snapshot.py:185: AssertionError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+______________ TestTodoSnapshot.test_snapshot_returns_full_shape _______________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoSnapshot object at 0x79e2011c1c90>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e204231350>)
+
+    def test_snapshot_returns_full_shape(self, todo_server):
+        server, store = todo_server
+    
+>       resp = call(server, "todo.snapshot", {"session_id": "todo-sid"})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_todo_rpc.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.snapshot', params = {'session_id': 'todo-sid'}, rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.snapshot'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+____________ TestTodoSnapshot.test_snapshot_missing_session_is_4001 ____________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoSnapshot object at 0x79e2011c1fd0>
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+
+    def test_snapshot_missing_session_is_4001(self, server):
+>       resp = call(server, "todo.snapshot", {"session_id": "gone"})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_todo_rpc.py:95: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.snapshot', params = {'session_id': 'gone'}, rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.snapshot'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+____________ TestTodoSnapshot.test_snapshot_invalid_params_is_4004 _____________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoSnapshot object at 0x79e2011c2350>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7da0bd0>)
+
+    def test_snapshot_invalid_params_is_4004(self, todo_server):
+        server, _store = todo_server
+    
+>       resp = call(server, "todo.snapshot", {})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/tui_gateway/test_todo_rpc.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.snapshot', params = {}, rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.snapshot'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+__________ TestTodoUpdateStatus.test_mark_done_returns_full_snapshot ___________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011c2b10>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7d50c50>)
+
+    def test_mark_done_returns_full_snapshot(self, todo_server):
+        server, store = todo_server
+        rev = store.revision
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t1",
+            "status": "completed",
+            "actor": "user",
+            "expected_revision": rev,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:112: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_______________ TestTodoUpdateStatus.test_reopen_returns_pending _______________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011c3110>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d71386d0>)
+
+    def test_reopen_returns_pending(self, todo_server):
+        server, store = todo_server
+        store.update_status("t2", "completed", actor="user")
+        rev = store.revision
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t2",
+            "status": "pending",
+            "actor": "user",
+            "expected_revision": rev,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't2', 'status': 'pending', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+____ TestTodoUpdateStatus.test_stale_revision_is_4096_with_current_snapshot ____
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011c3710>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7d66990>)
+
+    def test_stale_revision_is_4096_with_current_snapshot(self, todo_server):
+        server, store = todo_server
+        stale = store.revision
+        store.write([{"id": "t3", "content": "New plan", "status": "in_progress"}])
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t3",
+            "status": "completed",
+            "actor": "user",
+            "expected_revision": stale,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't3', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_____ TestTodoUpdateStatus.test_missing_item_is_4044_with_current_snapshot _____
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011c3d50>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d4ada190>)
+
+    def test_missing_item_is_4044_with_current_snapshot(self, todo_server):
+        server, store = todo_server
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "nope",
+            "status": "completed",
+            "actor": "user",
+            "expected_revision": store.revision,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:170: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 'nope', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_______________ TestTodoUpdateStatus.test_invalid_status_is_4004 _______________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011d8390>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7166290>)
+
+    def test_invalid_status_is_4004(self, todo_server):
+        server, store = todo_server
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t1",
+            "status": "cancelled",
+            "actor": "user",
+        })
+
+tests/tui_gateway/test_todo_rpc.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'cancelled', 'actor': 'user'}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_______________ TestTodoUpdateStatus.test_invalid_actor_is_4004 ________________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011d8990>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d74e5e50>)
+
+    def test_invalid_actor_is_4004(self, todo_server):
+        server, store = todo_server
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t1",
+            "status": "completed",
+            "actor": "model",
+        })
+
+tests/tui_gateway/test_todo_rpc.py:198: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'completed', 'actor': 'model'}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+______________ TestTodoUpdateStatus.test_missing_item_id_is_4004 _______________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011c2090>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7158690>)
+
+    def test_missing_item_id_is_4004(self, todo_server):
+        server, _store = todo_server
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "status": "completed",
+            "actor": "user",
+        })
+
+tests/tui_gateway/test_todo_rpc.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'status': 'completed', 'actor': 'user'}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_________ TestTodoUpdateStatus.test_missing_expected_revision_is_4004 __________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011d8c90>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7402050>)
+
+    def test_missing_expected_revision_is_4004(self, todo_server):
+        server, _store = todo_server
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t1",
+            "status": "completed",
+            "actor": "user",
+        })
+
+tests/tui_gateway/test_todo_rpc.py:221: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'completed', 'actor': 'user'}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_ TestTodoUpdateStatus.test_noop_replay_returns_snapshot_without_revision_bump _
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011d8fd0>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7d4a290>)
+
+    def test_noop_replay_returns_snapshot_without_revision_bump(self, todo_server):
+        server, store = todo_server
+        store.update_status("t1", "completed", actor="user")
+        rev = store.revision
+        gen = store.snapshot_state()["generation"]
+    
+>       resp = call(server, "todo.update_status", {
+            "session_id": "todo-sid",
+            "item_id": "t1",
+            "status": "completed",
+            "actor": "user",
+            "expected_revision": rev,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:236: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+______________ TestTodoUpdateStatus.test_missing_session_is_4001 _______________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdateStatus object at 0x79e2011d92d0>
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+
+    def test_missing_session_is_4001(self, server):
+>       resp = call(server, "todo.update_status", {
+            "session_id": "gone",
+            "item_id": "t1",
+            "status": "completed",
+            "actor": "user",
+            "expected_revision": 1,
+        })
+
+tests/tui_gateway/test_todo_rpc.py:249: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'gone', 'item_id': 't1', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+____ TestTodoUpdatedEvent.test_success_emits_dedicated_full_snapshot_event _____
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdatedEvent object at 0x79e2011d9850>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e200ab5250>)
+
+    def test_success_emits_dedicated_full_snapshot_event(self, todo_server):
+        server, store = todo_server
+        events = []
+        original_emit = server._emit
+    
+        def spy(event, sid, payload=None):
+            if event == "todo.updated":
+                events.append((sid, payload))
+            return original_emit(event, sid, payload)
+    
+        server._emit = spy
+        try:
+            rev = store.revision
+>           call(server, "todo.update_status", {
+                "session_id": "todo-sid",
+                "item_id": "t1",
+                "status": "completed",
+                "actor": "user",
+                "expected_revision": rev,
+            })
+
+tests/tui_gateway/test_todo_rpc.py:274: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't1', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_________ TestTodoUpdatedEvent.test_stale_revision_does_not_emit_event _________
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoUpdatedEvent object at 0x79e2011d9e10>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d7143fd0>)
+
+    def test_stale_revision_does_not_emit_event(self, todo_server):
+        server, store = todo_server
+        events = []
+        original_emit = server._emit
+    
+        def spy(event, sid, payload=None):
+            if event == "todo.updated":
+                events.append(payload)
+            return original_emit(event, sid, payload)
+    
+        server._emit = spy
+        try:
+            stale = store.revision
+            store.write([{"id": "t4", "content": "Later plan", "status": "in_progress"}])
+>           call(server, "todo.update_status", {
+                "session_id": "todo-sid",
+                "item_id": "t4",
+                "status": "completed",
+                "actor": "user",
+                "expected_revision": stale,
+            })
+
+tests/tui_gateway/test_todo_rpc.py:306: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+server = <module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>
+method = 'todo.update_status'
+params = {'session_id': 'todo-sid', 'item_id': 't4', 'status': 'completed', 'actor': 'user', ...}
+rid = 'r1'
+
+    def call(server, method, params, rid="r1"):
+>       handler = server._methods[method]
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'todo.update_status'
+
+tests/tui_gateway/test_todo_rpc.py:75: KeyError
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_ TestTodoToolResultAndCompleEvent.test_todo_tool_result_includes_revision_and_generation _
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoToolResultAndCompleEvent object at 0x79e2011da590>
+
+    def test_todo_tool_result_includes_revision_and_generation(self):
+        from tools.todo_tool import TodoStore, todo_tool
+    
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "in_progress"}])
+    
+        result = json.loads(todo_tool(store=store))
+    
+        assert result["revision"] == store.revision
+>       assert result["generation"] == store.snapshot_state()["generation"]
+               ^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'generation'
+
+tests/tui_gateway/test_todo_rpc.py:332: KeyError
+_ TestTodoToolResultAndCompleEvent.test_tool_complete_todo_payload_carries_authoritative_fields _
+
+self = <tests.tui_gateway.test_todo_rpc.TestTodoToolResultAndCompleEvent object at 0x79e2011dab50>
+todo_server = (<module 'tui_gateway.server' from '/home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/tui_gateway/server.py'>, <tools.todo_tool.TodoStore object at 0x79e1d74b2710>)
+
+    def test_tool_complete_todo_payload_carries_authoritative_fields(self, todo_server):
+        server, store = todo_server
+        events = []
+        original_emit = server._emit
+    
+        def spy(event, sid, payload=None):
+            if event == "tool.complete":
+                events.append(payload)
+            return original_emit(event, sid, payload)
+    
+        server._emit = spy
+        try:
+            server._on_tool_complete(
+                "todo-sid",
+                "call-1",
+                "todo",
+                {},
+                json.dumps({"todos": store.read(), "revision": store.revision, "generation": 7}),
+            )
+        finally:
+            server._emit = original_emit
+    
+        assert events, "tool.complete must still be emitted for todo"
+        payload = events[-1]
+        assert payload["todos"] == store.read()
+        assert payload["revision"] == store.revision
+>       assert payload["generation"] == 7
+               ^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'generation'
+
+tests/tui_gateway/test_todo_rpc.py:361: KeyError
+----------------------------- Captured stdout call -----------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "tool.complete", "session_id": "todo-sid", "payload": {"tool_id": "call-1", "name": "todo", "args": {}, "result": {"todos": [{"id": "t1", "content": "Research competitors", "status": "in_progress"}, {"id": "t2", "content": "Build the tray", "status": "pending"}], "revision": 1, "generation": 7}, "todos": [{"id": "t1", "content": "Research competitors", "status": "in_progress"}, {"id": "t2", "content": "Build the tray", "status": "pending"}], "revision": 1}, "seq": 1}}
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "todo.updated", "session_id": "todo-sid", "payload": {"todos": [{"id": "t1", "content": "Research competitors", "status": "in_progress"}, {"id": "t2", "content": "Build the tray", "status": "pending"}], "revision": 1}, "seq": 2}}
+---------------------------- Captured log teardown -----------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_ test_reconnect_cannot_cross_orphan_interrupt_claim[already_claimed-activate] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x79e1e41e14d0>
+path = 'activate', claim = 'already_claimed'
+
+    @pytest.mark.parametrize("path", ["unpersisted", "reuse", "eager", "activate", "prompt"])
+    @pytest.mark.parametrize("claim", ["already_claimed", "wins_lock", "retired"])
+    def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim):
+        sid = "interrupt-race"
+        session = dict(transport=server._detached_ws_transport, running=True,
+                       history_lock=threading.Lock(), history=[], session_key="stored",
+                       agent=SimpleNamespace(model="test"), queued_prompt=None)
+        session["_client_gone_interrupt_requested"] = claim == "already_claimed"
+        monkeypatch.setattr(server, "_sessions", {sid: session})
+        monkeypatch.setattr(server, "_pending_ws_reaps", {sid: Mock()})
+        transport = object()
+        monkeypatch.setattr(server, "current_transport", lambda: transport)
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test")
+        monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
+        monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+        monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+        monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"queued": True}})
+        monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
+    
+        class ResumeLock:
+            held = False
+    
+            def __enter__(self):
+                assert not self.held, "resume path recursively acquired a non-reentrant lock"
+                self.held = True
+                if claim == "wins_lock":
+                    session["_client_gone_interrupt_requested"] = True
+                elif claim == "retired":
+                    server._sessions.pop(sid, None)
+    
+            def __exit__(self, *args):
+                self.held = False
+    
+        monkeypatch.setattr(server, "_session_resume_lock", ResumeLock())
+        ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+                              defer_history=False, target="stored", profile=None,
+                              profile_home=None, profile_resume_cwd=None, found={},
+                              messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
+                              restore=lambda: ([], [], []), display_prefix=lambda: [])
+        if path == "eager":
+            monkeypatch.setattr(server, "_profile_build_scope", lambda *a: nullcontext())
+            monkeypatch.setattr(server, "_make_agent_in_context", lambda *a, **kw: Mock())
+            monkeypatch.setattr(server, "_find_live_session_by_key", lambda *a: (sid, session))
+            response = server._resume_eager(ctx)
+        elif path == "unpersisted":
+            response = server._resume_live_unpersisted(ctx, sid, session)
+        elif path == "reuse":
+            response = server._resume_reuse_live(ctx, sid, session)
+        else:
+            name = {"activate": "session.activate", "prompt": "prompt.submit"}[path]
+            response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": name,
+                                              "params": {"session_id": sid, "text": "continue", "omit_messages": True}})
+>       assert response.get("error", {}).get("code") == (4007 if claim == "retired" else 4009)
+E       AssertionError: assert None == 4009
+E        +  where None = <built-in method get of dict object at 0x79e1d7ac2a80>('code')
+E        +    where <built-in method get of dict object at 0x79e1d7ac2a80> = {}.get
+E        +      where {} = <built-in method get of dict object at 0x79e1d7ac2440>('error', {})
+E        +        where <built-in method get of dict object at 0x79e1d7ac2440> = {'jsonrpc': '2.0', 'id': 1, 'result': {'info': {'model': 'test', 'provider': '', 'reasoning_effort': '', 'service_tier': '', ...}, 'message_count': 0, 'messages': [], 'messages_omitted': True, ...}}.get
+
+tests/tui_gateway/test_ws_orphan_races.py:205: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+____ test_reconnect_cannot_cross_orphan_interrupt_claim[wins_lock-activate] ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x79e1d74bd7d0>
+path = 'activate', claim = 'wins_lock'
+
+    @pytest.mark.parametrize("path", ["unpersisted", "reuse", "eager", "activate", "prompt"])
+    @pytest.mark.parametrize("claim", ["already_claimed", "wins_lock", "retired"])
+    def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim):
+        sid = "interrupt-race"
+        session = dict(transport=server._detached_ws_transport, running=True,
+                       history_lock=threading.Lock(), history=[], session_key="stored",
+                       agent=SimpleNamespace(model="test"), queued_prompt=None)
+        session["_client_gone_interrupt_requested"] = claim == "already_claimed"
+        monkeypatch.setattr(server, "_sessions", {sid: session})
+        monkeypatch.setattr(server, "_pending_ws_reaps", {sid: Mock()})
+        transport = object()
+        monkeypatch.setattr(server, "current_transport", lambda: transport)
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test")
+        monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
+        monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+        monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+        monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"queued": True}})
+        monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
+    
+        class ResumeLock:
+            held = False
+    
+            def __enter__(self):
+                assert not self.held, "resume path recursively acquired a non-reentrant lock"
+                self.held = True
+                if claim == "wins_lock":
+                    session["_client_gone_interrupt_requested"] = True
+                elif claim == "retired":
+                    server._sessions.pop(sid, None)
+    
+            def __exit__(self, *args):
+                self.held = False
+    
+        monkeypatch.setattr(server, "_session_resume_lock", ResumeLock())
+        ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+                              defer_history=False, target="stored", profile=None,
+                              profile_home=None, profile_resume_cwd=None, found={},
+                              messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
+                              restore=lambda: ([], [], []), display_prefix=lambda: [])
+        if path == "eager":
+            monkeypatch.setattr(server, "_profile_build_scope", lambda *a: nullcontext())
+            monkeypatch.setattr(server, "_make_agent_in_context", lambda *a, **kw: Mock())
+            monkeypatch.setattr(server, "_find_live_session_by_key", lambda *a: (sid, session))
+            response = server._resume_eager(ctx)
+        elif path == "unpersisted":
+            response = server._resume_live_unpersisted(ctx, sid, session)
+        elif path == "reuse":
+            response = server._resume_reuse_live(ctx, sid, session)
+        else:
+            name = {"activate": "session.activate", "prompt": "prompt.submit"}[path]
+            response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": name,
+                                              "params": {"session_id": sid, "text": "continue", "omit_messages": True}})
+>       assert response.get("error", {}).get("code") == (4007 if claim == "retired" else 4009)
+E       AssertionError: assert None == 4009
+E        +  where None = <built-in method get of dict object at 0x79e1d7a5f1c0>('code')
+E        +    where <built-in method get of dict object at 0x79e1d7a5f1c0> = {}.get
+E        +      where {} = <built-in method get of dict object at 0x79e1d74aa0c0>('error', {})
+E        +        where <built-in method get of dict object at 0x79e1d74aa0c0> = {'jsonrpc': '2.0', 'id': 1, 'result': {'info': {'model': 'test', 'provider': '', 'reasoning_effort': '', 'service_tier': '', ...}, 'message_count': 0, 'messages': [], 'messages_omitted': True, ...}}.get
+
+tests/tui_gateway/test_ws_orphan_races.py:205: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+_____ test_reconnect_cannot_cross_orphan_interrupt_claim[retired-activate] _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x79e1e60569d0>
+path = 'activate', claim = 'retired'
+
+    @pytest.mark.parametrize("path", ["unpersisted", "reuse", "eager", "activate", "prompt"])
+    @pytest.mark.parametrize("claim", ["already_claimed", "wins_lock", "retired"])
+    def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim):
+        sid = "interrupt-race"
+        session = dict(transport=server._detached_ws_transport, running=True,
+                       history_lock=threading.Lock(), history=[], session_key="stored",
+                       agent=SimpleNamespace(model="test"), queued_prompt=None)
+        session["_client_gone_interrupt_requested"] = claim == "already_claimed"
+        monkeypatch.setattr(server, "_sessions", {sid: session})
+        monkeypatch.setattr(server, "_pending_ws_reaps", {sid: Mock()})
+        transport = object()
+        monkeypatch.setattr(server, "current_transport", lambda: transport)
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test")
+        monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
+        monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+        monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+        monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"queued": True}})
+        monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
+    
+        class ResumeLock:
+            held = False
+    
+            def __enter__(self):
+                assert not self.held, "resume path recursively acquired a non-reentrant lock"
+                self.held = True
+                if claim == "wins_lock":
+                    session["_client_gone_interrupt_requested"] = True
+                elif claim == "retired":
+                    server._sessions.pop(sid, None)
+    
+            def __exit__(self, *args):
+                self.held = False
+    
+        monkeypatch.setattr(server, "_session_resume_lock", ResumeLock())
+        ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+                              defer_history=False, target="stored", profile=None,
+                              profile_home=None, profile_resume_cwd=None, found={},
+                              messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
+                              restore=lambda: ([], [], []), display_prefix=lambda: [])
+        if path == "eager":
+            monkeypatch.setattr(server, "_profile_build_scope", lambda *a: nullcontext())
+            monkeypatch.setattr(server, "_make_agent_in_context", lambda *a, **kw: Mock())
+            monkeypatch.setattr(server, "_find_live_session_by_key", lambda *a: (sid, session))
+            response = server._resume_eager(ctx)
+        elif path == "unpersisted":
+            response = server._resume_live_unpersisted(ctx, sid, session)
+        elif path == "reuse":
+            response = server._resume_reuse_live(ctx, sid, session)
+        else:
+            name = {"activate": "session.activate", "prompt": "prompt.submit"}[path]
+            response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": name,
+                                              "params": {"session_id": sid, "text": "continue", "omit_messages": True}})
+>       assert response.get("error", {}).get("code") == (4007 if claim == "retired" else 4009)
+E       AssertionError: assert None == 4007
+E        +  where None = <built-in method get of dict object at 0x79e1d740a4c0>('code')
+E        +    where <built-in method get of dict object at 0x79e1d740a4c0> = {}.get
+E        +      where {} = <built-in method get of dict object at 0x79e204100200>('error', {})
+E        +        where <built-in method get of dict object at 0x79e204100200> = {'jsonrpc': '2.0', 'id': 1, 'result': {'info': {'model': 'test', 'provider': '', 'reasoning_effort': '', 'service_tier': '', ...}, 'message_count': 0, 'messages': [], 'messages_omitted': True, ...}}.get
+
+tests/tui_gateway/test_ws_orphan_races.py:205: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:378 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1432 Plugin discovery complete: 62 found, 51 enabled
+=============================== warnings summary ===============================
+tests/gateway/relay/test_ws_transport_hardening.py::test_read_loop_exit_fails_pending_futures_promptly
+tests/gateway/relay/test_ws_transport_hardening.py::test_send_during_redial_window_fails_fast
+tests/gateway/relay/test_ws_transport_hardening.py::test_send_after_drop_with_reconnect_disabled_fails_fast
+tests/gateway/relay/test_ws_transport_hardening.py::test_send_raising_socket_returns_error_dict
+  /home/kensei/scratch/hermes-upstream-phase1-2026-09-11/candidate/.phase2-venv/lib/python3.11/site-packages/websockets/exceptions.py:125: DeprecationWarning: ConnectionClosed.code is deprecated; use Protocol.close_code or ConnectionClosed.rcvd.code
+    warnings.warn(  # deprecated in 13.1 - 2024-09-21
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tui_gateway/test_control_room_methods.py::TestRegistration::test_methods_registered
+FAILED tests/tui_gateway/test_control_room_methods.py::TestRegistration::test_snapshot_returns_json_safe_payload
+FAILED tests/tui_gateway/test_control_room_methods.py::TestRegistration::test_snapshot_handles_provider_failure_as_typed_unavailable
+FAILED tests/tui_gateway/test_control_room_methods.py::TestRegistration::test_action_requires_action_object
+FAILED tests/tui_gateway/test_control_room_methods.py::TestRegistration::test_action_requires_confirmation_first
+FAILED tests/tui_gateway/test_profile_target_unavailable.py::test_explicit_profile_target_never_falls_back
+FAILED tests/tui_gateway/test_subagent_snapshot.py::test_snapshot_projects_only_this_sessions_runtime_records
+FAILED tests/tui_gateway/test_subagent_snapshot.py::test_reattach_preserves_child_controls_including_late_registration
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoSnapshot::test_snapshot_returns_full_shape
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoSnapshot::test_snapshot_missing_session_is_4001
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoSnapshot::test_snapshot_invalid_params_is_4004
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_mark_done_returns_full_snapshot
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_reopen_returns_pending
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_stale_revision_is_4096_with_current_snapshot
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_missing_item_is_4044_with_current_snapshot
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_invalid_status_is_4004
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_invalid_actor_is_4004
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_missing_item_id_is_4004
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_missing_expected_revision_is_4004
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_noop_replay_returns_snapshot_without_revision_bump
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdateStatus::test_missing_session_is_4001
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdatedEvent::test_success_emits_dedicated_full_snapshot_event
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoUpdatedEvent::test_stale_revision_does_not_emit_event
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoToolResultAndCompleEvent::test_todo_tool_result_includes_revision_and_generation
+FAILED tests/tui_gateway/test_todo_rpc.py::TestTodoToolResultAndCompleEvent::test_tool_complete_todo_payload_carries_authoritative_fields
+FAILED tests/tui_gateway/test_ws_orphan_races.py::test_reconnect_cannot_cross_orphan_interrupt_claim[already_claimed-activate]
+FAILED tests/tui_gateway/test_ws_orphan_races.py::test_reconnect_cannot_cross_orphan_interrupt_claim[wins_lock-activate]
+FAILED tests/tui_gateway/test_ws_orphan_races.py::test_reconnect_cannot_cross_orphan_interrupt_claim[retired-activate]
+28 failed, 1508 passed, 4 warnings in 202.68s (0:03:22)

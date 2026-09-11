@@ -19,7 +19,15 @@ const BOTS_PANE = 'hermes-bots:pane'
 
 const disposers: (() => void)[] = []
 
-function registerPane(id: string, data: Record<string, unknown>) {
+interface AssemblyPaneData {
+  placement: 'main' | 'left' | 'bottom'
+  collapsible?: boolean
+  uncloseable?: boolean
+  width?: string
+  dock?: { enforce: boolean; pane: string; pos: 'center' | 'right' }
+}
+
+function registerPane(id: string, data: AssemblyPaneData) {
   const dispose = registry.register({ area: 'panes', data, id, render: () => null, title: id })
 
   disposers.push(dispose)

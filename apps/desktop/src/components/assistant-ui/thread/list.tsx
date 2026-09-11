@@ -178,7 +178,7 @@ let greetingRevealed = false
 function OnboardingGreetingRow({ text }: { text: string }) {
   const [shown, setShown] = useState(() =>
     greetingRevealed ||
-    (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
       ? text.length
       : 0
   )
@@ -465,34 +465,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
   )
 })
 
-const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
-  clampToComposer,
-  components,
-  emptyPlaceholder,
-  loadingIndicator,
-  sessionId = null,
-  sessionKey
-}) => {
-  // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
-  // changes only when messages are added/removed/swapped — it keys the error
-  // boundaries and the row identity. The WEIGHT one (parts + character cost)
-  // ticks while a streaming turn appends content — it feeds only the render
-  // budget. Folding weights into the structural key handed every boundary a
-  // new resetKey per appended part, which reconciled every turn's subtree on
-  // every tick (measured: 540 wasted Block renders per explain() sample with
-  // two threads streaming).
-  const structuralSignature = useAuiState(s =>
-    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
-  )
-
-  const weightSignature = useAuiState(s =>
-    s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
-  )
-
-  const { t } = useI18n()
-  // Row structure is memoized on the STRUCTURAL signature only, so streaming
-  // part-appends can't churn group identity (that would defeat the rows memo
-  // below on every tick). Weights are folded in separately for the budget.
+function useOnboardingTranscript(structuralSignature: string, sessionKey: string | null | undefined) {
   const onboardingThreadIds = useStore($chatOnboardingThreadIds)
   const onboardingGreeting = useStore($onboardingGreeting)
   // Solo mode makes the pane the guided chat BEFORE the seeded session exists
@@ -520,6 +493,56 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     return firstTurn === -1 ? [] : firstTurn === 0 ? built : built.slice(firstTurn)
   }, [structuralSignature, bankedGreeting])
+
+  const threadType = onboardingThread ? 'onboarding' : undefined
+
+  // The guided chat's opening line is PRE-BANKED and rendered here, client-
+  // side, the instant the thread mounts — the model's cold first turn took up
+  // to 10s in live runs and the greeting must never wait on it. The kickoff
+  // brief tells the model exactly what was said; its first reply is an
+  // invisible ready-ack, and the conversation continues from the user's name.
+  // It TYPES itself in (OnboardingGreetingRow) so it reads as the agent
+  // speaking, not a static label — the banked line must be indistinguishable
+  // from a streamed turn.
+  const greetingRow =
+    threadType === 'onboarding' && onboardingGreeting ? <OnboardingGreetingRow text={onboardingGreeting} /> : null
+
+  return { groups, onboardingThread, threadType, greetingRow }
+}
+
+const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
+  clampToComposer,
+  components,
+  emptyPlaceholder,
+  loadingIndicator,
+  sessionId = null,
+  sessionKey
+}) => {
+  // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
+  // changes only when messages are added/removed/swapped — it keys the error
+  // boundaries and the row identity. The WEIGHT one (parts + character cost)
+  // ticks while a streaming turn appends content — it feeds only the render
+  // budget. Folding weights into the structural key handed every boundary a
+  // new resetKey per appended part, which reconciled every turn's subtree on
+  // every tick (measured: 540 wasted Block renders per explain() sample with
+  // two threads streaming).
+  const structuralSignature = useAuiState(s =>
+    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
+  )
+
+  const weightSignature = useAuiState(s =>
+    s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
+  )
+
+  const { t } = useI18n()
+
+  // Row structure is memoized on the STRUCTURAL signature only, so streaming
+  // part-appends can't churn group identity (that would defeat the rows memo
+  // below on every tick). Weights are folded in separately for the budget.
+  const { groups, onboardingThread, threadType, greetingRow } = useOnboardingTranscript(
+    structuralSignature,
+    sessionKey
+  )
 
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder) && !onboardingThread
 
@@ -704,20 +727,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // sticky user bubble falls back to its ~4px default and slides under the OS
   // traffic lights.
   const secondaryTitlebarGap = 'calc(var(--titlebar-height) + 0.75rem)'
-
-  const threadType = onboardingThread ? 'onboarding' : undefined
-
-  // The guided chat's opening line is PRE-BANKED and rendered here, client-
-  // side, the instant the thread mounts — the model's cold first turn took up
-  // to 10s in live runs and the greeting must never wait on it. The kickoff
-  // brief tells the model exactly what was said; its first reply is an
-  // invisible ready-ack, and the conversation continues from the user's name.
-  // It TYPES itself in (OnboardingGreetingRow) so it reads as the agent
-  // speaking, not a static label — the banked line must be indistinguishable
-  // from a streamed turn.
-  const greetingRow =
-    threadType === 'onboarding' && onboardingGreeting ? <OnboardingGreetingRow text={onboardingGreeting} /> : null
-
 
   const threadContentTopPad = secondaryWindow
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
@@ -1171,7 +1180,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           <div
             className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
             data-slot="aui_thread-content"
-            data-thread-type={threadType}
           >
             {emptyPlaceholder}
           </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { OnboardingAnswers } from '@/store/onboarding-answers'
+import { DEFAULT_ANSWERS, type OnboardingAnswers } from '@/store/onboarding-answers'
 
 import { buildFirstTaskRunbook, ensureSetupProfile, SETUP_PROFILE } from './setup-profile'
 
@@ -13,11 +13,12 @@ import { buildFirstTaskRunbook, ensureSetupProfile, SETUP_PROFILE } from './setu
  * ordinary session on the user's own profile, so the seeded runbook is the
  * only carrier: everything Setup learned has to be in it.
  */
-const ANSWERS = {
+const ANSWERS: OnboardingAnswers = {
+  ...DEFAULT_ANSWERS,
   connectors: ['Notion', 'Slack'],
   context: 'kitchen reno, contractor quotes due Friday',
   name: 'Sam'
-} as unknown as OnboardingAnswers
+}
 
 const runbook = () => buildFirstTaskRunbook('Plant tracker', ANSWERS)
 
@@ -41,7 +42,7 @@ describe('the picture Setup hands to the build session', () => {
 
   // Setup can be skipped, and every answer is optional on the way through.
   it('says nothing at all about a user who told Setup nothing', () => {
-    const bare = buildFirstTaskRunbook('Plant tracker', { connectors: [] } as unknown as OnboardingAnswers)
+    const bare = buildFirstTaskRunbook('Plant tracker', DEFAULT_ANSWERS)
 
     expect(bare).not.toMatch(/undefined|\bnull\b/)
     expect(bare).not.toMatch(/user is called\b/i)

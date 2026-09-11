@@ -106,10 +106,17 @@ export function startChatOnboardingSolo(): void {
  *  the new panes to be usable, NOT a chat-size-preserving projection (which
  *  balloons the window). Left = sessions sidebar; Elite adds its right rail
  *  and terminal row. Tune by feel. */
-const LAYOUT_GROWTH: Record<string, { bottom?: number; left?: number; right?: number; top?: number }> = {
-  basic: { left: 220 },
-  'terminal-deck': { bottom: 200, left: 220, right: 240 }
+interface LayoutGrowth {
+  bottom?: number
+  left?: number
+  right?: number
+  top?: number
 }
+
+const LAYOUT_GROWTH = new Map<string, LayoutGrowth>([
+  ['basic', { left: 220 }],
+  ['terminal-deck', { bottom: 200, left: 220, right: 240 }]
+])
 
 /**
  * Put the tree in the state this layout describes — on the first pick AND on
@@ -191,7 +198,7 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode): void {
   const firstPick = $chatOnboardingSolo.get()
 
   if (firstPick) {
-    const growth = LAYOUT_GROWTH[id] ?? { left: 220 }
+    const growth = LAYOUT_GROWTH.get(id) ?? { left: 220 }
 
     window.hermesDesktop?.chatOnboarding?.grow({
       bottom: growth.bottom ?? 0,
@@ -222,6 +229,7 @@ export function skipChatOnboarding(): void {
   const preset = registry.getArea('layouts').find(contribution => contribution.id === 'basic')
 
   if (preset?.data) {
+    // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
     assembleChatOnboarding(preset.id, preset.data as LayoutNode)
   } else {
     $chatOnboardingSolo.set(false)

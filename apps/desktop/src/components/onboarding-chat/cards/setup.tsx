@@ -118,6 +118,7 @@ export function LayoutCard({ locked }: CardProps) {
     // this card) pixel-fixed; later ones re-arrange in place. Swapping just the
     // preset tree on a re-pick left the previous layout's dismissals and dock
     // records in force, and the two layouts came up mixed together.
+    // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
     assembleChatOnboarding(preset.id, preset.data as LayoutNode)
   }
 

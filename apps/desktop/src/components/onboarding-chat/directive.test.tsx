@@ -14,13 +14,13 @@ describe('OnboardingChatDirective', () => {
 
     expect(card).toBeTruthy()
     expect(card?.hasAttribute('inert')).toBe(true)
-    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true)
 
     rerender(<OnboardingChatDirective attrs={{ step: 'look' }} streaming={false} />)
 
     expect(document.querySelector('[data-onboarding-card]')).toBe(card)
     expect(card?.hasAttribute('inert')).toBe(false)
-    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false)
   })
 
   it('renders nothing for an unknown step', () => {

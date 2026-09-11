@@ -75,7 +75,7 @@ export function AccentSwatch({
 // Mini layout trees — the two starting layouts, mirroring the real preset
 // trees in app/contrib/controller.tsx (BASIC_TREE / TERMINAL_TREE), drawn in
 // the layout editor's thumbnail language, upscaled.
-export type MiniNode = number | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
+export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
 
 /** The power-user layout. Picking it is the most explicit thing a user does
  *  in the whole first run to say how they work. */
@@ -95,7 +95,7 @@ export const LAYOUTS: Array<{ id: string; name: string; tree: MiniNode }> = [
 ]
 
 export function MiniTree({ node }: { node: MiniNode }) {
-  if (typeof node === 'number') {
+  if (node === 1) {
     return <div className="min-h-0 min-w-0 flex-1 rounded-[3px] bg-foreground/15" />
   }
 

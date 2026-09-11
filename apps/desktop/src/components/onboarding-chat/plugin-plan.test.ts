@@ -16,10 +16,9 @@ const ANSWERS = {
   accent: '',
   connectors: ['Linear'],
   context: 'shipping a release this week',
-  focus: [],
   layout: '',
   name: 'Alex'
-} as never
+}
 
 describe('parseHandoffPlan', () => {
   it('reads the plans the script is allowed to emit', () => {

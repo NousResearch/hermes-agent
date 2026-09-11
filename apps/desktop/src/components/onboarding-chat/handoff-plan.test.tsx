@@ -2,11 +2,12 @@ import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $machine } from '@/store/machine'
+import { DEFAULT_ANSWERS } from '@/store/onboarding-answers'
 
 import { OnboardingChatDirective } from './directive'
 import { $setupHandoff, buildFirstTaskRunbook, parseHandoffPlan, resetSetupHandoffForTests } from './setup-profile'
 
-const ANSWERS = { connectors: [], name: 'BK' } as unknown as Parameters<typeof buildFirstTaskRunbook>[1]
+const ANSWERS = { ...DEFAULT_ANSWERS, name: 'BK' }
 
 describe('the machine-setup plan', () => {
   beforeEach(() => {

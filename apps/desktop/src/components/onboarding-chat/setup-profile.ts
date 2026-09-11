@@ -282,10 +282,6 @@ export function buildHandoffCompleteNote(task: string): string {
 
 // ── gateway helpers (called from the wiring's kickoff + handoff effects) ─────
 
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && /exist/i.test(error.message)
-}
-
 /** Create the guide once with the default profile’s configured providers and shared OAuth. */
 export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
   try {
@@ -298,7 +294,7 @@ export async function ensureSetupProfile(request: GatewayRequest): Promise<void>
       soul: composeSetupSoul()
     })
   } catch (error) {
-    if (!isAlreadyExists(error)) {
+    if (!(error instanceof Error && /exist/i.test(error.message))) {
       throw error
     }
   }

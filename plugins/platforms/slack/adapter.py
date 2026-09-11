@@ -919,7 +919,7 @@ class SlackAdapter(BasePlatformAdapter):
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
         # Workspace-scoped companion used when filtering recovered thread deltas.
-        self._processed_message_markers: set[Tuple[str, str]] = set()
+        self._processed_message_markers: set[Tuple[str, str, str]] = set()
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -952,6 +952,7 @@ class SlackAdapter(BasePlatformAdapter):
         # mark only their thread for another delta check.
         self._thread_rehydration_checked: set = set()
         self._pending_thread_updates: Dict[str, str] = {}
+        self._pending_edited_thread_messages: Dict[Tuple[str, str, str, str], dict] = {}
         # Message IDs with reaction lifecycle (bounded: an exception between add and finalize would
         # leak entries).
         self._reacting_message_ids: set = set()
@@ -3275,16 +3276,29 @@ class SlackAdapter(BasePlatformAdapter):
             "context_channel_id": context_channel_id or cached.get("context_channel_id", ""),
             "team_id": team_id, "user_id": user_id}
 
-    def _remember_processed_message_ts(self, ts: str, *, team_id: str = "") -> None:
+    def _processed_message_marker(
+        self, team_id: str, user_id: str, ts: str
+    ) -> Tuple[str, str, str]:
+        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
+        session_user = user_id if getattr(store_cfg, "thread_sessions_per_user", False) else ""
+        return team_id, session_user, ts
+
+    def _remember_processed_message_ts(
+        self, ts: str, *, team_id: str = "", user_id: str = ""
+    ) -> None:
         """Claim a message ts for the ``message_changed`` guard: on entry (suppresses mid-flight
         unfurls) and after construction (refreshes LRU recency). Bounded."""
         if not ts:
             return
         self._processed_message_ts[ts] = time.time()
         if team_id:
-            self._processed_message_markers.add(self._workspace_message_marker(team_id, ts))
+            self._processed_message_markers.add(
+                self._processed_message_marker(team_id, user_id, ts)
+            )
             self._evict_oldest_by_ts(
-                self._processed_message_markers, self._PROCESSED_MESSAGE_TS_MAX
+                self._processed_message_markers,
+                self._PROCESSED_MESSAGE_TS_MAX,
+                lambda marker: marker[-1],
             )
         if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
@@ -4070,6 +4084,7 @@ class SlackAdapter(BasePlatformAdapter):
                         thread_ts=event_thread_ts,
                         current_ts=ts,
                         team_id=team_id,
+                        user_id=user_id,
                         after_ts=watermark_ts,
                     )
                     recovery_complete = watermark_to_set == ts
@@ -4329,7 +4344,9 @@ class SlackAdapter(BasePlatformAdapter):
         # original block a later "@bot" edit from summoning the bot.
         _claim_ts = str(event.get("ts") or "")
         if _claim_ts:
-            self._remember_processed_message_ts(_claim_ts, team_id=team_id)
+            self._remember_processed_message_ts(
+                _claim_ts, team_id=team_id, user_id=user_id
+            )
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
@@ -4361,7 +4378,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}")
         if ts:
-            self._remember_processed_message_ts(ts, team_id=team_id)
+            self._remember_processed_message_ts(ts, team_id=team_id, user_id=user_id)
         await self.handle_message(msg_event)
 
     async def _build_message_event(
@@ -5490,7 +5507,8 @@ class SlackAdapter(BasePlatformAdapter):
         return next((m for m in messages if m.get("ts", "") == thread_ts), None)
 
     async def _fetch_thread_delta(
-        self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str, after_ts: str,
+        self, *, channel_id: str, thread_ts: str, current_ts: str, team_id: str,
+        user_id: str, after_ts: str,
     ) -> Tuple[str, str]:
         """Return a bounded delta and the latest timestamp that was safely recovered."""
         messages: List[dict] = []
@@ -5505,7 +5523,9 @@ class SlackAdapter(BasePlatformAdapter):
                     msg.get("user") == bot_uid
                     or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
                     in self._bot_message_ts
-                    or self._workspace_message_marker(team_id, str(msg.get("ts") or ""))
+                    or self._processed_message_marker(
+                        team_id, user_id, str(msg.get("ts") or "")
+                    )
                     in self._processed_message_markers
                 )
             ]
@@ -5541,6 +5561,15 @@ class SlackAdapter(BasePlatformAdapter):
             metadata = result.get("response_metadata") or {}
             cursor = str(metadata.get("next_cursor") or "")
             if not cursor:
+                messages.extend(
+                    self._pending_edited_messages_for_delta(
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        team_id=team_id,
+                        after_ts=after_ts,
+                        current_ts=current_ts,
+                    )
+                )
                 return await _format_recovered(), current_ts
         recovered_ts = max(
             (str(msg.get("ts") or "") for msg in messages if msg.get("ts")),
@@ -5597,7 +5626,8 @@ class SlackAdapter(BasePlatformAdapter):
                 continue
             is_parent = msg_ts == thread_ts
             # Skip already-consumed messages; parent still flows through for parent_text capture.
-            skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
+            delta_ts = str(msg.get("_slack_changed_event_ts") or msg_ts)
+            skip_for_delta = bool(after_ts and delta_ts and delta_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
             msg_text = self._render_message_text(msg, bot_uid=bot_uid)
@@ -5885,9 +5915,10 @@ class SlackAdapter(BasePlatformAdapter):
         """Remember a dropped external app/bot post so the next human turn recovers its delta."""
         channel_id = str(event.get("channel") or "")
         thread_ts = str(event.get("thread_ts") or "")
-        update_ts = str(event.get("ts") or "")
+        message_ts = str(event.get("ts") or "")
+        update_ts = str(event.get("_slack_changed_event_ts") or message_ts)
         team_id = team_id or str(event.get("team") or event.get("team_id") or "")
-        if not channel_id or not thread_ts or not update_ts or thread_ts == update_ts:
+        if not channel_id or not thread_ts or not update_ts or thread_ts == message_ts:
             return
         key = self._pending_thread_update_key(channel_id, thread_ts, team_id)
         previous = self._pending_thread_updates.get(key, "")
@@ -5902,6 +5933,37 @@ class SlackAdapter(BasePlatformAdapter):
             self._PENDING_THREAD_UPDATES_MAX,
             lambda entry: self._pending_thread_updates.get(entry, ""),
         )
+        if event.get("_slack_changed_event_ts") and message_ts:
+            edit_key = (team_id, channel_id, thread_ts, message_ts)
+            self._pending_edited_thread_messages[edit_key] = dict(event)
+            self._evict_oldest_by_ts(
+                self._pending_edited_thread_messages,
+                self._PENDING_THREAD_UPDATES_MAX,
+                lambda entry: self._pending_edited_thread_messages[entry].get(
+                    "_slack_changed_event_ts", ""
+                ),
+            )
+
+    def _pending_edited_messages_for_delta(
+        self, *, channel_id: str, thread_ts: str, team_id: str,
+        after_ts: str, current_ts: str,
+    ) -> List[dict]:
+        """Edited app posts whose edit event, not original message, falls in this delta."""
+        recovered = []
+        for (edit_team, edit_channel, edit_thread, _), message in (
+            self._pending_edited_thread_messages.items()
+        ):
+            if (edit_team, edit_channel, edit_thread) != (team_id, channel_id, thread_ts):
+                continue
+            changed_ts = str(message.get("_slack_changed_event_ts") or "")
+            if (
+                self._slack_timestamp_sort_key(changed_ts)
+                > self._slack_timestamp_sort_key(after_ts)
+                and self._slack_timestamp_sort_key(changed_ts)
+                <= self._slack_timestamp_sort_key(current_ts)
+            ):
+                recovered.append(dict(message))
+        return recovered
 
     def _thread_watermark_io(
         self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any

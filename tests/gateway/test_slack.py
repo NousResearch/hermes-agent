@@ -3362,6 +3362,104 @@ class TestThreadReplyHandling:
         assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
 
     @pytest.mark.asyncio
+    async def test_processed_delta_markers_follow_per_user_session_scope(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        mock_session_store.config.thread_sessions_per_user = True
+        adapter_with_session_store._remember_processed_message_ts(
+            "123.200", team_id="T_TEAM", user_id="U_FIRST"
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.200", "user": "U_FIRST", "text": "first user's update"},
+                ]
+            }
+        )
+
+        second_context, _ = await adapter_with_session_store._fetch_thread_delta(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.456",
+            team_id="T_TEAM",
+            user_id="U_SECOND",
+            after_ts="123.100",
+        )
+        first_context, _ = await adapter_with_session_store._fetch_thread_delta(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.456",
+            team_id="T_TEAM",
+            user_id="U_FIRST",
+            after_ts="123.100",
+        )
+
+        assert "first user's update" in second_context
+        assert "first user's update" not in first_context
+
+    @pytest.mark.asyncio
+    async def test_pending_app_edit_uses_edit_timestamp_for_recovery(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(return_value=True)
+        metadata = {"slack_thread_watermark:C123:123.000": "123.300"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._mark_thread_rehydration_checked(
+            "C123", "123.000", "U_USER", "T_TEAM"
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "subtype": "message_changed",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "event_ts": "123.400",
+            "message": {
+                "text": "Deployment succeeded",
+                "user": "U_APP",
+                "bot_id": "B_APP",
+                "subtype": "bot_message",
+                "channel": "C123",
+                "ts": "123.200",
+                "thread_ts": "123.000",
+                "edited": {"user": "U_APP", "ts": "123.400"},
+            },
+        })
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "123.200",
+                        "user": "U_APP",
+                        "bot_id": "B_APP",
+                        "text": "Deployment succeeded",
+                    },
+                    {"ts": "123.500", "user": "U_USER", "text": "verify"},
+                ]
+            }
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "verify",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "channel": "C123",
+            "ts": "123.500",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        context = adapter_with_session_store.handle_message.call_args[0][0].channel_context
+        assert "Deployment succeeded" in context
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.500"
+
+    @pytest.mark.asyncio
     async def test_oversized_delta_advances_to_last_fetched_page(
         self, adapter_with_session_store, mock_session_store
     ):

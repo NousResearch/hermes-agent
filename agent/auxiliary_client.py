@@ -3916,6 +3916,16 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
+    if task == "vision" and not _main_model_supports_vision(main_provider, main_model):
+        # A text-only main model cannot accept image content: keep the original
+        # provider error instead of surfacing a guaranteed 400 on the image block.
+        logger.debug(
+            "Auxiliary vision: main agent model %s (%s) takes no image input, "
+            "keeping the original error",
+            main_model,
+            main_provider,
+        )
+        return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,

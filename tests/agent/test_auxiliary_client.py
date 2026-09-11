@@ -1993,6 +1993,46 @@ class TestTryMainAgentModelFallback:
         assert model == "anthropic/claude-sonnet-4"
         assert label == "main-agent(openrouter)"
 
+    def test_vision_task_skips_text_only_main_model(self):
+        """A vision call must not fall back to a main model that takes no image input."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="zai"),
+            patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"),
+            patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False),
+            patch(
+                "agent.auxiliary_client._main_model_supports_vision", return_value=False
+            ),
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
+        ):
+            client, model, label = _try_main_agent_model_fallback("nous", task="vision")
+        assert client is None and model is None and label == ""
+        mock_resolve.assert_not_called()
+
+    def test_vision_task_allows_vision_capable_main_model(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_provider", return_value="openrouter"
+            ),
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                return_value="anthropic/claude-sonnet-4",
+            ),
+            patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False),
+            patch(
+                "agent.auxiliary_client._main_model_supports_vision", return_value=True
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "anthropic/claude-sonnet-4"),
+            ),
+        ):
+            client, model, label = _try_main_agent_model_fallback("nous", task="vision")
+        assert client is fake_client
+        assert label == "main-agent(openrouter)"
+
 
 
 

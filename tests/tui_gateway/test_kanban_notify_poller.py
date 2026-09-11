@@ -312,6 +312,7 @@ class TestNotificationPollerLoopKanbanWiring:
         import threading
 
         return {
+            "agent": object(),
             "session_key": SESSION_KEY,
             "history_lock": threading.Lock(),
             "running": running,

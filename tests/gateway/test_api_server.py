@@ -1480,8 +1480,7 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
-    async def test_batch_preserves_reasoning_output_item(self, adapter, reasoning_enabled):
-        """Non-streaming Responses aggregates turn reasoning into one item."""
+    async def test_batch_places_reasoning_before_the_tool_calls_it_produced(self, adapter, reasoning_enabled):
         result = {
             "final_response": "answer",
             "messages": [
@@ -1525,15 +1524,47 @@ class TestResponsesEndpoint:
                 payload = await resp.json()
 
         assert [item["type"] for item in payload["output"]] == [
-            "function_call", "function_call_output", "reasoning", "message"
+            "reasoning", "function_call", "function_call_output", "reasoning", "message"
         ]
         reasoning_items = [
             item for item in payload["output"] if item["type"] == "reasoning"
         ]
-        assert len(reasoning_items) == 1
+        assert len(reasoning_items) == 2
         assert reasoning_items[0]["summary"] == [
-            {"type": "summary_text", "text": "check facts\n\nform answer"}
+            {"type": "summary_text", "text": "check facts"}
         ]
+        assert reasoning_items[1]["summary"] == [
+            {"type": "summary_text", "text": "form answer"}
+        ]
+
+    def test_batch_output_preserves_reasoning_tool_result_order(self):
+        result = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "reasoning_content": "First inspect the journal.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {"name": "search", "arguments": '{"query":"Ithaca"}'},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "one matching entry"},
+                {
+                    "role": "assistant",
+                    "reasoning_content": "Now answer from that evidence.",
+                    "content": "Ken wrote about Ithaca.",
+                },
+            ],
+            "final_response": "Ken wrote about Ithaca.",
+        }
+
+        items = APIServerAdapter._extract_output_items(result, include_reasoning=True)
+
+        assert [item["type"] for item in items] == [
+            "reasoning", "function_call", "function_call_output", "reasoning", "message"
+        ]
+        assert items[0]["summary"][0]["text"] == "First inspect the journal."
+        assert items[3]["summary"][0]["text"] == "Now answer from that evidence."
 
 
     @pytest.mark.asyncio
@@ -1855,6 +1886,132 @@ class TestResponsesStreaming:
         assert completed["output"][0]["content"] == [
             {"type": "reasoning_text", "text": "check facts"}
         ]
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_bursts_interleave_with_tool_calls(self, adapter):
+        async def fake_run(**kwargs):
+            kwargs["reasoning_callback"]("\n")
+            kwargs["reasoning_callback"]("check ")
+            kwargs["reasoning_callback"]("facts")
+            kwargs["tool_start_callback"]("call_1", "lookup", {})
+            kwargs["tool_complete_callback"]("call_1", "lookup", {}, "found it")
+            kwargs["reasoning_callback"]("form ")
+            kwargs["reasoning_callback"]("answer")
+            kwargs["stream_delta_callback"]("answer")
+            return {
+                "final_response": "answer",
+                "messages": [{"role": "assistant", "content": "answer"}],
+                "session_id": "responses-reasoning-bursts",
+            }, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+        app = _create_app(adapter)
+        with patch.object(adapter, "_run_agent", side_effect=fake_run):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "reason first", "stream": True, "store": False},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        events = []
+        for block in body.split("\n\n"):
+            event_name = None
+            payload = None
+            for line in block.splitlines():
+                if line.startswith("event: "):
+                    event_name = line[len("event: "):]
+                elif line.startswith("data: "):
+                    payload = json.loads(line[len("data: "):])
+            if event_name and payload is not None:
+                events.append((event_name, payload))
+
+        reasoning_added = [
+            payload for name, payload in events
+            if name == "response.output_item.added" and payload["item"]["type"] == "reasoning"
+        ]
+        assert len(reasoning_added) == 2
+        assert reasoning_added[0]["item"]["id"] != reasoning_added[1]["item"]["id"]
+        assert reasoning_added[0]["output_index"] < reasoning_added[1]["output_index"]
+
+        reasoning_done = [
+            payload for name, payload in events
+            if name == "response.output_item.done" and payload["item"]["type"] == "reasoning"
+        ]
+        assert [d["item"]["content"] for d in reasoning_done] == [
+            [{"type": "reasoning_text", "text": "check facts"}],
+            [{"type": "reasoning_text", "text": "form answer"}],
+        ]
+
+        completed = next(
+            payload["response"] for name, payload in events
+            if name == "response.completed"
+        )
+        assert [item["type"] for item in completed["output"]] == [
+            "reasoning", "function_call", "function_call_output", "reasoning", "message",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stream_fallback_reasoning_indexes_match_terminal_output(self, adapter):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "First inspect the journal.",
+                "tool_calls": [{"id": "call_1", "function": {"name": "search", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "one entry"},
+            {"role": "assistant", "reasoning_content": "Now answer.", "content": "Answer."},
+        ]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def fake_run(**kwargs):
+                kwargs["tool_start_callback"]("call_1", "search", {})
+                kwargs["tool_complete_callback"]("call_1", "search", {}, "one entry")
+                return (
+                    {"final_response": "Answer.", "messages": messages, "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with (
+                patch.object(adapter, "_reasoning_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=fake_run),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = []
+            for block in body.split("\n\n"):
+                event_name = None
+                payload = None
+                for line in block.splitlines():
+                    if line.startswith("event: "):
+                        event_name = line[len("event: "):]
+                    elif line.startswith("data: "):
+                        payload = json.loads(line[len("data: "):])
+                if event_name and payload is not None:
+                    events.append((event_name, payload))
+
+            output = [d for n, d in events if n == "response.completed"][0]["response"]["output"]
+            assert [it["type"] for it in output] == [
+                "function_call", "function_call_output", "reasoning", "reasoning", "message",
+            ]
+            reasoning_added = [
+                d["output_index"] for n, d in events
+                if n == "response.output_item.added" and d["item"]["type"] == "reasoning"
+            ]
+            reasoning_done = [
+                (d["output_index"], d["item"]["content"][0]["text"]) for n, d in events
+                if n == "response.output_item.done" and d["item"]["type"] == "reasoning"
+            ]
+            assert reasoning_added == [2, 3]
+            assert reasoning_done == [(2, "First inspect the journal."), (3, "Now answer.")]
+            for idx, text in reasoning_done:
+                assert output[idx]["content"] == [{"type": "reasoning_text", "text": text}]
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):

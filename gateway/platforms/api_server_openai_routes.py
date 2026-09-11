@@ -13,6 +13,7 @@ import re
 import time
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 try:
@@ -115,6 +116,13 @@ def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return items
 
 
+@dataclass
+class _ReasoningBurst:
+    item: Dict[str, Any]
+    output_index: int
+    parts: List[str] = field(default_factory=list)
+
+
 class _ResponsesStream:
     """Per-request state and event emitters for the POST /v1/responses SSE writer.
 
@@ -140,11 +148,7 @@ class _ResponsesStream:
         self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.message_output_index: Optional[int] = None
         self.message_opened = False
-        self.reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-        self.reasoning_output_index: Optional[int] = None
-        self.reasoning_parts: List[str] = []
-        self.reasoning_item: Optional[Dict[str, Any]] = None
-        self.reasoning_opened = False
+        self.reasoning_burst: Optional[_ReasoningBurst] = None
         self.reasoning_enabled = adapter._reasoning_enabled()
         self.final_response_text = ""
         self.agent_error: Optional[str] = None
@@ -195,15 +199,16 @@ class _ResponsesStream:
             return
         text = "".join(self.final_text_parts) or self.final_response_text
         items = list(self.emitted_items)
-        if self.reasoning_item is not None and self.reasoning_parts:
-            reasoning_text = "".join(self.reasoning_parts)
+        burst = self.reasoning_burst
+        if burst is not None and burst.parts:
+            reasoning_text = "".join(burst.parts)
             incomplete_reasoning = {
-                **self.reasoning_item,
+                **burst.item,
                 "summary": [{"type": "summary_text", "text": reasoning_text}],
                 "content": [{"type": "reasoning_text", "text": reasoning_text}],
             }
             items = [
-                incomplete_reasoning if item is self.reasoning_item else item
+                incomplete_reasoning if item is burst.item else item
                 for item in items
             ]
         history = self._history_with_user()
@@ -222,6 +227,7 @@ class _ResponsesStream:
         """Emit output_item.added for the assistant message on the first text delta."""
         if self.message_opened:
             return
+        await self.close_reasoning_item()
         self.message_opened = True
         self.message_output_index = self.output_index
         self.output_index += 1
@@ -238,55 +244,61 @@ class _ResponsesStream:
             "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
             "logprobs": []})
 
-    async def _open_reasoning_item(self) -> None:
-        """Create the Responses reasoning item before its first live delta."""
-        if self.reasoning_opened:
-            return
-        self.reasoning_opened = True
-        self.reasoning_output_index = self.output_index
-        self.output_index += 1
-        self.reasoning_item = {
-            "id": self.reasoning_item_id,
+    async def _open_reasoning_burst(self) -> _ReasoningBurst:
+        item = {
+            "id": f"rs_{uuid.uuid4().hex[:24]}",
             "type": "reasoning",
             "status": "in_progress",
             "summary": [],
             "content": [],
         }
-        self.emitted_items.append(self.reasoning_item)
+        output_index = self.output_index
+        self.output_index += 1
+        burst = _ReasoningBurst(item, output_index)
+        self.reasoning_burst = burst
+        self.emitted_items.append(item)
         await self.write_event("response.output_item.added", {
             "type": "response.output_item.added",
-            "output_index": self.reasoning_output_index,
-            "item": dict(self.reasoning_item),
+            "output_index": output_index,
+            "item": dict(item),
         })
+        return burst
 
     async def emit_reasoning_delta(self, delta_text: str) -> None:
-        """Emit one live Responses reasoning delta in its own output item."""
-        await self._open_reasoning_item()
-        self.reasoning_parts.append(delta_text)
+        burst = self.reasoning_burst
+        if burst is None:
+            if not delta_text.strip():
+                return
+            burst = await self._open_reasoning_burst()
+        burst.parts.append(delta_text)
         await self.write_event("response.reasoning_text.delta", {
             "type": "response.reasoning_text.delta",
-            "item_id": self.reasoning_item_id,
-            "output_index": self.reasoning_output_index,
+            "item_id": burst.item["id"],
+            "output_index": burst.output_index,
             "content_index": 0,
             "delta": delta_text,
         })
 
     async def close_reasoning_item(self) -> None:
-        """Finalize the reasoning output item after all live deltas are received."""
-        if not self.reasoning_opened or self.reasoning_item is None:
+        """Finalize the open reasoning burst, if any."""
+        burst = self.reasoning_burst
+        if burst is None:
             return
-        text = "".join(self.reasoning_parts)
-        self.reasoning_item["status"] = "completed"
-        self.reasoning_item["summary"] = [{"type": "summary_text", "text": text}]
-        self.reasoning_item["content"] = [{"type": "reasoning_text", "text": text}]
+        text = "".join(burst.parts)
+        item = burst.item
+        item["status"] = "completed"
+        item["summary"] = [{"type": "summary_text", "text": text}]
+        item["content"] = [{"type": "reasoning_text", "text": text}]
         await self.write_event("response.output_item.done", {
             "type": "response.output_item.done",
-            "output_index": self.reasoning_output_index,
-            "item": dict(self.reasoning_item),
+            "output_index": burst.output_index,
+            "item": dict(item),
         })
+        self.reasoning_burst = None
 
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
+        await self.close_reasoning_item()
         self.call_counter += 1
         call_id = payload.get("tool_call_id") or f"call_{self.response_id[5:]}_{self.call_counter}"
         args = payload.get("arguments", {})
@@ -377,23 +389,33 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            # Completed-message reasoning is only a compatibility fallback; live deltas win.
+            if self.reasoning_enabled and isinstance(result, dict) and not self._has_reasoning_item():
+                await self._emit_fallback_reasoning_bursts(result)
             if agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
-            # Completed-message reasoning is only a compatibility fallback; live deltas win.
-            if self.reasoning_enabled and isinstance(result, dict) and not self.reasoning_parts:
-                turn_start = self.adapter._response_messages_turn_start_index(
-                    self.conversation_history, self.user_message, result)
-                completed_reasoning = self.adapter._extract_reasoning_text(
-                    result, start_index=turn_start)
-                if completed_reasoning:
-                    await self.emit_reasoning_delta(completed_reasoning)
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
         except Exception as e:  # noqa: BLE001
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
+
+    def _has_reasoning_item(self) -> bool:
+        return any(item.get("type") == "reasoning" for item in self.emitted_items)
+
+    async def _emit_fallback_reasoning_bursts(self, result: Dict[str, Any]) -> None:
+        turn_start = self.adapter._response_messages_turn_start_index(
+            self.conversation_history, self.user_message, result)
+        for msg in result.get("messages", [])[turn_start:]:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            reasoning_text = msg.get("reasoning_content") or msg.get("reasoning")
+            if not isinstance(reasoning_text, str) or not reasoning_text.strip():
+                continue
+            await self.emit_reasoning_delta(reasoning_text)
+            await self.close_reasoning_item()
 
     async def close_message_item(self) -> None:
         await self.close_reasoning_item()
@@ -444,6 +466,7 @@ class _ResponsesStream:
             "response.completed", {"type": "response.completed", "response": env})
 
     async def emit_crash(self, exc: BaseException) -> None:
+        await self.close_reasoning_item()
         error = self._api._redact_api_error_text(exc, limit=500)
         env = self.terminal_envelope("failed", list(self.emitted_items), error=error)
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
@@ -1069,39 +1092,27 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
-    def _extract_reasoning_text(result: Dict[str, Any], start_index: int = 0) -> str:
-        """Return completed-message reasoning for providers without live deltas.
-
-        Live ``reasoning_callback`` output is authoritative when available; this helper is
-        only a compatibility fallback for providers that expose reasoning on completion.
-        """
-        messages = result.get("messages", []) if isinstance(result, dict) else []
-        if start_index > 0:
-            messages = messages[start_index:]
-        parts: List[str] = []
-        for msg in messages:
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            reasoning = msg.get("reasoning_content") or msg.get("reasoning")
-            if isinstance(reasoning, str) and reasoning.strip():
-                parts.append(reasoning)
-        return "\n\n".join(parts)
-
-    @staticmethod
     def _extract_output_items(
         result: Dict[str, Any], start_index: int = 0, *, include_reasoning: bool,
     ) -> List[Dict[str, Any]]:
         from gateway.platforms.api_server import _redact_api_error_text
         items: List[Dict[str, Any]] = []
-        reasoning_text = OpenAICompatRoutesMixin._extract_reasoning_text(
-            result, start_index=start_index) if include_reasoning else ""
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]
         for msg in messages:
             role = msg.get("role")
-            if role == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
+            if role == "assistant":
+                if include_reasoning:
+                    reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+                    if isinstance(reasoning, str) and reasoning.strip():
+                        items.append({
+                            "id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning",
+                            "status": "completed",
+                            "summary": [{"type": "summary_text", "text": reasoning}],
+                            "content": [{"type": "reasoning_text", "text": reasoning}],
+                        })
+                for tc in msg.get("tool_calls") or []:
                     func = tc.get("function", {})
                     # Already executed server-side; replayed for structured tool UI only, so
                     # marked completed (matching the SSE path) — never pending client calls.
@@ -1115,13 +1126,6 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
-        if reasoning_text:
-            items.append({
-                "id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning",
-                "status": "completed",
-                "summary": [{"type": "summary_text", "text": reasoning_text}],
-                "content": [{"type": "reasoning_text", "text": reasoning_text}],
-            })
         final = result.get("final_response", "") or _redact_api_error_text(
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))

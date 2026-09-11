@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { startChatOnboardingSolo } from '@/components/onboarding-chat/assembly'
+import { takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { ackFreeTierNotice, type FreeTierRequester } from '@/store/free-tier'
 import { $introReveal } from '@/store/intro-reveal'
@@ -23,9 +23,8 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
   // gateway opens — otherwise the normal shell paints at full size for the
   // seconds the backend takes to come up, and then snaps down to the guide.
   useEffect(() => {
-    if (isOnboardingEnabled() && gate.guideQueued && intro.phase === 'hidden') {
-      startChatOnboardingSolo()
-      window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+    if (gate.guideQueued && intro.phase === 'hidden') {
+      takeGuideShape()
     }
     // Once, on mount: the queued flag is a boot fact, not a live signal.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -62,6 +62,10 @@ export function finishIntroReveal(): void {
 
   writeKey(SEEN_KEY, '1')
   $introReveal.set(INITIAL)
+  // The gate's listener on that edge queues the guide and takes the solo
+  // shape (small window, greeting layout) synchronously, so the main window
+  // is already the guide when it is shown. Showing first and shrinking after
+  // is what flashed the full app between the film and the greeting.
   void window.hermesDesktop?.introReveal?.close({ showMain: true }).catch(() => undefined)
 }
 

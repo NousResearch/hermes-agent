@@ -65,6 +65,22 @@ export const $chatLayoutPicked = atom(false)
 
 let previousLayout: { id: string; tree: LayoutNode | null } | null = null
 
+/** The guide's shape, all at once: the solo layout and the small centred
+ *  window. Called on the tick the guide is owed (film ended, or a boot that
+ *  finds the guide queued) so no full-size frame paints in between. */
+export function takeGuideShape(): void {
+  if ($chatOnboardingSolo.get()) {
+    return
+  }
+
+  startChatOnboardingSolo()
+
+  // startChatOnboardingSolo declines when the guide is off; shrink only when it took.
+  if ($chatOnboardingSolo.get()) {
+    window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+  }
+}
+
 export function startChatOnboardingSolo(): void {
   if (!isOnboardingEnabled() || $chatOnboardingSolo.get()) {
     return

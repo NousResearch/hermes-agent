@@ -1394,8 +1394,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _run_update_check_fetch(
-            git_cmd, [], "origin", branch, _m().PROJECT_ROOT)
+        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)

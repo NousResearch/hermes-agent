@@ -374,6 +374,13 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main; otherwise
     compare the local checkout's HEAD. Both go through the GitHub API, never ``git fetch``.
     """
+    from hermes_cli.config import get_project_root
+    from hermes_cli.update_contract import is_commit_build
+    from hermes_cli.steward import is_bundled_payload
+
+    if is_commit_build(get_project_root()) or is_bundled_payload(get_project_root()):
+        return None
+
     def _read_config_opt_out():
         from hermes_cli.config import load_config
         return load_config().get("updates", {}).get("check", True) is False
@@ -392,6 +399,10 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     if _quiet(_install_method) in {"docker", "apt"}:
         return None
+    from hermes_cli.config import load_config
+    from hermes_cli.update_channel import resolve_update_channel
+
+    channel = resolve_update_channel(_quiet(load_config), get_project_root())
     # Cache is invalidated when the embedded rev OR installed version changed since the last check.
     # For a git checkout the local HEAD is part of the key too: `hermes update` moves HEAD, and a
     # stale "3 behind" must not survive the update it just prompted.
@@ -400,18 +411,30 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
-            and cached.get("head") == head_rev:
+            and cached.get("head") == head_rev and cached.get("channel", "main") == channel:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
         if now - cached.get("ts", 0) < ttl:
             return cached.get("behind")
-    if embedded_rev:
+    if channel in {"stable", "canary"}:
+        from hermes_cli.source_releases import resolve_source_release, source_repository
+
+        global _last_target_rev
+        repository = source_repository(["git"] if repo_dir else None, repo_dir)
+        _, _last_target_rev = resolve_source_release(channel, repository=repository)
+        current = head_rev or embedded_rev
+        # A selected release can be an ancestor after a channel switch.
+        # Equality, not ancestry, means this install runs that release.
+        behind = None if not current or not _last_target_rev else (
+            0 if current == _last_target_rev else UPDATE_AVAILABLE_NO_COUNT
+        )
+    elif embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
     _quiet(lambda: cache_file.write_text(
         json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
-                    "head": head_rev or embedded_rev, "target": _last_target_rev}),
+                    "head": head_rev or embedded_rev, "target": _last_target_rev, "channel": channel}),
         encoding="utf-8"))
     return behind
 
@@ -477,7 +500,29 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
+    from hermes_cli.config import get_project_root
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.update_channel import is_canary_tag
+
+    stamp = read_install_stamp(get_project_root())
+    if stamp.get("distribution") == "desktop-app":
+        version = stamp.get("displayVersion") or stamp.get("baseVersion") or VERSION
+        label = f"Hermes Agent v{version}"
+        if stamp.get("source") == "commit-build":
+            return f"{label} · commit-build · {str(stamp.get('commit') or '')[:12]}"
+        if stamp.get("tag"):
+            channel = "canary" if is_canary_tag(stamp["tag"]) else "stable"
+            return f"{label} · {channel}"
+        return label
+
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    from hermes_cli.config import load_config
+    from hermes_cli.update_channel import resolve_update_channel
+
+    channel = resolve_update_channel(_quiet(load_config), get_project_root())
+    if channel in {"stable", "canary"}:
+        head = _git_stdout(["rev-parse", "HEAD"], cwd=get_project_root())
+        return f"{base} · {channel}" + (f" · local {head[:12]}" if head else "")
     state = get_git_banner_state()
     if not state:
         return base

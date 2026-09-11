@@ -32,7 +32,7 @@ class VersionInfo:
     distance: int | None
     commit: str | None
     branch: str | None
-    source: Literal["build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"]
+    source: Literal["build", "commit-build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"]
     dirty: bool = False
     commit_date: int | None = None
     distribution: Literal["docker", "nix", "desktop-app"] | None = None
@@ -146,8 +146,8 @@ def _stamp_version_info() -> VersionInfo | None:
     # the package form users installed. Keep both facts intact for support.
     stamp_source = str(data.get("source") or "")
     source = (
-        cast(Literal["build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"], stamp_source)
-        if stamp_source in {"ci", "docker", "fallback", "local", "nix"}
+        cast(Literal["build", "commit-build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"], stamp_source)
+        if stamp_source in {"commit-build", "ci", "docker", "fallback", "local", "nix"}
         else "build"
     )
     distribution = data.get("distribution")

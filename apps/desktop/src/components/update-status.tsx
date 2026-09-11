@@ -137,7 +137,7 @@ export function VersionHero({
 }: {
   renderHeading?: (heading: string) => ReactNode
   version: DesktopVersionInfo | null
-}) {
+}): ReactElement {
   const { t } = useI18n()
   const u = t.updates
 
@@ -152,6 +152,7 @@ export function VersionHero({
         )}
         <p className="mt-1 text-xs text-muted-foreground">
           {version?.appVersion ? u.version(version.appVersion) : u.versionUnavailable}
+          {version?.channel ? ` · ${version.channel}` : ''}
         </p>
       </div>
       {(version?.bundleSwapPending || version?.bundleOutOfSync) && (
@@ -268,7 +269,7 @@ export function UpdateStatusCard({
 
           {view.updateAvailable && view.supported && !view.applying && (
             <>
-              <Button onClick={() => startActiveUpdate()} size="sm">
+              <Button onClick={() => startActiveUpdate(target)} size="sm">
                 {u.updateNow}
               </Button>
               <Button onClick={() => openUpdateOverlayFor(target)} size="sm" variant="textStrong">

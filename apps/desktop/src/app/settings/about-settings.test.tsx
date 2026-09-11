@@ -11,6 +11,7 @@ import {
   checkBackendUpdates,
   checkUpdates,
   refreshDesktopVersion,
+  startActiveUpdate,
   type UpdateApplyState
 } from '@/store/updates'
 
@@ -107,6 +108,26 @@ describe('AboutSettings', (): void => {
 
     expect(refreshDesktopVersion).toHaveBeenCalledTimes(3)
     expect(checkBackendUpdates).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the fixed package channel with no selector', (): void => {
+    $desktopVersion.set({ ...$desktopVersion.get()!, channel: 'canary' })
+    render(<AboutSettings />)
+    expect(screen.getByText(`${en.updates.version('1.2.3')} · canary`)).toBeTruthy()
+    expect(screen.queryByRole('combobox')).toBeNull()
+  })
+
+  it('a commit client refuses updates without hiding an unrelated backend update', (): void => {
+    const message: string = "This build doesn't get updates. Ask the developer who gave it to you for a new build."
+    $connection.set(connection('remote'))
+    $desktopVersion.set({ ...$desktopVersion.get()!, source: 'commit-build' })
+    $updateStatus.set({ supported: false, mechanism: 'external', reason: 'commit-build', message })
+    $backendUpdateStatus.set({ supported: true, behind: 3 })
+    render(<AboutSettings />)
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: en.updates.checkNow })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: en.updates.updateNow }))
+    expect(startActiveUpdate).toHaveBeenCalledWith('backend')
   })
 
   it('forces a fresh check only for the card the user checks', async (): Promise<void> => {

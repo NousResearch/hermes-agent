@@ -650,8 +650,10 @@ export interface DesktopSyncReceipt {
 }
 
 export interface DesktopVersionInfo {
-  /** Running gateway version; empty when the gateway cannot report it. */
+  /** Packaged client version, or the runtime version for source installs. */
   appVersion: string
+  /** Fixed release identity. Commit builds have no update channel. */
+  channel?: 'stable' | 'canary' | null
   electronVersion: string
   nodeVersion: string
   platform: string
@@ -668,7 +670,7 @@ export interface DesktopVersionInfo {
   commit?: string | null
   distance?: number
   dirty?: boolean
-  source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
+  source?: 'build' | 'commit-build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
   distribution?: 'desktop-app' | 'docker' | 'nix'
   /** Who applies the next update (from the stamp). Names the Store on a
    *  Store-identity build — the Settings label keys off this, never

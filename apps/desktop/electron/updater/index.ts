@@ -29,6 +29,7 @@ export type UpdaterMechanism =
 /** The facts the mechanism dispatch keys on. Pure data — injectable for tests. */
 export interface MechanismFacts {
   platform: NodeJS.Platform
+  source?: InstallStamp['source']
   updateMechanism: InstallStamp['updateMechanism'] | undefined
 }
 
@@ -37,6 +38,8 @@ export interface MechanismFacts {
  * packaged app into a checkout, and Light needs no payload to update itself.
  */
 export function resolveUpdaterMechanism(facts: MechanismFacts): UpdaterMechanism {
+  if (facts.source === 'commit-build') { return 'external' }
+
   if (facts.updateMechanism && facts.updateMechanism !== 'self') {
     return facts.updateMechanism
   }

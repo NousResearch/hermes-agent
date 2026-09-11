@@ -102,6 +102,36 @@ class TestPerJobToolsetMcpMerge:
         assert result == ["web"]
         assert not (set(result) & self._enabled_names())
 
+    def test_prefixed_mcp_toolset_is_treated_as_allowlist(self):
+        # Toolsets are registered as ``mcp-<server>`` (tools/mcp_tool_registration.py)
+        # while enabled_mcp_server_names() returns the raw key. Naming the prefixed
+        # form must still count as naming that server, not as "no MCP named".
+        result = _merge_mcp_into_per_job_toolsets(["web", "mcp-finnhub"], self.CFG)
+        assert result == ["web", "mcp-finnhub"]
+        assert "playwright" not in result
+
+    def test_prefixed_match_is_case_insensitive(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "MCP-FinnHub"], self.CFG)
+        assert result == ["web", "MCP-FinnHub"]
+
+    def test_alias_form_does_not_duplicate_an_already_listed_server(self):
+        # A list carrying both spellings must not gain a third entry for finnhub.
+        result = _merge_mcp_into_per_job_toolsets(["mcp-finnhub", "finnhub"], self.CFG)
+        assert result == ["mcp-finnhub", "finnhub"]
+
+    def test_prefixed_only_list_still_unions_unnamed_servers(self):
+        # Naming one prefixed server must not suppress the other enabled servers:
+        # the union path appends them without duplicating finnhub.
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert result[:1] == ["web"]
+        assert set(result) == {"web"} | self._enabled_names()
+
+    def test_prefixed_entry_is_not_mirrored_by_the_raw_name(self):
+        # The prefixed entry satisfies the allowlist, so the raw alias is not added too.
+        result = _merge_mcp_into_per_job_toolsets(["web", "mcp-finnhub"], self.CFG)
+        assert result.count("mcp-finnhub") == 1
+        assert "finnhub" not in result
+
 
     def test_resolver_empty_per_job_falls_through_to_platform(self):
         # No per-job list -> must delegate to _get_platform_tools (the platform

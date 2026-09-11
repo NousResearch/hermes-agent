@@ -86,6 +86,7 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
+    (home / "profiles" / "reviewer").mkdir(parents=True)
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     result = _result(srv._methods["groups.capabilities"](1, {}))
@@ -118,6 +119,36 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
         room_id="room-1",
         target_profile="reviewer",
     )
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_rpc_invitation_requires_explicit_replication_opt_in(home, opt_in):
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret, HostedRoomGrantError
+
+    capabilities = _result(srv._methods["groups.capabilities"](1, {}))
+    assert "authenticated_replication" in capabilities["features"]
+    invitation = _result(srv._methods["groups.peer.invite"](2, {
+        "room_id": "replica-opt-in", "home_install_id": "install:home",
+        "authority_gateway_id": "install:home", "authority_epoch": 1,
+        "member_id": "member-peer", "replication": opt_in,
+    }))
+    if opt_in:
+        claims = decode_room_grant(gateway_room_grant_secret(), invitation["grant"], permission="replicate")
+        assert claims["room_id"] == "replica-opt-in"
+    else:
+        with pytest.raises(HostedRoomGrantError, match="does not allow"):
+            decode_room_grant(gateway_room_grant_secret(), invitation["grant"], permission="replicate")
+
+
+@pytest.mark.parametrize("value", [1, "true", None, {}])
+def test_rpc_invitation_rejects_ambiguous_replication_opt_in(home, value):
+    result = srv._methods["groups.peer.invite"](2, {
+        "room_id": "replica-opt-in", "home_install_id": "install:home",
+        "authority_gateway_id": "install:home", "authority_epoch": 1,
+        "member_id": "member-peer", "replication": value,
+    })
+    assert result["error"]["code"] == 4120
+    assert "replication must be a boolean" in result["error"]["message"]
 
 
 def test_capabilities_disable_roomlink_when_run_replay_is_not_durable(
@@ -235,6 +266,7 @@ def test_roomlink_endpoint_absence_has_machine_reason(home, monkeypatch):
 
 
 def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
+    from gateway import hosted_rooms
     from gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
@@ -269,12 +301,38 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
         permission="status",
     )
     assert claims["target_profile"] == "reviewer"
+    assert hosted_rooms.peer_room_is_reserved(
+        home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
+    assert hosted_rooms.peer_room_is_reserved(
+        reviewer_home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
     with pytest.raises(HostedRoomGrantError, match="signature"):
         decode_room_grant(
             derive_room_grant_secret(default_key),
             invitation["grant"],
             permission="status",
         )
+
+    revoked = _result(
+        srv._methods["groups.peer.revoke"](
+            4,
+            {"grant": invitation["grant"], "profile": "reviewer"},
+        )
+    )
+    assert revoked == {"revoked": True}
+    assert hosted_rooms.room_grant_is_revoked(
+        reviewer_home / "state.db",
+        claims=claims,
+    )
+    assert hosted_rooms.room_grant_is_revoked(
+        home / "state.db",
+        claims=claims,
+    )
 
 
 def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
@@ -917,6 +975,10 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     class FakeService:
         db_path = hosted_rooms_default_db_path()
 
+        def begin_room_disband(self, room_id):
+            calls.append(("begin", room_id))
+            return methods_groups.get_hosted_room_service().begin_room_disband(room_id)
+
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
 
@@ -926,7 +988,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
-    assert calls == [("stop", "room-1"), ("revoke", "room-1")]
+    assert calls == [("begin", "room-1"), ("stop", "room-1"), ("revoke", "room-1")]
     assert _result(srv._methods["groups.list"](10, {}))["rooms"] == []
 
 
@@ -935,6 +997,9 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+
+        def begin_room_disband(self, room_id):
+            return methods_groups.get_hosted_room_service().begin_room_disband(room_id)
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -961,6 +1026,10 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     class FakeService:
         db_path = hosted_rooms_default_db_path()
 
+        def begin_room_disband(self, room_id):
+            calls.append(("begin", True))
+            return methods_groups.get_hosted_room_service().begin_room_disband(room_id)
+
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))
             raise RuntimeError("room work is still stopping")
@@ -972,7 +1041,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     result = srv._methods["groups.disband"](13, {"room_id": "room-1"})
 
     assert result["error"]["code"] == 5114
-    assert calls == [("stop", True)]
+    assert calls == [("begin", True), ("stop", True)]
     assert [
         room["room_id"]
         for room in _result(srv._methods["groups.list"](14, {}))["rooms"]

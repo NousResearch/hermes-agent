@@ -24,7 +24,7 @@ from gateway.hosted_room_peer import (
 )
 from tools import approval_context
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-from tui_gateway.hosted_room_service import _RouteStatusPeerClient
+from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 
 
 def _policy(*, approval_mode: str = "manual", max_turns: int = 12) -> dict:

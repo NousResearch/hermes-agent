@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -19,6 +19,7 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
 from gateway.hosted_rooms_common import compact_json
+from gateway.hosted_room_authority_history import AuthorityHistoryError, AuthoritySpan, at_sequence, validate_history
 
 
 MAX_DISCUSSION_MEMBERS = 6
@@ -92,6 +93,7 @@ class DiscussionRoom:
     members: tuple[DiscussionMember, ...]
     gateway_id: str
     authority_epoch: int
+    authority_history: tuple[AuthoritySpan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -278,8 +280,12 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
         raise DiscussionValidationError("room name is too long")
     gateway_id = _identifier(value.get("authority_gateway_id"), label="authority_gateway_id")
     authority_epoch = _positive_int(value.get("authority_epoch"), label="authority_epoch")
+    try:
+        history = validate_history(value["authority_history"], gateway_id=gateway_id, epoch=authority_epoch) if "authority_history" in value else ()
+    except AuthorityHistoryError as exc:
+        raise DiscussionValidationError(str(exc)) from exc
     members = validate_roster(value.get("members"), local_profiles=local_profiles)
-    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch)
+    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch, history)
 
 
 def is_pass_text(value: Any) -> bool:
@@ -436,7 +442,16 @@ def _validated_events(events: Sequence[Mapping[str, Any]], *, room: DiscussionRo
     validated: list[_ValidatedEvent] = []
     event_ids: set[str] = set()
     for raw in events:
-        event = _validate_event(raw, room=room, previous_seq=validated[-1].seq if validated else 0)
+        context = room
+        if room.authority_history:
+            if not isinstance(raw, Mapping):
+                raise DiscussionValidationError("room event must be an object")
+            seq = _positive_int(raw.get("seq"), label="event seq")
+            stamp = at_sequence(room.authority_history, seq)
+            if type(raw.get("authority_epoch")) is not int or raw["authority_epoch"] != stamp.epoch:
+                raise DiscussionValidationError("event does not match its recorded authority interval")
+            context = replace(room, gateway_id=stamp.gateway_id, authority_epoch=stamp.epoch, authority_history=())
+        event = _validate_event(raw, room=context, previous_seq=validated[-1].seq if validated else 0)
         if event.event_id in event_ids:
             raise DiscussionValidationError("room event ids must be unique")
         validated.append(event)

@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 
 # Keep the extracted store's log records on the API server logger.
@@ -129,7 +129,8 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                before_create: Callable[[sqlite3.Connection], None] | None = None):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -142,6 +143,8 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
+            if before_create is not None:
+                before_create(self._conn)
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"

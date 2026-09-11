@@ -2048,6 +2048,14 @@ DEFAULT_CONFIG = {
         # index matches instead of LIKE scans. True = use when present (inert otherwise); False =
         # never load/serve it. Bridged to HERMES_CJK_FTS.
         "cjk_fts": True,
+        # Session sources to hide from the Desktop sidebar's "recent sessions"
+        # slice and its session search (Cmd+Shift+F). Merged on top of the
+        # built-in exclusions (cron / kanban / subagent / tool / messaging
+        # platforms), never replacing them. Default hides A2A peer dispatches:
+        # they are machine-to-machine, so on any host that runs A2A peers they
+        # crowd out interactive chats. An empty list restores the built-in
+        # behavior only.
+        "exclude_sources": ["a2a"],
         # Slow session-search threshold (ms): searches at/above it log one INFO line with the
         # routing path (fts_cjk / fts5 / trigram / like_scan). 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS.

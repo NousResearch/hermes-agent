@@ -99,6 +99,33 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     assert not unseen(task)
 
 
+def test_telegram_topic_is_not_shadowed_by_an_unrelated_chat_route(tmp_path, monkeypatch):
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = RecordingAdapter()
+    runner.adapters = {Platform.TELEGRAM: primary}  # type: ignore[assignment]
+    runner.config.profile_routes = parse_profile_routes([
+        dict(platform="telegram", chat_id="-100group", thread_id="3", profile="other"),
+        dict(platform="telegram", chat_id="creator-dm", profile="yuki"),
+        dict(platform="telegram", chat_id="-100group", profile="yuki"),
+    ])
+    with kbc.connect() as conn:
+        task = kb.create_task(conn, title="telegram topic completion", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=task, platform="telegram", chat_id="-100group", thread_id="2",
+            chat_type="group", user_id="creator", notifier_profile="yuki",
+            delivery_mode="notify+wake", delivery_metadata={"chat_type": "group", "thread_id": "2"},
+        )
+        kb.complete_task(conn, task, result="finished")
+
+    rows = collect(runner)
+    assert [row["task"].id for row in rows] == [task]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert primary.sent[0][0] == "-100group"
+    assert primary.sent[0][2]["metadata"]["thread_id"] == "2"
+    assert not collect(runner)
+
+
 def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkeypatch):
     runner = setup_runner(tmp_path, monkeypatch)
     primary = runner.adapters[Platform.DISCORD]

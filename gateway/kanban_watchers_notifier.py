@@ -132,8 +132,16 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
-        if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
+        # Only Discord uses a thread/post id as ``chat_id`` and therefore needs
+        # the fail-closed unknown-parent probe. Telegram and Slack keep the
+        # containing chat/channel in ``chat_id``; synthesizing each candidate
+        # route's own chat as their parent made an unrelated DM/channel route
+        # shadow the real Telegram topic route before it could be considered.
+        parent_unknown = platform.value == "discord" and parent is None and thread_like
+        if parent_unknown and route.matches(
+            platform.value, guild_id=guild or route.guild_id, chat_id=chat,
+            thread_id=thread, parent_chat_id=route.chat_id,
+        ):
             return None
     return primary if profile == primary_profile else None
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from hermes_cli import backup
 import pytest
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles
 
 
@@ -20,7 +21,7 @@ def test_profile_copy_refuses_enrolled_identity(tmp_path, monkeypatch, operation
     monkeypatch.setenv('HERMES_HOME', str(source))
     # Gateway service registration is a process activation boundary; never run it.
     monkeypatch.setattr(profiles, '_maybe_register_gateway_service', lambda *a: None)
-    with kb.connect_closing(source / 'kanban.db') as db:
+    with kbc.connect_closing(source / 'kanban.db') as db:
         if enrolled: kb.enroll_authority_history(db)
     archive = tmp_path / 'source.tar.gz'
     if operation == 'import':
@@ -49,7 +50,7 @@ def test_restore_refuses_copied_or_rolled_back_authority(tmp_path, monkeypatch, 
     incoming = tmp_path / 'incoming'
     incoming.mkdir()
     for directory, location in ((root, 'target'), (incoming, 'incoming')):
-        with kb.connect_closing(directory / 'kanban.db') as db:
+        with kbc.connect_closing(directory / 'kanban.db') as db:
             if authority_location == location: kb.enroll_authority_history(db)
     before = (root / 'kanban.db').read_bytes()
     if operation == 'zip':
@@ -72,5 +73,5 @@ def test_restore_refuses_copied_or_rolled_back_authority(tmp_path, monkeypatch, 
         assert not (root / 'config.yaml').exists()
     else:
         invoke()
-        with kb.connect_closing(root / 'kanban.db') as db:
+        with kbc.connect_closing(root / 'kanban.db') as db:
             assert kb.authority_history_capability(db) is None

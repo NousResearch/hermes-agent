@@ -2,6 +2,7 @@
 import sqlite3
 import pytest
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.kanban_db_dispatch import _set_worker_pid as _kbd_set_worker_pid
 from tests.hermes_cli.test_kanban_authority_history import conn, enrolled, history
@@ -98,9 +99,9 @@ def test_real_runtime_lifecycle_matrix(conn, monkeypatch, action, kind, terminal
     signals = []
     def invoke():
         if action in {'extend', 'defer'}: return kb.release_stale_claims(conn)
-        if action == 'timeout': return kb.enforce_max_runtime(conn, signal_fn=lambda *args: signals.append(args))
-        if action == 'stale': return kb.detect_stale_running(conn, stale_timeout_seconds=1)
-        return kb.detect_crashed_workers(conn)
+        if action == 'timeout': return kbd.enforce_max_runtime(conn, signal_fn=lambda *args: signals.append(args))
+        if action == 'stale': return kbd.detect_stale_running(conn, stale_timeout_seconds=1)
+        return kbd.detect_crashed_workers(conn)
     before = rows(conn)
     if fault:
         conn.execute("CREATE TRIGGER matrix_fault BEFORE INSERT ON authority_history BEGIN SELECT RAISE(ABORT,'matrix fault'); END")
@@ -166,7 +167,7 @@ def test_failed_board_removal_retries_with_enrollment_fenced(tmp_path, monkeypat
         with pytest.raises(OSError, match='injected removal failure'):
             kb.remove_board('reserved', archive=archive)
     assert directory.is_dir()
-    with kb.connect_closing(board='reserved') as db:
+    with kbc.connect_closing(board='reserved') as db:
         assert db.execute('SELECT * FROM authority_history_removal').fetchall()
         with pytest.raises(ValueError, match='remov'):
             kb.enroll_authority_history(db)
@@ -179,7 +180,7 @@ def test_failed_board_removal_retries_with_enrollment_fenced(tmp_path, monkeypat
     if archive:
         target = Path(result['new_path'])
         assert target.is_dir()
-        with kb.connect_closing(target / 'kanban.db') as db:
+        with kbc.connect_closing(target / 'kanban.db') as db:
             assert kb.get_task(db, task).title == 'still ordinary'
             assert len(db.execute('SELECT * FROM authority_history_removal').fetchall()) == 1
             with pytest.raises(ValueError, match='remov'):

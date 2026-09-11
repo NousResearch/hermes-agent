@@ -27,6 +27,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_db_dispatch import _set_worker_pid as _kbd_set_worker_pid
 
 
@@ -36,7 +37,7 @@ class AuthorityClaimSurfaceTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / "k.db"
         kb._INITIALIZED_PATHS.discard(str(self.db.resolve()))
-        self.conn = kb.connect(db_path=self.db, board="c123")
+        self.conn = kbc.connect(db_path=self.db, board="c123")
         self.addCleanup(self.conn.close)
 
     def _enrolled_task(self, title="t"):
@@ -165,7 +166,7 @@ class BearerPublicationSweepTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / "k.db"
         kb._INITIALIZED_PATHS.discard(str(self.db.resolve()))
-        self.conn = kb.connect(db_path=self.db, board="f12")
+        self.conn = kbc.connect(db_path=self.db, board="f12")
         self.addCleanup(self.conn.close)
 
     def _bound(self, title):

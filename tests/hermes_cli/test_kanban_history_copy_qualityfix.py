@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from hermes_cli import backup, profiles, kanban_history as history, kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 def test_clone_collision_preserves_competing_profile(tmp_path, monkeypatch):
@@ -50,7 +51,7 @@ def test_zip_nonstandard_database_accepted(tmp_path, monkeypatch, prefix, locati
     source = tmp_path / 'incoming' / location
     source.parent.mkdir(parents=True)
     if kind == 'enrolled':
-        with kb.connect_closing(source) as db:
+        with kbc.connect_closing(source) as db:
             kb.enroll_authority_history(db)
     else:
         with sqlite3.connect(source) as db:
@@ -83,7 +84,7 @@ def test_zip_nonstandard_database_accepted(tmp_path, monkeypatch, prefix, locati
 def test_zip_standard_database_refused_before_overlay(tmp_path, monkeypatch, prefix, location, kind):
     source = tmp_path / 'fixture.db'
     if kind == 'enrolled':
-        with kb.connect_closing(source) as db:
+        with kbc.connect_closing(source) as db:
             kb.enroll_authority_history(db)
     else:
         source.write_bytes(b'not sqlite')
@@ -108,7 +109,7 @@ def test_zip_standard_database_refused_before_overlay(tmp_path, monkeypatch, pre
 def test_zip_authority_in_wal_refused(tmp_path, monkeypatch, prefix):
     source = tmp_path / 'fixture.db'
     archive = tmp_path / 'fixture.zip'
-    with kb.connect_closing(source) as db:
+    with kbc.connect_closing(source) as db:
         if db.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
             # hermes_state refuses WAL on SQLite versions affected by the
             # wal-reset corruption bug and uses journal_mode=DELETE instead.

@@ -4,12 +4,14 @@ import sqlite3
 
 import pytest
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_db_dispatch import _record_task_failure
 
 
 @pytest.fixture
 def conn(tmp_path):
-    db = kb.connect(tmp_path / 'board.db')
+    db = kbc.connect(tmp_path / 'board.db')
     yield db
     db.close()
 
@@ -125,7 +127,7 @@ def test_migration_reopen_preserves_exact_records(conn):
     before = history(conn, cap)
     path = conn.execute('PRAGMA database_list').fetchone()[2]
     kb.init_db(__import__('pathlib').Path(path))
-    other = kb.connect(__import__('pathlib').Path(path))
+    other = kbc.connect(__import__('pathlib').Path(path))
     try:
         assert history(other, cap) == before
     finally:
@@ -136,7 +138,7 @@ def test_migration_reopen_preserves_exact_records(conn):
 def test_enrolled_board_removal_refused(tmp_path, monkeypatch, archive):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     kb.create_board('history')
-    with kb.connect_closing(board='history') as db:
+    with kbc.connect_closing(board='history') as db:
         kb.enroll_authority_history(db)
     with pytest.raises(ValueError, match='enrolled'):
         kb.remove_board('history', archive=archive)
@@ -152,7 +154,7 @@ def test_enrollment_cannot_race_board_removal(tmp_path, monkeypatch):
     reached = []
     def interleaved_rename(path, target):
         if path == directory:
-            with kb.connect_closing(directory / 'kanban.db') as db:
+            with kbc.connect_closing(directory / 'kanban.db') as db:
                 with pytest.raises(ValueError, match='remov'):
                     kb.enroll_authority_history(db)
             reached.append(True)
@@ -280,7 +282,7 @@ def test_actual_lifecycle_transitions(conn, monkeypatch, action, kind, status):
         monkeypatch.setattr(kb.time, 'time', lambda: claimed.claim_expires + 1)
         assert kb.release_stale_claims(conn) == 1
     elif action == 'heartbeat':
-        assert kb.heartbeat_worker(conn, task, expected_run_id=claimed.current_run_id)
+        assert kbd.heartbeat_worker(conn, task, expected_run_id=claimed.current_run_id)
     elif action == 'delete_active':
         before = history(conn, cap)
         with pytest.raises(ValueError, match='active'):

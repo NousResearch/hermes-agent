@@ -94,6 +94,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
     connectionId: null | string
     profile: string
   } | null>(null)
+  const [ownerFailure, setOwnerFailure] = useState<string | null>(null)
 
   useEffect(() => {
     if (!storedId || !runtimeId || historical) {
@@ -118,6 +119,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
       .catch(() => {
         if (!cancelled) {
           setOwner(null)
+          setOwnerFailure(`${storedId}:${runtimeId}`)
         }
       })
 
@@ -194,7 +196,10 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   if (firstBuild && storedId && owner?.storedId === storedId && owner.runtimeId === runtimeId) {
     return (
       <FirstBuildConnectorOffer
+        connectionId={owner.connectionId}
         part={props}
+        profile={owner.profile}
+        runtimeId={owner.runtimeId}
         storedId={storedId}
         target={view.kind === 'tile' ? `tile:${storedId}` : 'main'}
       />
@@ -202,7 +207,11 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }
 
   if (!flow) {
-    return <p className="text-xs text-muted-foreground">{t.connectors.ownerMissing}</p>
+    return (
+      <p className="text-xs text-muted-foreground">
+        {ownerFailure === `${storedId}:${runtimeId}` ? t.connectors.ownerMissing : 'Checking your apps…'}
+      </p>
+    )
   }
 
   return (

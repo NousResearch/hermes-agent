@@ -366,25 +366,41 @@ class CLILoopsMixin:
             try:
                 while not getattr(self, "_should_exit", False):
                     time.sleep(POLL_SECONDS)
-                    try:
-                        mgr = self._get_heartbeat_manager()
-                        if mgr is None or not mgr.is_active():
-                            continue
-                        busy = (
-                            self._agent_running
-                            or getattr(self, "_voice_recording", False)
-                            or getattr(self, "_voice_processing", False)
-                            or not self._pending_input.empty())
-                        if busy:
-                            continue
-                        prompt = mgr.due_prompt()
-                        if prompt:
-                            self._pending_input.put(prompt)
-                    except Exception as exc:
-                        logging.debug("heartbeat watchdog tick failed: %s", exc)
+                    self._heartbeat_watchdog_tick()
             finally:
                 self._heartbeat_watchdog_started = False
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
+
+    def _heartbeat_watchdog_tick(self) -> None:
+        """One daemon poll: release a parked /goal whose barrier lifted, then fire a due heartbeat.
+
+        The parked-goal resume lives HERE as well as in the interactive idle tick so a stalled-
+        subagent barrier does not depend on the process loop being idle to release. That daemon
+        polls on its own timer regardless of ``_agent_running``; the idle tick is starved while a
+        long tool call runs, and a parked goal that outlives its target must not stall the loop."""
+        try:
+            busy = (
+                self._agent_running
+                or getattr(self, "_voice_recording", False)
+                or getattr(self, "_voice_processing", False)
+                or not self._pending_input.empty())
+        except Exception:
+            return
+        if busy:
+            return
+        try:
+            self._maybe_resume_parked_goal()
+        except Exception as exc:
+            logging.debug("parked-goal watchdog resume failed: %s", exc)
+        try:
+            mgr = self._get_heartbeat_manager()
+            if mgr is None or not mgr.is_active():
+                return
+            prompt = mgr.due_prompt()
+            if prompt:
+                self._pending_input.put(prompt)
+        except Exception as exc:
+            logging.debug("heartbeat watchdog tick failed: %s", exc)
 
     def _maybe_resume_parked_goal(self) -> None:
         """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process

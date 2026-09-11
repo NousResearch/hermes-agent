@@ -1280,6 +1280,9 @@ DEFAULT_CONFIG = {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
+        # Longest a pid/session wait barrier may hold the loop before judging resumes. A stalled
+        # subagent should cost minutes, not half an hour; keep this well under a human's patience.
+        "max_barrier_wait_seconds": 600,
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

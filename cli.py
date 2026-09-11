@@ -3863,6 +3863,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         threading.Thread(target=self._tui_spinner_loop, daemon=True).start()
         threading.Thread(target=self._tui_process_loop, daemon=True).start()
+        # Durable driver for parked-goal resume (_heartbeat_watchdog_tick): start it at run() so a
+        # parked /goal always has a timer-driven release, independent of the process loop's idle
+        # path. Harmless when no heartbeat is configured — is_active() gates the heartbeat branch.
+        self._start_heartbeat_watchdog()
         # Wake word listener off-thread so a first-run engine install never blocks the prompt.
         threading.Thread(target=self._tui_wake_startup, daemon=True, name="wake-startup").start()
 

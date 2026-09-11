@@ -873,3 +873,36 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Wait-barrier self-heal cap (goals.max_barrier_wait_seconds)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_barrier_cap_is_config_driven_and_releases_past_it(hermes_home, monkeypatch):
+    """The pid/session barrier self-heal cap reads config, and releases the loop past it.
+
+    Contract: a barrier younger than the configured cap still holds the loop; past the cap it
+    releases (judging resumes) instead of parking indefinitely on a stalled subagent. The cap is
+    resolved through ``_barrier_wait_cap_seconds`` so a profile can tune it below the default.
+    """
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    monkeypatch.setattr(goals, "_barrier_wait_cap_seconds", lambda: 60.0)
+    monkeypatch.setattr(goals, "_pid_alive", lambda _pid: True)  # target stays "alive"
+
+    mgr = GoalManager(session_id="cap-config")
+    mgr.set("g")
+    mgr.wait_on(1, reason="stalled subagent")
+    assert mgr.state is not None
+
+    mgr.state.waiting_since = time.time() - 30  # under the cap -> still parked
+    mgr._save()
+    assert mgr.is_waiting() is True
+
+    mgr.state.waiting_since = time.time() - 61  # past the cap -> released
+    mgr._save()
+    assert mgr.is_waiting() is False
+    assert mgr.state.waiting_on_pid is None

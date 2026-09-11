@@ -226,7 +226,11 @@ into a shared environment. Subprocesses like MCP servers and Kanban workers only
 ever see their own profile's secrets — including credentials injected by an
 external secret source (1Password, Bitwarden, …): a stdio MCP server started for
 profile B receives B's value for such a name, or nothing if B has none, never the
-default profile's. Terminal settings
+default profile's. MCP servers are connected **per profile**: two profiles that
+both name a server `github` with their own token get two connections and each
+sees only its own tools; profiles whose `mcp_servers` entry is identical (same
+route *and* credentials) share one connection, and an owner's `/reload-mcp`
+re-registers the sharing profiles' tools without them reloading. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the

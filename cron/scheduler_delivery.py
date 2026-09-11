@@ -641,6 +641,20 @@ def _resolve_single_delivery_target(
                 return _home_target(platform_name, chat_id, "origin_fallback")
         return None
 
+    # desktop-session[:<job-name>] — deliver to a per-job Desktop chat.
+    # The bare form auto-names from the job id; the explicit form sets the
+    # session title to the given name.
+    if deliver_value.lower().startswith("desktop-session"):
+        session_name = None
+        if ":" in deliver_value:
+            session_name = deliver_value.split(":", 1)[1].strip()
+        return {
+            "platform": "desktop-session",
+            "chat_id": session_name or str(job.get("id", "?")),
+            "thread_id": None,
+            "_resolved_from": "desktop_session",
+        }
+
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
@@ -1904,7 +1918,7 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict, content: str, adapters=None, loop=None, session_db=None, *, for_failure: bool = False
 ) -> Optional[str]:
     """Deliver job output to the configured target(s). With ``adapters``/``loop`` (gateway
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
@@ -1969,6 +1983,7 @@ def _deliver_result(
     # Bridge media-policy config into the env vars the path validator reads. The gateway does this
     # at boot; standalone runs (`hermes cron run`) did not, silently dropping files. Idempotent.
     from gateway.media_policy import apply_media_policy_env
+    from cron.desktop_delivery import _deliver_to_desktop_session
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     # Redact at this single chokepoint, BEFORE the live-adapter / standalone send lanes below.
@@ -2010,6 +2025,19 @@ def _deliver_result(
     delivery_errors = []
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
     for target in targets:
+        # desktop-session targets don't ride a gateway adapter: the output
+        # gets written to a Desktop delivery session via the SessionDB (same DB
+        # the desktop client queries). Handled before the Platform enum below,
+        # which knows nothing about this pseudo-platform. The target's chat_id
+        # holds the session name hint (the job id by default).
+        if target["platform"] == "desktop-session":
+            desktop_error = _deliver_to_desktop_session(
+                job, delivery_content, session_db,
+            )
+            if desktop_error:
+                delivery_errors.append(desktop_error)
+            continue
+
         # A failure notice for a platform that hides warning notifications is a suppressed
         # disposition, not a send; requested (non-failure) results are never gated.
         from gateway.warning_notifications import warning_notifications_enabled
@@ -2052,6 +2080,23 @@ def _deliver_result(
         job["_notification_all_targets_suppressed"] = True
     else:
         delivery_errors.extend(policy_drop_errors)
+
+    # Desktop delivery via per-job field (desktop_delivery_enabled=True): deliver
+    # the output to the job's Desktop session in addition to whatever the
+    # deliver= targets resolved.  Skipped when the deliver= targets already
+    # included a desktop-session target (no double-send).
+    if (
+        job.get("desktop_delivery_enabled")
+        and not any(
+            t.get("platform") == "desktop-session"
+            for t in targets
+        )
+    ):
+        desktop_error = _deliver_to_desktop_session(
+            job, delivery_content, session_db,
+        )
+        if desktop_error:
+            delivery_errors.append(desktop_error)
     _record_delivery_verification(job, unverified_targets)
     return "; ".join(delivery_errors) if delivery_errors else None
 

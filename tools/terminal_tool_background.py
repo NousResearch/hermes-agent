@@ -39,7 +39,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     'exit-code-driven `gh pr checks $PR >/dev/null` (rc 0 = green, 8 = pending, else fail) for '
     'exit-on-first-fail behavior, or the column-2 awk-on-tabs poller (`awk -F"\\t" '
     '"$2==\\"pending\\""`) for sharded matrices. Load '
-    "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
+    "the repository's documented CI workflow for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
     "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '

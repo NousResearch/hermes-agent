@@ -319,7 +319,9 @@ def _usage_path_is_present(obj: Any, *path: str) -> bool:
                 return False
             obj = obj[hop]
             continue
-        fields_set = getattr(obj, "model_fields_set", getattr(obj, "__fields_set__", None))
+        fields_set = getattr(obj, "model_fields_set", None)
+        if fields_set is None:
+            fields_set = getattr(obj, "__fields_set__", None)
         if fields_set is not None and hop not in fields_set:
             return False
         if not hasattr(obj, hop):

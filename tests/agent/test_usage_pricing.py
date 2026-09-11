@@ -32,6 +32,20 @@ def test_usage_field_availability_distinguishes_explicit_zero_from_missing_cache
     }
     assert usage_field_availability(missing, api_mode="codex_responses")["cache_read_tokens"] is False
 
+    defaulted_details = SimpleNamespace(cached_tokens=0, model_fields_set=set())
+    defaulted = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=10,
+        input_tokens_details=defaulted_details,
+        model_fields_set={"input_tokens", "output_tokens", "input_tokens_details"},
+    )
+    assert (
+        usage_field_availability(defaulted, api_mode="codex_responses")[
+            "cache_read_tokens"
+        ]
+        is False
+    )
+
 
 def test_api_request_hook_usage_includes_field_availability():
     class Hooks(ApiRequestHooksMixin):

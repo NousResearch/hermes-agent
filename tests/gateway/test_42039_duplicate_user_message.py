@@ -171,6 +171,32 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     assert replay[-1]["content"] == "unrelated question"
 
 
+
+@pytest.mark.asyncio
+async def test_deduped_retry_of_failed_turn_adds_no_second_boundary(monkeypatch, tmp_path):
+    """A platform retry of the same failed message (dedupe skips the user row) must not stack a
+    second boundary behind the first — that would be two consecutive assistant rows."""
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.has_platform_message_id.return_value = True
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "API call failed after 3 retries: 429 Too Many Requests",
+            "error": "429 Too Many Requests — rate limit exceeded",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(_event(), _source(), "agent:main:telegram:group:-1001:12345", 1)
+
+    assert [
+        call.args[1]["role"] for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
+    ] == []
+
+
 @pytest.mark.asyncio
 async def test_failed_turn_with_tool_activity_does_not_recommend_blind_retry(
     monkeypatch, tmp_path

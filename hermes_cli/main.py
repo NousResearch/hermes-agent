@@ -596,6 +596,17 @@ def _nf_tier_gate(flag_name, env_profile_name):
         return _fail_closed if _nf_provisioning_file_present() else None
 
 
+def _desktop_ssh_backend(argv: list) -> bool:
+    """A Desktop-owned ``serve --ssh-session-token-file`` child has a fixed identity too.
+
+    The Desktop client names the remote profile explicitly (``--profile <name>``, or none for
+    the root home). Following the remote host's sticky ``active_profile`` instead silently
+    re-homes the backend into a profile the UI never asked for, so Settings read one
+    ``config.yaml`` and the user edits another (KC's "nothing sticks over SSH").
+    """
+    return "--ssh-session-token-file" in argv
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]

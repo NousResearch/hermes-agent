@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 EXPORTER_VERSION = "hermes sessions export (md/qmd) v1"
-_SHA_LINE_RE = re.compile(r"- SHA256 of exported body: `([0-9a-f]{64})`")
+_SHA_LINE_RE = re.compile(r"- SHA256 of exported body: `([0-9a-f]{64})`\n?\Z")
 _SHA_PLACEHOLDER = "__SHA256_PLACEHOLDER__"
 _VERIFICATION_HEADING = "## Export verification"
 
@@ -83,7 +83,9 @@ def _render_messages(session: dict[str, Any]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-def _export_body_without_hash(session: dict[str, Any], *, fmt: str, exported_at: float) -> str:
+def _export_body_without_hash(
+    session: dict[str, Any], *, fmt: str, exported_at: float, include_verification: bool = True
+) -> str:
     session_id = _session_id(session)
     exported_iso = _iso_timestamp(exported_at)
     message_count = _message_count(session)
@@ -109,13 +111,16 @@ def _export_body_without_hash(session: dict[str, Any], *, fmt: str, exported_at:
         *([f"Source: `{session.get('source')}`\n"] if session.get("source") else []),
         *([f"Working directory: `{session.get('cwd')}`\n"] if session.get("cwd") else []),
         _render_messages(session),
-        f"{_VERIFICATION_HEADING}\n",
-        f"- Session id: `{session_id}`",
-        f"- Exported messages: `{message_count}`",
-        f"- Source DB message count at export: `{session.get('message_count', message_count)}`",
-        f"- Exported at: `{exported_iso}`",
-        f"- SHA256 of exported body: `{_SHA_PLACEHOLDER}`",
     ]
+    if include_verification:
+        parts.extend([
+            f"{_VERIFICATION_HEADING}\n",
+            f"- Session id: `{session_id}`",
+            f"- Exported messages: `{message_count}`",
+            f"- Source DB message count at export: `{session.get('message_count', message_count)}`",
+            f"- Exported at: `{exported_iso}`",
+            f"- SHA256 of exported body: `{_SHA_PLACEHOLDER}`",
+        ])
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -129,12 +134,16 @@ def render_session_markdown(
 ) -> str:
     """Render a SessionDB export dictionary as Markdown/QMD text."""
     _check_fmt(fmt)
-    body = _export_body_without_hash(session, fmt=fmt, exported_at=time.time())
+    body = _export_body_without_hash(
+        session, fmt=fmt, exported_at=time.time(), include_verification=include_verification
+    )
     if not include_verification:
-        return body.split(f"\n{_VERIFICATION_HEADING}\n", 1)[0].rstrip() + "\n"
+        return body
     # The digest covers the body with the SHA line set to `pending`, which is what verify recomputes.
-    digest_body = body.replace(f"`{_SHA_PLACEHOLDER}`", "`pending`")
-    return body.replace(_SHA_PLACEHOLDER, hashlib.sha256(digest_body.encode("utf-8")).hexdigest())
+    # Only the final placeholder belongs to the exporter; earlier copies are conversation text.
+    prefix, _, suffix = body.rpartition(_SHA_PLACEHOLDER)
+    digest_body = prefix + "pending" + suffix
+    return prefix + hashlib.sha256(digest_body.encode("utf-8")).hexdigest() + suffix
 
 
 def safe_session_filename(session: dict[str, Any], *, fmt: str = "md") -> str:
@@ -153,15 +162,17 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
     if not Path(path).exists():
         return False, "file missing"
     text = Path(path).read_text(encoding="utf-8")
-    match = _SHA_LINE_RE.search(text)
+    # Messages can contain complete older exports. Only this document's final footer is metadata.
+    body, separator, footer = text.rpartition(f"\n{_VERIFICATION_HEADING}\n")
+    match = _SHA_LINE_RE.search(footer) if separator else None
     if not match:
         return False, "sha256 marker missing"
-    digest_body = _SHA_LINE_RE.sub("- SHA256 of exported body: `pending`", text)
+    digest_body = body + separator + footer[:match.start(1)] + "pending" + footer[match.end(1):]
     if hashlib.sha256(digest_body.encode("utf-8")).hexdigest() != match.group(1):
         return False, "sha256 mismatch"
-    if f"- Exported messages: `{_message_count(session)}`" not in text:
+    if f"- Exported messages: `{_message_count(session)}`" not in footer:
         return False, "message count mismatch"
-    if f"- Session id: `{_session_id(session)}`" not in text:
+    if f"- Session id: `{_session_id(session)}`" not in footer:
         return False, "session id mismatch"
     return True, "ok"
 

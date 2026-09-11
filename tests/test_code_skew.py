@@ -71,6 +71,24 @@ class TestModelSwitchSkewGuard:
         assert "def4567890" in msg
         assert "hermes gateway restart" in msg
 
+    def test_model_handler_checks_guard_before_lazy_imports(self, monkeypatch):
+        """Bare /model must reject stale code before importing newly updated modules."""
+        from gateway import slash_commands_model as slash_commands
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        expected = "restart required"
+        monkeypatch.setattr(slash_commands, "_model_switch_skew_guard", lambda: expected)
+        event = MessageEvent(
+            text="/model",
+            message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"),
+        )
+
+        handler = object.__new__(slash_commands.GatewayModelCommandsMixin)
+        assert asyncio.run(handler._handle_model_command(event)) == expected
+
 
 class TestDashboardCodeSkewGuard:
     """Dashboard mirror of the gateway's model-switch skew guard (#86207)."""

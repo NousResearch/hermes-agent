@@ -464,6 +464,13 @@ class GatewayModelCommandsMixin:
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model."""
+        # Guard before every lazy import below. A bare /model only lists choices and never reaches
+        # _perform_model_switch(), but newly pulled model modules can still import names missing from
+        # this long-lived process's cached dependencies.
+        skew_error = _model_switch_skew_guard()
+        if skew_error:
+            return skew_error
+
         from gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
 

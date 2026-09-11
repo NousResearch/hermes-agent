@@ -13,12 +13,13 @@ import threading
 import time
 
 from hermes_cli import web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 def _reset_cache():
-    web_server._TOPOLOGY_CACHE["ts"] = 0.0
-    web_server._TOPOLOGY_CACHE["data"] = None
-    web_server._TOPOLOGY_CACHE["fn"] = None
+    _web_server_gateway._TOPOLOGY_CACHE["ts"] = 0.0
+    _web_server_gateway._TOPOLOGY_CACHE["data"] = None
+    _web_server_gateway._TOPOLOGY_CACHE["fn"] = None
 
 
 def _fake_topology(calls, delay=0.0):
@@ -34,12 +35,12 @@ def _fake_topology(calls, delay=0.0):
 def test_topology_cache_returns_cached_result_within_ttl(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        web_server, "_collect_profile_gateway_topology", _fake_topology(calls)
+        _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls)
     )
     _reset_cache()
     try:
-        first = web_server._collect_profile_gateway_topology_cached()
-        second = web_server._collect_profile_gateway_topology_cached()
+        first = _web_server_gateway._collect_profile_gateway_topology_cached()
+        second = _web_server_gateway._collect_profile_gateway_topology_cached()
     finally:
         _reset_cache()
 
@@ -50,14 +51,14 @@ def test_topology_cache_returns_cached_result_within_ttl(monkeypatch):
 def test_topology_cache_rescans_after_ttl(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        web_server, "_collect_profile_gateway_topology", _fake_topology(calls)
+        _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls)
     )
     _reset_cache()
     try:
-        web_server._collect_profile_gateway_topology_cached()
+        _web_server_gateway._collect_profile_gateway_topology_cached()
         # Age the cache entry past the TTL instead of sleeping through it.
-        web_server._TOPOLOGY_CACHE["ts"] -= web_server._TOPOLOGY_CACHE_TTL + 1.0
-        web_server._collect_profile_gateway_topology_cached()
+        _web_server_gateway._TOPOLOGY_CACHE["ts"] -= _web_server_gateway._TOPOLOGY_CACHE_TTL + 1.0
+        _web_server_gateway._collect_profile_gateway_topology_cached()
     finally:
         _reset_cache()
 
@@ -69,7 +70,7 @@ def test_topology_cache_collapses_concurrent_scans(monkeypatch):
     is exactly the GIL storm the cache exists to prevent."""
     calls = []
     monkeypatch.setattr(
-        web_server,
+        _web_server_gateway,
         "_collect_profile_gateway_topology",
         _fake_topology(calls, delay=0.05),
     )
@@ -79,7 +80,7 @@ def test_topology_cache_collapses_concurrent_scans(monkeypatch):
         threads = [
             threading.Thread(
                 target=lambda: results.append(
-                    web_server._collect_profile_gateway_topology_cached()
+                    _web_server_gateway._collect_profile_gateway_topology_cached()
                 )
             )
             for _ in range(8)
@@ -100,15 +101,15 @@ def test_topology_cache_misses_when_collector_is_swapped(monkeypatch):
     collector never leaks across the swap."""
     calls_a, calls_b = [], []
     monkeypatch.setattr(
-        web_server, "_collect_profile_gateway_topology", _fake_topology(calls_a)
+        _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls_a)
     )
     _reset_cache()
     try:
-        first = web_server._collect_profile_gateway_topology_cached()
+        first = _web_server_gateway._collect_profile_gateway_topology_cached()
         monkeypatch.setattr(
-            web_server, "_collect_profile_gateway_topology", _fake_topology(calls_b)
+            _web_server_gateway, "_collect_profile_gateway_topology", _fake_topology(calls_b)
         )
-        second = web_server._collect_profile_gateway_topology_cached()
+        second = _web_server_gateway._collect_profile_gateway_topology_cached()
     finally:
         _reset_cache()
 

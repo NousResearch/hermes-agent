@@ -152,7 +152,7 @@ def test_stale_credential_id_prefers_api_key_hint(tmp_path, monkeypatch):
     healthy key must not inherit the primary's 429.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -211,7 +211,7 @@ def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, 
     # Keep the dev machine's live ~/.claude credentials from seeding a
     # claude_code singleton entry into this pool (same isolation as the
     # other anthropic pool tests in this file).
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -1113,8 +1113,8 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
             "expiresAt": int(time.time() * 1000) + 3_600_000,
         }
 
-    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", _fake_pkce)
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", _fake_cc)
+    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", _fake_pkce)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", _fake_cc)
 
     from agent.credential_pool import load_pool
 
@@ -1167,8 +1167,8 @@ def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch
         },
     )
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
     from agent.credential_pool import load_pool
 
@@ -1196,11 +1196,11 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
         lambda: None,
     )
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: {
             "accessToken": "sk-ant-oat01-autodiscovered-cc",
             "refreshToken": "cc-refresh",
@@ -1366,11 +1366,11 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
 
     # Claude Code credentials exist on disk
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
     )
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
         lambda: None,
     )
     # User configured kimi-coding, NOT anthropic
@@ -1780,8 +1780,8 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
     # on a dev machine would seed an extra claude_code entry and break the
     # exact-id assertions below (passes on CI where no such file exists).
-    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -1856,11 +1856,11 @@ def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, ref
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
     monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
         lambda: None,
     )
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
     )
     from agent.credential_pool import load_pool
@@ -1884,7 +1884,7 @@ def test_sync_anthropic_entry_tokens_unchanged_no_op(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: {"accessToken": "same-access", "refreshToken": "same-refresh", "expiresAt": 9_999_999_999_000},
     )
 
@@ -1922,7 +1922,7 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     pool._replace_entry(entry, exhausted)
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_000},
     )
 
@@ -2079,3 +2079,133 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+def _exhausted_billing_store(tmp_path, *, age_seconds: float):
+    """An auth store with one deepseek entry benched for a billing failure."""
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "deepseek": [
+                    {
+                        "id": "cred-1",
+                        "label": "api-key-1",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-test",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - age_seconds,
+                        "last_error_code": 402,
+                        "last_error_reason": "invalid_request_error",
+                        "last_error_message": "Insufficient Balance",
+                        "failure_reason": "billing",
+                    }
+                ]
+            },
+        },
+    )
+
+
+def _disk_entry(tmp_path) -> dict:
+    """The deepseek entry as it actually reached disk."""
+    store = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = store["credential_pool"]["deepseek"]
+    assert len(entries) == 1, entries
+    return entries[0]
+
+
+def test_reset_statuses_clears_a_cooldown_that_is_still_binding(tmp_path, monkeypatch):
+    """An operator reset has to survive the disk-recency merge.
+
+    ``write_credential_pool`` keeps a NEWER on-disk cooldown over the caller's
+    snapshot so one process cannot resurrect a key another has just benched.
+    ``reset_statuses`` clears ``last_status_at`` to None, which that merge reads
+    as epoch 0 — older than any real timestamp — so the reset always lost and
+    the cooldown was copied straight back. ``hermes auth reset`` printed "Reset
+    status on 1 credentials" and changed nothing on disk.
+
+    The cooldown here is deliberately RECENT. Once a cooldown has expired the
+    merge bails out early, so the same assertions pass with or without the fix:
+    a test written against an expired cooldown proves nothing. Verified by
+    reverting the source change with the tests kept: this one and the
+    failure_reason test fail, and the guard test below keeps passing, which is
+    how it is known to pin pre-existing behaviour rather than the new flag.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("deepseek").reset_statuses() == 1
+
+    entry = _disk_entry(tmp_path)
+    assert entry["last_status"] is None
+    assert entry["last_status_at"] is None
+    assert entry["last_error_code"] is None
+    # And a fresh load agrees, which is what the next process will see. The
+    # operational symptom of the bug was the CLI refusing the provider outright
+    # with "No usable credentials found", so availability is the property that
+    # matters here, not any single field.
+    assert load_pool("deepseek").has_available() is True
+
+
+def test_reset_statuses_clears_the_classified_failure_reason(tmp_path, monkeypatch):
+    """``failure_reason`` is part of the exhaustion state, so a reset clears it.
+
+    It lives in ``extra`` rather than as a dataclass field, so ``replace()``
+    could not reach it and it outlived every reset — leaving an entry with no
+    status and no error code but still classified ``billing``. ``hermes auth
+    list`` renders that leftover as though it were a current finding.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("deepseek").reset_statuses() == 1
+
+    entry = _disk_entry(tmp_path)
+    assert entry.get("failure_reason") is None
+
+
+def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
+    tmp_path, monkeypatch
+):
+    """The concurrency guard the fix threads through must still hold.
+
+    This is the property ``status_cleared_ids`` is scoped against: a writer that
+    has NOT declared a deliberate clear is presumed to be holding a stale
+    snapshot, and a binding on-disk cooldown outranks it. Without this test the
+    fix could have been "skip the merge always", which would let one process
+    resurrect a key another had just rate-limited — the exact lost update the
+    merge exists to prevent.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+
+    from hermes_cli.auth import write_credential_pool
+
+    # A stale snapshot: same id, status cleared, intent NOT declared.
+    write_credential_pool(
+        "deepseek",
+        [
+            {
+                "id": "cred-1",
+                "label": "api-key-1",
+                "auth_type": "api_key",
+                "priority": 0,
+                "source": "manual",
+                "access_token": "sk-test",
+                "last_status": None,
+                "last_status_at": None,
+                "last_error_code": None,
+            }
+        ],
+    )
+
+    entry = _disk_entry(tmp_path)
+    assert entry["last_status"] == "exhausted"
+    assert entry["last_error_code"] == 402

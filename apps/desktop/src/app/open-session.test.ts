@@ -7,6 +7,11 @@ const setSessionTileWorkspaceScope = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
+const clearUnreadOnOpen = vi.fn(async (_sessionId: string) => undefined)
+
+vi.mock('@/store/session-unread-remote', () => ({
+  clearUnreadOnOpen: (sessionId: string) => clearUnreadOnOpen(sessionId)
+}))
 
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
@@ -92,6 +97,7 @@ describe('openSession', () => {
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
     setSessionTileWorkspaceScope.mockReset()
+    clearUnreadOnOpen.mockClear()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -102,6 +108,7 @@ describe('openSession', () => {
     expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(navigate).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
+    expect(clearUnreadOnOpen).toHaveBeenCalledWith('s1')
   })
 
   it('in-place focuses main when already selected and not on a page', () => {

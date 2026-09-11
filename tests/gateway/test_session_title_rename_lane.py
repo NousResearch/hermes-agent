@@ -14,7 +14,8 @@ import types
 import pytest
 
 from gateway.config import Platform
-from gateway.run import TurnRunner
+from gateway.run import GatewayRunner
+from gateway.run_turn_runner import TurnRunner
 
 
 def _attach(lane):
@@ -53,3 +54,51 @@ def test_the_rename_waits_for_the_model_title(lane):
 
     callback("Fix flaky auth test", "llm")
     assert renames == ["Fix flaky auth test"]
+
+
+@pytest.mark.asyncio
+async def test_native_thread_rename_passes_only_the_initial_name_guard():
+    """The shared rename lane must honor the strict native adapter contract."""
+    calls: list[tuple[str, str, str | None]] = []
+
+    class StrictNativeAdapter:
+        async def rename_thread(
+            self,
+            thread_id: str,
+            name: str,
+            *,
+            only_if_current_name: str | None = None,
+        ) -> bool:
+            calls.append((thread_id, name, only_if_current_name))
+            return True
+
+    class NativeRenameRunner:
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self, adapter):
+            self.adapters = {Platform.DISCORD: adapter}
+
+        def _adapter_for_source(self, source):
+            return self.adapters[source.platform]
+
+    source = types.SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        thread_id="999",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+
+    runner = NativeRenameRunner(StrictNativeAdapter())
+    await runner._rename_discord_auto_thread_for_session_title(
+        source,
+        "session-1",
+        "Semantic Session Title",
+    )
+
+    assert calls == [("999", "Semantic Session Title", "Initial words")]

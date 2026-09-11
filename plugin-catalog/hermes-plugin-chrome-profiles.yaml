@@ -1,0 +1,14 @@
+name: hermes-plugin-chrome-profiles
+repo: https://github.com/anpicasso/hermes-plugin-chrome-profiles
+sha: 5b9c3257b464c0f926d4355149a8aed9c8f307b4
+description: Switch Hermes browser tools between local and remote Chrome/Edge profiles via CDP.
+maintainer: anpicasso
+tier: community
+docs_url: https://github.com/anpicasso/hermes-plugin-chrome-profiles
+platforms: []
+capabilities:
+  provides_tools:
+  - browser_profile
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

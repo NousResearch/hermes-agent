@@ -77,7 +77,7 @@ const hoverProps = (index: number, paint: (index: number, on: boolean) => void) 
 // shared rAF handle cancels a prior jump so rapid tick clicks don't fight.
 let jumpRaf = 0
 
-function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
+export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
   cancelAnimationFrame(jumpRaf)
   const start = viewport.scrollTop
   const delta = top - start
@@ -110,7 +110,7 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-function scrollToPrompt(root: HTMLElement | null, id: string) {
+export function scrollToPrompt(root: HTMLElement | null, id: string) {
   const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 

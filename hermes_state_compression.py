@@ -28,8 +28,12 @@ _CHAIN_STEP_SQL = f"""
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND COALESCE(
+                            json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from'), ''
+                          ) != parent.id
+                      AND COALESCE(
+                            json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from'), ''
+                          ) != parent.id
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE

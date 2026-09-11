@@ -43,7 +43,6 @@ import {
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
-import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -894,9 +893,21 @@ export function paneRootSide(paneId: string): null | TreeSide {
   }
 
   const panes = registry.getArea('panes')
-  const child = row.children.find(c => allPaneIds(c).includes(paneId))
+  const index = row.children.findIndex(c => allPaneIds(c).includes(paneId))
 
-  return child ? rootChildSide(child, id => panes.find(p => p.id === id)) : null
+  const mainIndices = row.children.flatMap((child, i) =>
+    allPaneIds(child).some(
+      id => (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+    )
+      ? [i]
+      : []
+  )
+
+  if (index < 0 || mainIndices.length === 0) {
+    return null
+  }
+
+  return index < mainIndices[0] ? 'left' : index > mainIndices[mainIndices.length - 1] ? 'right' : null
 }
 
 /** The closer-less Close: dismiss the pane (removed + remembered; reveal
@@ -985,11 +996,52 @@ export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
   }
 }
 
+/** Explicit side-open also recovers hide-only tabs, without fronting over Bots. */
+export function restoreHiddenTreeSideTabs(side: TreeSide): void {
+  for (const paneId of [...$hiddenStripTabs.get()]) {
+    if (paneRootSide(paneId) === side) {
+      setStripTabHidden(paneId, false)
+    }
+  }
+}
+
+/** Restore minimized zones without changing their active tab (including Bots). */
+export function restoreMinimizedTreeSide(side: TreeSide): boolean {
+  const tree = $layoutTree.get()
+  const row = rootRow()
+
+  if (!tree || !row) {
+    return false
+  }
+
+  let next = tree
+
+  for (const child of row.children) {
+    if (paneRootSide(allPaneIds(child)[0]) !== side) {
+      continue
+    }
+
+    for (const id of groupLeafIds(child)) {
+      if (findGroup(next, id)?.minimized) {
+        next = setGroupMinimized(next, id, false)
+      }
+    }
+  }
+
+  if (next === tree) {
+    return false
+  }
+
+  commit(next)
+
+  return true
+}
+
 /**
  * Does the layout have a collapsible root side of `side`? ⌘J's normal target is
  * the right sidebar; a layout without one (e.g. a terminal-on-bottom preset)
- * lets callers fall back to the terminal so ⌘J is never a dead key. Semantic —
- * reuses `rootChildSide`, so it tracks a ⌘\ flip / drag like the toggles do.
+ * lets callers fall back to the terminal so ⌘J is never a dead key. Tracks
+ * physical position through a ⌘\ flip / drag, just like the toggles.
  */
 export function layoutHasRootSide(side: TreeSide): boolean {
   const row = rootRow()
@@ -998,9 +1050,7 @@ export function layoutHasRootSide(side: TreeSide): boolean {
     return false
   }
 
-  const panes = registry.getArea('panes')
-
-  return row.children.some(child => rootChildSide(child, id => panes.find(p => p.id === id)) === side)
+  return row.children.some(child => paneRootSide(allPaneIds(child)[0]) === side)
 }
 
 /**
@@ -1049,33 +1099,9 @@ export function bindTreeSideVisibility(
   $open.listen(open => setTreeSideCollapsed(side, !open))
 }
 
-/** The chrome toggle owning `paneId`'s root-row column — SEMANTIC, matching
- *  the renderer's `rootChildSide`: ⌘B ⇔ the sessions column (left-placement
- *  panes) wherever it sits, ⌘J ⇔ the other side columns. Null for the main
- *  column (never side-collapsed). */
+/** The physical column's chrome toggle; main columns never side-collapse. */
 export function treeSideOfPane(paneId: string): TreeSide | null {
-  const row = rootRow()
-
-  if (!row) {
-    return null
-  }
-
-  const child = row.children.find(node => allPaneIds(node).includes(paneId))
-
-  if (!child) {
-    return null
-  }
-
-  const placementOf = (id: string) =>
-    (registry.getArea('panes').find(c => c.id === id)?.data as { placement?: string } | undefined)?.placement
-
-  const placements = allPaneIds(child).map(placementOf)
-
-  if (placements.includes('main')) {
-    return null
-  }
-
-  return placements.includes('left') ? 'left' : 'right'
+  return paneRootSide(paneId)
 }
 
 /**

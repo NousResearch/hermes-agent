@@ -476,6 +476,11 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
 
+`post_api_request.usage.available_fields` maps each normalized token counter to a boolean
+that distinguishes provider-reported zero from unavailable metadata. This matters for
+cache telemetry: `cache_read_tokens: 0` plus `available_fields.cache_read_tokens: true`
+is an observed cache miss, while `false` is unknown rather than a zero-percent hit rate.
+
 ---
 
 ### Streaming output hooks

@@ -300,6 +300,26 @@ class TestPreloadResumedSession:
 
         mock_db.reopen_session.assert_called_once_with("reopen_session")
 
+    def test_resumed_session_title_with_rich_markup_does_not_crash(self):
+        """A stored title containing Rich markup characters (like [/plan — plan mode]) must not crash with MarkupError."""
+        cli = _make_cli(resume="session_with_markup")
+        messages = [{"role": "user", "content": "hi"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "[special_session]",
+            "title": "[/plan — plan mode] [bold red]critical[/]",
+        }
+        mock_db.get_resume_conversations.return_value = (messages, messages)
+        mock_db.resolve_resume_session_id.return_value = "[special_session]"
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        assert cli._preload_resumed_session() is True
+        output = buf.getvalue()
+        assert "Resumed session" in output
+        assert "[/plan — plan mode]" in output
+
     def test_rejects_runaway_transcript_before_history_load(self):
         from hermes_state import SessionResumeTooLargeError
 

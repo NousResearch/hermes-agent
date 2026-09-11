@@ -373,7 +373,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
-        return mirror(sid, session, agent, arg) or ""
+        # Wrap in profile scope so config writes land in the session's profile, not the default
+        # (fixes #107860: Desktop /model --global in a named profile leaked to default config).
+        with _session_profile_runtime_scope(session):
+            return mirror(sid, session, agent, arg) or ""
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

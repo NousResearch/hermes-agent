@@ -23,6 +23,16 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
 
+# llama-server's multimodal placeholder. It randomizes the suffix per process start
+# (``media_marker`` in /props) so a prompt cannot forge one, then splits every prompt
+# on that exact string before tokenizing and demands an attached bitmap per piece.
+# Text carrying a marker with no image behind it fails in mtmd, and the server answers
+# HTTP 400 "Failed to tokenize prompt" in ~0.2s — before the model runs, non-retryable,
+# and identical on every endpoint of that server, so failover cannot route around it.
+# A session poisons itself just by reading the server's own /props into a tool result.
+# ``<__media__>`` / ``<__image__>`` are the fixed spellings older builds use.
+_MEDIA_MARKER_RE = re.compile(r'<__(?:media|image)(?:_[A-Za-z0-9_-]+)?__>')
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
@@ -32,6 +42,16 @@ def _sanitize_surrogates(text: str) -> str:
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     return text.encode('ascii', errors='ignore').decode('ascii')
+
+
+def _neutralize_media_markers(text: str) -> str:
+    """Drop llama.cpp media placeholders from *text*; no-op when none present.
+
+    Removed rather than escaped: the only thing that reaches this is text quoting a
+    marker (a /props dump, a log line), never a real image reference — genuine images
+    travel as structured ``image_url`` parts and the server inserts its own marker.
+    """
+    return _MEDIA_MARKER_RE.sub('[media-marker removed]', text)
 
 
 def _fix_str_field(container: Any, key: Any, fix: Callable[[str], str]) -> bool:
@@ -93,6 +113,9 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
+# Deep: a marker quoted inside tool_call arguments wedges the prompt exactly as one in
+# message content does.
+_sanitize_messages_media_markers = partial(_sanitize_messages, fix=_neutralize_media_markers, deep=True)
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -289,6 +312,7 @@ __all__ = [
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
+    "_neutralize_media_markers", "_sanitize_messages_media_markers",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",

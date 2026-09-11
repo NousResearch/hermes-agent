@@ -67,6 +67,7 @@ COMPACTION_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier
 COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue..."
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL: float = 15.0
 
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
@@ -1521,13 +1522,13 @@ class _CompressionActivityHeartbeat:
         # so a later UNKNOWN rewrite cannot re-arm a detached zombie heartbeat.
         self._suppressed = False
         if interval_seconds is None:
-            interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
+            interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL)
         try:
-            interval_seconds = float(interval_seconds or 60.0)
+            interval_seconds = float(interval_seconds or DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL)
             if not math.isfinite(interval_seconds):
-                interval_seconds = 60.0
+                interval_seconds = DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL
         except (TypeError, ValueError):
-            interval_seconds = 60.0
+            interval_seconds = DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL
         self._interval_seconds = max(0.1, interval_seconds)
         # Only a compression that opened a VISIBLE compaction phase (the
         # routine start status was emitted) keeps it alive with heartbeats;
@@ -4028,6 +4029,7 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 __all__ = [
     "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
+    "DEFAULT_COMPRESSION_ACTIVITY_HEARTBEAT_INTERVAL",
     "check_compression_model_feasibility", "replay_compression_warning", "compress_context",
     "try_shrink_image_parts_in_messages",
 ]

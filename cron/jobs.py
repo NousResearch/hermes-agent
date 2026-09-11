@@ -350,6 +350,16 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
         return fn()
 
 
+class _LocalFireFenceUnavailable:
+    """Distinct, falsey result for a heartbeat that could not inspect ownership locally."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+LOCAL_FIRE_FENCE_UNAVAILABLE = _LocalFireFenceUnavailable()
+
+
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
     """Hold a per-job fence while an owner performs an external side effect."""
@@ -2590,13 +2600,18 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(
+    job_id: str, *, expected_owner: str
+) -> Union[bool, _LocalFireFenceUnavailable]:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
     outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return LOCAL_FIRE_FENCE_UNAVAILABLE
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

@@ -461,9 +461,9 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    LOCAL_FIRE_FENCE_UNAVAILABLE, _ensure_cron_dir, advance_next_runs, claim_dispatch,
+    claim_job_for_fire, fire_claim_fence, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
+    heartbeat_run_claim, mark_job_run, save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
     mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
@@ -2374,18 +2374,43 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         logger.warning("Job '%s': fire claim ownership was already lost before execution", job_id)
         _finish_unstarted("Fire claim ownership lost before execution started.")
         return True
+    if owns_fire_claim is not True and owns_fire_claim is not LOCAL_FIRE_FENCE_UNAVAILABLE:
+        logger.warning("Job '%s': initial fire_claim validation returned an unknown state", job_id)
+        _finish_unstarted("Fire claim ownership could not be validated before execution started.")
+        return True
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                heartbeat_result = heartbeat_fire_claim(job_id, expected_owner=owner)
+                if heartbeat_result is False:
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
                         job_id)
                     return
-                last_confirmed = time.monotonic()
+                if heartbeat_result is True:
+                    last_confirmed = time.monotonic()
+                    continue
+                if heartbeat_result is not LOCAL_FIRE_FENCE_UNAVAILABLE:
+                    lost_ownership.set()
+                    logger.warning(
+                        "Job '%s': fire_claim heartbeat returned an unknown state; "
+                        "interrupting uncertain run",
+                        job_id)
+                    return
+                if (
+                    time.monotonic() - last_confirmed
+                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+                ):
+                    lost_ownership.set()
+                    logger.warning(
+                        "Job '%s': local fire fence remained unavailable for %.1fs; "
+                        "interrupting uncertain run",
+                        job_id,
+                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
+                    return
             except Exception:
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
                 if (
@@ -2497,7 +2522,10 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
     terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
-    if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
+    if (
+        fire_owner is not None
+        and heartbeat_fire_claim(job_id, expected_owner=fire_owner) is True
+    ):
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
@@ -2587,7 +2615,7 @@ class _FireOwnership:
         if self.owner is None:
             return False
         try:
-            if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
+            if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner) is True:
                 return False
         except Exception:
             logger.debug(

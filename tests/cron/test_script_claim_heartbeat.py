@@ -360,6 +360,84 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
     assert refreshed["by"] == original_claim["by"]
 
 
+def test_local_fire_fence_timeout_during_slow_delivery_does_not_fake_owner_loss(
+    tmp_path, monkeypatch
+):
+    """A notifying run survives heartbeat contention with its own delivery fence."""
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(
+            prompt="x", schedule="every 5m", name="slow notify", deliver="telegram"
+        )
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+
+    heartbeat_waiting_on_delivery = threading.Event()
+    heartbeat_finished_waiting = threading.Event()
+    real_heartbeat = jobs.heartbeat_fire_claim
+
+    def _observed_heartbeat(job_id: str, *, expected_owner: str):
+        is_heartbeat_thread = threading.current_thread().name == "cron-fire-claim-heartbeat"
+        if is_heartbeat_thread:
+            heartbeat_waiting_on_delivery.set()
+        result = real_heartbeat(job_id, expected_owner=expected_owner)
+        if is_heartbeat_thread:
+            heartbeat_finished_waiting.set()
+        return result
+
+    def _slow_delivery(*_args, **_kwargs):
+        assert heartbeat_waiting_on_delivery.wait(timeout=1)
+        assert heartbeat_finished_waiting.wait(timeout=1)
+        return None
+
+    mark_run = MagicMock(return_value=True)
+    finish = MagicMock()
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.005)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _observed_heartbeat)
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_args, **_kwargs: (True, "output", "notification", None),
+    )
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
+    monkeypatch.setattr(scheduler, "_deliver_result", _slow_delivery)
+    monkeypatch.setattr(scheduler, "mark_job_run", mark_run)
+    monkeypatch.setattr(scheduler, "finish_execution", finish)
+
+    claimed_job["execution_id"] = "slow-notify-execution"
+    with (
+        jobs.use_cron_store(profile_home),
+        patch("agent.secret_scope.set_secret_scope", return_value=None),
+        patch("agent.secret_scope.build_profile_secret_scope", return_value=None),
+        patch("agent.secret_scope.reset_secret_scope"),
+    ):
+        assert scheduler.run_one_job(claimed_job) is True
+
+    mark_run.assert_called_once_with(
+        claimed_job["id"],
+        True,
+        None,
+        delivery_error=None,
+        expected_fire_owner=claimed_job["fire_claim"]["by"],
+    )
+    finish.assert_called_once_with(
+        "slow-notify-execution",
+        success=True,
+        error=None,
+        delivery_outcome="delivered",
+    )
+
+
 def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     """A runner that loses its durable owner must not deliver its stale result."""
     import cron.scheduler as scheduler

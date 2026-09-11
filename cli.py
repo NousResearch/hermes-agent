@@ -4232,7 +4232,7 @@ def _install_single_query_signal_handlers(cli):
             with suppress(Exception):
                 audit = getattr(cli, "_oneshot_invocation_audit", None)
                 if audit is not None:
-                    audit.bind_session(getattr(cli, "session_id", None))
+                    audit.bind_session(_oneshot_agent_and_session(cli)[1])
                     audit.finish(130, "interrupted")
             _flush_logging_and_stdio()
             os._exit(0)
@@ -4438,21 +4438,25 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         if _query_label:
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
-        cli.chat(query, images=single_query_images or None)
+        response = cli.chat(query, images=single_query_images or None)
+        if response is None:
+            audit = getattr(cli, "_oneshot_invocation_audit", None)
+            if audit is not None:
+                audit.set_outcome_hint("agent_error")
         cli._print_exit_summary(clear_screen=False)
     except BaseException as exc:
         from hermes_cli.oneshot_audit import finish_from_exception
 
         audit = getattr(cli, "_oneshot_invocation_audit", None)
         if audit is not None:
-            audit.bind_session(getattr(cli, "session_id", None))
+            audit.bind_session(_oneshot_agent_and_session(cli)[1])
         finish_from_exception(audit, exc)
         raise
     finally:
         _finalize_single_query(cli)
         audit = getattr(cli, "_oneshot_invocation_audit", None)
         if audit is not None:
-            audit.bind_session(getattr(cli, "session_id", None))
+            audit.bind_session(_oneshot_agent_and_session(cli)[1])
             audit.finish(0)
 
 

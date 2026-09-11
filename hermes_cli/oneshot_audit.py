@@ -106,10 +106,22 @@ def _normalized_exit_code(code: object) -> int:
     return code if isinstance(code, int) else (0 if code is None else 1)
 
 
+def _invocation_provenance(session_source: str | None = None) -> dict[str, object]:
+    """Return the privacy-safe caller identity available at process startup."""
+    from agent.turn_author import turn_author_from_env
+
+    author = turn_author_from_env()
+    return {
+        "session_source": session_source or os.environ.get("HERMES_SESSION_SOURCE") or "cli",
+        "caller_id": author.get("id") if author is not None else None,
+        "caller_is_bot": author.get("is_bot") if author is not None else None,
+    }
+
+
 class OneShotAudit:
     """Idempotent start/finish writer for one CLI invocation."""
 
-    def __init__(self, prompt: str | None, input_mode: str):
+    def __init__(self, prompt: str | None, input_mode: str, session_source: str | None = None):
         prompt_text = prompt if isinstance(prompt, str) else None
         self.audit_id = uuid.uuid4().hex
         self._session_id: str | None = None
@@ -130,14 +142,17 @@ class OneShotAudit:
                 else None
             ),
             "prompt_chars": len(prompt_text) if prompt_text is not None else None,
+            **_invocation_provenance(session_source),
         }
         self._write("started", outcome=None, exit_code=None)
 
     @classmethod
-    def start(cls, prompt: str | None, input_mode: str) -> OneShotAudit | None:
+    def start(
+        cls, prompt: str | None, input_mode: str, session_source: str | None = None,
+    ) -> OneShotAudit | None:
         """Start an audit without making ledger I/O fatal to the invocation."""
         try:
-            return cls(prompt, input_mode)
+            return cls(prompt, input_mode, session_source)
         except Exception:
             return None
 
@@ -145,7 +160,7 @@ class OneShotAudit:
         if session_id:
             self._session_id = str(session_id)
 
-    def set_outcome_hint(self, outcome: str) -> None:
+    def set_outcome_hint(self, outcome: str | None) -> None:
         self._outcome_hint = outcome
 
     def finish(self, exit_code: object = 0, outcome: str | None = None) -> None:

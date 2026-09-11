@@ -1710,7 +1710,11 @@ def _prepare_oneshot_audit(args):
             except BaseException as exc:
                 from hermes_cli.oneshot_audit import OneShotAudit, finish_from_exception
 
-                audit = OneShotAudit.start(None, "query-file")
+                audit = OneShotAudit.start(
+                    None,
+                    "query-file",
+                    session_source=getattr(args, "source", None),
+                )
                 setattr(args, "_oneshot_audit", audit)
                 finish_from_exception(audit, exc)
                 raise
@@ -1720,7 +1724,11 @@ def _prepare_oneshot_audit(args):
         prompt = getattr(args, "query", None) or ""
     from hermes_cli.oneshot_audit import OneShotAudit
 
-    audit = OneShotAudit.start(prompt, input_mode)
+    audit = OneShotAudit.start(
+        prompt,
+        input_mode,
+        session_source=getattr(args, "source", None),
+    )
     setattr(args, "_oneshot_audit", audit)
     return audit
 
@@ -1732,6 +1740,8 @@ def _prepare_agent_startup_audited(args) -> None:
     except BaseException as exc:
         from hermes_cli.oneshot_audit import finish_from_exception
 
+        if audit is not None and isinstance(exc, SystemExit):
+            audit.set_outcome_hint("validation_error")
         finish_from_exception(audit, exc)
         raise
 
@@ -3002,22 +3012,24 @@ def _run_oneshot_from_args(args) -> None:
         # oneshot exit path takes over, else the flags parse fine but silently do nothing
         # and the turn starts a fresh session (every wire request loses all history).
         _resolve_chat_session_args(args, use_tui=False)
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            skills=getattr(args, "skills", None),
-            usage_file=getattr(args, "usage_file", None),
-            resume=getattr(args, "resume", None),
-            reasoning=getattr(args, "reasoning", None),
-            invocation_audit=invocation_audit,
-        )
     except BaseException as exc:
         from hermes_cli.oneshot_audit import finish_from_exception
 
+        if invocation_audit is not None and isinstance(exc, SystemExit):
+            invocation_audit.set_outcome_hint("validation_error")
         finish_from_exception(invocation_audit, exc)
         raise
+    _run_and_exit_oneshot(
+        args.oneshot,
+        model=getattr(args, "model", None),
+        provider=getattr(args, "provider", None),
+        toolsets=getattr(args, "toolsets", None),
+        skills=getattr(args, "skills", None),
+        usage_file=getattr(args, "usage_file", None),
+        resume=getattr(args, "resume", None),
+        reasoning=getattr(args, "reasoning", None),
+        invocation_audit=invocation_audit,
+    )
 
 
 def _light_chat_parser():

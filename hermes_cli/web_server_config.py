@@ -16,6 +16,7 @@ from hermes_cli.config import (
     resolve_cron_model_drift_defaults,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from tools.wake_word import _PROVIDER_PREFERENCE
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -65,6 +66,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         *_timezone_options(), searchable=True, clearable=True,
     ),
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
+    "wake_word.provider": _select(
+        "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
+        "auto", *_PROVIDER_PREFERENCE,
+    ),
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",

@@ -55,6 +55,7 @@ _PROVIDERS: Dict[str, tuple[str, str]] = {
     **{k: ("_SherpaKwsEngine", "wake-sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
     **{k: ("_OpenWakeWordEngine", "wake-openwakeword") for k in ("openwakeword", "oww", "local")},
 }
+_PROVIDER_PREFERENCE = ("openwakeword", "sherpa", "porcupine")
 
 
 class WakeWordInUse(RuntimeError):
@@ -67,7 +68,7 @@ class WakeWordInUse(RuntimeError):
 # frames via wake.feed), or "auto" (local when a device exists, else client).
 _DEFAULTS: Dict[str, Any] = {
     "enabled": False, "surface": "auto", "input_device": None, "capture": "auto",
-    "provider": "openwakeword", "phrase": "hey hermes", "sensitivity": 0.6,
+    "provider": "auto", "phrase": "hey hermes", "sensitivity": 0.6,
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES, "start_new_session": True,
 }
 
@@ -105,8 +106,14 @@ def _clamped(cfg: Dict[str, Any], key: str, cast, lo, hi):
     return min(max(n, lo), hi)
 
 
-def _provider(cfg: Dict[str, Any]) -> str:
-    return str(_get(cfg, "provider")).strip().lower() or "openwakeword"
+def _provider(cfg: Dict[str, Any], *, supported: Callable[[str], bool] | None = None) -> str:
+    provider = str(_get(cfg, "provider")).strip().lower() or "auto"
+    if provider != "auto":
+        return provider
+    if supported is None:
+        from pm.extras import extra_supported
+        supported = extra_supported
+    return next((name for name in _PROVIDER_PREFERENCE if supported(_PROVIDERS[name][1])), "porcupine")
 
 
 def _input_device(cfg: Dict[str, Any]) -> int | str | None:
@@ -337,14 +344,16 @@ def _tts_ready() -> bool:
         return False
 
 
-def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
+                                 supported: Callable[[str], bool] | None = None) -> Dict[str, Any]:
     """Report whether wake-word detection can run, with a remediation hint."""
     cfg = cfg if cfg is not None else load_wake_word_config()
-    provider = _provider(cfg)
     import pm
     from pm.ensure import lazy_installs_allowed
     from pm.extras import extra_supported
 
+    supported = supported or extra_supported
+    provider = _provider(cfg, supported=supported)
     if provider == "porcupine":
         feature = "wake-porcupine"
     elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
@@ -352,7 +361,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     else:
         feature = "wake-openwakeword"
     deps_ok = pm.available(feature)
-    supported = deps_ok or extra_supported(feature)
+    platform_ok = deps_ok or supported(feature)
     lazy_ok = lazy_installs_allowed()
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
@@ -370,9 +379,9 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     tts_ok = _tts_ready()
     hint = ""
 
-    if not supported:
+    if not platform_ok:
         alternatives = [name for name in ("sherpa", "porcupine")
-                        if extra_supported(_PROVIDERS[name][1])]
+                        if supported(_PROVIDERS[name][1])]
         hint = f"The {provider} wake engine is not supported on this platform."
         if alternatives:
             hint += f" Set wake_word.provider to {' or '.join(alternatives)}."
@@ -403,7 +412,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                     "build with client-capture wake support.")
 
     return {
-        "available": supported and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
+        "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,

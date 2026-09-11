@@ -9,6 +9,7 @@ true; pm owns HOW (uv sync inside the venv package).
 from __future__ import annotations
 
 import importlib.util
+from typing import Callable
 
 
 # extra name -> module that proves it is installed
@@ -118,13 +119,14 @@ def _platform_gates() -> dict[str, str]:
 _PLATFORM_GATES: dict[str, str] | None = None
 
 
-def extra_supported(extra: str) -> bool:
+def extra_supported(extra: str, *, environment: dict[str, str] | None = None,
+                    importable: Callable[[str], bool] | None = None) -> bool:
     """Is this extra installable on THIS platform? True when the extra
     carries no gate, or its marker matches the running platform. An
     extra that IS present on this machine (anchors importable) is always
     supported — an installed override beats the table (dev machines,
     hand-synced venvs)."""
-    if all(_importable(a) for a in _anchors(extra)):
+    if all((importable or _importable)(a) for a in _anchors(extra)):
         return True
     marker = _platform_gates().get(extra)
     if marker is None:
@@ -135,12 +137,13 @@ def extra_supported(extra: str) -> bool:
 
     from packaging.markers import Marker
 
-    environment = {
-        "sys_platform": sys.platform,
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "os_name": os.name,
-    }
+    if environment is None:
+        environment = {
+            "sys_platform": sys.platform,
+            "platform_system": platform.system(),
+            "platform_machine": platform.machine(),
+            "os_name": os.name,
+        }
     try:
         return bool(Marker(marker).evaluate(environment=environment))
     except Exception:

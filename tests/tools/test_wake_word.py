@@ -27,7 +27,7 @@ import tools.wake_word as ww
 
 
 def test_config_defaults_and_clamping():
-    assert ww._provider({}) == "openwakeword"
+    assert ww._provider({}) == ww._provider(ww.load_wake_word_config())
     assert ww._provider({"provider": "Porcupine"}) == "porcupine"
     assert ww._input_device({}) is None
     assert ww._input_device({"input_device": 7}) == 7
@@ -65,12 +65,35 @@ def test_looks_like_path():
     assert not _looks_like_path("hey_jarvis")
 
 
-def test_load_wake_word_config_is_a_dict_with_defaults():
-    # Wired into DEFAULT_CONFIG, so a real load returns the section shape.
+@pytest.mark.parametrize("system,machine,expected", [
+    ("win32", "ARM64", "porcupine"),
+    ("win32", "AMD64", "openwakeword"),
+    ("darwin", "x86_64", "sherpa"),
+    ("darwin", "arm64", "openwakeword"),
+    ("linux", "x86_64", "openwakeword"),
+    ("linux", "aarch64", "openwakeword"),
+])
+@pytest.mark.parametrize("saved", [None, "wake_word: {}\n", "wake_word:\n  provider: auto\n"])
+def test_loaded_wake_defaults_resolve_supported_provider(tmp_path, monkeypatch, system, machine, expected, saved):
+    from functools import partial
+
+    from pm.extras import extra_supported
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    if saved is not None:
+        path.write_text(saved, encoding="utf-8")
     cfg = ww.load_wake_word_config()
-    assert isinstance(cfg, dict)
-    assert cfg.get("enabled") is False
-    assert cfg.get("provider") == "openwakeword"
+    assert cfg["provider"] == "auto"
+    supported = partial(extra_supported, environment={"sys_platform": system, "platform_machine": machine},
+                        importable=lambda _: False)
+    assert ww._provider(cfg, supported=supported) == expected
+    assert ww._provider({}, supported=supported) == expected
+    assert supported(ww._PROVIDERS[expected][1])
+    assert not ww.wake_surface_enabled("gui", cfg)
+    assert cfg["provider"] == "auto"
+    if saved is not None:
+        assert path.read_text(encoding="utf-8") == saved
 
 
 def test_load_wake_word_config_guards_non_dict(monkeypatch):
@@ -86,6 +109,10 @@ def test_load_wake_word_config_guards_non_dict(monkeypatch):
 def test_build_engine_dispatch(monkeypatch):
     monkeypatch.setattr(ww, "_OpenWakeWordEngine", lambda cfg: "oww")
     monkeypatch.setattr(ww, "_PorcupineEngine", lambda cfg: "pv")
+    monkeypatch.setattr(ww, "_SherpaKwsEngine", lambda cfg: "sherpa")
+    expected = {"openwakeword": "oww", "porcupine": "pv", "sherpa": "sherpa"}[ww._provider({})]
+    assert ww._build_engine(ww.load_wake_word_config()) == expected
+    assert ww._build_engine({"provider": "auto"}) == expected
     assert ww._build_engine({"provider": "openwakeword"}) == "oww"
     assert ww._build_engine({"provider": "porcupine"}) == "pv"
     with pytest.raises(ValueError):
@@ -194,6 +221,46 @@ def _voice_loop_ready(monkeypatch, stt=True, tts=True):
     monkeypatch.setattr(ww, "_stt_ready", lambda: stt)
     monkeypatch.setattr(ww, "_tts_ready", lambda: tts)
     monkeypatch.setattr("pm.extras._PLATFORM_GATES", {})
+
+
+@pytest.mark.parametrize("system,machine", [("win32", "ARM64"), ("darwin", "x86_64")])
+@pytest.mark.parametrize("provider", ["auto", *ww._PROVIDERS])
+def test_loaded_provider_requirements_preserve_choices_and_require_keys(tmp_path, monkeypatch, system, machine, provider):
+    from functools import partial
+
+    from pm.extras import extra_supported
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("PORCUPINE_ACCESS_KEY", raising=False)
+    saved = f"wake_word:\n  provider: {provider}\n  capture: client\n"
+    path = tmp_path / "config.yaml"
+    path.write_text(saved, encoding="utf-8")
+    cfg = ww.load_wake_word_config()
+    supported = partial(extra_supported, environment={"sys_platform": system, "platform_machine": machine},
+                        importable=lambda _: False)
+    monkeypatch.setattr(pm, "available", lambda _: False)
+    monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(ww, "_stt_ready", lambda: True)
+    monkeypatch.setattr(ww, "_tts_ready", lambda: True)
+    result = ww.check_wake_word_requirements(cfg, supported=supported)
+    selected = ww._provider(cfg, supported=supported)
+    assert result["provider"] == selected
+    if provider != "auto":
+        assert selected == provider
+    if not supported(ww._PROVIDERS[selected][1]):
+        assert not result["available"]
+        assert "not supported on this platform" in result["hint"]
+    elif selected == "porcupine":
+        assert not result["available"]
+        assert not result["access_key_set"]
+        assert "PORCUPINE_ACCESS_KEY" in result["hint"]
+        monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "test-key")
+        assert ww.check_wake_word_requirements(cfg, supported=supported)["available"]
+    else:
+        assert result["available"]
+    assert not ww.wake_surface_enabled("gui", cfg)
+    assert cfg["provider"] == provider
+    assert path.read_text(encoding="utf-8") == saved
 
 
 def test_requirements_openwakeword_available(monkeypatch):

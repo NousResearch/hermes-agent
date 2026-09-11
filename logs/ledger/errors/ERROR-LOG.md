@@ -114,6 +114,11 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   `origin/main`. Not caused by `CHG-2026-09-10-001` (which touches
   `nf_admin.py` / `nf_tier.py` / `cli.py` comments / a test — never `main.py`);
   reproduced with this run's changes reverted.
+- **Update 2026-09-10 (`RUN-2026-09-10-002`):** still OPEN — `main.py:645` after
+  the `git pull --rebase` onto `origin/main` `23135479a2` (a +163
+  `NousResearch:main` sync) **still** calls `_desktop_ssh_backend` with no `def`
+  in the tree. The sync did not carry the fix; the verbatim restore from
+  `677e8ed8a4` is still owed.
 - **Not self-fixed:** `_apply_profile_override()` is the Basic-tier enforcement
   path (ledger Agent-Conduct: escalate, do not self-fix access-tier logic), the
   fault is outside this run's task, and it already sits on `origin/main` — a

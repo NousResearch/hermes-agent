@@ -16,13 +16,22 @@ passcode as a bare message in a running session to open the same
 `scripts/nf-setup.ps1` reconfiguration (tier / pin / edition) nf-setup already
 provides, without exiting and without a re-provision-from-scratch cycle.**
 **MINOR** — a new North Forge admin capability on top of upstream; no schema or
-engine change. Committed to local `main` on base `hermes@0e9fc2cc15`
-(`NF-v0.9.0` HEAD `bb64aab4f3`); **not pushed** — local `main` is 4 commits
-behind `origin/main` (a `NousResearch:main` sync + `fmt(js)` + two `fix(desktop)`
-clarify-form commits), and a `git pull --rebase` + push is a separate
-owner-authorised step. `DECISION-2026-09-10-001` (opened + decided same run,
+engine change. `DECISION-2026-09-10-001` (opened + decided same run,
 owner-directed): the trigger stands as designed — a bare-token passcode on an
 active Full-tier drive, silent on every other input.
+
+**`RUN-2026-09-10-002` (drive-maintenance pass) rebased this block onto
+`origin/main`.** `CHG-2026-09-10-001` was first committed to local `main` on base
+`hermes@0e9fc2cc15` (`NF-v0.9.0` HEAD `bb64aab4f3`); the next session
+`git pull --rebase`d it (and `RUN-2026-09-10-002`'s own `CHG-2026-09-10-002`)
+onto `origin/main` `23135479a2` — a +163 `NousResearch:main` sync — **0
+conflicts**; `tests/test_nf_admin.py` re-run **17 passed** on the rebased tree.
+`main` is now `+2 ahead / 0 behind` `origin/main`, **still not pushed** — the
+push is a separate owner-authorised step, and the two commits are also backed up
+at `D:\NF-v0.10.0-BACKUP_2026-09-10\` (branch `nf-v0.10.0-hold`, tag, thin
+bundle, `format-patch` series). `ERR-2026-09-10-001` **reconfirmed present** on
+`origin/main` `23135479a2` after the rebase — the +163 sync did not carry the
+fix.
 
 The feature arrived this run as an **uncommitted work-in-progress** (classifier
 + CLI wiring already written, referencing an unwritten `CHG-2026-09-09-004`).
@@ -80,6 +89,39 @@ the new/changed files.
   `hermes_cli/cli_commands_mixin.py`, `tests/test_nf_admin.py`.
   Ref: DECISION-2026-09-10-001; ERR-2026-09-10-001 (found in passing, not fixed).
   Run: RUN-2026-09-10-001.
+
+### Changed
+
+- **CHG-2026-09-10-002** — **Branding drift correction: README, translations, and
+  the tease page now lead with North Forge as the identity, with Hermes Agent
+  credited as the engine it is *built on* — not as what North Forge *is*.** The
+  user-facing lead copy had drifted to *"North Forge … **is** [Hermes Agent] …
+  carrying a North Forge identity"* and *"a … chassis **on top of** the Hermes
+  engine"*, framing North Forge as Hermes wearing a skin. Corrected to *"North
+  Forge is an AI agent you can make your own … It is **built on** Hermes Agent"*.
+  `README.md`: H1 tagline, lead paragraph, the "learning loop" paragraph
+  (`The engine brings…` → `From that engine North Forge inherits…`), the CLI-vs-
+  Messaging intro (`Hermes has two entry points` → `North Forge has…`), the
+  Documentation intro, and the OpenClaw-migration line (`Hermes can import` →
+  `North Forge can`). `README.es.md` / `README.zh-CN.md` / `README.ur-pk.md`:
+  the lead predicate noun (`chassis` / `底座` / `چیسس` → "an AI agent you can make
+  your own"); these already used a "built on the engine" construction, so only the
+  noun changed. `docs/preview.html`: `<title>`, `<meta description>`, hero `<h1>`
+  (`A brandable AI-agent chassis` → `An AI agent you can make your own`), hero
+  sub, and the "what it is" lead — plus **three stale `used unmodified` phrasings**
+  that contradicted `DECISION-2026-09-07-002` (which had tightened exactly that
+  wording elsewhere) were aligned to *"keeps the engine's functional behavior;
+  changes are identity, presentation, and workflow"*. **Attribution unchanged and
+  intact**: the `hermes` command name and `hermes …` examples, the "Engine by
+  Nous Research" / "Engine docs" badges, the docs-table links to
+  `hermes-agent.nousresearch.com`, the `pyproject.toml` `hermes-agent`
+  distribution name, and the dual `LICENSE` copyright lines are all deliberate
+  category-2/3 surfaces per `BRANDING.md` and were left as-is. `NF-vX.Y.Z`
+  versioning was already North-Forge-first. **PATCH** (docs only). Paths:
+  `README.md`, `README.es.md`, `README.zh-CN.md`, `README.ur-pk.md`,
+  `docs/preview.html`. Ref: `BRANDING.md` §1 (README lead = North-Forge-owned);
+  consistent with `DECISION-2026-09-06-001` / `DECISION-2026-09-07-002`.
+  Run: RUN-2026-09-10-002.
 
 ## [NF-v0.9.0] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main)
 

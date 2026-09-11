@@ -322,6 +322,30 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
+def _persist_requested_empty_row(record: dict) -> bool:
+    """Persist an otherwise-lazy empty row only when the client explicitly asks.
+
+    Ordinary drafts stay lazy so abandoned composers do not create sidebar
+    clutter. Desktop /clear is different: it needs a durable replacement before
+    it may delete the original session, including its copied title.
+    """
+    key = record.get("session_key")
+    try:
+        if _ensure_session_db_row(record) is not True:
+            return False
+        with _session_db(record) as db:
+            if db is None or db.get_session(key) is None:
+                return False
+            if (title := record.get("pending_title")) and not db.set_session_title(key, title):
+                return False
+            if title:
+                record["pending_title"] = None
+        return True
+    except Exception:
+        logger.warning("requested empty-session persistence failed for %s", key, exc_info=True)
+        return False
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
@@ -359,6 +383,12 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
+    # Explicit persistence is for callers replacing an existing chat. Keep the
+    # normal draft path lazy below.
+    if _flag(params, "persist") and not _persist_requested_empty_row(_sessions[sid]):
+        with _sessions_lock:
+            _sessions.pop(sid, None)
+        return _err(rid, 5006, "failed to persist requested empty session")
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"

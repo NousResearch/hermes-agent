@@ -520,6 +520,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     createBackendSessionForSend,
     openNewSessionTile,
     removeSession,
+    resetCurrentSession,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft
@@ -722,6 +723,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
+    resetCurrentSession,
     resumeStoredSession: resumeSession,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,

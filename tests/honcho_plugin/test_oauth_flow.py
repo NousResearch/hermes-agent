@@ -444,6 +444,7 @@ def test_launcher_runs_flow_in_background_and_reports_connected(monkeypatch, res
     assert st["state"] == "pending"  # returns immediately, before the flow finishes
     assert _wait_until(lambda: seen.get("source") == "hermes-desktop")  # default source tag
     assert seen["host"] == "hermes"
+    assert seen["apply_config"] is False
     gate.set()
     assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
 

@@ -12,6 +12,15 @@ strict enough to stand alone; ``tools.approval``/Tirith still run after for
 any command this guard permits, as defense-in-depth (see
 ``run_read_only_guard`` docstring below).
 
+Only command families reachable from a REGISTERED ``rob_*`` tool are
+allowlisted (``_ALLOWED_SIMPLE`` / ``_SUBCOMMAND_VALIDATORS``). Validator
+families no registered tool can emit — curl, find, file, rg, openssl, ip,
+tailscale — were REMOVED as dead, security-sensitive surface in the
+consolidated security-closure pass rather than kept "for future use"
+(YAGNI): the registered tools already route HTTP through urllib and TLS
+through Python ssl, and the generic file-traversal families only existed
+for the deliberately-unregistered ``container_exec_readonly``.
+
 Reuses ``tools.approval``'s existing shell tokenization/deobfuscation
 primitives — the same ones ``tools/self_repo_guard.py`` composes on top of
 for its own narrower guard — rather than re-parsing shell syntax from
@@ -34,8 +43,7 @@ guard needs that didn't previously exist anywhere in the codebase.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from tools.approval import (
     _deobfuscate_shell_word_for_detection,
@@ -140,49 +148,6 @@ def _allow() -> GuardResult:
     return GuardResult(allowed=True)
 
 
-# Allowlist-first, not a denylist: an earlier version denied a fixed set
-# of mutating/executing predicates (-exec, -execdir, -ok, -okdir, -delete,
-# -fprintf, -fls) and simply never enumerated GNU find's other two
-# file-writing predicates, -fprint and -fprint0 (both create a file if
-# absent and TRUNCATE it if present — confirmed live: `find /tmp -maxdepth
-# 0 -fprint /tmp/x` created /tmp/x; run against a file with real content,
-# it destroyed that content). This is the exact same denylist antipattern
-# `_validate_curl`/`_validate_journalctl` were rewritten away from after
-# repeated bypasses — inverted the same way here before it needed its own
-# incident: a predicate/option is permitted only if it exactly matches one
-# of the safe, read-only set below (test/print/traverse predicates and
-# find's own boolean operators). Anything else, including any future
-# find predicate this code didn't anticipate, is denied by not being a
-# match — not by needing to be individually enumerated as dangerous.
-_FIND_ALLOWED_TOKENS = frozenset({
-    "-name", "-iname", "-path", "-ipath", "-regex", "-iregex",
-    "-type", "-maxdepth", "-mindepth",
-    "-mtime", "-mmin", "-ctime", "-cmin", "-atime", "-amin",
-    "-size", "-newer", "-samefile",
-    "-empty", "-perm", "-user", "-group", "-uid", "-gid", "-links", "-inum",
-    "-readable", "-writable", "-executable",
-    "-print", "-print0",
-    "-prune", "-depth", "-follow", "-xdev", "-mount", "-daystart", "-noleaf",
-    "-not", "-a", "-and", "-o", "-or", "!", "(", ")",
-})
-
-# find's own `+N`/`-N`/`N` numeric-threshold argument convention (e.g.
-# `-mtime -7`, `-size +10k`) — a plain value, never a predicate, and
-# denying it outright (it starts with `-` like a flag) would break every
-# legitimate use of a "less than" time/size qualifier.
-_FIND_NUMERIC_ARG_PATTERN = re.compile(r"^[+-]?\d+[A-Za-z]{0,2}$")
-
-
-def _validate_find(argv: list[str]) -> GuardResult:
-    for tok in argv[1:]:
-        if not tok.startswith("-") or tok in _FIND_ALLOWED_TOKENS:
-            continue
-        if _FIND_NUMERIC_ARG_PATTERN.match(tok):
-            continue
-        return _deny("find", f"find predicate/option '{tok}' is not in the read-only allowlist")
-    return _allow()
-
-
 _GIT_ALLOWED_SUBCOMMANDS = {
     "status",
     "log",
@@ -243,6 +208,9 @@ def _validate_git(argv: list[str]) -> GuardResult:
 
 
 def _validate_docker(argv: list[str]) -> GuardResult:
+    """Only the subcommands a registered rob_* tool can emit — no speculative
+    entries (compose config / image inspect had no registered caller and were
+    removed as dead surface in the consolidated security pass)."""
     args = argv[1:]
     if not args:
         return _deny("docker", "bare 'docker' with no subcommand is not a read-only operation")
@@ -250,11 +218,7 @@ def _validate_docker(argv: list[str]) -> GuardResult:
     if sub == "compose":
         if args[1:2] == ["ps"]:
             return _allow()
-        if args[1:2] == ["config"]:
-            # `docker compose config` only renders the merged compose file —
-            # no container/daemon interaction, purely informational.
-            return _allow()
-        return _deny("docker compose", "only 'docker compose ps'/'config' are allowed")
+        return _deny("docker compose", "only 'docker compose ps' is allowed")
     if sub == "stats":
         if "--no-stream" in args[1:]:
             return _allow()
@@ -265,8 +229,6 @@ def _validate_docker(argv: list[str]) -> GuardResult:
         return _allow()
     if sub == "volume" and args[1:2] == ["inspect"]:
         return _allow()
-    if sub == "image" and args[1:2] == ["inspect"]:
-        return _allow()
     return _deny(f"docker {sub}", f"docker subcommand '{sub}' is not in the read-only allowlist")
 
 
@@ -275,7 +237,7 @@ def _validate_systemctl(argv: list[str]) -> GuardResult:
     if not args:
         return _deny("systemctl", "bare 'systemctl' with no verb is not a read-only operation")
     sub = args[0]
-    if sub in {"status", "show", "cat", "list-units", "list-timers"}:
+    if sub in {"status", "show"}:
         return _allow()
     return _deny(f"systemctl {sub}", f"systemctl verb '{sub}' is not in the read-only allowlist")
 
@@ -316,264 +278,30 @@ def _validate_journalctl(argv: list[str]) -> GuardResult:
     return _allow()
 
 
-# Boolean curl short flags with no security-relevant effect at all — none
-# of these read, write, or execute anything; they only affect what curl
-# itself prints or how it negotiates the connection.
-_CURL_ALLOWED_SHORT_LETTERS = frozenset("sSfIiLkv46")
-
-# Boolean curl long flags, same criteria as the short set above.
-_CURL_ALLOWED_LONG_BOOLEAN_FLAGS = frozenset({
-    "--silent", "--show-error", "--fail", "--head", "--include",
-    "--location", "--insecure", "--verbose", "--ipv4", "--ipv6",
-    "--compressed",
-})
-
-# Value-taking flags that are safe to allow: -H only shapes the outbound
-# request (never reads/writes a file, never sets a mutating HTTP method).
-_CURL_ALLOWED_VALUE_LONG_FLAGS = frozenset({"--header"})
-
-# curl understands far more URL schemes than http(s): file://, gopher://,
-# dict://, smtp://, tftp://, ftp://, scp://, sftp://, telnet://, smb://,
-# ldap:// among others. A positional (non-flag) argument is curl's URL —
-# every prior fix to this validator constrained FLAGS and never the URL
-# itself, so `curl file:///home/x/.ssh/id_ed25519` reads an arbitrary local
-# file (bypassing sensitive_path_guard entirely, since it never inspects
-# curl's arguments) and `curl gopher://127.0.0.1:6379/_...` writes
-# attacker-controlled raw bytes to any local TCP service (the classic
-# gopher-to-Redis SSRF class) — both found independently in review, both
-# ALLOWED despite the flag-only allowlist above being complete and correct.
-_CURL_URL_SCHEME_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
-
-
-def _validate_curl(argv: list[str]) -> GuardResult:
-    """Allowlist-first, not a denylist. Three consecutive fix attempts at
-    denylisting dangerous curl flags were each bypassed by a new spelling
-    of the same flag:
-
-    1. A whole-token `tok[:2]` check missed every denied flag placed after
-       a harmless flag in the same clustered short-option token
-       (`-sSXPOST` == `-s -S -X POST` to curl, but denylisted only
-       `tok[:2]` == "-s").
-    2. Per-character cluster scanning closed that, but curl's OWN long-
-       option parser is case-insensitive AND accepts any unambiguous
-       PREFIX of a long flag (confirmed against the real binary: `curl
-       --dat` errors "is ambiguous", but `curl --data-b` resolves cleanly
-       to `--data-binary`) — neither was handled, so `--DATA`, `--data-b`,
-       `--uploa`, `--confi`, `--remote-n`, etc. all bypassed an
-       exact-string denylist while curl still executed them as the flag
-       they abbreviate.
-    3. The denied set also only ever covered the flags anticipated at the
-       time — `--trace`, `--libcurl`, `--stderr`, `--hsts`, `--alt-svc`
-       (all real file-write primitives) were simply never enumerated.
-
-    An allowlist has none of these problems by construction: a flag is
-    permitted only if it EXACTLY matches one of a small, fully-enumerated
-    safe set below. Any case variant, any abbreviation, and any flag added
-    to curl after this code was written are all denied the same way —
-    by not being an exact match — with no need to track curl's own
-    expansion/case rules at all. This mirrors `_validate_openssl` in this
-    same module, which already used an allowlist rather than a denylist.
-
-    A fourth-round review found that none of the above ever touched the
-    URL argument's SCHEME, only its flags — closed below by requiring
-    every positional (non-flag) argument to start with `http://` or
-    `https://`.
-    """
-    args = argv[1:]
-    method = "GET"
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok.startswith("--"):
-            flag, sep, value = tok.partition("=")
-            if flag in _CURL_ALLOWED_LONG_BOOLEAN_FLAGS:
-                pass
-            elif flag in _CURL_ALLOWED_VALUE_LONG_FLAGS:
-                if not sep and i + 1 < len(args):
-                    i += 1  # space-separated value form
-            elif flag == "--request":
-                if value:
-                    method = value
-                elif i + 1 < len(args):
-                    method = args[i + 1]
-                    i += 1
-                else:
-                    return _deny("curl", "--request with no value")
-            else:
-                return _deny("curl", f"'{flag}' is not in the read-only curl allowlist")
-        elif tok.startswith("-") and len(tok) > 1:
-            chars = tok[1:]
-            j = 0
-            while j < len(chars):
-                c = chars[j]
-                if c in _CURL_ALLOWED_SHORT_LETTERS:
-                    j += 1
-                    continue
-                if c == "H":
-                    inline_value = chars[j + 1 :]
-                    if not inline_value and i + 1 < len(args):
-                        i += 1
-                    break  # rest of the cluster (or the next token) is -H's value
-                if c == "X":
-                    inline_value = chars[j + 1 :]
-                    if inline_value:
-                        method = inline_value
-                    elif i + 1 < len(args):
-                        method = args[i + 1]
-                        i += 1
-                    else:
-                        return _deny("curl", "-X with no value")
-                    break  # rest of the cluster is -X's value, not more flags
-                return _deny("curl", f"'-{c}' is not in the read-only curl allowlist")
-        else:
-            # A positional argument — curl's URL. Restrict to the same
-            # http(s)-only surface http_probe already uses; see
-            # `_CURL_URL_SCHEME_PATTERN`'s comment for why every other
-            # scheme is a real read-boundary bypass, not a style choice.
-            if not _CURL_URL_SCHEME_PATTERN.match(tok):
-                return _deny("curl", f"URL '{tok}' must use http:// or https:// — no other scheme is permitted")
-        i += 1
-    if method.upper() not in ("GET", "HEAD"):
-        return _deny("curl", f"method '{method}' is not GET/HEAD")
-    return _allow()
-
-
-def _validate_openssl(argv: list[str]) -> GuardResult:
-    args = argv[1:]
-    if args[:1] != ["s_client"]:
-        return _deny("openssl", "only 'openssl s_client' is allowed")
-    for tok in args[1:]:
-        if tok in ("-quiet",) or tok.startswith("-connect") or tok.startswith("-servername"):
-            continue
-        if tok in ("-quiet", "-brief", "-showcerts"):
-            continue
-        if tok.startswith("-"):
-            # Deliberately conservative: reject any s_client flag beyond
-            # this small, well-understood inspection set rather than try
-            # to enumerate every safe one.
-            return _deny("openssl s_client", f"flag '{tok}' is not in the allowed subset")
-    return _allow()
-
-
-def _validate_ip(argv: list[str]) -> GuardResult:
-    args = argv[1:]
-    if args[:1] in (["addr"], ["a"], ["address"]) or args[:1] in (["route"], ["r"]):
-        # Only bare `ip addr [show]` / `ip route [show]` — no `add`/`del`/`set`.
-        rest = args[1:]
-        if not rest or rest[0] in ("show", "list", "ls"):
-            return _allow()
-        return _deny("ip", f"'ip {' '.join(args[:1])} {rest[0]}' is not read-only")
-    return _deny("ip", "only 'ip addr' and 'ip route' (show form) are allowed")
-
-
-def _validate_tailscale(argv: list[str]) -> GuardResult:
-    """Only the bare `status`/`serve status`/`funnel status` forms — an
-    earlier version accepted `args[:1] == ["status"]`/`args[:2] == [...]`
-    with no check on anything AFTER those tokens, so `tailscale status
-    --web --listen 0.0.0.0:PORT --browser=false` was also allowed: `--web`
-    starts an HTTP server exposing the tailnet status page (peer names,
-    tailnet IPs, user identities) and blocks for the tool's full timeout —
-    live-proven to actually bind and serve. Requiring an exact, argument-
-    less match closes this the same way `git branch --show-current`/
-    `git worktree list` already require an exact match rather than just a
-    matching prefix."""
-    args = argv[1:]
-    if args == ["status"]:
-        return _allow()
-    if args == ["serve", "status"]:
-        return _allow()
-    if args == ["funnel", "status"]:
-        return _allow()
-    return _deny("tailscale", f"'tailscale {' '.join(args)}' is not in the read-only allowlist")
-
-
 # Simple commands: allowed outright once the executable name matches, with
-# no subcommand semantics to police. `find` still gets a validator because
-# its *predicates*, not a subcommand, are what can mutate.
+# no subcommand semantics to police. `dig` is deliberately ABSENT despite
+# being a "read" in name: its `-f <file>` flag reads a file of query names
+# and sends them to a resolver — a file-read/exfiltration primitive — and
+# no registered rob_* tool emits it. `cd` changes the working directory
+# only for the rest of the SAME shell invocation (each Rob command runs as
+# its own fresh subprocess) — it never persists or mutates anything on
+# disk, so `cd <repo> && git status` is exactly as read-only as
+# `git status` alone. Needed by git_inspect/docker_compose_ps's templates.
 _ALLOWED_SIMPLE = frozenset({
     "ls", "cat", "head", "tail", "grep", "stat", "readlink",
     "du", "df", "pwd",
     "ps", "pgrep", "pstree", "uptime", "uname", "free", "id", "whoami",
     "which", "whereis",
-    "ss", "getent", "dig", "nslookup",
-    # `cd` changes the working directory only for the rest of the SAME
-    # shell invocation (each Rob command runs as its own fresh
-    # subprocess) — it never persists or mutates anything on disk, so
-    # `cd <repo> && git status` is exactly as read-only as `git status`
-    # alone. Needed by git_inspect/docker_compose_ps's own templates.
+    "ss", "getent", "nslookup",
     "cd",
 })
 
 
-# `file` uses GNU getopt_long, exactly like curl and journalctl — a
-# denylist of `-C`/`--compile` (tried once already) is bypassed by the
-# same abbreviation/clustering mechanics that broke curl's denylist three
-# times over: `--com`/`--comp`/`--compil` all resolve to `--compile`, and
-# `-bC`/`-Cb` cluster it with a harmless flag. Live-proven: each created
-# or overwrote a `.mgc` file. A pure allowlist of boolean, no-argument,
-# read-only flags has no such gap — an unrecognized token (clustered,
-# abbreviated, or otherwise) is denied by not being an exact match, never
-# by needing to be individually enumerated as dangerous. None of these
-# take a value, so there is no attached/next-token consumption to get
-# wrong either.
-_FILE_ALLOWED_TOKENS = frozenset({
-    "-b", "--brief",
-    "-i", "--mime", "--mime-type", "--mime-encoding",
-    "-z", "--uncompress",
-    "-L", "--dereference",
-    "-h", "--no-dereference",
-    "-k", "--keep-going",
-    "-s", "--special-files",
-    "-0", "--print0",
-    "-n", "--no-buffer",
-})
-
-
-def _validate_file(argv: list[str]) -> GuardResult:
-    for tok in argv[1:]:
-        if tok.startswith("-") and tok not in _FILE_ALLOWED_TOKENS:
-            return _deny("file", f"'{tok}' is not in the read-only file allowlist")
-    return _allow()
-
-
-# Same reasoning as `file` above, applied to ripgrep: a denylist of
-# `--pre`/`--pre-glob` (tried once already) misses ripgrep's OTHER
-# external-command flag, `--hostname-bin <COMMAND>` (rg >= 14) — not
-# installed on NiPoGi today, but the allowlist-level gap is live
-# regardless. A small allowlist of read-only search flags has no such
-# enumeration problem.
-_RG_ALLOWED_TOKENS = frozenset({
-    "--json",
-    "-n", "--line-number",
-    "-i", "--ignore-case",
-    "-v", "--invert-match",
-    "-w", "--word-regexp", "-x", "--line-regexp",
-    "-c", "--count",
-    "-l", "--files-with-matches",
-    "-L", "--follow",
-    "-u", "-uu", "-uuu",
-})
-
-
-def _validate_rg(argv: list[str]) -> GuardResult:
-    for tok in argv[1:]:
-        if tok.startswith("-") and tok not in _RG_ALLOWED_TOKENS:
-            return _deny("rg", f"'{tok}' is not in the read-only rg allowlist")
-    return _allow()
-
-
 _SUBCOMMAND_VALIDATORS = {
-    "find": _validate_find,
     "git": _validate_git,
     "docker": _validate_docker,
     "systemctl": _validate_systemctl,
     "journalctl": _validate_journalctl,
-    "curl": _validate_curl,
-    "openssl": _validate_openssl,
-    "ip": _validate_ip,
-    "tailscale": _validate_tailscale,
-    "file": _validate_file,
-    "rg": _validate_rg,
 }
 
 # Executables that are an unconditional escape hatch regardless of args —
@@ -581,12 +309,12 @@ _SUBCOMMAND_VALIDATORS = {
 # since their entire purpose is running arbitrary user-supplied code.
 _UNCONDITIONAL_DENY = frozenset({
     "sudo", "su", "doas",
-    "rm", "mv", "cp", "touch", "mkdir", "mkdir", "truncate", "chmod",
+    "rm", "mv", "cp", "touch", "mkdir", "truncate", "chmod",
     "chown", "chgrp", "ln", "tee", "install", "rsync", "shred",
     "sed", "perl", "awk", "gawk", "mawk",
     "xargs",
     "python", "python3", "node", "nodejs", "ruby", "php", "powershell",
-    "pwsh", "perl", "lua", "irb", "deno", "bun",
+    "pwsh", "lua", "irb", "deno", "bun",
     "sh", "bash", "dash", "zsh", "ksh", "fish", "csh", "tcsh",
     "kill", "pkill", "killall", "pkexec",
     "iptables", "ip6tables", "nft", "ufw", "firewall-cmd",
@@ -600,7 +328,7 @@ _UNCONDITIONAL_DENY = frozenset({
     "at", "batch", "crontab",
     "docker-compose",  # only the `docker compose` (v2, space form) path is validated
     "nc", "ncat", "netcat", "socat",  # arbitrary network read/write, not a bounded probe
-    "wget",  # curl's validator is the only sanctioned HTTP path
+    "wget",  # no registered rob_* tool emits curl/wget; probes go through urllib/socket
     "scp", "sftp", "ftp",
 })
 

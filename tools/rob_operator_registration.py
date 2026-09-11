@@ -497,8 +497,10 @@ registry.register(
 # but out of the registry until a real `docker exec` allowlist entry is
 # added to read_only_command_guard.py's _validate_docker — deliberately
 # NOT done as part of this pass, since a `docker exec` allowlist entry is a
-# new guard capability, not a bugfix, and the guard's git/curl handling was
-# only just hardened in this same pass (see read_only_command_guard.py's
-# _validate_git/_validate_curl history). Adding new reachable surface in
-# the same commit as closing a guard gap is exactly the sequencing this
-# implementation's own review flagged as risky.
+# new guard capability, not a bugfix. The consolidated security-closure
+# pass also REMOVED the dead validator families (curl, find, file, rg,
+# openssl, ip, tailscale — none reachable from a registered rob_* tool) and
+# trimmed docker/systemctl to exactly the subcommands the registered tools
+# emit; adding new reachable surface in the same commit as closing a guard
+# gap is exactly the sequencing this implementation's own review flagged
+# as risky.

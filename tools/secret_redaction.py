@@ -8,47 +8,40 @@ dump's ``DATABASE_URL=postgresql://user:PASSWORD@host/db`` line was missed
 because the filter only matched *variable names*, never the embedded
 credential inside a URI *value*. This module redacts by both name and
 value pattern for exactly that reason.
+
+Every pattern here is applied to attacker-influenced text (HTTP bodies,
+log output, DB output), so each one is bounded/linear — no nested
+unbounded quantifiers, no per-start-position backtracking over the rest
+of the line. See the comments on ``_redact_name_value_pairs`` and
+``_COOKIE_PATTERN`` for the closed O(n^2) shapes, and on ``_JWT_PATTERN``
+for the backtracking-elimination change, in the consolidated security
+pass.
 """
 
 from __future__ import annotations
 
 import re
 
-_SECRET_WORD = r"(?:TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL)"
-
-_NAME_KEY_SEP_PATTERN = re.compile(
-    # A key is any identifier CONTAINING a secret-shaped word segment,
-    # anywhere in the line — not just at the start of the (stripped) line.
-    # An earlier `^`-anchored version only matched when the secret-shaped
-    # name was the first token on the line, which misses the exact shape a
-    # `docker inspect` env dump actually produces (`    "MCP_TOKEN=x",` —
-    # the name is preceded by indentation AND a quote, never at line start)
-    # as well as any secret embedded mid-line (a JSON body, a log line with
-    # a prefix). A one-character negative lookbehind keeps this from
-    # matching in the middle of a longer identifier at a word boundary,
-    # while intentionally still matching substrings like "PGPASSWORD" or
-    # "APIKEY" that have no separating underscore ("SOMETOKENISH" is NOT
-    # exempted by this — it still matches, deliberately: over-redacting an
-    # identifier that merely contains a secret word is far safer than
-    # missing a real bare-word secret name).
-    #
-    # This pattern locates the key+separator only — NOT the value. How far
-    # the value extends is decided procedurally in
-    # `_redact_name_value_pairs`, based on how the value is quoted, rather
-    # than by matching up to a fixed delimiter set (space/comma/etc) here:
-    # a real secret value can legitimately contain any of those characters
-    # (a generated passphrase, a base64/URL-safe token used in a query
-    # string), and a delimiter-bounded value group truncates the redaction
-    # right there and leaks the rest of the secret in plaintext — a real
-    # regression an earlier version of this exact fix introduced.
-    r"(?P<lead_quote>[\"'])?"
-    r"(?<![A-Za-z0-9_])"
-    r"(?P<key>[A-Za-z0-9_.-]*" + _SECRET_WORD + r"[A-Za-z0-9_.-]*)"
-    r"(?:[\"'])?"  # the key's OWN closing quote in `"NAME": "value"` — not captured, just skipped
-    r"(?P<sep>\s*[:=]\s*)"
-    r"(?P<value_quote>[\"'])?",
-    re.IGNORECASE,
+# Name/key detection is a linear SCAN, not a regex, on purpose. The
+# previous `_NAME_KEY_SEP_PATTERN` was effectively
+# `[A-Za-z0-9_.-]*SECRET_WORD[A-Za-z0-9_.-]*`: an unbounded greedy prefix
+# tried from every one of n start positions, each attempt backtracing the
+# whole remaining line when no `[:=]` separator ever followed — O(n^2) on
+# a hostile 200 KB text body (measured ~63s through the registered
+# `rob_http_probe` tool). No real identifier needs an unbounded prefix,
+# so the scan below finds each secret-word occurrence once, extends the
+# key left/right over identifier characters, and moves on — linear in
+# input size with identical redaction semantics (see
+# `_redact_name_value_pairs`).
+_SECRET_WORD_ALTERNATION = re.compile(
+    r"TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL", re.IGNORECASE
 )
+
+_ASCII_IDENT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+)
+_KEY_CHARS = _ASCII_IDENT_CHARS | frozenset(".-")
+_QUOTES = frozenset("\"'")
 
 
 def _find_unescaped_char(line: str, char: str, start: int) -> int:
@@ -93,42 +86,86 @@ def _redact_name_value_pairs(line: str) -> str:
       the end of the line, since there is no other reliable terminator and
       a truncated redaction that leaks the value's tail is worse than
       over-redacting trailing text on the same line.
+
+    This is the same match semantics as the previous
+    ``_NAME_KEY_SEP_PATTERN`` (leftmost match, greedy key extension over
+    ``[A-Za-z0-9_.-]``, optional surrounding quotes) implemented as a
+    linear scan: the left-extension loop is the same greedy prefix, but
+    each input position is visited once instead of rescanned from every
+    possible start. A key with no following ``[:=]`` separator makes every
+    later secret word in the SAME identifier run fail identically, so the
+    scan skips the whole run at once — this keeps dense word runs
+    (``"TOKEN" * 50_000``) linear instead of quadratic.
     """
     out: list[str] = []
     pos = 0
-    for m in _NAME_KEY_SEP_PATTERN.finditer(line):
-        if m.start() < pos:
-            continue  # already consumed by a previous match's value span
-        value_start = m.end()
-        terminator = m.group("value_quote") or m.group("lead_quote")
+    skip_until = 0
+    n = len(line)
+    rstrip_len = len(line.rstrip("\n"))
+    for m in _SECRET_WORD_ALTERNATION.finditer(line):
+        if m.start() < skip_until:
+            continue  # already consumed by a previous match's span/skipped run
+
+        # Greedy key extension leftward: identical to the regex's
+        # `[A-Za-z0-9_.-]*` prefix. Because this consumes every alnum/
+        # underscore char, the char before the key can never be one, which
+        # is exactly the regex's `(?<![A-Za-z0-9_])` guard.
+        key_start = m.start()
+        while key_start > 0 and line[key_start - 1] in _KEY_CHARS:
+            key_start -= 1
+        lead_quote = (
+            line[key_start - 1]
+            if key_start > 0 and line[key_start - 1] in _QUOTES
+            else None
+        )
+
+        key_end = m.end()
+        while key_end < n and line[key_end] in _KEY_CHARS:
+            key_end += 1
+        if key_end < n and line[key_end] in _QUOTES:
+            key_end += 1  # the key's own closing quote in `"NAME": "value"`
+
+        sep_idx = key_end
+        while sep_idx < n and line[sep_idx] in " \t":
+            sep_idx += 1
+        if sep_idx >= n or line[sep_idx] not in ":=":
+            # No separator after this key — not a name=value pair. Every
+            # later secret-word occurrence inside this same identifier run
+            # reaches the same run end and fails the same way, so skip the
+            # whole run rather than re-extending left across it. (skip_until
+            # is separate from `pos` on purpose: nothing has been emitted
+            # for the skipped region yet.)
+            skip_until = max(skip_until, key_end)
+            continue
+        sep_idx += 1
+        while sep_idx < n and line[sep_idx] in " \t":
+            sep_idx += 1
+
+        value_quote = line[sep_idx] if sep_idx < n and line[sep_idx] in _QUOTES else None
+        value_start = sep_idx + (1 if value_quote else 0)
+        terminator = value_quote or lead_quote
         if terminator:
             close_idx = _find_unescaped_char(line, terminator, value_start)
-            value_end = close_idx if close_idx != -1 else len(line.rstrip("\n"))
+            value_end = close_idx if close_idx != -1 else rstrip_len
         else:
-            value_end = len(line.rstrip("\n"))
+            value_end = rstrip_len
         if value_end <= value_start:
             continue  # empty value (e.g. NAME="") — nothing to redact
         out.append(line[pos:value_start])
         out.append(REDACTED)
         pos = value_end
+        skip_until = max(skip_until, value_end)
     out.append(line[pos:])
     return "".join(out)
 
+
 # scheme://user:password@host or scheme://:password@host (Redis-style,
 # empty username) — redact only the credential portion, keep the
-# scheme/host visible since that's the useful diagnostic part.
+# scheme/host visible since that's the useful diagnostic part. The
+# scheme's repetition is bounded ({0,15}: no real URI scheme is anywhere
+# near 16 chars) so a long scheme-shaped blob with no `://` can never
+# trigger per-position backtracking.
 _URI_CREDENTIAL_PATTERN = re.compile(
-    # The scheme's repeating group was unbounded (`*`), which is
-    # catastrophic on a long run of scheme-shaped characters with no
-    # `://` ever following (e.g. a long alnum blob in an HTTP response
-    # body or a log line) — the greedy match consumes to end-of-line and
-    # then backtracks one character at a time from every one of n start
-    # positions, an O(n^2) blowup confirmed live: ~30s of CPU on a 200,000
-    # -char adversarial line through the real, registered `rob_http_probe`
-    # tool. No real URI scheme is anywhere near this long (the longest in
-    # common use, e.g. "postgresql"/"mongodb+srv", is under 16 chars) —
-    # bounding the repetition removes the pathological case entirely
-    # without narrowing what actually gets redacted.
     r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]{0,15}://)"
     r"(?P<user>[^:@/\s]*):(?P<pass>[^@/\s]+)"
     r"(?P<at>@)"
@@ -138,7 +175,10 @@ _AUTH_HEADER_PATTERN = re.compile(
     r"(?i)(Authorization\s*:\s*)(Bearer|Basic|Digest|Token)\s+([A-Za-z0-9._~+/=-]+)"
 )
 
-# Well-known token-shaped prefixes.
+# Well-known token-shaped prefixes. Each alternative is anchored on a
+# distinct literal prefix and ends in a greedy quantifier with no trailing
+# constraint beyond `\b`, which is always satisfied at the end of the
+# character class / line — no backtracking path.
 _TOKEN_PREFIX_PATTERN = re.compile(
     r"\b("
     r"gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub PAT/OAuth/user/server/refresh tokens
@@ -153,15 +193,26 @@ _TOKEN_PREFIX_PATTERN = re.compile(
 
 # JWT-shaped: three base64url segments separated by dots. Deliberately
 # requires all three segments to be reasonably long to avoid false
-# positives on ordinary dotted version-ish strings.
+# positives on ordinary dotted version-ish strings. The quantifiers are
+# LAZY: each segment expands forward one character at a time until the
+# next `.` (or, for the last segment, a word boundary) matches, so there
+# is no backtracking at all — expansion is forward-only, each position
+# visited a constant number of times regardless of how dotted runs
+# overlap. Lazy is also the correct span: exactly three segments, not the
+# longest possible run.
 _JWT_PATTERN = re.compile(
-    r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"
+    r"\beyJ[A-Za-z0-9_-]{5,}?\.[A-Za-z0-9_-]{5,}?\.[A-Za-z0-9_-]{5,}?\b"
 )
 
 # Cookie / session-id style: `key=<long opaque token>` inside a Cookie
-# header or Set-Cookie line.
+# header or Set-Cookie line. The attribute-name span between the header
+# name and `=` is bounded (lazy, {1,64}): the previous unbounded
+# `[^=;\s]+` made repeated `Cookie:` prefixes with no `=` ever following
+# rescan the rest of the line from every occurrence — O(n^2). Real
+# cookie/attribute names are short; the value span is greedy with no
+# trailing constraint, so it never backtracks.
 _COOKIE_PATTERN = re.compile(
-    r"(?i)((?:Cookie|Set-Cookie)\s*:\s*[^=;\s]+=)([^;\s]{16,})"
+    r"(?i)((?:Cookie|Set-Cookie)\s*:\s*[^=;\s]{1,64}?=)([^;\s]{16,})"
 )
 
 REDACTED = "[REDACTED]"
@@ -217,7 +268,7 @@ _SECRET_KEY_BARE_WORDS = ("TOKEN", "PASSWORD", "SECRET", "KEY", "PASSWD", "CREDE
 
 
 def _is_secret_key(key: str) -> bool:
-    # Same rule as _NAME_PATTERN: any key CONTAINING a secret-shaped word
+    # Same rule as the name scan: any key CONTAINING a secret-shaped word
     # counts, not just one ending with "_" + the word — a bare, unseparated
     # name like "PGPASSWORD" or "APIKEY" is exactly as sensitive as
     # "MCP_TOKEN_SIGNING_SECRET" and must not slip through for lack of an

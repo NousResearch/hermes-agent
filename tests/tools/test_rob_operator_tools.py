@@ -91,21 +91,62 @@ class TestRunNeverLeaksSecretAtTruncationBoundary:
     for the CPU cost is bounding the regex itself (see
     secret_redaction.py's _URI_CREDENTIAL_PATTERN scheme-length bound),
     not truncating before redacting.
+
+    The OLD (truncate-first) implementation left the plaintext PREFIX of
+    any secret whose terminator lay beyond the cut point in the output:
+    the redaction pattern that would have caught it never got to see the
+    terminator (the URI pattern's `@`, a token's 20th character, ...). The
+    first two tests below place the cut INSIDE the secret precisely so the
+    old code fails them while the redact-first order passes — the earlier
+    versions of these tests placed the secret comfortably before (or the
+    cut before) the boundary, which the old code also passed, so they
+    proved nothing.
     """
 
-    def test_secret_straddling_truncation_boundary_is_not_leaked(self, tmp_path):
+    def test_uri_password_straddling_cut_leaks_no_prefix(self, tmp_path):
+        secret = "SuperSecretPassword123"
+        line_prefix = "SOME_URL=postgresql://dbuser:"
+        line = line_prefix + secret + "@db.internal/db\n"
+        # Under the old order the cut at _MAX_OUTPUT_CHARS lands 10 chars
+        # INTO the password, leaving `...dbuser:SuperSecr` in plaintext
+        # (no `@` in the truncated text, so the URI pattern never fires).
+        padding = "P" * (t._MAX_OUTPUT_CHARS - len(line_prefix) - 10)
+        content = padding + line
+        f = tmp_path / "straddle.txt"
+        f.write_text(content)
+
+        result = t._run(f"cat {shlex.quote(str(f))}")
+        assert result.ok, result.error
+        assert secret not in result.output
+        assert secret[:8] not in result.output  # fails against old truncate-first code
+
+    def test_token_prefix_straddling_cut_leaks_no_prefix(self, tmp_path):
+        token = "sk-" + "AbCdEfGhIjKlMnOpQrStUvWxYz"
+        line_prefix = "SOME_FIELD="
+        line = line_prefix + token + "\n"
+        # Cut 10 chars into the token run: the old order left
+        # `sk-AbCdEfGh` (below the 20-char minimum) in plaintext because
+        # the token pattern needs its full minimum length to fire.
+        padding = "P" * (t._MAX_OUTPUT_CHARS - len(line_prefix) - 10)
+        content = padding + line
+        f = tmp_path / "token_straddle.txt"
+        f.write_text(content)
+
+        result = t._run(f"cat {shlex.quote(str(f))}")
+        assert result.ok, result.error
+        assert token not in result.output
+        assert token[:8] not in result.output  # fails against old truncate-first code
+
+    def test_secret_fully_inside_bound_is_redacted_not_just_truncated(self, tmp_path):
+        # Sanity invariant: a secret whose whole value AND terminator sit
+        # inside the bound must be redacted (marker visible), not merely
+        # cut away — old code passed this one too, it's the complement of
+        # the two straddling regressions above.
         secret = "SuperSecretPassword123"
         line = f'"DATABASE_URL=postgresql://dbuser:{secret}@db.internal/db",\n'
-        # Padding placed so the SECRET LINE ITSELF sits comfortably inside
-        # the output bound (total well under _MAX_OUTPUT_CHARS), so the
-        # redacted marker is still visible in the final output rather than
-        # truncated away entirely — this isolates the actual regression
-        # (does a secret in a LARGE document still get redacted at all)
-        # from truncation position arithmetic.
         padding = "P" * (t._MAX_OUTPUT_CHARS - len(line) - 10_000)
         content = padding + line
-        assert len(content) < t._MAX_OUTPUT_CHARS
-        f = tmp_path / "big_output.txt"
+        f = tmp_path / "inside.txt"
         f.write_text(content)
 
         result = t._run(f"cat {shlex.quote(str(f))}")
@@ -113,21 +154,22 @@ class TestRunNeverLeaksSecretAtTruncationBoundary:
         assert secret not in result.output
         assert "[REDACTED]" in result.output
 
-    def test_secret_at_exact_truncation_boundary_never_leaks_raw_value(self, tmp_path):
-        # The harder case: the secret's own text spans the exact point
-        # where _MAX_OUTPUT_CHARS would have cut under the OLD (buggy)
-        # truncate-first order. Whether or not the redacted marker
-        # survives into the final (possibly still-truncated) output, the
-        # raw secret value must never appear in it.
+    def test_secret_beginning_exactly_at_cut_point_leaks_no_prefix(self, tmp_path):
+        # The cut lands exactly on the secret's first character under the
+        # old order. Whether or not the marker survives into the final
+        # (truncated) output, no secret character may appear.
         secret = "SuperSecretPassword123"
-        padding = "P" * (t._MAX_OUTPUT_CHARS - 15)
-        content = f'{padding}"DATABASE_URL=postgresql://dbuser:{secret}@db.internal/db",\n'
-        f = tmp_path / "boundary_output.txt"
+        line_prefix = "SOME_URL=postgresql://dbuser:"
+        line = line_prefix + secret + "@db.internal/db\n"
+        padding = "P" * (t._MAX_OUTPUT_CHARS - len(line_prefix))
+        content = padding + line
+        f = tmp_path / "at_boundary.txt"
         f.write_text(content)
 
         result = t._run(f"cat {shlex.quote(str(f))}")
         assert result.ok, result.error
         assert secret not in result.output
+        assert secret[:8] not in result.output
 
 
 class TestSqlGuard:

@@ -304,7 +304,14 @@ def http_probe(url: str, method: str = "GET", timeout: int = 10) -> ToolResult:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — scheme validated above
             status = resp.status
             headers = {k: v for k, v in resp.getheaders() if k.lower() != "authorization"}
-            body = "" if method == "HEAD" else resp.read(_MAX_OUTPUT_CHARS).decode("utf-8", errors="replace")
+            # Read the FULL body, redact, then truncate — the same order
+            # `_run` uses for shell output. Capping the read before
+            # redaction reintroduces the truncation-boundary leak class:
+            # a secret whose terminator lies beyond the read cap is cut
+            # mid-value and its plaintext prefix survives in the result.
+            # The wall-clock timeout already bounds the transfer; the
+            # output itself is still capped at _MAX_OUTPUT_CHARS below.
+            body = "" if method == "HEAD" else resp.read().decode("utf-8", errors="replace")
     except Exception as exc:
         # The exception text can itself embed the requested URL (e.g. a
         # DNS/connect failure message quoting it back), and a
@@ -317,7 +324,7 @@ def http_probe(url: str, method: str = "GET", timeout: int = 10) -> ToolResult:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     duration_ms = int((time.monotonic() - started) * 1000)
-    output = redact_text(json.dumps({"status": status, "headers": headers, "body": body}))
+    output = redact_text(json.dumps({"status": status, "headers": headers, "body": body}))[:_MAX_OUTPUT_CHARS]
     return ToolResult(ok=True, output=output, duration_ms=duration_ms)
 
 

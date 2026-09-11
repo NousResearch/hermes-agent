@@ -306,3 +306,101 @@ class TestUriPatternNotCatastrophicallySlow:
         # The bound must not break genuinely long-ish real schemes.
         assert "hunter2" not in redact_text("mongodb+srv://user:hunter2@cluster0.example.net/db")
         assert "hunter2" not in redact_text("postgresql://user:hunter2@host:5432/db")
+
+
+class TestNamePatternNotCatastrophicallySlow:
+    """Regression: `_NAME_KEY_SEP_PATTERN` was effectively
+    `[A-Za-z0-9_.-]*SECRET_WORD[A-Za-z0-9_.-]*` — an unbounded greedy
+    prefix tried from every one of n start positions, each attempt
+    backtracing the rest of the line when no `[:=]` separator followed:
+    O(n^2), measured ~63s on a hostile 200 KB text body through the
+    registered rob_http_probe tool. The linear scan replacement must keep
+    the same redaction behavior at interactive speed on the same hostile
+    shapes. The genuinely quadratic old-code shapes are DENSE secret-word
+    runs with no `[:=]` separator: at every secret-word start the old
+    regex's greedy key prefix consumed the rest of the line and then
+    backtracked it once per candidate — `"TOKEN" * 15_000` (75 KB) already
+    takes ~0.9s on the old implementation, so the 200-250 KB shapes below
+    run for minutes there while the linear scan finishes in milliseconds.
+    Bounds are deliberately generous (CI noise) while still failing the
+    old implementation by orders of magnitude."""
+
+    def test_dense_secret_word_run_no_separator_is_fast(self):
+        adversarial = "TOKEN" * 50_000  # ~250 KB of near-match candidates
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_dense_password_word_run_no_separator_is_fast(self):
+        adversarial = "PASSWORD" * 30_000  # ~240 KB of near-match candidates
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_dense_mixed_secret_words_no_separator_is_fast(self):
+        adversarial = "TOKENKEY" * 30_000  # ~240 KB of adjacent candidates
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_realistic_docker_inspect_shape_still_redacted_after_linearization(self):
+        # The scan replacement must not change what actually gets redacted.
+        line = '            "MCP_TOKEN_SIGNING_SECRET=abc123def456",'
+        assert "abc123def456" not in redact_text(line)
+
+
+class TestOtherPatternsNotCatastrophicallySlow:
+    """The full audit covered every pattern in this module: JWT segments
+    were greedy-unbounded (quadratic on dotted near-JWT blobs) and the
+    cookie attribute-name span was unbounded (quadratic on repeated
+    `Cookie:` prefixes with no `=`). Both are bounded/lazy now — keep the
+    adversarial shapes from regressing."""
+
+    def test_repeated_cookie_headers_no_equals_is_fast(self):
+        adversarial = "Cookie:" * 50_000
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_dotted_near_jwt_blobs_are_fast(self):
+        # Lazy segment quantifiers are a linearity guard: each expansion is
+        # forward-only with no backtracking, so near-JWT blobs cannot blow
+        # up regardless of dot placement.
+        adversarial = ("eyJ" + "a" * 500 + "." + "b" * 500 + ".!") * 500  # ~750 KB
+        started = time.monotonic()
+        redact_text(adversarial)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s — expected well under 1s"
+
+    def test_jwt_still_redacted_after_lazy_rewrite(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        assert jwt not in redact_text(f"token={jwt}")
+
+    def test_cookie_still_redacted_after_bounding(self):
+        result = redact_text("Set-Cookie: session=abcdefghijklmnopqrstuvwxyz; Path=/")
+        assert "abcdefghijklmnopqrstuvwxyz" not in result
+
+
+class TestMultipleSecretsInOneLine:
+    def test_multiple_name_value_pairs_all_redacted(self):
+        result = redact_text("PGPASSWORD=one TOKEN=two API_KEY=three")
+        assert "one" not in result
+        assert "two" not in result
+        assert "three" not in result
+
+    def test_mixed_uri_and_name_pairs_all_redacted(self):
+        result = redact_text(
+            "A=mysql://root:hunter2@db/x PASSWORD=topsecret ghp_1234567890abcdefghij1234567890abcdef"
+        )
+        assert "hunter2" not in result
+        assert "topsecret" not in result
+        assert "ghp_1234567890abcdefghij1234567890abcdef" not in result
+
+    def test_duplicate_keys_on_one_line_all_redacted(self):
+        result = redact_text('{"PASSWORD": "a", "PASSWORD": "b"}')
+        assert '"a"' not in result
+        assert '"b"' not in result

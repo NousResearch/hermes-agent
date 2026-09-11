@@ -2744,8 +2744,11 @@ class MatrixAdapter(BasePlatformAdapter):
             return text
         protected, placeholders = self._protect_outbound_mention_regions(text)
         linked = _OUTBOUND_MENTION_RE.sub(lambda m: f"[{m.group(1)}](https://matrix.to/#/{m.group(1)})", protected)
-        for idx, original in enumerate(placeholders):
-            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", original)
+        # Later placeholders may contain earlier ones; unwind them outside-in.
+        for idx in reversed(range(len(placeholders))):
+            linked = linked.replace(
+                f"\x00MENTION_PROTECTED{idx}\x00", placeholders[idx]
+            )
         return linked
 
     def _protect_outbound_mention_regions(self, text: str) -> tuple[str, list[str]]:
@@ -2907,8 +2910,8 @@ class MatrixAdapter(BasePlatformAdapter):
         result = re.sub(r"\n", "<br>\n", result)
         result = re.sub(r"<br>\n(</?(?:pre|blockquote|h[1-6]|ul|ol|li|hr))", r"\n\1", result)
         result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li)>)<br>", r"\1", result)
-        for idx, original in enumerate(placeholders):
-            result = result.replace(f"\x00PROTECTED{idx}\x00", original)
+        for idx in reversed(range(len(placeholders))):
+            result = result.replace(f"\x00PROTECTED{idx}\x00", placeholders[idx])
         return result
 
 

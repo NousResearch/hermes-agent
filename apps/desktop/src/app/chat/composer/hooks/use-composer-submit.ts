@@ -96,13 +96,17 @@ export function useComposerSubmit({
       stashAt(submittedScope, text, submittedAttachments)
     }
 
+    // A hidden submit is machine text (a setup note, never something the user
+    // typed), so a rejection drops it instead of loading it into the draft.
+    const rejected = displayKind ? () => {} : restore
+
     void Promise.resolve(
       attachments
         ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
         : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
-      .catch(restore)
+      .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
+      .catch(rejected)
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship

@@ -34,6 +34,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Card-lane failures that describe the DESTINATION, not a transient outage. Native Slack
+# (`No Slack thread target`) and the relay connector (`slack task_card requires a thread anchor`)
+# both refuse cards for un-threaded chats; the refusal repeats on every event of the turn.
+_CARD_DESTINATION_UNSUPPORTED_MARKERS = ("thread anchor", "thread target")
+
+
+def _card_destination_unsupported(result: Any) -> bool:
+    """True when a failed task-card send means this chat cannot host a card at all."""
+    error = str(getattr(result, "error", "") or "").lower()
+    return any(marker in error for marker in _CARD_DESTINATION_UNSUPPORTED_MARKERS)
+
 
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
@@ -408,6 +419,18 @@ class TurnRunner:
                 )
                 return
             st.native_failed = True
+            if _card_destination_unsupported(result):
+                # The destination itself cannot host a card (flat DM: no thread anchor). This is
+                # a property of the chat, not a transient outage, and it repeats on every event.
+                # Degrading to text would deliver tool progress the operator never enabled
+                # (Slack's default is off), so the lane goes silent for this turn.
+                st.egress_declined = True
+                logger.info(
+                    "Slack native task cards are unsupported for this destination "
+                    "(%s); tool progress stays off for this turn",
+                    getattr(result, "error", "unknown error"),
+                )
+                return
             logger.warning(
                 "Slack native task-card progress failed; falling back "
                 "to an editable text update: %s", getattr(result, "error", "unknown error"),

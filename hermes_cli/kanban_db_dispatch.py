@@ -2160,6 +2160,42 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     )
 
 
+# A kanban worker burns several turns on startup alone (memory prefetch, MCP
+# handshakes, skill scans) before it can act on the task itself — a budget
+# below this cannot complete meaningful work. Matches the goal-mode dispatcher's
+# own GoalManager(default_max_turns=20) baseline elsewhere in this codebase.
+_IMPLAUSIBLY_LOW_MAX_TURNS = 20
+
+
+def _warn_if_max_turns_implausibly_low(task: Task, profile_home: str) -> None:
+    """Best-effort diagnostic for issue #108575: an assignee profile whose
+    effective agent.max_turns is too low for autonomous work fails with a bare
+    "Iteration budget exhausted (N/N)" that gives no hint the root cause is a
+    profile-level config value rather than the task itself. Warns only (never
+    blocks the spawn — a deliberately low budget is a legitimate choice) and
+    never lets a diagnostics read fail dispatch.
+    """
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            max_turns = load_config().get("agent", {}).get("max_turns")
+        finally:
+            reset_hermes_home_override(token)
+        if isinstance(max_turns, int) and 0 < max_turns < _IMPLAUSIBLY_LOW_MAX_TURNS:
+            sys.stderr.write(
+                f"⚠ kanban: assignee '{task.assignee}' has agent.max_turns={max_turns}, "
+                f"below the {_IMPLAUSIBLY_LOW_MAX_TURNS}-turn floor a kanban worker needs for "
+                f"startup alone — task {task.id} will likely fail with "
+                f"'Iteration budget exhausted' before doing any task work. "
+                f"Raise agent.max_turns in {profile_home}/config.yaml.\n"
+            )
+    except Exception:
+        pass  # diagnostics only — never block or fail a spawn over this
+
+
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -2199,6 +2235,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # No profile dir (isolated test fixtures) — the CLI resolves it from
         # HERMES_PROFILE (set below) instead.
         pass
+    else:
+        _warn_if_max_turns_implausibly_low(task, env["HERMES_HOME"])
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

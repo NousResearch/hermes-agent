@@ -866,6 +866,99 @@ class TestSharedBoardPaths:
             assert key not in env
 
 
+class TestLowMaxTurnsWarning:
+    """Regression for issue #108575: a kanban worker cannot complete
+    meaningful work with a very low agent.max_turns budget (startup alone
+    -- memory prefetch, MCP handshakes, skill scans -- burns several
+    turns), and the resulting "Iteration budget exhausted" failure gives
+    no hint the cause is a profile-level config value, not the task
+    itself. Independently confirmed by @liuhao1024: no create/clone path
+    synthesizes a low value and no runtime default resolves to 4, so
+    however the value got there, a dispatch-time diagnostic is the
+    actionable fix regardless of root cause."""
+
+    def _profile_home(self, tmp_path, name, max_turns=None):
+        home = tmp_path / ".hermes" / "profiles" / name
+        home.mkdir(parents=True)
+        if max_turns is not None:
+            (home / "config.yaml").write_text(f"agent:\n  max_turns: {max_turns}\n")
+        return home
+
+    def _task(self, tmp_path, assignee):
+        return kb.Task(
+            id="t_low_budget", title="x", body=None, assignee=assignee, status="ready",
+            priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+            workspace_kind="worktree", workspace_path=str(tmp_path / "ws"), claim_lock=None,
+            claim_expires=None, tenant=None, branch_name="wt/t_low_budget",
+        )
+
+    def test_warns_on_stderr_when_assignee_max_turns_is_implausibly_low(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        self._profile_home(tmp_path, "lowbudget", max_turns=4)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(tmp_path / ".hermes" / "profiles" / profile),
+        )
+        monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: types.SimpleNamespace(pid=1))
+
+        kbd._default_spawn(self._task(tmp_path, "lowbudget"), str(tmp_path / "ws"))
+
+        err = capsys.readouterr().err
+        assert "lowbudget" in err
+        assert "max_turns=4" in err
+        assert "t_low_budget" in err
+
+    def test_does_not_warn_for_a_normal_max_turns_budget(self, tmp_path, monkeypatch, capsys):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        self._profile_home(tmp_path, "normalbudget", max_turns=150)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(tmp_path / ".hermes" / "profiles" / profile),
+        )
+        monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: types.SimpleNamespace(pid=1))
+
+        kbd._default_spawn(self._task(tmp_path, "normalbudget"), str(tmp_path / "ws"))
+
+        assert "max_turns" not in capsys.readouterr().err
+
+    def test_never_blocks_the_spawn_even_when_the_diagnostic_read_fails(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A profile dir that exists but has no readable config.yaml (or any
+        other diagnostics-read failure) must never prevent the spawn
+        itself -- this is a warning, not a gate."""
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        self._profile_home(tmp_path, "noconfig")  # no config.yaml at all
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(tmp_path / ".hermes" / "profiles" / profile),
+        )
+        spawned = {}
+
+        def fake_popen(cmd, **kw):
+            spawned["called"] = True
+            return types.SimpleNamespace(pid=1)
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+        pid = kbd._default_spawn(self._task(tmp_path, "noconfig"), str(tmp_path / "ws"))
+
+        assert spawned.get("called") is True
+        assert pid == 1
+        assert "max_turns" not in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs
 # ---------------------------------------------------------------------------

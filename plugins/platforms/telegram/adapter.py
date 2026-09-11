@@ -3811,6 +3811,51 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
 
+    def material_review_target(self) -> tuple[int, int, int | None]:
+        """Return the explicitly configured Alan review lane."""
+        settings = self.config.extra.get("material_review", {})
+        if not isinstance(settings, dict):
+            raise ValueError("Material review is not configured")
+        reviewer_id, chat_id, thread_id = (settings.get(key) for key in ("reviewer_id", "chat_id", "thread_id"))
+        if (type(reviewer_id) is not int or type(chat_id) is not int or reviewer_id <= 0 or chat_id == 0
+                or (chat_id < 0 and (type(thread_id) is not int or thread_id <= 1))
+                or (chat_id > 0 and thread_id is not None)):
+            raise ValueError("Material review requires numeric reviewer and chat IDs")
+        if chat_id > 0 and chat_id != reviewer_id:
+            raise ValueError("Private material review must use the reviewer's direct chat")
+        return reviewer_id, chat_id, thread_id
+
+    async def send_material_review_card(self, payload: dict) -> SendResult:
+        """Send a bounded, plain-text Alan review card with opaque buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            _, chat_id, thread_id = self.material_review_target()
+            approve_id, reject_id = payload["approve_action_id"], payload["reject_action_id"]
+            if (not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,59}", value)
+                        for value in (approve_id, reject_id)) or approve_id == reject_id):
+                raise ValueError("Invalid material review action IDs")
+            candidates = payload["candidates"]
+            confidence = payload.get("confidence")
+            score = "未知" if confidence is None else f"{confidence:.0%}"
+            lines = [f"教材待審核 {payload.get('profile', '')}", str(payload["title"])[:200],
+                     f"檔案：{str(payload['filename'])[:128]}", f"OCR 信心：{score}",
+                     f"候選單字（{payload.get('candidate_count', len(candidates))}）"]
+            lines.extend(f"• {item['term'][:80]}：{item['definition'][:160]}" for item in candidates[:20])
+            text = "\n".join(lines).encode("utf-16-le")[:7000].decode("utf-16-le", errors="ignore")
+            message = await self._bot.send_message(
+                chat_id=chat_id, message_thread_id=thread_id, text=text,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("批准", callback_data=f"mr:{approve_id}:a"),
+                    InlineKeyboardButton("退回", callback_data=f"mr:{reject_id}:r"),
+                ]]), **self._link_preview_kwargs())
+            return SendResult(success=True, message_id=str(message.message_id))
+        except (ValueError, TypeError, KeyError):
+            return SendResult(success=False, error="Invalid material review payload or configuration")
+        except Exception:
+            logger.warning("[%s] Material review card delivery failed", self.name)
+            return SendResult(success=False, error="Material review card delivery failed")
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
@@ -4263,6 +4308,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
+        if isinstance(data, str) and data.startswith("mr:"):
+            await self.handle_material_review_callback(update)
+            return
         if data.startswith("wa:"):
             await self._handle_wisdom_agent_callback(query, data)
             return
@@ -4288,6 +4336,53 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
+
+    async def _run_material_review_action(self, action_id: str, decision: str, reviewer_id: int) -> dict:
+        child = await asyncio.create_subprocess_exec(
+            "/home/alan/.hermes/skills/alan-english-review/bin/english-material-review-action",
+            decision, action_id, str(reviewer_id), stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            cwd="/home/alan/.hermes", env={"PATH": os.defpath, "HOME": "/home/alan", "LANG": "C.UTF-8"})
+        try:
+            stdout, _ = await asyncio.wait_for(child.communicate(), timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            with contextlib.suppress(ProcessLookupError):
+                child.kill()
+            await child.wait()
+            raise
+        if child.returncode != 0:
+            raise ValueError("Material review action failed")
+        result = json.loads(stdout)
+        if not isinstance(result, dict) or result.get("action_id") != action_id or result.get("status") not in ("approved", "rejected"):
+            raise ValueError("Invalid material review result")
+        return result
+
+    async def handle_material_review_callback(self, update: "Update") -> None:
+        query = update.callback_query
+        if query is None:
+            return
+        match = re.fullmatch(r"mr:([A-Za-z0-9_-]{1,59}):([ar])", query.data if isinstance(query.data, str) else "")
+        try:
+            target = self.material_review_target()
+        except ValueError:
+            target = None
+        message = getattr(query, "message", None)
+        actual = (getattr(getattr(query, "from_user", None), "id", None), getattr(message, "chat_id", None),
+                  getattr(message, "message_thread_id", None))
+        if not match or actual != target:
+            await query.answer(text="無效的教材按鈕或未授權的審核位置。")
+            return
+        await query.answer(text="正在處理教材審核…")
+        action_id, code = match.groups()
+        try:
+            result = await self._run_material_review_action(action_id, "approve" if code == "a" else "reject", target[0])
+        except Exception:
+            logger.warning("[%s] Material review action failed", self.name)
+            return
+        try:
+            await query.edit_message_text(text=f"教材{'已批准' if result['status'] == 'approved' else '已退回'}。", reply_markup=None)
+        except Exception:
+            logger.warning("[%s] Material review completed but card edit failed", self.name)
 
     async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
@@ -5823,7 +5918,8 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return
         super()._enqueue_text_event(event)
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
+    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str,
+                              log_fn=None, dispatch=None) -> None:
         """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
         the pop but before durable dispatch re-holds the event (never lose it)."""
         current_task = asyncio.current_task()
@@ -5835,6 +5931,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                 return
             if self._should_drop_delayed_delivery():
                 self._hold_inbound_event(event, where=f"{where}-flush")
+                event = None
+                return
+            if dispatch is not None and await dispatch(event):
                 event = None
                 return
             if log_fn is not None:
@@ -5884,16 +5983,19 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         """Send a buffered photo burst/album as a single MessageEvent."""
         await self._flush_buffered(
             self._pending_photo_batches, self._pending_photo_batch_tasks, batch_key, self._media_batch_delay_seconds, "photo",
-            lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
+            lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)),
+            lambda ev: self._maybe_dispatch_max_material(ev, None))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
         """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
         existing = pending.get(key)
         if existing is None:
+            event._max_material_message_ids = [str(event.message_id)]
             pending[key] = event
             return
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        existing._max_material_message_ids.append(str(event.message_id))
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 
@@ -6118,7 +6220,51 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
         await self._flush_buffered(
-            self._media_group_events, self._media_group_tasks, media_group_id, self.MEDIA_GROUP_WAIT_SECONDS, "media-group")
+            self._media_group_events, self._media_group_tasks, media_group_id, self.MEDIA_GROUP_WAIT_SECONDS, "media-group",
+            dispatch=lambda ev: self._maybe_dispatch_max_material(ev, media_group_id))
+
+    async def _maybe_dispatch_max_material(self, event: MessageEvent, media_group_id: str | None) -> bool:
+        """Consume an authorized Max JPG/PNG batch before normal agent routing."""
+        result = await asyncio.to_thread(
+            self._dispatch_max_material_ingress, event, media_group_id,
+            list(getattr(event, "_max_material_message_ids", [str(event.message_id)])),
+        )
+        if result is None:
+            return False
+        await self._send_max_material_receipt(event, result.status)
+        return True
+
+    def _dispatch_max_material_ingress(self, event: MessageEvent, media_group_id: str | None,
+                                       message_ids: list[str]):
+        settings = self.config.extra.get("max_material_ingress", {})
+        if not isinstance(settings, dict) or settings.get("enabled") is not True:
+            return None
+        try:
+            from gateway.max_material_ingress import dispatch
+            result = dispatch(settings=settings, chat_id=str(event.source.chat_id),
+                              user_id=str(event.source.user_id), message_ids=message_ids,
+                              media_group_id=media_group_id, cached_paths=list(event.media_urls))
+            return result if result.handled else None
+        except Exception:
+            logger.exception("[%s] Max material ingress dispatch failed", self.name)
+            from gateway.max_material_ingress import IngressDispatchResult
+            return IngressDispatchResult(True, "failed")
+
+    async def _send_max_material_receipt(self, event: MessageEvent, status: str) -> None:
+        if not self._bot:
+            logger.error("[%s] Max material %s but Telegram receipt cannot be sent", self.name, status)
+            return
+        messages = {
+            "received": "教材圖片已收到，正在處理，尚未加入題庫。",
+            "pending_review": "教材已送交審核，尚未加入題庫。",
+            "needs_resubmission": "這批圖片無法使用，請重新傳送清楚的 JPG 或 PNG；管理者已收到通知。",
+            "retrying": "教材處理暫時失敗，系統會重試；管理者已收到通知。",
+            "failed": "教材處理未完成，管理者已收到通知。",
+        }
+        try:
+            await self._bot.send_message(chat_id=int(event.source.chat_id), text=messages.get(status, messages["failed"]))
+        except Exception:
+            logger.exception("[%s] Max material receipt delivery failed", self.name)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""

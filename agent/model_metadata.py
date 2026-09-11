@@ -341,10 +341,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
     # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes. ``deepseek-flash``
     # (version-less canonical id, 2026-09 Flash refresh) needs a discrete entry or the
-    # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below.
+    # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below. The dotted
+    # V4.1 line needs its own key too: "deepseek-v4-flash" is not a substring of
+    # "deepseek-v4.1-flash" (v4.1 != v4), so that slug also fell to the catch-all.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000, "deepseek-v4.1-flash": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-v4.1-flash": 1_048_576,
+    "deepseek-chat": 1_000_000, "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000,
+    "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
@@ -1303,6 +1306,7 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    "deepseek-v4.1-flash",  # 1M; dotted slug missed "deepseek-v4-flash", so "deepseek" persisted 128,000
 })
 
 

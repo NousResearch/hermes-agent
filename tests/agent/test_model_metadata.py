@@ -356,6 +356,7 @@ class TestDefaultContextLengths:
         expected_keys = {
             "deepseek-v4-pro": 1_000_000,
             "deepseek-v4-flash": 1_000_000,
+            "deepseek-v4.1-flash": 1_048_576,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
             # Version-less canonical Flash id (2026-09 Flash refresh).
@@ -377,6 +378,7 @@ class TestDefaultContextLengths:
             cases = [
                 ("deepseek-v4-pro", 1_000_000),
                 ("deepseek-v4-flash", 1_000_000),
+                ("deepseek-v4.1-flash", 1_048_576),
                 ("deepseek/deepseek-v4-pro", 1_000_000),
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
@@ -1709,6 +1711,12 @@ class TestGenericPreCatalogStaleGuard:
         assert _stale_pre_catalog_cache_entry("qwen3.6-plus", 131_072)
         assert _stale_pre_catalog_cache_entry("alibaba/qwen3.6-plus", 131_072)
         assert not _stale_pre_catalog_cache_entry("qwen3.6-plus", 1_048_576)
+        # deepseek-v4.1-flash (1M): the dotted slug missed "deepseek-v4-flash", so pre-fix
+        # builds persisted the 128,000 "deepseek" catch-all.
+        assert _stale_pre_catalog_cache_entry("deepseek-v4.1-flash", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-v4.1-flash", 1_048_576)
+        # Legacy DeepSeek slugs keep their genuine 128K window.
+        assert not _stale_pre_catalog_cache_entry("deepseek-v3.2", 128_000)
         # A 256K value for qwen3.6-plus is above the "qwen" catch-all —
         # could be a genuine probe result, so it is NOT dropped.
         assert not _stale_pre_catalog_cache_entry("qwen3.6-plus", 262_144)

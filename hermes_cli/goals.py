@@ -109,15 +109,14 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
-# Fed back when the judge reviews the last response and returns `continue`: the
+# Appended (never wrapped) when the judge's last verdict was `continue`: the
 # agent would otherwise see a byte-identical prompt every turn and cannot adapt
-# to the specific deficiency the judge named. Without this the loop is
-# guess-and-repeat (observed: dozens of identical turns on a wording mismatch).
-CONTINUATION_PROMPT_JUDGE_FEEDBACK_TEMPLATE = (
-    "[Continuing toward your standing goal — the judge returned `continue`]\n"
-    "Goal: {goal}\n\n"
-    "{body}\n\n"
-    "The judge reviewed your most recent response and was not yet satisfied:\n"
+# to the specific deficiency the judge named. Appending — not rewrapping —
+# keeps the "[Continuing toward your standing goal]" header and goal text a
+# byte-stable prefix (prompt-cache invariant; resume surfaces key on it).
+JUDGE_FEEDBACK_BLOCK = (
+    "\n\n---\n"
+    "The judge reviewed your most recent response and returned `continue`:\n"
     "> {reason}\n\n"
     "Address the judge's reason specifically in your next response — quote "
     "the evidence that answers it (command output, file contents, test "
@@ -1562,8 +1561,8 @@ class GoalManager:
         # every turn and the loop cannot converge (it guess-and-repeats).
         reason = (s.last_reason or "").strip()
         if reason and s.last_verdict in (None, "continue"):
-            body = CONTINUATION_PROMPT_JUDGE_FEEDBACK_TEMPLATE.format(
-                goal=s.goal, body=body, reason=reason.splitlines()[0][:400])
+            body += JUDGE_FEEDBACK_BLOCK.format(
+                reason=reason.splitlines()[0][:400])
         return body
 
     def render_contract(self) -> str:

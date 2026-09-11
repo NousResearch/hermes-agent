@@ -150,7 +150,8 @@ class TestGoalManager:
         mgr._state.last_reason = "criterion 2 expects 24 connectors but only 21 exist"
         prompt = mgr.next_continuation_prompt()
         assert prompt is not None
-        assert "judge returned `continue`" in prompt
+        assert prompt.startswith("[Continuing toward your standing goal]")
+        assert "returned `continue`" in prompt
         assert "only 21 exist" in prompt
         # Base body must still be present (goal + instructions intact).
         assert "ship the widget" in prompt
@@ -168,7 +169,7 @@ class TestGoalManager:
         mgr._state.last_reason = "criterion 2 expects 24 connectors but only 21 exist"
         prompt = mgr.next_continuation_prompt()
         assert prompt is not None
-        assert "judge returned" not in prompt
+        assert "returned `continue`" not in prompt
         assert "only 21 exist" not in prompt
 
 

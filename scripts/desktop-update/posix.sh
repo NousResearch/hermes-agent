@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # posix.sh -- repo-owned macOS/Linux Desktop update hand-off.
 #
 # The whole job: wait for the Desktop to exit, run `hermes update`, tell the

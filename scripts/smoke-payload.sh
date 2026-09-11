@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke-test a staged pm payload (`pm bundle --out`): the raw store python
 # boots hermes_cli/pm out of the staged repo snapshot (cwd at the staged
 # repo, no network, lazy installs off). The desktop's self-relative CLI

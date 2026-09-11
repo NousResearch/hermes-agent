@@ -10,6 +10,7 @@
 #   3. Point you at `.\activate.ps1` - the venv-style way to put the pm env
 #      (PATH + tool vars) into your current session.
 # ============================================================================
+param([switch]$RuntimeOnly)
 $ErrorActionPreference = 'Stop'
 
 Write-Host ''
@@ -86,6 +87,8 @@ try {
     Pop-Location
 }
 Write-Host 'Tools + dependencies installed (hash-verified via pm + uv.lock)' -ForegroundColor Green
+
+if ($RuntimeOnly) { exit 0 }
 
 # ---------------------------------------------------------------------------
 # Environment file

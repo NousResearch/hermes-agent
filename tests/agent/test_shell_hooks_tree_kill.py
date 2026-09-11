@@ -44,7 +44,7 @@ def _write_forking_script(tmp_path, stall_after: bool):
     script.write_text(
         textwrap.dedent(
             f"""\
-            #!/bin/bash
+            #!/usr/bin/env bash
             sleep 300 &
             echo $! > {marker}
             {tail}
@@ -105,7 +105,7 @@ def test_successful_hook_preserves_detached_helpers(tmp_path):
     script.write_text(
         textwrap.dedent(
             f"""\
-            #!/bin/bash
+            #!/usr/bin/env bash
             sleep 300 > /dev/null 2>&1 < /dev/null &
             echo $! > {marker}
             exit 0
@@ -128,7 +128,7 @@ def test_successful_hook_preserves_detached_helpers(tmp_path):
 def test_hook_child_leads_own_process_group(tmp_path):
     """The hook child must lead its own group (killpg ownership precondition)."""
     script = tmp_path / "pgid.sh"
-    script.write_text("#!/bin/bash\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"\n")
+    script.write_text("#!/usr/bin/env bash\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"\n")
     script.chmod(0o755)
 
     r = _spawn(_spec(str(script), timeout=10), "{}")
@@ -142,7 +142,7 @@ def test_fast_path_contract_unchanged(tmp_path):
     """stdin JSON delivery, stdout/stderr capture, and exit codes still work."""
     script = tmp_path / "echoer.sh"
     script.write_text(
-        "#!/bin/bash\ncat\necho errline >&2\nexit 3\n"
+        "#!/usr/bin/env bash\ncat\necho errline >&2\nexit 3\n"
     )
     script.chmod(0o755)
 

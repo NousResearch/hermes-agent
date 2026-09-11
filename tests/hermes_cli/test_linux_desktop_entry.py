@@ -218,7 +218,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    hermes_bin.write_text('#!/bin/bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8")
+    hermes_bin.write_text('#!/usr/bin/env bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8")
     hermes_bin.chmod(0o755)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
@@ -287,7 +287,7 @@ def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
     repo_script.chmod(0o755)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
     wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n', encoding="utf-8")
+    wrapper.write_text(f'#!/usr/bin/env bash\nexec {sys.executable} "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)
 
     # argv[0] = repo script; PATH lookup finds the installed wrapper.
@@ -316,7 +316,7 @@ def test_exec_never_persists_a_bare_interpreter_command(
     root = _make_project(tmp_path)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
     wrapper.parent.mkdir(parents=True)
-    wrapper.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(0o755)
 
     interpreter = tmp_path / "uv" / "cpython-3.11.15" / "bin" / "python3.11"
@@ -411,7 +411,7 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     known_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
     known_wrapper.parent.mkdir(parents=True)
     known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
     known_wrapper.chmod(0o755)
@@ -460,7 +460,7 @@ def test_exec_rejects_known_wrapper_from_another_checkout(
     foreign_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
     foreign_wrapper.parent.mkdir(parents=True)
     foreign_wrapper.write_text(
-        f"#!/bin/bash\nexec {other_root / 'venv' / 'bin' / 'python'} "
+        f"#!/usr/bin/env bash\nexec {other_root / 'venv' / 'bin' / 'python'} "
         f'{other_root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
@@ -800,7 +800,7 @@ def test_wrapper_ownership_rejects_sibling_extensions(suffix, tmp_path):
     checkout.mkdir()
     evil = tmp_path / "evil-shim"
     evil.write_text(
-        f"#!/bin/bash\n"
+        f"#!/usr/bin/env bash\n"
         f"exec {checkout}{suffix}/venv/bin/python "
         f'{checkout}{suffix}/hermes "$@"\n',
         encoding="utf-8",
@@ -829,7 +829,7 @@ def test_wrapper_ownership_accepts_shim_via_symlinked_home(tmp_path, monkeypatch
     shim = home_link / ".local" / "bin" / "hermes"
     shim.parent.mkdir(parents=True)
     shim.write_text(
-        f"#!/bin/bash\n"
+        f"#!/usr/bin/env bash\n"
         f"exec {lexical_checkout}/venv/bin/python "
         f'{lexical_checkout}/hermes "$@"\n',
         encoding="utf-8",
@@ -992,7 +992,7 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
     good_wrapper = xdg_home / ".local" / "bin" / "hermes"
     good_wrapper.parent.mkdir(parents=True)
     good_wrapper.write_text(
-        f"#!/bin/bash\nexec {root / 'venv' / 'bin' / 'python'} "
+        f"#!/usr/bin/env bash\nexec {root / 'venv' / 'bin' / 'python'} "
         f'{root / "hermes"} "$@"\n',
         encoding="utf-8",
     )

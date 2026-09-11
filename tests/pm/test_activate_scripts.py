@@ -1,12 +1,8 @@
-"""The venv-style activate scripts (./activate, ./activate.ps1).
+"""Run the real activation scripts with setup replaced at its process boundary.
 
-`source ./activate` must put the composed pm env into the CURRENT shell
-without ever invoking uv: it runs the pm store's pinned python (fallback:
-the repo venv) to emit `python -m pm.cli env`, then exports the result,
-with a venv-activate-style `deactivate` that restores the prior state.
-These are real input->output checks against a fake store (same layout the
-pm store uses: facts.json + a python-<version>-<target> entry), following
-tests/pm conventions for faking the store.
+The isolated checkout uses the real PM environment reader and fake installed
+artifacts. Setup records each sync and publishes a selected environment; no test
+sources the working checkout or runs its installer against the developer's home.
 """
 
 from __future__ import annotations
@@ -127,10 +123,8 @@ def _fake_store(tmp_path: Path) -> tuple[Path, Path]:
     # spawnable interpreter instead (see _spawnable_python). The wrapper
     # works even named python.exe because activate execs it through
     # bash/MSYS, which honors #!-scripts regardless of suffix.
-    interpreter = entry / "bin" / (
-        "python.exe" if sys.platform.startswith("win") else "python"
-    )
-    interpreter.parent.mkdir(parents=True)
+    interpreter = entry / ("python.exe" if sys.platform.startswith("win") else "bin/python3")
+    interpreter.parent.mkdir(parents=True, exist_ok=True)
     real = _spawnable_python()
     wrapper = "#!/bin/sh\nexec '%s' \"$@\"\n" % _posix(real)
     interpreter.write_text(wrapper, encoding="utf-8")
@@ -156,8 +150,30 @@ def _fake_store(tmp_path: Path) -> tuple[Path, Path]:
     return store, entry
 
 
+def _isolated_checkout(tmp_path: Path) -> Path:
+    root = tmp_path / "checkout with spaces"
+    root.mkdir()
+    shutil.copytree(REPO_ROOT / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "hermes_cli").mkdir()
+    for relative in ("activate", "activate.ps1", "hermes_constants.py", "hermes_cli/__init__.py",
+                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py"):
+        shutil.copy2(REPO_ROOT / relative, root / relative)
+    # Environment-only tests do not exercise provisioning; the runtime tests
+    # replace these stubs with a publisher that records and applies each sync.
+    (root / "setup-hermes.sh").write_text('test "$#" = 1 && test "$1" = --runtime-only\n', encoding="utf-8")
+    (root / "setup-hermes.ps1").write_text(
+        "param([switch]$RuntimeOnly)\nif (-not $RuntimeOnly) { exit 2 }\n", encoding="utf-8",
+    )
+    return root
+
+
 def _bash_env(store: Path) -> dict:
-    env = os.environ.copy()
+    env = _child_env()
+    home = store.parent / "home"
+    home.mkdir(exist_ok=True)
+    env.update(HOME=_posix(home), USERPROFILE=str(home), HERMES_HOME=_posix(home / "hermes"))
+    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "BASH_ENV", "__HERMES_ACTIVATED"):
+        env.pop(key, None)
     env["HERMES_RUNTIME_DIR"] = _posix(store)
     # Keep the real env out of the composed pm output so the canary export
     # is the only thing activate adds beyond the ambient environment.
@@ -173,18 +189,11 @@ def test_bash_scripts_pass_syntax_check():
         assert result.returncode == 0, f"{script.name}: {result.stderr}"
 
 
-def test_activate_never_invokes_uv():
-    """The fast path must run the provisioned python directly — setup is
-    the only place uv bootstrap logic lives."""
-    source = ACTIVATE.read_text(encoding="utf-8")
-    assert "uv run" not in source
-    assert "ensure_pinned_uv" not in source
-
-
 def test_source_activate_exports_the_pm_env(tmp_path: Path):
+    root = _isolated_checkout(tmp_path)
     store, _ = _fake_store(tmp_path)
     script = (
-        f'source "{_posix(ACTIVATE)}" && '
+        f'source "{_posix(root / "activate")}" && '
         f'test -n "$__HERMES_ACTIVATED" && '
         f'printf "%s" "${CANARY}"'
     )
@@ -192,7 +201,7 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
         [_bash(), "-c", script],
         capture_output=True,
         text=True,
-        cwd=_posix(REPO_ROOT),
+        cwd=_posix(tmp_path),
         env=_bash_env(store),
     )
     assert result.returncode == 0, result.stderr
@@ -200,9 +209,10 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
 
 
 def test_deactivate_restores_the_prior_shell(tmp_path: Path):
+    root = _isolated_checkout(tmp_path)
     store, _ = _fake_store(tmp_path)
     script = (
-        f'source "{_posix(ACTIVATE)}" && deactivate && '
+        f'source "{_posix(root / "activate")}" && deactivate && '
         f'test -z "${{{CANARY}+set}}" && '
         f'test -z "${{__HERMES_ACTIVATED+set}}" && '
         f"! declare -F deactivate >/dev/null && "
@@ -212,7 +222,7 @@ def test_deactivate_restores_the_prior_shell(tmp_path: Path):
         [_bash(), "-c", script],
         capture_output=True,
         text=True,
-        cwd=_posix(REPO_ROOT),
+        cwd=_posix(tmp_path),
         env=_bash_env(store),
     )
     assert result.returncode == 0, result.stderr
@@ -220,12 +230,8 @@ def test_deactivate_restores_the_prior_shell(tmp_path: Path):
 
 
 def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
-    env = os.environ.copy()
-    env["HERMES_RUNTIME_DIR"] = _posix(tmp_path / "empty-store")
-    env.pop(CANARY, None)
-    isolated = tmp_path / "no-install" / "activate"
-    isolated.parent.mkdir()
-    shutil.copy2(ACTIVATE, isolated)
+    env = _bash_env(tmp_path / "empty-store")
+    isolated = _isolated_checkout(tmp_path) / "activate"
     script = (
         f'source "{_posix(isolated)}" 2>/dev/null; '
         f'test $? -ne 0 && echo refused'
@@ -234,7 +240,7 @@ def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
         [_bash(), "-c", script],
         capture_output=True,
         text=True,
-        cwd=_posix(REPO_ROOT),
+        cwd=_posix(tmp_path),
         env=env,
     )
     # Without any provisioned python the source must refuse — never
@@ -285,56 +291,25 @@ def test_powershell_scripts_parse():
         assert result.returncode == 0, f"{script.name}: {result.stdout}{result.stderr}"
 
 
+@pytest.mark.platforms("windows")
 def test_powershell_activate_exports_and_deactivates(tmp_path: Path):
-    ps = _powershell()
-    if ps is None:
-        pytest.skip("no PowerShell host available")
-    store, _ = _fake_store(tmp_path)
-
-    # The store interpreter is a /bin/sh wrapper — PowerShell needs a real
-    # python.exe, so stage the running interpreter (+ its DLLs/zips) into
-    # the fake entry; if that does not yield a runnable python, skip.
-    entry = store / json.loads(store.joinpath("facts.json").read_text())["packages"][
-        "python"
-    ]["entry"]
-    exe = Path(sys.executable)
-    shim = entry / "bin" / "python.exe"
-    for src in exe.parent.glob("*.dll"):
-        shutil.copy2(src, entry / "bin" / src.name)
-    for base in (exe.parent, Path(sys.base_prefix)):
-        for zipname in ("python311.zip", "python312.zip"):
-            if (base / zipname).exists():
-                shutil.copy2(base / zipname, entry / "bin" / zipname)
-    if (exe.parent / "Lib").is_dir():
-        shutil.copytree(exe.parent / "Lib", entry / "bin" / "Lib", dirs_exist_ok=True)
-    shutil.copy2(exe, shim)
-
-    probe = subprocess.run(
-        [str(shim), "-c", "print(1)"], capture_output=True, text=True, env=_child_env()
+    # Native venv redirectors resolve the base DLLs/stdlib without copying CPython.
+    root = _isolated_checkout(tmp_path)
+    env = _bash_env(tmp_path / "store")
+    subprocess.run(
+        [str(_spawnable_python()), "-m", "venv", "--without-pip", str(root / ".venv")],
+        check=True, capture_output=True, env=env, timeout=60,
     )
-    if probe.returncode != 0:
-        pytest.skip("copied interpreter is not runnable on this host")
-
+    ps = _powershell()
+    assert ps, "native Windows test requires PowerShell"
     result = subprocess.run(
-        [
-            ps,
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            f"$env:HERMES_RUNTIME_DIR = '{store}'; "
-            f". '{ACTIVATE_PS1}'; "
-            f"$active = $env:{CANARY}; "
-            f"deactivate; "
-            f"$after = $env:{CANARY}; "
-            f"Write-Output ('active=' + $active + ' after=' + $after)",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env=_child_env(),
+        [ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+         f"$ErrorActionPreference='Stop'; $env:PYTHONPATH='caller-original'; "
+         f". '{root / 'activate.ps1'}'; "
+         "Write-Output ('active=' + $env:PYTHONPATH); deactivate; "
+         "Write-Output ('after=' + $env:PYTHONPATH)"],
+        capture_output=True, text=True, cwd=str(tmp_path), env=env, timeout=40,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "active=env-ok" in result.stdout
-    assert "after=" in result.stdout and "after=env-ok" not in result.stdout
+    assert f"active={root}{os.pathsep}" in result.stdout
+    assert "after=caller-original" in result.stdout

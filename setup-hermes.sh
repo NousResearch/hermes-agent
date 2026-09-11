@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # Hermes Agent Setup Script — THE dev-environment entry point.
 # ============================================================================
@@ -14,6 +14,14 @@
 # ============================================================================
 
 set -e
+
+# Activation needs only provisioning, not user-facing installation side effects.
+runtime_only=false
+case "${1:-}" in
+    --runtime-only) runtime_only=true ;;
+    '') ;;
+    *) printf 'Unknown setup option: %s\n' "$1" >&2; exit 2 ;;
+esac
 
 # Colors
 GREEN='\033[0;32m'
@@ -153,6 +161,10 @@ if ! "$boot_py" -m pm.cli install; then
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Tools + dependencies installed (hash-verified via pm + uv.lock)"
+
+if [ "$runtime_only" = true ]; then
+    exit 0
+fi
 
 # ============================================================================
 # Environment file

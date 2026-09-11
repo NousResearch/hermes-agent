@@ -165,6 +165,9 @@ jobs:
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
 
+      - name: Require portable Bash shebangs
+        run: python scripts/check_bash_shebangs.py
+
       # The Sep 2026 decomposition kept old import paths alive for external plugins
       # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
       # reverting one commit, so in-tree code must never depend on them.

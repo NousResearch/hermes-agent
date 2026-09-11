@@ -122,9 +122,9 @@ requires trust in that plugin and its dependencies.
 
 ## Developer workflow {#developer-workflow}
 
-PM prepares the toolchain for a source checkout. Activation makes that installed
-toolchain available in a shell. Neither operation selects your editor's Python
-interpreter or redirects an installed desktop app to this checkout.
+Activation asks PM to prepare or sync the toolchain for a source checkout, then
+makes it available in the shell. It does not select your editor's Python
+interpreter or redirect an installed desktop app to this checkout.
 
 ### Prepare a checkout
 
@@ -149,7 +149,6 @@ Bash, from the repository root:
 ```bash
 export HERMES_HOME="$HOME/hermes-dev-data"
 export HERMES_RUNTIME_DIR="$HERMES_HOME/tools"
-bash setup-hermes.sh
 source ./activate
 ```
 
@@ -158,14 +157,16 @@ PowerShell, from the repository root:
 ```powershell
 $env:HERMES_HOME = Join-Path $HOME 'hermes-dev-data'
 $env:HERMES_RUNTIME_DIR = Join-Path $env:HERMES_HOME 'tools'
-.\setup-hermes.ps1
 . .\activate.ps1
 ```
 
 `HERMES_RUNTIME_DIR` in these examples is a process-local development override.
 It makes the bootstrap and PM use the same writable store. Do not persist a
-path into an installed MSIX or macOS bundle. The setup scripts provision tools
-and the `all` Python extra. They do not select `dev` or install JS workspaces.
+path into an installed MSIX or macOS bundle. Activation runs the setup script's
+runtime-only path to provision tools and sync the `all` Python extra. It does
+not select `dev` or install JS workspaces. It also skips setup's user-facing
+installation work: shell configuration, launchers, `.env`, and bundled skills.
+Run the setup script separately if you want that full installation workflow.
 
 The bootstrap uses uv to install and locate Python, then waits for uv to exit.
 That Python runs PM directly. PM can then replace its uv entry without a running
@@ -175,7 +176,7 @@ PyYAML, including when dependency installation fails.
 ### Activate an existing installation
 
 In each new shell, restore your development-home values and enter the checkout.
-Then activate it without running installation again:
+Then activate it; there is no separate setup command to remember:
 
 | Shell | Enter | Leave |
 |---|---|---|
@@ -187,9 +188,14 @@ The leading dot and space in PowerShell are required. Executing
 The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
 fish, or assuming that a Zsh startup file has Bash semantics.
 
-Activation prepends installed PM tools to `PATH`. It sets `PYTHONPATH` to this
-checkout and its selected dependency tree. It does not download packages,
-change an OS-wide PATH, or activate a conventional venv prompt.
+Each activation invokes PM's install/sync path. PM reuses current tools and
+dependency generations; missing or stale inputs can require downloads and a
+rebuild. A setup failure returns an error before changing the activated shell
+environment, including when re-sourcing an already active environment.
+
+After sync, activation prepends installed PM tools to `PATH` and sets
+`PYTHONPATH` to this checkout and its selected dependency tree. It does not
+change an OS-wide PATH or activate a conventional venv prompt.
 Start in a clean shell rather than nesting this inside another venv.
 `deactivate` restores the environment values captured by the activation script.
 It does not uninstall packages or stop processes that you started.
@@ -240,13 +246,15 @@ requirements in the [desktop build guide](https://github.com/NousResearch/hermes
 
 ### Refresh dependencies without changing branches
 
-After a branch or lockfile change, prepare dependencies with this checkout's PM:
+After a branch or lockfile change, source the activation script again to sync
+and select the new dependencies (`source ./activate` in Bash or
+`. .\activate.ps1` in PowerShell). To sync without activating a shell:
 
 ```bash
 python -m pm.cli install
 ```
 
-Then leave and reactivate the environment, and restart affected processes.
+After a standalone sync, reactivate the environment. Restart affected processes.
 Use `python -m pm.cli doctor` for tool diagnostics and `python -m pm.cli status`
 for the latest sync receipt. Do not run `hermes update` just to refresh a
 feature branch: it is an application update and can change the source branch.

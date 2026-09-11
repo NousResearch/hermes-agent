@@ -119,7 +119,8 @@ Use the [PM developer workflow](website/docs/reference/package-management.md#dev
 dependency changes, and test environments. Select your development
 home before setup so experimental code does not migrate production data.
 
-After successful setup, activate from the repository root in each new shell.
+Activate from the repository root in each new shell. Activation runs setup's
+runtime-only path, so it provisions a fresh checkout and syncs stale dependencies.
 
 Bash:
 
@@ -136,8 +137,9 @@ python hermes --version
 ```
 
 Run `python hermes` for this checkout, not a global `hermes` alias. PM activation
-adds installed tools and the selected dependency tree. It does not install
-packages or JS workspaces. `deactivate` restores the prior shell environment.
+syncs tools and Python dependencies before adding them to the shell. It does not
+install JS workspaces or rewrite launchers and shell configuration. `deactivate`
+restores the prior shell environment.
 
 ### Manual development and test environment
 

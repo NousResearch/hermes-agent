@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # venv-style activation for the Hermes dev environment (pm-managed tools).
 #
@@ -8,17 +8,25 @@
 # Emits the composed pm env (PATH + tool vars) into the CURRENT shell, with
 # save/restore: `deactivate` undoes exactly what activation changed.
 #
-# Requires a completed `./setup-hermes.sh` — it never invokes uv. It runs
-# the pm store's pinned python (fallback: the repo venv) to emit the env
-# JSON, then exports it here.
+# Sync through setup before selecting the environment. PM owns freshness;
+# activation does not maintain a second dependency stamp.
 # ============================================================================
+_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Setup runs in a child: failures must not exit or partially activate the
+# caller's shell, and activation must not republish launchers or shell config.
+if ! (
+    unset PYTHONHOME PYTHONPATH VIRTUAL_ENV
+    bash "$_HERMES_REPO/setup-hermes.sh" --runtime-only
+) >&2; then
+    printf '%s\n' 'activate: setup failed; shell environment unchanged' >&2
+    return 1 2>/dev/null || exit 1
+fi
+
 # Guard against double-sourcing: venv activate precedent (re-activating is a
 # no-op re-save; we keep it idempotent by deactivating first).
 if [ -n "${__HERMES_ACTIVATED:-}" ]; then
     deactivate
 fi
-
-_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Bootstrap Python only emits the environment; it does not install anything.
 _hermes_repo="$_HERMES_REPO"

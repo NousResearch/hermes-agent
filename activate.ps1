@@ -1,7 +1,23 @@
-# Source this file to apply the installed PM environment; deactivate restores it.
+# Source this file to sync and apply the PM environment; deactivate restores it.
 $ErrorActionPreference = 'Stop'
-if (Test-Path function:deactivate) { deactivate }
 $repo = $PSScriptRoot
+$bootstrapSaved = @{}
+foreach ($key in @('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV')) {
+    $bootstrapSaved[$key] = [Environment]::GetEnvironmentVariable($key)
+    Remove-Item "env:$key" -ErrorAction SilentlyContinue
+}
+try {
+    # Run separately so setup's exit/failure cannot terminate the sourced shell.
+    $shell = (Get-Process -Id $PID).Path
+    & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$repo\setup-hermes.ps1" -RuntimeOnly | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'activate: setup failed; shell environment unchanged' }
+} finally {
+    foreach ($key in $bootstrapSaved.Keys) {
+        if ($null -eq $bootstrapSaved[$key]) { Remove-Item "env:$key" -ErrorAction SilentlyContinue }
+        else { Set-Item "env:$key" $bootstrapSaved[$key] }
+    }
+}
+if (Test-Path function:deactivate) { deactivate }
 $py = $null
 foreach ($candidate in @("$repo\.venv\Scripts\python.exe", "$repo\venv\Scripts\python.exe")) {
     if (Test-Path -LiteralPath $candidate) { $py = $candidate; break }

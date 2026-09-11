@@ -11,6 +11,7 @@ run, pointing at a disposable container created for this task and torn
 down after)."""
 
 import os
+import shlex
 
 import pytest
 
@@ -74,6 +75,59 @@ class TestParameterInjectionRejected:
     def test_container_exec_readonly_rejects_shell_wrapper(self):
         result = t.container_exec_readonly("some-container", "sh -c 'rm -rf /'")
         assert not result.ok
+
+
+class TestRunNeverLeaksSecretAtTruncationBoundary:
+    """Regression: an earlier version of _run() truncated command output to
+    _MAX_OUTPUT_CHARS BEFORE redacting it, to bound redact_text's CPU cost
+    on unbounded commands (docker logs, git diff, ...). That reorder was
+    itself a real leak: several redaction patterns need trailing context
+    to even recognize a secret (_URI_CREDENTIAL_PATTERN needs the closing
+    '@'), so a cut landing between a secret's value and its terminator
+    left the value's prefix in plaintext in the truncated output — exactly
+    the DATABASE_URL=postgresql://user:PASSWORD@host shape that motivated
+    this module's own existence. Fixed by redacting the full output
+    first, then truncating the already-redacted result; the actual fix
+    for the CPU cost is bounding the regex itself (see
+    secret_redaction.py's _URI_CREDENTIAL_PATTERN scheme-length bound),
+    not truncating before redacting.
+    """
+
+    def test_secret_straddling_truncation_boundary_is_not_leaked(self, tmp_path):
+        secret = "SuperSecretPassword123"
+        line = f'"DATABASE_URL=postgresql://dbuser:{secret}@db.internal/db",\n'
+        # Padding placed so the SECRET LINE ITSELF sits comfortably inside
+        # the output bound (total well under _MAX_OUTPUT_CHARS), so the
+        # redacted marker is still visible in the final output rather than
+        # truncated away entirely — this isolates the actual regression
+        # (does a secret in a LARGE document still get redacted at all)
+        # from truncation position arithmetic.
+        padding = "P" * (t._MAX_OUTPUT_CHARS - len(line) - 10_000)
+        content = padding + line
+        assert len(content) < t._MAX_OUTPUT_CHARS
+        f = tmp_path / "big_output.txt"
+        f.write_text(content)
+
+        result = t._run(f"cat {shlex.quote(str(f))}")
+        assert result.ok, result.error
+        assert secret not in result.output
+        assert "[REDACTED]" in result.output
+
+    def test_secret_at_exact_truncation_boundary_never_leaks_raw_value(self, tmp_path):
+        # The harder case: the secret's own text spans the exact point
+        # where _MAX_OUTPUT_CHARS would have cut under the OLD (buggy)
+        # truncate-first order. Whether or not the redacted marker
+        # survives into the final (possibly still-truncated) output, the
+        # raw secret value must never appear in it.
+        secret = "SuperSecretPassword123"
+        padding = "P" * (t._MAX_OUTPUT_CHARS - 15)
+        content = f'{padding}"DATABASE_URL=postgresql://dbuser:{secret}@db.internal/db",\n'
+        f = tmp_path / "boundary_output.txt"
+        f.write_text(content)
+
+        result = t._run(f"cat {shlex.quote(str(f))}")
+        assert result.ok, result.error
+        assert secret not in result.output
 
 
 class TestSqlGuard:

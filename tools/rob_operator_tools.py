@@ -95,14 +95,24 @@ def _run(command: str, *, timeout: int = _DEFAULT_TIMEOUT_S, host: str | None = 
     duration_ms = int((time.monotonic() - started) * 1000)
 
     combined = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
-    # Bound BEFORE redacting, not after: redact_text's cost scales with
-    # input size, and an unbounded command (docker logs, git diff, ...)
-    # can produce megabytes of output — redacting the full thing before
-    # truncating means the bound this line exists to enforce doesn't
-    # actually cap the CPU cost of getting there. Truncating first is safe
-    # from a leak perspective too: content past the cut is simply absent
-    # from the output, never partially redacted-then-exposed.
-    combined = redact_text(combined[:_MAX_OUTPUT_CHARS])
+    # Redact BEFORE truncating, not after — reverted from a prior version
+    # of this line that truncated first. That reorder was itself a real,
+    # live-proven regression: several redaction patterns need trailing
+    # context to even RECOGNIZE a secret (_URI_CREDENTIAL_PATTERN needs
+    # the closing `@`; the token/JWT/cookie patterns need a minimum
+    # length), so cutting the string can remove that context while still
+    # leaving the secret's own prefix in the truncated output — e.g. a
+    # `_MAX_OUTPUT_CHARS`-length cut landing between a DATABASE_URL's
+    # password and its `@` leaves the password in plaintext, since the
+    # pattern that would have caught it never gets to see the `@` at all.
+    # The actual fix for the CPU cost this was trying to address is
+    # bounding the regexes themselves (see secret_redaction.py's
+    # `_URI_CREDENTIAL_PATTERN`, whose previously-unbounded scheme group
+    # was the real quadratic-blowup source) — with that done, redacting
+    # the full output before truncating is no longer the pathological
+    # case it once was, and is the only order that doesn't reintroduce a
+    # leak at the cut point.
+    combined = redact_text(combined)[:_MAX_OUTPUT_CHARS]
     if proc.returncode != 0:
         return ToolResult(ok=False, error=combined or f"exited {proc.returncode}", duration_ms=duration_ms)
     return ToolResult(ok=True, output=combined, duration_ms=duration_ms)

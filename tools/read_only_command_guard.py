@@ -467,12 +467,22 @@ def _validate_ip(argv: list[str]) -> GuardResult:
 
 
 def _validate_tailscale(argv: list[str]) -> GuardResult:
+    """Only the bare `status`/`serve status`/`funnel status` forms — an
+    earlier version accepted `args[:1] == ["status"]`/`args[:2] == [...]`
+    with no check on anything AFTER those tokens, so `tailscale status
+    --web --listen 0.0.0.0:PORT --browser=false` was also allowed: `--web`
+    starts an HTTP server exposing the tailnet status page (peer names,
+    tailnet IPs, user identities) and blocks for the tool's full timeout —
+    live-proven to actually bind and serve. Requiring an exact, argument-
+    less match closes this the same way `git branch --show-current`/
+    `git worktree list` already require an exact match rather than just a
+    matching prefix."""
     args = argv[1:]
-    if args[:1] == ["status"]:
+    if args == ["status"]:
         return _allow()
-    if args[:2] == ["serve", "status"]:
+    if args == ["serve", "status"]:
         return _allow()
-    if args[:2] == ["funnel", "status"]:
+    if args == ["funnel", "status"]:
         return _allow()
     return _deny("tailscale", f"'tailscale {' '.join(args)}' is not in the read-only allowlist")
 
@@ -495,29 +505,60 @@ _ALLOWED_SIMPLE = frozenset({
 })
 
 
+# `file` uses GNU getopt_long, exactly like curl and journalctl — a
+# denylist of `-C`/`--compile` (tried once already) is bypassed by the
+# same abbreviation/clustering mechanics that broke curl's denylist three
+# times over: `--com`/`--comp`/`--compil` all resolve to `--compile`, and
+# `-bC`/`-Cb` cluster it with a harmless flag. Live-proven: each created
+# or overwrote a `.mgc` file. A pure allowlist of boolean, no-argument,
+# read-only flags has no such gap — an unrecognized token (clustered,
+# abbreviated, or otherwise) is denied by not being an exact match, never
+# by needing to be individually enumerated as dangerous. None of these
+# take a value, so there is no attached/next-token consumption to get
+# wrong either.
+_FILE_ALLOWED_TOKENS = frozenset({
+    "-b", "--brief",
+    "-i", "--mime", "--mime-type", "--mime-encoding",
+    "-z", "--uncompress",
+    "-L", "--dereference",
+    "-h", "--no-dereference",
+    "-k", "--keep-going",
+    "-s", "--special-files",
+    "-0", "--print0",
+    "-n", "--no-buffer",
+})
+
+
 def _validate_file(argv: list[str]) -> GuardResult:
-    """`file` sat in `_ALLOWED_SIMPLE` (allowed outright, no validator at
-    all) even though `-C`/`--compile` writes a compiled magic database to
-    disk — confirmed live: `file -C -m /tmp/x` created `x.mgc` in the
-    current directory. An allowlisted-with-no-validator entry is the same
-    blind spot as an incomplete denylist elsewhere in this module; `file`
-    is common enough to keep, with its one write flag denied."""
     for tok in argv[1:]:
-        flag = tok.split("=", 1)[0]
-        if flag in ("-C", "--compile"):
-            return _deny("file", f"'{flag}' is not permitted (writes a compiled magic file)")
+        if tok.startswith("-") and tok not in _FILE_ALLOWED_TOKENS:
+            return _deny("file", f"'{tok}' is not in the read-only file allowlist")
     return _allow()
 
 
+# Same reasoning as `file` above, applied to ripgrep: a denylist of
+# `--pre`/`--pre-glob` (tried once already) misses ripgrep's OTHER
+# external-command flag, `--hostname-bin <COMMAND>` (rg >= 14) — not
+# installed on NiPoGi today, but the allowlist-level gap is live
+# regardless. A small allowlist of read-only search flags has no such
+# enumeration problem.
+_RG_ALLOWED_TOKENS = frozenset({
+    "--json",
+    "-n", "--line-number",
+    "-i", "--ignore-case",
+    "-v", "--invert-match",
+    "-w", "--word-regexp", "-x", "--line-regexp",
+    "-c", "--count",
+    "-l", "--files-with-matches",
+    "-L", "--follow",
+    "-u", "-uu", "-uuu",
+})
+
+
 def _validate_rg(argv: list[str]) -> GuardResult:
-    """`rg` sat in `_ALLOWED_SIMPLE` alongside `grep`, but unlike grep it
-    has `--pre <command>`, which spawns an arbitrary executable per
-    searched file — not installed on NiPoGi today, but the allowlist entry
-    itself was already live regardless of what's installed."""
     for tok in argv[1:]:
-        flag = tok.split("=", 1)[0]
-        if flag in ("--pre", "--pre-glob"):
-            return _deny("rg", f"'{flag}' is not permitted (spawns an external command per file)")
+        if tok.startswith("-") and tok not in _RG_ALLOWED_TOKENS:
+            return _deny("rg", f"'{tok}' is not in the read-only rg allowlist")
     return _allow()
 
 

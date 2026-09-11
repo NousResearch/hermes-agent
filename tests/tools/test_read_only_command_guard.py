@@ -73,6 +73,24 @@ class TestFilesystemAllowed:
         assert denied("file -C -m /tmp/x")
         assert denied("file --compile -m /tmp/x")
 
+    def test_file_compile_abbreviation_and_clustering_denied(self):
+        # Regression: the first fix above was itself a denylist of two
+        # literal spellings — `file` uses the same GNU getopt_long parser
+        # as curl, so unambiguous abbreviation (`--com`, `--comp`,
+        # `--compil` all resolve to `--compile`) and short-option
+        # clustering (`-bC`, `-Cb`) both bypassed it. Live-proven: each
+        # created or overwrote a `.mgc` file. Now an allowlist of boolean
+        # read-only flags — nothing needs abbreviation/clustering
+        # awareness since an unrecognized token is denied either way.
+        assert denied("file --com -m /tmp/x")
+        assert denied("file --comp -m /tmp/x")
+        assert denied("file --compil -m /tmp/x")
+        assert denied("file -bC -m /tmp/x")
+        assert denied("file -Cb -m /tmp/x")
+        assert denied("file -zC -m /tmp/x")
+        assert denied("file -m /tmp/x")  # -m/--magic-file: not in the allowlist at all
+        assert denied("cd /home/nico && file --com -m target")
+
     def test_rg_pre_flag_denied(self):
         # Regression: `rg` sat in the plain allowlist with NO validator —
         # unlike grep, ripgrep's `--pre <command>` spawns an arbitrary
@@ -81,6 +99,16 @@ class TestFilesystemAllowed:
         assert denied("rg --pre-glob '*.txt' -e . .")
         assert allowed("rg --json foo .")
         assert allowed("readlink -f /etc/resolv.conf")
+
+    def test_rg_hostname_bin_and_unknown_flags_denied(self):
+        # Regression: the first fix above denylisted only --pre/--pre-glob
+        # and missed rg's OTHER external-command flag, --hostname-bin
+        # (rg >= 14). Now an allowlist, so any execution-capable flag —
+        # enumerated or not — is denied by not being an exact match.
+        assert denied("rg --hostname-bin /usr/bin/id .")
+        assert denied("rg -e . /etc/hostname")  # -e not in the minimal allowlist
+        assert allowed("rg -n foo file.txt")
+        assert allowed("rg -i -c foo file.txt")
 
     def test_du_df_pwd(self):
         assert allowed("du -sh /var/log")
@@ -140,6 +168,22 @@ class TestNetworkAllowed:
         assert allowed("tailscale status")
         assert allowed("tailscale serve status")
         assert allowed("tailscale funnel status")
+
+    def test_tailscale_status_with_extra_flags_denied(self):
+        # Regression: the guard checked only that the command STARTED with
+        # `status`/`serve status`/`funnel status`, with no constraint on
+        # anything after — `tailscale status --web --listen 0.0.0.0:PORT
+        # --browser=false` was also allowed. `--web` starts a real HTTP
+        # server exposing the tailnet status page (peer names, tailnet
+        # IPs, user identities) and blocks for the tool's full timeout —
+        # live-proven to actually bind and serve. Now requires an exact,
+        # argument-less match, the same way `git branch --show-current`
+        # and `git worktree list` already do.
+        assert denied("tailscale status --web")
+        assert denied("tailscale status --web --listen 0.0.0.0:41112")
+        assert denied("tailscale status --json")
+        assert denied("tailscale serve status --web")
+        assert denied("tailscale funnel status --json")
 
 
 class TestGitReadOnlyAllowed:

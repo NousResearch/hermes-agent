@@ -68,6 +68,7 @@ model:
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
+  #   "openzoo"      - openzoo local x402 proxy, pays per call (requires: OPENZOO_API_KEY=sk-openzoo — any value; run `npx openzoo`; defaults to http://localhost:8402/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
   #   "custom"       - Any other OpenAI-compatible endpoint. Set base_url below.

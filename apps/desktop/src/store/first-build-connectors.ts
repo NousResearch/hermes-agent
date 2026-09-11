@@ -237,6 +237,7 @@ export function watchFirstBuildWait(
   }
 }
 
+/** A true submit result means the composer owns delivery through send, steer or queue. */
 export function startFirstBuild(storedId: string, submit: (text: string) => boolean): void {
   const state = $firstBuildConnections.get()[storedId]
   const key = `hermes.onboarding.started.v1.${storedId}`

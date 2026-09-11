@@ -550,7 +550,7 @@ class TestClearOverlaysForInterrupt:
 
         # Each blocked thread would have received a terminal value.
         assert approval_q.get_nowait() == "deny"
-        assert clarify_q.get_nowait()  # cancellation sentinel string
+        assert clarify_q.get_nowait() == ""  # neutral cancel, same as sudo/secret
         assert sudo_q.get_nowait() == ""
         assert secret_q.get_nowait() == ""
 
@@ -572,7 +572,25 @@ class TestClearOverlaysForInterrupt:
 
         assert cli._approval_state is None  # cleared despite dead queue
         assert cli._clarify_state is None
-        assert clarify_q.get_nowait()
+        assert clarify_q.get_nowait() == ""
+
+    def test_interrupt_cancels_clarify_neutrally(self):
+        """#103009 — interrupting a pending clarify must put the neutral cancel
+        value (""), matching the sudo/secret overlays and the TUI's clarify
+        interrupt. It must NOT push an instruction like "use your best
+        judgement to proceed", which turns a Ctrl+C into an implicit go-ahead."""
+        cli = self._make_cli()
+        clarify_q = queue.Queue()
+        cli._clarify_state = {"response_queue": clarify_q}
+
+        cli._clear_active_overlays_for_interrupt()
+
+        value = clarify_q.get_nowait()
+        assert value == ""
+        # Guard against the fail-open prose sneaking back in any spelling.
+        lowered = value.lower()
+        assert "judgement" not in lowered and "judgment" not in lowered
+        assert "proceed" not in lowered
 
     def test_interrupt_unblocks_thread_blocked_on_approval(self):
         """End-to-end: a worker blocked on the approval queue unblocks when the

@@ -91,6 +91,17 @@ def _print_curator_config(curator) -> None:
     report = state.get("last_report_path")
     if report:
         print(f"  last report:    {report}{'' if Path(report).exists() else ' (missing)'}")
+    health = state.get("last_store_health")
+    if health and (health.get("skills_absorbed") or health.get("bytes_archived")):
+        try:
+            from hermes_cli.sizefmt import format_bytes
+            lossy_str = f"  lossy={health['lossy_merges_count']}" if health.get("lossy_merges_count") else ""
+            print(f"  store health:   absorbed={health.get('skills_absorbed', 0)} skills  "
+                  f"archived={format_bytes(health.get('bytes_archived', 0))}  "
+                  f"retained={format_bytes(health.get('bytes_retained', 0))}"
+                  f"{lossy_str}")
+        except Exception:
+            pass
     ih = curator.get_interval_hours()
     print(f"  interval:       every {f'{ih // 24}d' if ih % 24 == 0 and ih >= 24 else f'{ih}h'}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")

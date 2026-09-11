@@ -833,13 +833,14 @@ function ProfileDropdown({
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
 function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
 
   return (
     <DropdownMenuRadioItem
       className="min-w-0"
       onPointerEnter={startPrewarm}
       onPointerLeave={cancelPrewarm}
+      onPointerMove={notePointerMove}
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -1177,7 +1178,7 @@ function ProfileSquare({
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
   // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(label)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -1272,6 +1273,7 @@ function ProfileSquare({
                       clearPress()
                       cancelPrewarm()
                     }}
+                    onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}

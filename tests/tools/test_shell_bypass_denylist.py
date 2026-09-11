@@ -109,6 +109,22 @@ class TestDecodeAndExecutePipes:
         assert dangerous is True, f"decode-and-execute pipe was not caught: {cmd!r}"
         assert "obfuscation" in desc
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo x; tr a b | bash",
+            "echo x | tr a b; bash",
+            "echo x && tr a b | bash",
+        ],
+    )
+    def test_tr_pipe_does_not_span_command_separators(self, cmd):
+        # A pipeline gap cannot contain a separator: `echo x; tr a b | bash` is two
+        # commands, not an obfuscated pipe, and must not match the tr rule.
+        dangerous, _key, desc = detect_dangerous_command(cmd)
+        assert (dangerous, desc) == (False, None) or "obfuscation" not in (desc or ""), (
+            f"tr rule spanned a separator: {cmd!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Benign commands must stay unflagged across all three additions.

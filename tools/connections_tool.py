@@ -39,6 +39,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.registry import registry, tool_error
+from tools.tool_gateway.errors import GatewayUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +428,27 @@ def manage_connections(
             results.append(out)
         return json.dumps(
             {"results": results, "summary": response.get("summary", {})},
+            ensure_ascii=False,
+        )
+    except GatewayUnavailable:
+        # The connector deployment deliberately answers 404 when its routes
+        # are dark for this principal. That is an availability state, not
+        # proof that the user's connectors are disconnected and not a
+        # transient gateway failure. Keep the shape action-independent so a
+        # caller can branch on it without parsing prose.
+        return json.dumps(
+            {
+                "status": "unavailable",
+                "code": "CONNECTORS_UNAVAILABLE",
+                "connectors": [],
+                "message": (
+                    "Connector service is not available for this account or session."
+                ),
+                "hint": (
+                    "Do not infer connection state or retry automatically. "
+                    "The user can manage connections in the Nous Portal."
+                ),
+            },
             ensure_ascii=False,
         )
     except Exception as exc:

@@ -12,6 +12,7 @@ import pytest
 
 import tools.connections_tool  # registers the tool
 from tools.connections_tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from tools.tool_gateway.errors import GatewayUnavailable
 
 
 class FakeClient:
@@ -130,6 +131,26 @@ def test_gateway_failure_is_a_model_actionable_error():
         manage_connections({"action": "status"}, client_factory=exploding)
     )
     assert "connector gateway request failed" in out["error"]
+
+
+def test_dark_gateway_is_an_unavailable_state_not_disconnected_inventory():
+    def dark():
+        raise GatewayUnavailable("route concealed", code="NOT_FOUND", status=404)
+
+    out = json.loads(
+        manage_connections({"action": "status"}, client_factory=dark)
+    )
+
+    assert out == {
+        "status": "unavailable",
+        "code": "CONNECTORS_UNAVAILABLE",
+        "connectors": [],
+        "message": "Connector service is not available for this account or session.",
+        "hint": (
+            "Do not infer connection state or retry automatically. "
+            "The user can manage connections in the Nous Portal."
+        ),
+    }
 
 
 def test_mcp_actions_are_not_this_tools_business():

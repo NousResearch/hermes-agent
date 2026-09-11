@@ -45,8 +45,13 @@ export interface ParsedTranscriptDirective {
 }
 
 // The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
-// Length caps bound the attr scan on adversarial input.
-const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?$/
+// The body is a run of quoted strings and plain characters, so a brace inside
+// a quoted value (`p1="stash@{0}"`) is content while a brace outside one still
+// fails the match. The alternation branches start with distinct characters, so
+// there is nothing ambiguous to backtrack over. Note the repetition counts
+// alternation groups rather than characters, so the real bound on body length
+// is the 1200-char guard in parseTranscriptDirective below.
+const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{((?:"[^"]*"|'[^']*'|[^{}"']){0,1024})\})?$/
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi

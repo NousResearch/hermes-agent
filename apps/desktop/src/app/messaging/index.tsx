@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
@@ -223,20 +223,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   // Scope switch: the mounted list still shows the PREVIOUS profile's
   // platforms/pairing while the new fetch is in flight — blank it so stale
-  // rows can't be toggled against the wrong backend.
-  const scopeSeenRef = useRef(scopeProfile)
+  // rows can't be toggled against the wrong backend. This must run during
+  // render, not in an effect: passive effects fire after paint, and that
+  // first painted frame would show the previous profile's credential
+  // placeholders (e.g. a redacted Telegram token) under the new profile's
+  // scope for the ~1s until the fetch lands (#96542). Setting state during
+  // render makes React throw the stale frame away before it reaches the
+  // screen.
+  const [prevScope, setPrevScope] = useState(scopeProfile)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (scope-change guard)
-  useEffect(() => {
-    if (scopeSeenRef.current === scopeProfile) {
-      return
-    }
-
-    scopeSeenRef.current = scopeProfile
+  if (prevScope !== scopeProfile) {
+    setPrevScope(scopeProfile)
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
-  }, [scopeProfile])
+  }
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const platformsChangeTick = useStore($platformsChangeTick)

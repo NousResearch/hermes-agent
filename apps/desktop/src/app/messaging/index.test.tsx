@@ -121,6 +121,72 @@ describe('MessagingView profile scope', () => {
     await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
     expect(getPairing).toHaveBeenCalledWith(undefined)
   })
+
+  it("drops the previous profile's credential placeholders on the very first post-switch render", async () => {
+    // #96542: blanking the stale platforms state in a passive effect lets the
+    // "new scope + old data" frame paint first, so the new profile briefly
+    // showed the PREVIOUS profile's redacted Telegram token as the field
+    // placeholder. The reset must happen during render — after the scope
+    // switch returns from act(), the old value is already gone from the DOM
+    // with no waitFor() in between.
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    const oldToken = '123456:AAE-previous-profile-token'
+
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: 'Telegram bot token from @BotFather.',
+              is_password: true,
+              is_set: true,
+              key: 'TELEGRAM_TOKEN',
+              prompt: 'Token',
+              redacted_value: oldToken,
+              required: true,
+              url: null
+            }
+          ],
+          id: 'telegram',
+          name: 'Telegram'
+        })
+      ]
+    })
+
+    $settingsScopeOverride.set(null)
+    await renderMessaging()
+
+    // The previous profile's redacted token is visible as the placeholder.
+    expect(await screen.findByPlaceholderText(oldToken)).not.toBeNull()
+
+    // Switch the scope while B's fetch stays pending, so any stale rendering
+    // would still be showing A's data.
+    //
+    // Note on coverage: jsdom cannot observe the paint-order race itself
+    // (act() flushes passive effects synchronously, so an effect-based reset
+    // also clears before the assertion; outside act() the commit itself is
+    // deferred). This test therefore pins the reset *semantics* — after a
+    // scope switch the previous profile's credential placeholder must be gone
+    // from the DOM even while the new profile's fetch is still pending. The
+    // paint-order guarantee ("the stale frame never reaches the screen") is
+    // carried by resetting during render per the React docs pattern instead
+    // of in a passive effect, which fires after paint.
+    getMessagingPlatforms.mockReturnValue(new Promise(() => {}))
+
+    await act(async () => {
+      $settingsScopeOverride.set('profile-b')
+    })
+
+    // Synchronous assertion — no waitFor: the reset must have discarded the
+    // stale platforms state before the new profile's fetch resolves.
+    expect(screen.queryByPlaceholderText(oldToken)).toBeNull()
+
+    // Let pending work settle and restore the shared store.
+    await act(async () => {
+      $settingsScopeOverride.set(null)
+    })
+  })
 })
 
 describe('MessagingView setup-guide link', () => {

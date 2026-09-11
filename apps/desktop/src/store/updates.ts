@@ -5,6 +5,7 @@
 
 import { atom } from 'nanostores'
 
+import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
@@ -94,8 +95,10 @@ function isUpdateToastSnoozed(): boolean {
 }
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
-// against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means GUI<->backend skew.
+// against. Legacy backends report their own value in session runtime info; a
+// lower value (or none — a pre-GUI checkout) means GUI<->backend skew.
+// Canonical gateways identify their distinct wire protocol instead. That value
+// does not claim the legacy API features listed below.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
@@ -149,8 +152,13 @@ function isInstallMethodToastSnoozed(): boolean {
  * Runs on every session open; closing the toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
-export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+export function reportBackendContract(contract: number | undefined, protocol?: string): void {
+  // An unknown explicit protocol must not fall back to a legacy version claim.
+  const compatible = protocol === undefined
+    ? (contract ?? 0) >= REQUIRED_BACKEND_CONTRACT
+    : protocol === CANONICAL_GATEWAY_PROTOCOL
+
+  if (compatible) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.

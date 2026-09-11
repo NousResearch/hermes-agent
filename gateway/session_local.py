@@ -9,6 +9,7 @@ import uuid
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -165,4 +166,5 @@ def local_session_info(authority, ref):
     policy = policy_for_source(authority.runner, live.source)
     return {'source': policy.source if policy else live.source.platform.value,
             'model': getattr(agent, 'model', policy.model if policy else None), 'lazy': agent is None,
-            'profile_id': authority.profile_id, **({'cwd': policy.cwd} if policy else {})}
+            'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
+            **({'cwd': policy.cwd} if policy else {})}

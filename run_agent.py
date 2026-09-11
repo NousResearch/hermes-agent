@@ -304,12 +304,6 @@ class AIAgent(
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
-    def _session_row_model_config(self) -> Any:
-        """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
-        before the first turn (``hermes --resume`` restores it)."""
-        from tools.approval_yolo import with_session_yolo
-        return with_session_yolo(self._session_init_model_config, self.session_id)
-
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:

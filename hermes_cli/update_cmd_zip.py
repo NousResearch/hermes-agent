@@ -337,13 +337,33 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
-            # it — refuse here with the same defer-via-marker contract.
-            # See #87331.
-            _refuse_update_for_contended_shims(_sqe)
+
+        def _editable_reinstall_with_quarantine_refusal():
+            try:
+                _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+            except _shim_quarantine_error_type() as _sqe:
+                # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
+                # it — refuse here with the same defer-via-marker contract.
+                # See #87331.
+                _refuse_update_for_contended_shims(_sqe)
+
+        is_termux = _m()._is_termux_env(uv_env)
+        lockfile = _m().PROJECT_ROOT / "uv.lock"
+        if not is_termux and lockfile.exists():
+            # Sync from uv.lock so the update phase leaves the venv in the exact state a
+            # later `uv run hermes` expects. `--extra all`, NOT `--all-extras`: the curated
+            # install set is the `[all]` extra (scripts/install.sh makes the same choice);
+            # --all-extras would drag in extras like matrix/rl that are intentionally
+            # excluded from the update environment. Termux keeps its curated legacy path.
+            sync_env = {**uv_env, "UV_PROJECT_ENVIRONMENT": str(_m().PROJECT_ROOT / "venv")}
+            try:
+                _m()._run_install_with_heartbeat(
+                    [uv_bin, "sync", "--extra", "all", "--locked"], env=sync_env)
+            except subprocess.CalledProcessError:
+                print("⚠ uv lockfile sync failed, falling back to editable reinstall...")
+                _editable_reinstall_with_quarantine_refusal()
+        else:
+            _editable_reinstall_with_quarantine_refusal()
         install_prefix, install_env = [uv_bin, "pip"], uv_env
     else:
         # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.

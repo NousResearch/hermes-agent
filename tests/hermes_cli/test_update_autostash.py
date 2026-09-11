@@ -239,6 +239,72 @@ def _make_update_side_effect(
 
 
 # ---------------------------------------------------------------------------
+# uv.lock-present update syncs the locked env instead of editable reinstall
+# ---------------------------------------------------------------------------
+
+def test_cmd_update_uses_uv_sync_locked_when_lockfile_exists(monkeypatch, tmp_path):
+    """With uv.lock present, update must sync the locked env instead of editable reinstall."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    base_side_effect, _ = _make_update_side_effect()
+    uv_sync_seen = []
+
+    def side_effect(cmd, **kwargs):
+        recorded_cmd = list(cmd)
+        joined = " ".join(str(c) for c in recorded_cmd)
+        if "diff" in joined and "--name-only" in joined:
+            # An install-defining file changed in the pull → the deps phase runs.
+            return SimpleNamespace(returncode=0, stdout="pyproject.toml\n", stderr="")
+        if recorded_cmd == ["/usr/bin/uv", "sync", "--extra", "all", "--locked"]:
+            uv_sync_seen.append(recorded_cmd)
+            assert kwargs["check"] is True
+            assert kwargs["cwd"] == tmp_path
+            assert kwargs["env"]["VIRTUAL_ENV"] == str(tmp_path / "venv")
+            assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "venv")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "pip" in joined and "install" in joined:
+            raise AssertionError(f"unexpected editable reinstall: {cmd}")
+        return base_side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert uv_sync_seen == [["/usr/bin/uv", "sync", "--extra", "all", "--locked"]]
+
+
+def test_cmd_update_falls_back_when_uv_sync_locked_fails(monkeypatch, tmp_path, capsys):
+    """A failed lockfile sync must keep the existing editable reinstall fallback."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    base_side_effect, recorded = _make_update_side_effect()
+    uv_sync_seen = []
+
+    def side_effect(cmd, **kwargs):
+        recorded_cmd = list(cmd)
+        joined = " ".join(str(c) for c in recorded_cmd)
+        if "diff" in joined and "--name-only" in joined:
+            return SimpleNamespace(returncode=0, stdout="pyproject.toml\n", stderr="")
+        if recorded_cmd == ["/usr/bin/uv", "sync", "--extra", "all", "--locked"]:
+            uv_sync_seen.append(recorded_cmd)
+            raise CalledProcessError(returncode=1, cmd=recorded_cmd)
+        return base_side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert uv_sync_seen == [["/usr/bin/uv", "sync", "--extra", "all", "--locked"]]
+    fallback = [c for c in recorded if "pip" in c and "install" in c and "-e" in c]
+    assert fallback, f"expected editable reinstall fallback, got: {recorded}"
+    assert "uv lockfile sync failed" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
 # Non-main branch → auto-checkout main
 # ---------------------------------------------------------------------------
 

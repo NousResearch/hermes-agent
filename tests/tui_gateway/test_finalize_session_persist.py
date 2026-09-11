@@ -268,3 +268,136 @@ class TestOnSessionEndHook:
             model="claude-sonnet-4",
             platform="tui",
         )
+
+
+class TestDesktopAutomaticCleanupPreservesDurableRow:
+    """Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) must NOT
+    end the durable session row — the conversation stays open and resumable
+    until the user explicitly closes or archives it.
+
+    Regression test for #105588.
+    """
+
+    @patch("tui_gateway.server._other_runtime_lease_guard")
+    @patch("tui_gateway.server._get_db")
+    @patch("tui_gateway.server._session_source", return_value="desktop")
+    def test_ws_orphan_reap_skips_end_session(
+        self, _mock_source, mock_get_db, mock_lease_guard
+    ):
+        """ws_orphan_reap on a Desktop session must not call db.end_session."""
+        from tui_gateway.server import _finalize_session
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+        # Simulate no other runtime owning the lifecycle (TUI owns it).
+        mock_lease_guard.__enter__ = MagicMock(return_value=False)
+        mock_lease_guard.__exit__ = MagicMock(return_value=False)
+
+        agent = _make_agent(session_id="sess_orphan_001")
+        session = _make_session(
+            agent=agent,
+            history=[{"role": "user", "content": "hello"}],
+        )
+        session["source"] = "desktop"
+
+        _finalize_session(session, end_reason="ws_orphan_reap")
+
+        mock_db.end_session.assert_not_called()
+
+    @patch("tui_gateway.server._other_runtime_lease_guard")
+    @patch("tui_gateway.server._get_db")
+    @patch("tui_gateway.server._session_source", return_value="desktop")
+    def test_idle_timeout_skips_end_session(
+        self, _mock_source, mock_get_db, mock_lease_guard
+    ):
+        """idle_timeout on a Desktop session must not call db.end_session."""
+        from tui_gateway.server import _finalize_session
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+        mock_lease_guard.__enter__ = MagicMock(return_value=False)
+        mock_lease_guard.__exit__ = MagicMock(return_value=False)
+
+        agent = _make_agent(session_id="sess_idle_001")
+        session = _make_session(
+            agent=agent,
+            history=[{"role": "user", "content": "hello"}],
+        )
+        session["source"] = "desktop"
+
+        _finalize_session(session, end_reason="idle_timeout")
+
+        mock_db.end_session.assert_not_called()
+
+    @patch("tui_gateway.server._other_runtime_lease_guard")
+    @patch("tui_gateway.server._get_db")
+    @patch("tui_gateway.server._session_source", return_value="desktop")
+    def test_lru_evict_skips_end_session(
+        self, _mock_source, mock_get_db, mock_lease_guard
+    ):
+        """lru_evict on a Desktop session must not call db.end_session."""
+        from tui_gateway.server import _finalize_session
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+        mock_lease_guard.__enter__ = MagicMock(return_value=False)
+        mock_lease_guard.__exit__ = MagicMock(return_value=False)
+
+        agent = _make_agent(session_id="sess_lru_001")
+        session = _make_session(
+            agent=agent,
+            history=[{"role": "user", "content": "hello"}],
+        )
+        session["source"] = "desktop"
+
+        _finalize_session(session, end_reason="lru_evict")
+
+        mock_db.end_session.assert_not_called()
+
+    @patch("tui_gateway.server._other_runtime_lease_guard")
+    @patch("tui_gateway.server._get_db")
+    @patch("tui_gateway.server._session_source", return_value="desktop")
+    def test_explicit_close_still_calls_end_session(
+        self, _mock_source, mock_get_db, _mock_lease_guard
+    ):
+        """Explicit user close (tui_close) must still call db.end_session —
+        only automatic cleanup reasons skip it."""
+        from tui_gateway.server import _finalize_session
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        agent = _make_agent(session_id="sess_close_001")
+        session = _make_session(
+            agent=agent,
+            history=[{"role": "user", "content": "hello"}],
+        )
+        session["source"] = "desktop"
+
+        _finalize_session(session, end_reason="tui_close")
+
+        mock_db.end_session.assert_called_once_with("sess_close_001", "tui_close")
+
+    @patch("tui_gateway.server._other_runtime_lease_guard")
+    @patch("tui_gateway.server._get_db")
+    @patch("tui_gateway.server._session_source", return_value="tui")
+    def test_non_desktop_source_still_calls_end_session(
+        self, _mock_source, mock_get_db, _mock_lease_guard
+    ):
+        """ws_orphan_reap on a NON-desktop source (e.g. TUI) must still call
+        db.end_session — the fix only applies to Desktop sessions."""
+        from tui_gateway.server import _finalize_session
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        agent = _make_agent(session_id="sess_tui_001")
+        session = _make_session(
+            agent=agent,
+            history=[{"role": "user", "content": "hello"}],
+        )
+        # No source set → falls back to platform which we patch as "tui"
+
+        _finalize_session(session, end_reason="ws_orphan_reap")
+
+        mock_db.end_session.assert_called_once_with("sess_tui_001", "ws_orphan_reap")

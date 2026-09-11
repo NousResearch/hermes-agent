@@ -165,10 +165,24 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
 
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
     if len(content) > MAX_SKILL_CONTENT_CHARS:
+        over = len(content) - MAX_SKILL_CONTENT_CHARS
+        unit = "character" if over == 1 else "characters"
+        if label == "SKILL.md":
+            recovery = (
+                "If that would discard useful content, move whole sections into "
+                "files under references/ or templates/ and link to them."
+            )
+        else:
+            recovery = (
+                f"If that would discard useful content, split {label} into smaller "
+                "supporting files and update the skill to reference them."
+            )
         return (
-            f"{label} content is {len(content):,} characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
-            f"Consider splitting into a smaller SKILL.md with supporting files in references/ "
-            f"or templates/.")
+            f"{label} content is {len(content):,} characters, {over:,} over the "
+            f"{MAX_SKILL_CONTENT_CHARS:,} limit. Reduce it by at least {over:,} "
+            f"{unit} in one edit. {recovery} "
+            f"Do not repeatedly trim small amounts and retry."
+        )
     return None
 
 

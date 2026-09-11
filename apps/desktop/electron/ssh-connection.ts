@@ -36,6 +36,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { getSshBinary } from './ssh-binary'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -404,7 +406,40 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
 // promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
-function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
+async function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
+  // A custom spawnFn means the caller (tests) controls spawning entirely, so
+  // keep the literal 'ssh' and let injected children see unchanged argv. In
+  // production, resolve a binary that actually runs on this machine (#103288).
+  let sshBinary = 'ssh'
+
+  if (spawnFn === spawn) {
+    // The first resolution health-checks candidates (bounded by a total
+    // budget in ssh-binary). Race it against the caller's abort signal so a
+    // cancelled connect does not have to wait out the probe chain; the
+    // memoized resolution itself continues in the background.
+    let abortResolution: any
+    const aborted = new Promise<string>((_, reject) => {
+      abortResolution = reject
+    })
+    const onAbort = () => {
+      const error: any = new Error('SSH operation was cancelled.')
+      error.kind = 'superseded'
+      abortResolution(error)
+    }
+
+    if (signal?.aborted) {
+      onAbort()
+    } else {
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }
+
+    try {
+      sshBinary = await Promise.race([getSshBinary(), aborted])
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error: any = new Error('SSH operation was cancelled.')
@@ -418,7 +453,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn(sshBinary, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
       reject(error)
 
@@ -815,9 +850,22 @@ class SshConnection {
   // _handleNoMuxTunnelFlap (bounded restart) instead of poisoning isAlive()
   // outright — the old instant-poison path is how a ~10s local tunnel blip
   // cascaded into SIGTERM of a healthy backend (#96266).
-  _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
+  async _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
+    // Same rule as runSsh: an injected _spawnFn (tests) keeps the literal
+    // 'ssh'; production resolves a binary that runs on this machine (#103288).
+    const sshBinary = this._spawnFn === spawn ? await getSshBinary() : 'ssh'
+
+    // The await above opens a window where cancelForward/close can tear this
+    // tunnel down; spawning now would leak an ssh child nothing manages.
+    if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
+      const error: any = new Error('tunnel was cancelled while resolving the ssh binary')
+      error.kind = 'superseded'
+      error.tunnelStderr = ''
+      throw error
+    }
+
     return new Promise<void>((resolve, reject) => {
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn(sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
       let readyConfirmed = false
@@ -974,7 +1022,12 @@ class SshConnection {
       } catch (error: any) {
         try {
           await stopTunnelChild(tunnel.child)
-          this._tunnels.delete(spec)
+          // A newer forward() for the same spec may already have replaced
+          // the map entry while this one awaited the ssh-binary resolution;
+          // only delete the entry if it still belongs to this tunnel.
+          if (this._tunnels.get(spec) === tunnel) {
+            this._tunnels.delete(spec)
+          }
         } catch (stopError) {
           throw this._fail(stopError, SSH_ERROR.UNKNOWN)
         }
@@ -1017,7 +1070,13 @@ class SshConnection {
         }
 
         await stopTunnelChild(tunnel.child)
-        this._tunnels.delete(spec)
+
+        // Same ownership guard as forward(): a same-spec re-forward may have
+        // replaced the entry while the stop was awaited.
+        if (this._tunnels.get(spec) === tunnel) {
+          this._tunnels.delete(spec)
+        }
+
         this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
       }
 

@@ -12,6 +12,7 @@ import nodePty from 'node-pty'
 
 import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
+import { getSshBinary } from './ssh-binary'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
@@ -305,9 +306,9 @@ export function registerTerminalIpc({
 
     const ptyProcess = remote
       ? nodePty.spawn(
-          process.platform === 'win32'
-            ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-            : 'ssh',
+          // Health-checked ssh executable — the hardcoded System32 OpenSSH
+          // path can exist yet be unusable on Windows (#103288).
+          await getSshBinary(rememberLog),
           buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
           { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
         )

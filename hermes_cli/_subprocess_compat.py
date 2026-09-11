@@ -2,6 +2,10 @@
 
 * ``["npm", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch shim; ``Popen`` fails with
   WinError 193 because CreateProcessW can't run a ``.cmd`` without ``shell=True``/PATHEXT.
+* npm.cmd also ignores CreateProcess ``lpCurrentDirectory`` (Python's ``Popen(cwd=)``): it
+  inherits the process Win32 directory, which can stay at the folder Hermes was launched
+  from. :func:`pinned_win32_cwd` aligns that directory with the intended checkout, matching
+  ``Sync-Win32ProcessCwd`` in ``scripts/install.ps1``.
 * ``start_new_session=True`` — POSIX ``os.setsid()`` detach; silently ignored on Windows, whose
   equivalent is the ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`` creationflags bundle.
 """
@@ -13,6 +17,8 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Mapping, Sequence
 
 __all__ = [
@@ -24,6 +30,8 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "pinned_win32_cwd",
+    "npm_failure_is_wrong_cwd",
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
@@ -111,6 +119,55 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     """
     resolved = shutil.which(name)
     return [resolved or name, *argv]
+
+
+@contextmanager
+def pinned_win32_cwd(
+    cwd: str | os.PathLike[str] | None,
+    *,
+    is_windows: bool | None = None,
+    chdir: Callable[[str], object] | None = None,
+    getcwd: Callable[[], str] | None = None,
+) -> Iterator[None]:
+    """On Windows, set the process Win32 directory to *cwd* for the duration of the block.
+
+    ``Push-Location`` / ``os.chdir``-equivalent Python ``Popen(cwd=)`` does not pin ``npm.cmd``:
+    the batch shim inherits ``GetCurrentDirectory``, which can remain the directory Hermes was
+    launched from (e.g. ``D:\\Work``). npm then reads that folder's ``package.json``:
+
+      No workspaces found: --workspace=ui-tui --workspace=web
+      Missing script: "pack"
+
+    POSIX and a missing *cwd* are no-ops. *is_windows* / *chdir* / *getcwd* are injectable so
+    tests pass the Windows branch as data without faking ``sys.platform``.
+    """
+    if is_windows is None:
+        is_windows = IS_WINDOWS
+    if not is_windows or cwd is None:
+        yield
+        return
+    target = os.fspath(cwd)
+    if not target:
+        yield
+        return
+    _chdir = chdir or os.chdir
+    _getcwd = getcwd or os.getcwd
+    previous = _getcwd()
+    _chdir(target)
+    try:
+        yield
+    finally:
+        _chdir(previous)
+
+
+def npm_failure_is_wrong_cwd(output: str | None) -> bool:
+    """True when npm ran against the wrong ``package.json`` (launch cwd), not a missing Electron zip.
+
+    The installer and ``hermes desktop`` otherwise misdiagnose this as a blocked GitHub download
+    and retry npmmirror (#46785).
+    """
+    text = output or ""
+    return ('Missing script: "pack"' in text) or ("No workspaces found" in text)
 
 
 # Win32 CreationFlags — defined here because CREATE_NO_WINDOW / DETACHED_PROCESS aren't guaranteed

@@ -202,19 +202,14 @@ def _generate_row(
             )
             # fit=False keeps raw columns so normalize_cells registers the whole pet at once.
             strict = attempt < _ROW_GEN_ATTEMPTS - 1
-            method = "components" if strict else "auto"
             try:
-                frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
+                frames = atlas.extract_strip_frames(strips[0], count, method="components" if strict else "auto", fit=False)
             except atlas.UnsegmentableStripError as exc:
-                # The art itself is unsegmentable (merged poses): a stricter
-                # re-roll would fail identically and cost another image call.
-                # Jump straight to the lenient attempt.
+                # Only strict mode raises this. The art itself is unsegmentable
+                # (merged poses), so a strict re-roll would fail identically and
+                # cost another image call: salvage the SAME strip leniently.
                 logger.warning("pet hatch %r: row %r unsegmentable (attempt %d/%d) — skipping strict retries: %s", slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc)
-                if strict:
-                    method = "auto"
-                    frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
-                else:
-                    raise
+                frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
             if collapsed := atlas.row_frames_collapsed(frames, reference_size):
                 # Lenient slicing can "succeed" with slivers of the body; those
                 # pass relative frame checks but sink the atlas later. A

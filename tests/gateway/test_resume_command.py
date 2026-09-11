@@ -342,6 +342,15 @@ class TestHandleResumeCommand:
             user_id="other-user", chat_id="other",
         )
         db.set_session_title("discord_named", "Discord Work")
+        for i in range(10):
+            db.create_session(
+                f"newer_unnamed_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:newer-{i}",
+                user_id=f"newer-user-{i}", chat_id=f"newer-{i}",
+            )
+        db.create_session(
+            "newer_tool", "tool", session_key="agent:main:tool:job:newer",
+        )
 
         runner = _make_runner(session_db=db, event=event)
         runner._resume_caller_is_admin = lambda _source: True

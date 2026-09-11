@@ -834,14 +834,32 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
+    async def _session_listing_rows(
+        self, source, session_key: str, *, include_all: bool,
+        include_unnamed: bool = False, search_query: str | None = None,
+    ) -> tuple[list[dict], bool]:
+        """Build the shared row projection consumed by ``/sessions`` and numeric ``/resume``."""
+        from hermes_cli.session_listing import query_session_listing
+
+        cross_origin = include_all and self._resume_caller_is_admin(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        query_limit = 50 if search_query else 10
+        rows = await asyncio.to_thread(
+            query_session_listing, getattr(self._session_db, "_db", self._session_db),
+            source=source.platform.value if source.platform else None,
+            session_key=None if cross_origin else session_key,
+            current_session_id=current_entry.session_id, include_current_session=True,
+            include_all_sources=cross_origin, include_unnamed=include_unnamed,
+            search_query=search_query, limit=query_limit, exclude_sources=["tool"])
+        if not cross_origin:
+            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
+        return rows[:10], cross_origin
+
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
-        widen = allow_all and self._resume_caller_is_admin(source)
-        sessions = await self._session_db.list_sessions_rich(
-            source=None if widen else (source.platform.value if source.platform else None),
-            session_key=None if widen else session_key, limit=10)
-        titled = [s for s in sessions if s.get("title")][:10]
-        return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+        rows, _cross_origin = await self._session_listing_rows(
+            source, session_key, include_all=allow_all)
+        return rows
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
@@ -975,8 +993,7 @@ class GatewaySessionCommandsMixin:
         """Handle /sessions — list previous sessions for gateway chats."""
         if not self._session_db:
             return self._session_db_unavailable_reply()
-        from hermes_cli.session_listing import (
-            format_gateway_session_listing, parse_session_listing_args, query_session_listing)
+        from hermes_cli.session_listing import format_gateway_session_listing, parse_session_listing_args
         try:
             include_all, include_unnamed, target, search_query = parse_session_listing_args(
                 event.get_command_args().strip())
@@ -990,23 +1007,12 @@ class GatewaySessionCommandsMixin:
         session_key = self._session_key_for_source(source)
         # `/sessions all` is admin-only like `/resume --all` (else any caller could enumerate other
         # origins' ids/titles/previews); a non-admin gets explicit feedback, not a silent narrowing.
-        cross_origin = include_all and self._resume_caller_is_admin(source)
         scope_notice = None
+        rows, cross_origin = await self._session_listing_rows(
+            source, session_key, include_all=include_all,
+            include_unnamed=include_unnamed, search_query=search_query)
         if include_all and not cross_origin:
             scope_notice = "_Note: `all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
-        current_entry = await self.async_session_store.get_or_create_session(source)
-        rows = await asyncio.to_thread(
-            query_session_listing, getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
-            session_key=None if cross_origin else session_key,
-            current_session_id=current_entry.session_id, include_current_session=True,
-            include_all_sources=cross_origin, include_unnamed=include_unnamed,
-            search_query=search_query,
-            # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
-        if not cross_origin:
-            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
         if search_query:
             title = f"Sessions matching “{search_query}”"
         else:

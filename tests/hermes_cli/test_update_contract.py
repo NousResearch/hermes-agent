@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.image_provenance import read_image_provenance
+from hermes_cli.source_update_policy import SOURCE_UPDATE_POLICY_FILENAME
 from hermes_cli.update_contract import (
     UpdateRefusal,
     evaluate_update_admission,
@@ -133,6 +134,23 @@ def test_admission_git_checkout_no_marker_is_admitted(tmp_path, monkeypatch):
         "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
     )
     assert evaluate_update_admission(tmp_path) is None
+
+
+def test_admission_external_source_policy_refuses_git_checkout(tmp_path, monkeypatch):
+    (tmp_path / SOURCE_UPDATE_POLICY_FILENAME).write_text(json.dumps({
+        "schema": 1, "managed_externally": True, "update_command": "release-manager deploy hermes",
+    }))
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git")
+    refusal = evaluate_update_admission(tmp_path)
+    assert refusal is not None and refusal.code == "source-policy"
+    assert refusal.update_command == "release-manager deploy hermes"
+
+
+def test_admission_external_source_policy_fails_closed_when_malformed(tmp_path, monkeypatch):
+    (tmp_path / SOURCE_UPDATE_POLICY_FILENAME).write_text("not json")
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git")
+    refusal = evaluate_update_admission(tmp_path)
+    assert refusal is not None and refusal.code == "source-policy-invalid"
 
 
 def test_admission_apt_and_nix_refuse(tmp_path, monkeypatch):

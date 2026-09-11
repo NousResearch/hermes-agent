@@ -322,20 +322,25 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
+def _session_create_explicit_cwd(params: dict, profile_home) -> bool:
+    """Treat profile-configured terminal.cwd as user-selected workspace."""
+    raw_cwd = _str_param(params, "cwd")
+    with contextlib.suppress(Exception):
+        if raw_cwd and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))):
+            return True
+    return bool(_profile_configured_cwd(profile_home) or _launch_configured_cwd())
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
-    # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
-    explicit_cwd = False
-    raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
-    with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+    explicit_cwd = _session_create_explicit_cwd(params, profile_home)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:

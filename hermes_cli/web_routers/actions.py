@@ -255,6 +255,14 @@ async def check_hermes_update(force: bool = False):
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))
+    from hermes_cli.update_contract import evaluate_update_admission
+    refusal = evaluate_update_admission(_server_path("PROJECT_ROOT"))
+    if refusal is not None and refusal.code.startswith("source-policy"):
+        return {
+            "update_available": False, "can_apply": False,
+            "update_command": refusal.update_command, "message": refusal.message,
+        }
+
     payload: Dict[str, Any] = {
         "install_method": install_method, "current_version": __version__, "behind": None,
         "update_available": False, "can_apply": install_method == "git",

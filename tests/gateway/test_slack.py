@@ -2900,12 +2900,27 @@ class TestReactions:
             text="do more work", message_type=MessageType.TEXT, source=source,
             message_id="1234567890.000002",
         )
+        other_source = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="group",
+            user_id="U_USER", thread_id="333.444",
+        )
+        other_thread = MessageEvent(
+            text="new conversation", message_type=MessageType.TEXT, source=other_source,
+            message_id="1234567890.000003",
+        )
         await adapter.on_processing_start(first)
         await adapter.on_processing_start(second)
 
         adapter.send.assert_awaited_once_with(
             "C123", "Getting started…",
             metadata={"thread_id": "111.222", "_interim_send": True},
+        )
+
+        await adapter.on_processing_start(other_thread)
+        assert adapter.send.await_count == 2
+        adapter.send.assert_awaited_with(
+            "C123", "Getting started…",
+            metadata={"thread_id": "333.444", "_interim_send": True},
         )
 
     @pytest.mark.asyncio

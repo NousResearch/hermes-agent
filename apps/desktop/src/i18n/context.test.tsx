@@ -1,10 +1,34 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { DesktopMachineProfile } from '@/global'
 import type { HermesConfigRecord } from '@/hermes'
+import { deferred } from '@/test/deferred'
 
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
+
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn<(channel: string) => Promise<DesktopMachineProfile>>() }))
+
+vi.mock('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: (key: string, api: Window['hermesDesktop']) => vi.stubGlobal(key, api)
+  },
+  ipcRenderer: { invoke, sendSync: () => ({ guestOnboarding: false }) },
+  webFrame: {},
+  webUtils: {}
+}))
+
+const machineProfile: DesktopMachineProfile = {
+  ageDays: null,
+  arch: 'arm64',
+  locale: 'ja-JP',
+  model: '',
+  nvidia: false,
+  platform: 'darwin',
+  release: '',
+  username: ''
+}
 
 function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
   const { isLoadingConfig, isSavingLocale, locale, saveError, setLocale, t } = useI18n()
@@ -28,6 +52,8 @@ describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    invoke.mockReset()
   })
 
   it('defaults to English without a config client', () => {
@@ -58,6 +84,10 @@ describe('I18nProvider', () => {
   })
 
   it('loads the initial locale from display.language config', async () => {
+    const getMachineProfile = vi.fn()
+
+    vi.stubGlobal('hermesDesktop', { getMachineProfile })
+
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),
       saveConfig: vi.fn()
@@ -74,6 +104,63 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('zh')
     expect(screen.getByTestId('label').textContent).toBe('语言')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+    expect(getMachineProfile).not.toHaveBeenCalled()
+  })
+
+  it('uses the native OS locale through preload without persisting an inferred choice', async () => {
+    invoke.mockResolvedValue(machineProfile)
+    vi.resetModules()
+    // Preload is typechecked with the Electron project's compiler options.
+    await vi.importActual('../../electron/preload')
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({}),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
+    expect(document.documentElement.lang).toBe('ja')
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('hermes:machine:profile')
+    expect(configClient.getConfig).toHaveBeenCalledTimes(1)
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('keeps an explicit language choice when the native OS lookup finishes later', async () => {
+    const pendingProfile = deferred<DesktopMachineProfile>()
+
+    invoke.mockReturnValue(pendingProfile.promise)
+    vi.resetModules()
+    // Preload is typechecked with the Electron project's compiler options.
+    await vi.importActual('../../electron/preload')
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({}),
+      saveConfig: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="zh" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledExactlyOnceWith('hermes:machine:profile'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(configClient.saveConfig).toHaveBeenCalledWith({ display: { language: 'zh' } }))
+
+    await act(async () => pendingProfile.resolve(machineProfile))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
+    expect(document.documentElement.lang).toBe('zh')
+    expect(configClient.saveConfig).toHaveBeenCalledTimes(1)
   })
 
   it('keeps English usable when config loading fails', async () => {

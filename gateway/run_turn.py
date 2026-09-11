@@ -1494,11 +1494,27 @@ class GatewayTurnMixin:
             return ""
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
-        """agent:end hook, process-watcher scheduling, and watch-notification drain."""
-        await self.hooks.emit("agent:end", {
-            **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
+        """agent:end hook, process-watcher scheduling, and watch-notification drain.
+
+        Returns the response as possibly rewritten by an ``agent:end`` handler:
+        the context is emitted as a named dict, handlers see the full text, and an
+        in-place ``context["response"]`` mutation is read back and delivered."""
+        # Emit agent:end hook (full response; honor in-place mutations)
+        _hook_ctx_end = {
+            **hook_ctx,
+            "response": response or "",
+            "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
-        })
+        }
+        await self.hooks.emit("agent:end", _hook_ctx_end)
+        _new_response = _hook_ctx_end.get("response")
+        if isinstance(_new_response, str) and _new_response != (response or ""):
+            response = _new_response
+        elif _new_response is not None and not isinstance(_new_response, str):
+            logger.warning(
+                "[hooks] agent:end 'response' must be str, got %s; ignoring mutation",
+                type(_new_response).__name__,
+            )
 
         # Pending process watchers (check_interval on background processes)
         try:
@@ -1520,6 +1536,8 @@ class GatewayTurnMixin:
             await self._drain_watch_notifications(_pr.completion_queue)
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
+
+        return response
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -2007,7 +2025,7 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            response = await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)

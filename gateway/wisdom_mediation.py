@@ -1,0 +1,242 @@
+"""Wisdom's consumer of the messaging gateway's idle-session scheduling rail."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+from gateway.wisdom_command import WisdomCommandContext, bind_view_callbacks
+from hermes_wisdom.consent import ConsentActor
+from hermes_wisdom.mediation import WisdomMediation, delivery_mode, session_runtime
+from hermes_wisdom.mediation_view import advice_view, delivery_groups
+
+logger = logging.getLogger(__name__)
+ACTIVE_SECONDS = 10 * 60
+
+
+async def schedule(
+    gateway, adapter, source, session_id: str, *, observe_only: bool = False
+) -> bool:
+    """Return whether agent mode owns notification delivery for this profile."""
+    platform = str(getattr(source.platform, "value", source.platform))
+    profile = getattr(source, "profile", None) or getattr(
+        adapter, "_owner_profile", None
+    )
+    if not callable(getattr(adapter, "_run_wisdom_profile_operation", None)):
+        return False
+
+    async def scoped(fn):
+        if platform == "slack":
+            return await adapter._run_wisdom_profile_operation(fn, profile=profile)
+        return await adapter._run_wisdom_profile_operation(fn)
+
+    mediated = await scoped(delivery_mode) == "agent"
+    if platform not in {"telegram", "slack"}:
+        return mediated
+    if str(getattr(source, "chat_type", "")) not in {"dm", "private"}:
+        return mediated
+    if not getattr(source, "user_id", None) or not gateway._is_user_authorized(source):
+        return mediated
+    key = gateway._session_key_for_source(source)
+    actor = ConsentActor(
+        key,
+        platform,
+        str(source.user_id),
+        str(source.chat_id),
+        str(getattr(source, "thread_id", None) or ""),
+        str(getattr(source, "scope_id", None) or ""),
+    )
+    from hermes_wisdom.service import WisdomService
+
+    def register():
+        from hermes_wisdom.entitlement import local_work_allowed
+
+        service = WisdomService()
+        service.require_setup()
+        if not local_work_allowed(service.store):
+            raise PackagePolicyError("Wisdom entitlement unavailable")
+        org = service.store.active_org_id()
+        mediation = WisdomMediation(service)
+        mediation.queue.register_session(
+            org,
+            session_key=key,
+            session_id=session_id,
+            platform=platform,
+            actor_id=actor.actor_id,
+            private=True,
+            available=False,
+            user_activity=observe_only,
+            address=actor.address,
+        )
+
+    from hermes_wisdom.package import PackagePolicyError
+
+    try:
+        await scoped(register)
+    except PackagePolicyError:
+        # Fixed notification delivery still owns the unconfigured profile path.
+        return mediated
+    if observe_only:
+        return mediated
+    tasks = getattr(gateway, "_wisdom_mediation_tasks", None)
+    if tasks is None:
+        tasks = gateway._wisdom_mediation_tasks = {}
+    deadlines = getattr(gateway, "_wisdom_mediation_active_until", None)
+    if deadlines is None:
+        deadlines = gateway._wisdom_mediation_active_until = {}
+    deadlines[key] = time.monotonic() + ACTIVE_SECONDS
+    if key in tasks and not tasks[key].done():
+        return mediated
+
+    async def tick():
+        from tools.approval import get_pending_gateway_approval
+        from tools.clarify_gateway import has_pending
+
+        if get_pending_gateway_approval(key) or has_pending(key):
+            return
+        with gateway._agent_cache_lock:
+            cached = gateway._agent_cache.get(key)
+            agent = cached[0] if isinstance(cached, tuple) else cached
+            runtime = session_runtime(agent)
+            history = list(getattr(agent, "_session_messages", None) or [])
+
+        def prepare():
+            from hermes_wisdom.entitlement import local_work_allowed
+
+            service = WisdomService()
+            mediation = WisdomMediation(service)
+            org = service.store.active_org_id()
+            if not local_work_allowed(service.store):
+                return org, []
+            mediation.queue.register_session(
+                org,
+                session_key=key,
+                session_id=session_id,
+                platform=platform,
+                actor_id=actor.actor_id,
+                private=True,
+                available=True,
+                address=actor.address,
+            )
+            if mediation.queue.claim_refresh(org):
+                try:
+                    service.check(apply_automatic=False)
+                    mediation.ingest()
+                except Exception as exc:
+                    logger.debug(
+                        "Wisdom feed refresh deferred (%s)", type(exc).__name__
+                    )
+            return org, mediation.prepare(org, actor, runtime=runtime, history=history)
+
+        org, items = await scoped(prepare)
+        if not items:
+            return
+        guard = adapter._active_sessions.get(key)
+        if guard is None or guard.is_set():
+            return
+
+        def begin(group):
+            mediation = WisdomMediation(WisdomService())
+            introduction = not mediation.queue.introduced(org)
+            selected = mediation.begin_delivery(org, group)
+            return selected, introduction
+
+        for group in delivery_groups(items):
+            selected, introduction = await scoped(lambda: begin(group))
+            if not selected:
+                continue
+            guard = adapter._active_sessions.get(key)
+            ready = await scoped(
+                lambda: WisdomMediation(WisdomService()).delivery_ready(org, selected)
+            )
+            if (
+                guard is None
+                or guard.is_set()
+                or not gateway._is_user_authorized(source)
+                or get_pending_gateway_approval(key)
+                or has_pending(key)
+                or not ready
+            ):
+                await scoped(
+                    lambda: WisdomMediation(WisdomService()).cancel_delivery(
+                        org, selected
+                    )
+                )
+                continue
+            try:
+                view = advice_view(selected, introduction=introduction)
+                bind_view_callbacks(view, WisdomCommandContext(
+                    user_id=actor.actor_id, chat_id=actor.chat_id,
+                    profile=profile, organization_id=org,
+                    thread_id=actor.thread_id, scope_id=actor.scope_id,
+                ))
+            except Exception:
+                await scoped(
+                    lambda: WisdomMediation(WisdomService()).cancel_delivery(
+                        org, selected
+                    )
+                )
+                raise
+
+            def uncertain():
+                mediation = WisdomMediation(WisdomService())
+                for item in selected:
+                    job = item["assessment"]
+                    mediation.queue.uncertain_delivery(
+                        org, job["id"], job["lease_token"]
+                    )
+
+            try:
+                receipt = await adapter.send_wisdom_mediation(view, source=source)
+
+                def finish():
+                    mediation = WisdomMediation(WisdomService())
+                    for item in selected:
+                        job = item["assessment"]
+                        mediation.queue.complete_delivery(
+                            org,
+                            job["id"],
+                            job["lease_token"],
+                            receipt=receipt,
+                            introduced=introduction,
+                        )
+
+                await scoped(finish)
+            except BaseException:
+                # Also fence cancellation after an external send. If persistence
+                # fails, lease expiry still prevents automatic replay.
+                try:
+                    await scoped(uncertain)
+                except Exception:
+                    logger.warning("Wisdom uncertain delivery awaits lease recovery")
+                raise
+
+    async def watch():
+        try:
+            # The post-delivery hook still owns its guard until it returns.
+            await asyncio.sleep(1)
+            while time.monotonic() < deadlines.get(key, 0):
+                if not gateway._is_user_authorized(source):
+                    return
+                try:
+                    await adapter.run_idle_activity(key, tick)
+                except Exception as exc:
+                    logger.warning(
+                        "Wisdom session mediation deferred (%s)", type(exc).__name__
+                    )
+                await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Wisdom session mediation paused (%s)", type(exc).__name__)
+        finally:
+            if tasks.get(key) is asyncio.current_task():
+                tasks.pop(key, None)
+                deadlines.pop(key, None)
+
+    task = asyncio.create_task(watch())
+    tasks[key] = task
+    adapter._background_tasks.add(task)
+    task.add_done_callback(adapter._background_tasks.discard)
+    return mediated

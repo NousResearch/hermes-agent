@@ -109,6 +109,35 @@ declare global {
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
+      // Intro reveal: the full-screen first-run brand sequence. The main
+      // renderer owns the phase; the overlay window (`?win=intro`) owns
+      // the animation clock and plays sound locally.
+      introReveal?: {
+        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
+        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
+        skip: () => void
+        /** The surface painted its first frame — reveal the OS window now. */
+        ready: () => void
+        onSkip: (callback: () => void) => () => void
+        onClosed: (callback: () => void) => () => void
+      }
+      // In-chat onboarding assembly: grow the main window outward by per-edge
+      // pixel deltas so the chat pane keeps its exact screen rect while the
+      // app assembles around it.
+      chatOnboarding?: {
+        grow: (request: {
+          bottom: number
+          left: number
+          /** Floor for the resulting CSS-pixel viewport width, for layouts that
+           *  need one (a docked sidebar). Clamped to the display. */
+          minWidth?: number
+          right: number
+          top: number
+        }) => void
+        /** The film has revealed the app. Animate the visible window down to
+         *  the solo-chat size as the guided chat starts. */
+        soloBoot?: () => void
+      }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its
       // own gateway (like an instance window), sized and skinned as a floating
       // bar — so it mounts the real composer rather than a lookalike. Main
@@ -522,6 +551,9 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Host facts for the guided first run. Optional: an older preload (a
+       *  mid-upgrade managed install) simply doesn't answer. */
+      getMachineProfile?: () => Promise<DesktopMachineProfile>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
@@ -607,6 +639,26 @@ export interface DesktopVersionInfo {
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
+}
+
+export interface DesktopMachineProfile {
+  /** Days since the OS created this user account; null when unknowable. */
+  ageDays: null | number
+  arch: string
+  /** The OS display language (`app.getLocale()`, e.g. "ja", "pt-BR"); '' when
+   *  unknowable. A first-run DEFAULT for the UI language, never a lock — the
+   *  user's saved `display.language` always wins, and the picker still rules. */
+  locale: string
+  /** Hardware's self-reported model (`NVIDIA_DGX_Spark`); '' when unavailable. */
+  model: string
+  /** An NVIDIA GPU is present, by PCI vendor id. */
+  nvidia: boolean
+  platform: string
+  release: string
+  /** OS login name ('' when unknowable) — a first-name SUGGESTION for the
+   *  guided chat, never a default. The renderer blocklists handles that are
+   *  not a name before offering it. */
+  username: string
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

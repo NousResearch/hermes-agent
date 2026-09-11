@@ -147,7 +147,10 @@ class WhatsAppBehaviorMixin:
         set (pairing revoke purges it in place) — a stale env value must not broaden access."""
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
-            return self._coerce_allow_list(os.environ[source]) if source in os.environ else set()
+            # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist. None = key
+            # absent (revoked) → empty, never the construction snapshot.
+            live = _get_wsecret(source)
+            return self._coerce_allow_list(live) if live is not None else set()
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers
@@ -169,9 +172,10 @@ class WhatsAppBehaviorMixin:
 
     # ------------------------------------------------------------------ gating
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in _OPTIN_TRUTHY:
-            return True
-        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in _OPTIN_TRUTHY
+        # Both names via the scoped reader — the DEFAULT profile's os.environ opt-in must not open
+        # a secondary bot's DMs.
+        return any((_get_wsecret(name, default="") or "").lower() in _OPTIN_TRUTHY
+                   for name in ("GATEWAY_ALLOW_ALL_USERS", "WHATSAPP_ALLOW_ALL_USERS"))
 
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:

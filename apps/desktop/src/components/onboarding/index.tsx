@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
@@ -33,6 +34,7 @@ import {
   startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
+import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
@@ -200,6 +202,8 @@ export function DesktopOnboardingOverlay({
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
+  const introReveal = useStore($introReveal)
+  useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   const targetProfile = onboarding.targetProfile ?? profile
@@ -305,6 +309,13 @@ export function DesktopOnboardingOverlay({
       clearPendingProviderOAuth()
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
+
+  if (
+    !onboarding.manual &&
+    (introReveal.phase !== 'hidden' || onboardingSurfaceActive() || shouldPlayFirstRunIntro(onboarding.firstRunSkipped))
+  ) {
+    return null
+  }
 
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
   // configured field stays null until the runtime check resolves; only then

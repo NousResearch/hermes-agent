@@ -184,6 +184,9 @@ class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):
         """Compaction copies do not reject a display projection that fits the limit."""
         sid = _compact_in_place(db, "chat", epochs=4)
+        copied_id = db._read_one(
+            "SELECT id FROM messages WHERE session_id = ? AND compacted = 1 ORDER BY id LIMIT 1", (sid,))[0]
+        db._execute_write(lambda conn: db._clone_message_rows(conn, [copied_id]))
         db._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,)))
 

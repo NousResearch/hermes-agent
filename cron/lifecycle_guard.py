@@ -107,7 +107,7 @@ _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
 )
 _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 
-_SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh", "ash"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
@@ -692,8 +692,13 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, forced_shell)`` for the scripts the token at *index* executes, if any.
+
+    *forced_shell* is True when a POSIX shell provably parses the file — it was handed to
+    ``bash``/``sh``/… or ``source``/``.`` — and False for a bare path executed on its own shebang."""
     if index >= len(segment):
         return
     executable = segment[index]
@@ -701,7 +706,8 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            for path in _resolved_or_nothing(segment[index + 1], cwd):
+                yield path, True
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -722,19 +728,24 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            for path in _resolved_or_nothing(arguments[arg_index], cwd):
+                yield path, True
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        for path in _resolved_or_nothing(executable, cwd):
+            yield path, False
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
-    original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+def _iter_referenced_shell_scripts(
+    command: str, *, cwd: Optional[str] = None
+) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, forced_shell)`` for scripts executed directly or through a POSIX shell.
+    Each segment is read at the original token AND at the peeled wrapper target — additive on
+    purpose: peeling must never REMOVE a reference (a local ``./timeout`` is a script, not the
+    coreutils wrapper)."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -763,6 +774,36 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
             if argument in _SHELL_COMMAND_FLAGS:
                 yield arguments[arg_index + 1]
                 break
+
+
+_SHEBANG_POSIX_SHELL_RE = re.compile(r"\A#![^\n]*\b(?:%s)\b" % "|".join(sorted(_SHELL_EXECUTABLES)))
+
+
+def _is_posix_shell_source(text: str) -> bool:
+    """True when *text* opens with a POSIX-shell shebang (``#!/bin/sh``, ``#!/usr/bin/env bash``, …).
+
+    The recursive reference walk only chases edges that exist when a POSIX shell parses the file;
+    feeding another interpreter's source (a minified Node bundle's regex literals, pathlib's ``/``
+    division) to ``shlex`` yields path-shaped garbage, not script references (#77131, #105758).
+    """
+    return _SHEBANG_POSIX_SHELL_RE.match(text) is not None
+
+
+def _is_locally_executable(path: Path) -> bool:
+    """True when *path* exists locally and carries any execute bit.
+
+    An executable, shebang-less file reached in command position still ends up parsed by a POSIX
+    shell: execve(2) fails with ENOEXEC and the calling shell falls back to interpreting the file
+    as shell source line by line, so the recursive walk must keep following it. A file without an
+    execute bit cannot be reached that way — bare execution fails with EACCES — and a remote-only
+    file's mode is not observable from here, so in both cases the observable evidence keeps the
+    (cheaper, still literal-scanned) direct-scan path.
+    """
+    try:
+        return os.access(str(path), os.X_OK)
+    except (OSError, ValueError):
+        # ValueError: embedded NUL from a decoded binary tokenized as a path — never crash the guard.
+        return False
 
 
 # --- referenced-script reading ----------------------------------------------------------------
@@ -903,7 +944,7 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    for script_path, forced_shell in _iter_referenced_shell_scripts(command, cwd=cwd):
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             return True
@@ -930,6 +971,24 @@ def _contains_unsafe_gateway_action(
                 return True
         if not script_text:
             continue
+        if not forced_shell and not _is_posix_shell_source(script_text):
+            # A bare path executes on its own shebang, so a non-POSIX-shell interpreter's source
+            # never reaches a shell as *source*: recursing would only shell-tokenize its literals
+            # (a minified Node bundle's regexes) into garbage paths that burn the remote-read
+            # budget and fail closed on benign CLIs (#105758). The literal-command regex still
+            # scans the text — only the recursive reference walk is gated, mirroring the entry
+            # point's .py exemption (#77131, #78398).
+            if _is_locally_executable(resolved):
+                # An execute bit with no shell shebang is still shell-reachable — the POSIX
+                # ENOEXEC fallback interprets the file as shell source line by line — so a
+                # second-hop lifecycle command hidden in such a file stays inside the walk.
+                pass
+            elif not budget.charge_text(script_text):
+                return _budget_exhausted("text", depth)
+            elif not _direct_lifecycle_scan(script_text):
+                continue
+            else:
+                return True
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
             return True

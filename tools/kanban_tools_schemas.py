@@ -198,6 +198,33 @@ KANBAN_BLOCK_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_CLOSE_GATE_SCHEMA = _schema(
+    "kanban_close_gate",
+    (
+        "Close a gate this worker itself opened, to unblock its own current "
+        "task. The one sanctioned cross-task completion for a dispatcher "
+        "worker: the gate must be 'blocked', ``created_by`` this worker's "
+        "profile, and list the worker's current task among its children. "
+        "Unlink + complete are atomic, so the gate never sits 'ready'. A "
+        "worker closing a card it did not open, or completing other cards, "
+        "must instead use kanban_complete on its OWN task (the ownership "
+        "guard refuses every other cross-task mutation)."
+    ),
+    {
+        "gate_id": _prop("string", "The blocked gate task id to close."),
+        "summary": _prop("string", (
+                "Optional 1-2 sentence handoff describing why the gate's "
+                "resume condition is now met."
+        )),
+        "result": _prop("string", (
+                "Short result line — the evidence that resumed work "
+                "(e.g. a PR URL or a human answer)."
+        )),
+        "metadata": _prop("object", "Optional structured handoff metadata."),
+    },
+    ["gate_id"],
+)
+
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
     (

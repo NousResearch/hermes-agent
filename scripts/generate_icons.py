@@ -14,11 +14,16 @@ Sources of truth — two axes, composed per target:
   Backgrounds (per platform surface, light/dark):
                       assets/backgrounds/squircle-light.svg   white rounded
                       assets/backgrounds/squircle-dark.svg    #0d1117 rounded
+                      assets/backgrounds/squircle-mac-light.svg   mac HIG grid
+                      assets/backgrounds/squircle-mac-dark.svg    mac HIG grid
 
   The master SVGs (assets/icon-master.svg light, assets/icon-master-dark.svg
   dark) are GENERATED artifacts — squircle background + girl nested into the
   824px HIG content safe zone. The light master drives every squircle target;
-  the dark master drives the dark-appearance targets.
+  the dark master drives the dark-appearance targets. macOS is the exception:
+  its icns targets render from an in-memory mac master that puts the same
+  squircle on Apple's 824x824 (r=185.4) grid — centered in 1024 with 100px
+  margins — so the icon matches the size of Apple-template neighbors.
 
 The girl is nested via its art bbox as viewBox, so it always lands centered in
 the box (824 safe zone for squircles / height-fitted for the marks) without
@@ -98,11 +103,15 @@ DARK_HEX = "#0d1117"
 DARK_RGB = (13, 17, 23)
 
 # Girl placement per background: (x, y, w, h) in that background's coordinate
-# space. Squircle backgrounds put the girl in the 824px HIG content safe zone
-# (centered, 100px pad on a 1024 canvas). Marks reuse the same squircles.
+# space. Full-bleed squircles put the girl in the 824px HIG content safe zone
+# (centered, 100px pad on a 1024 canvas); the mac-grid squircle is itself 824
+# on 1024, so the girl box scales by 824/1024 to keep the same relative size
+# inside the shape. Marks reuse the full-bleed squircles.
 GIRL_BOXES = {
     "squircle-light.svg": (100, 100, 824, 824),
     "squircle-dark.svg": (100, 100, 824, 824),
+    "squircle-mac-light.svg": (180.5, 180.5, 663, 663),
+    "squircle-mac-dark.svg": (180.5, 180.5, 663, 663),
 }
 # The brand-kit SVG canvas (both girl svgs share this viewBox).
 GIRL_VIEWBOX = 5487.0615
@@ -187,6 +196,10 @@ class IconArt:
         self.bboxes: dict[str, tuple[float, float, float, float]] = {}
         self.master = compose_svg(self, "black", "squircle-light.svg")
         self.master_dark = compose_svg(self, "white", "squircle-dark.svg")
+        # macOS icons sit on Apple's 824-on-1024 grid, not the full-bleed
+        # squircle: same art, mac-grid backgrounds, icns targets only.
+        self.master_mac = compose_svg(self, "black", "squircle-mac-light.svg")
+        self.master_mac_dark = compose_svg(self, "white", "squircle-mac-dark.svg")
 
 
 def girl_path(art: IconArt, girl: str) -> str:
@@ -335,11 +348,11 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
         img = render(art.master_dark, max(arg))
         img.save(buf, format="ICO", sizes=[(s, s) for s in arg])
     elif kind == "icns":
-        img = render(art.master, 1024)
+        img = render(art.master_mac, 1024)
         frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
         img.save(buf, format="ICNS", append_images=frames[1:])
     elif kind == "icns_dark":
-        img = render(art.master_dark, 1024)
+        img = render(art.master_mac_dark, 1024)
         frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
         img.save(buf, format="ICNS", append_images=frames[1:])
     elif kind == "wide":

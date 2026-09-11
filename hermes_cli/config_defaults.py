@@ -47,6 +47,8 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # User-owned manual overlay, applied when no named personality is selected.
+        "system_prompt": "",
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

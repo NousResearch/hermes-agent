@@ -1,18 +1,4 @@
-"""Behavior tests for the skill review / combined review prompts.
-
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
-  1. Patching currently-loaded skills first,
-  2. Patching existing umbrellas next,
-  3. Adding references/ files under an existing umbrella,
-  4. Creating a new class-level umbrella only when nothing else fits.
-
-User-preference corrections (style, format, verbosity, legibility) are
-first-class skill signals, not just memory signals.
-
-These tests assert behavioral *instructions* are present — they do NOT
-snapshot the full prompt text (change-detector).
-"""
+"""Behavior contracts for the background skill-review prompts."""
 
 from run_agent import AIAgent
 
@@ -21,34 +7,34 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
-
-
-def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
-    """Style/format/verbosity complaints must be FIRST-CLASS skill signals, not just memory."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
+def _assert_selective_skill_policy(prompt: str, label: str) -> None:
     lower = prompt.lower()
-    # Must mention style/format/verbosity-family corrections
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
-        "must name style/format/verbosity/legibility as signals"
-    )
-    # Must frame these as first-class skill signals (not memory-only)
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
-        "must explicitly label user-preference corrections as first-class skill signals"
-    )
-    # Must mention the correction-type phrases to tune the model's ear
-    assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
-        "must give concrete phrasing examples so the model recognizes corrections"
-    )
+    assert "taking no skill action is explicitly valid" in lower, label
+    assert "all five" in lower, label
+    for requirement in (
+        "narrow loading trigger",
+        "reusable procedural value",
+        "evidence the workflow recurs",
+        "no better home",
+        "safe selective loading",
+    ):
+        assert requirement in lower, f"{label}: missing creation requirement {requirement!r}"
+    for better_home in (
+        "config", "user.md", "memory.md", "project instructions", "code",
+        "session/git/issue/pr", "existing skill",
+    ):
+        assert better_home in lower, f"{label}: missing better home {better_home!r}"
+    assert "unrelated conversations must work correctly without loading" in lower, label
+    assert "prefer extending an existing matching skill" in lower, label
+    for rejected in (
+        "global preferences", "standard agent behavior", "one-off task state", "raw logs",
+        "generic advice",
+    ):
+        assert rejected in lower, f"{label}: must reject {rejected}"
+
+
+def test_skill_review_prompt_requires_selective_creation():
+    _assert_selective_skill_policy(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
 
@@ -74,6 +60,12 @@ def test_combined_review_prompt_has_memory_section():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
+
+
+def test_combined_review_prompt_requires_selective_creation():
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    _assert_selective_skill_policy(prompt, "_COMBINED_REVIEW_PROMPT")
+    assert "memory action does not require skill action" in prompt.lower()
 
 
 

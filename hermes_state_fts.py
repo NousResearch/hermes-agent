@@ -131,6 +131,27 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
 _FTS5_SHADOW_SUFFIXES = ("content", "data", "docsize", "idx", "config")
 
 
+def _orphan_fts_shadow_families(cursor: sqlite3.Cursor, families: Sequence[str]) -> list[str]:
+    """Return families that have shadows but no live virtual table.
+
+    This is only an admission hint. The destructive helper rechecks the live schema
+    after the caller acquires FTS rebuild authority.
+    """
+    orphaned: list[str] = []
+    for family in families:
+        shadows = [f"{family}_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES]
+        if cursor.execute(
+            f"SELECT 1 FROM sqlite_master AS shadow WHERE shadow.type = 'table' "
+            f"AND shadow.name IN ({','.join('?' for _ in shadows)}) "
+            "AND NOT EXISTS (SELECT 1 FROM sqlite_master AS vtable "
+            "WHERE vtable.type = 'table' AND vtable.name = ? "
+            "AND vtable.sql LIKE 'CREATE VIRTUAL TABLE%') LIMIT 1",
+            (*shadows, family),
+        ).fetchone():
+            orphaned.append(family)
+    return orphaned
+
+
 def _drop_orphan_fts_shadow_tables(cursor: sqlite3.Cursor, families: Sequence[str]) -> list[str]:
     """Drop, per family, shadow tables whose virtual table row is absent from sqlite_master.
 

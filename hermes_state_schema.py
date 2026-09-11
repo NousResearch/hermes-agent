@@ -26,7 +26,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables
+from hermes_state_fts import _drop_orphan_fts_shadow_tables, _orphan_fts_shadow_families
 from hermes_state_holders import _read_proc_argv
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -606,9 +606,6 @@ class SessionSchemaMixin:
                 legacy = self._db_has_legacy_inline_fts(cursor)
                 recovered = self._recover_stale_fts(cursor, legacy=legacy, timeout_seconds=0.0)
                 if recovered:
-                    # CJK was detached alongside the base indexes; its own ensure path
-                    # decides when it comes back online.
-                    self._ensure_fts_cjk_schema(cursor)
                     self._fts_stale_retry_interval = 0.0
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.commit()
@@ -622,6 +619,9 @@ class SessionSchemaMixin:
     def _recover_stale_fts_locked(self, cursor: sqlite3.Cursor, *, legacy: bool) -> bool:
         """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority. One write
         transaction, so no canonical writer slips between rebuild and trigger restoration."""
+        _drop_orphan_fts_shadow_tables(
+            cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
+        )
         try:
             trigram_present = self._fts_table_probe(cursor, "messages_fts_trigram") is True
         except (sqlite3.DatabaseError, UnicodeDecodeError):
@@ -665,6 +665,10 @@ class SessionSchemaMixin:
         self._fts_stale = False
         self._fts_enabled = True
         self._trigram_available = include_trigram
+        if not legacy:
+            # Keep CJK orphan cleanup and recreation inside the same admission
+            # lifetime as the base/trigram recovery.
+            self._ensure_fts_cjk_schema(cursor)
         logger.warning("Rebuilt stale state.db FTS indexes from canonical messages and restored sync triggers.")
         return True
 
@@ -1129,41 +1133,49 @@ class SessionSchemaMixin:
         vtable exists so CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation.
         OPT-IN v23 boundary: a legacy v22 inline install keeps its inline schema + triggers
         (the v23 DDL would create the trigram source VIEW and leave a mixed state)."""
+        families = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
         legacy_fts = self._db_has_legacy_inline_fts(cursor)
         # A `.recover`-restored image keeps the shadow tables but not the vtable rows; the DDL
-        # below would fail on the first shadow. Drop only orphaned families, then rebuild the
-        # recreated (empty) index like a missing-trigger repair (#103840).
-        orphan_repaired = _drop_orphan_fts_shadow_tables(
-            cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
-        )
+        # below would fail on the first shadow. The preflight only selects the guarded path.
+        # The destructive helper rechecks and drops under rebuild admission so a stale snapshot
+        # cannot delete a family that another opener recreated (#103840).
+        orphan_families = set(_orphan_fts_shadow_families(cursor, families))
         if not self._fts_stale:
             self._migrate_bounded_tool_fts_triggers(cursor, legacy=legacy_fts)
         if self._fts_stale:
-            if self._recover_stale_fts(cursor, legacy=legacy_fts):
-                # CJK was detached alongside the base indexes; its ensure path decides when it returns.
-                self._ensure_fts_cjk_schema(cursor)
-            else:
+            if not self._recover_stale_fts(cursor, legacy=legacy_fts):
                 self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
         else:
             base_sql, trigram_sql = _FTS_DDL[legacy_fts]
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
             # another process write through an index whose bootstrap/repair has no owner (#105790).
             base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or getattr(
-                self, "_fts_tool_prefix_migration_requires_rebuild", False) or "messages_fts" in orphan_repaired
+                self, "_fts_tool_prefix_migration_requires_rebuild", False
+            ) or "messages_fts" in orphan_families
+            trigram_orphaned = "messages_fts_trigram" in orphan_families
+            cjk_orphaned = "messages_fts_cjk" in orphan_families
             trigram_triggers_missing = (
-                self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or "messages_fts_trigram" in orphan_repaired
+                self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or trigram_orphaned
             )
 
             def ensure_and_rebuild() -> None:
+                if orphan_families:
+                    _drop_orphan_fts_shadow_tables(cursor, families)
                 self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
                 if not self._fts_enabled:
                     return
                 self._trigram_available = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
+                if trigram_orphaned and not self._trigram_available:
+                    for trigger in _FTS_TRIGRAM_TRIGGERS:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
                 self._rebuild_fts_indexes(
                     cursor, legacy=legacy_fts, include_trigram=self._trigram_available,
                 )
                 if not legacy_fts:
                     self._ensure_fts_cjk_schema(cursor)
+                    if cjk_orphaned and not self._fts_cjk_available:
+                        for trigger in _FTS_CJK_TRIGGERS:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 
             if base_triggers_missing:
                 # The authority covers the whole first-publication sequence, not merely the final rebuild.
@@ -1173,10 +1185,28 @@ class SessionSchemaMixin:
             else:
                 self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
                 if self._fts_enabled:
-                    # Trigram is optional; without it CJK search falls back to LIKE.
-                    trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
-                    self._trigram_available = trigram_enabled
-                    if trigram_enabled and trigram_triggers_missing:
+                    if trigram_orphaned:
+                        def ensure_trigram_and_rebuild() -> None:
+                            _drop_orphan_fts_shadow_tables(cursor, families)
+                            self._trigram_available = self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", trigram_sql,
+                            )
+                            if self._trigram_available:
+                                self._rebuild_fts_indexes(
+                                    cursor, legacy=legacy_fts, include_trigram=True,
+                                )
+                            else:
+                                for trigger in _FTS_TRIGRAM_TRIGGERS:
+                                    cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+
+                        self._run_admitted_startup_rebuild(cursor, ensure_trigram_and_rebuild)
+                    else:
+                        # Trigram is optional; without it CJK search falls back to LIKE.
+                        trigram_enabled = self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", trigram_sql,
+                        )
+                        self._trigram_available = trigram_enabled
+                    if not trigram_orphaned and trigram_enabled and trigram_triggers_missing:
                         self._run_admitted_startup_rebuild(
                             cursor,
                             lambda: self._rebuild_fts_indexes(
@@ -1185,7 +1215,21 @@ class SessionSchemaMixin:
                         )
             if self._fts_enabled and not legacy_fts and not base_triggers_missing:
                 # CJK-bigram index: strictly additive, gated on the loadable tokenizer.
-                self._ensure_fts_cjk_schema(cursor)
+                if cjk_orphaned:
+                    with fts_rebuild_admission(self.db_path) as admitted:
+                        if admitted:
+                            _drop_orphan_fts_shadow_tables(cursor, families)
+                            self._ensure_fts_cjk_schema(cursor)
+                            if not self._fts_cjk_available:
+                                for trigger in _FTS_CJK_TRIGGERS:
+                                    cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                        else:
+                            cursor.execute(_STALE_KEY_UPSERT_SQL, (FTS_CJK_STALE_KEY,))
+                            for trigger in _FTS_CJK_TRIGGERS:
+                                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                            self._fts_cjk_available = False
+                else:
+                    self._ensure_fts_cjk_schema(cursor)
         # IF NOT EXISTS cannot rewrite pre-existing broad AFTER UPDATE triggers.
         if self._fts_enabled:
             self._migrate_broad_fts_update_triggers(cursor)

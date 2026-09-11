@@ -518,8 +518,25 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     return issues
 
 
-def cron_doctor() -> int:
+def cron_doctor(*, as_json: bool = False, check_provider: bool = False) -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
+    if as_json or check_provider:
+        from cron.health import inspect_jobs
+
+        reports = inspect_jobs(check_provider=check_provider)
+        healthy = not any(report["issues"] for report in reports)
+        if as_json:
+            import json
+
+            print(json.dumps({"healthy": healthy, "jobs": reports}, indent=2))
+        else:
+            for report in reports:
+                print(f"{report['id']}: {report.get('provider', '?')} / {report.get('model', '?')}")
+                for issue in report["issues"]:
+                    print(f"  - {issue['message']}")
+            if healthy:
+                print(color("✓ Cron doctor found no issues", Colors.GREEN))
+        return 0 if healthy else 1
     from cron.jobs import list_jobs
     jobs = list_jobs(include_disabled=False)
     findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
@@ -755,7 +772,7 @@ def cron_notepad(args) -> int:
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
     "status": lambda a: cron_status() or 0,
-    "doctor": lambda a: cron_doctor(),
+    "doctor": lambda a: cron_doctor(as_json=getattr(a, "json", False), check_provider=getattr(a, "check_provider", False)),
     "tick": lambda a: cron_tick(),
     "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
     "incidents": lambda a: cron_incidents(a),

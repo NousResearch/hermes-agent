@@ -596,7 +596,7 @@ markers = [
 addopts = "-m 'not integration'"
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.11"  # Match requires-python and the CI test runtime.
 
 [tool.ty.rules]
 unknown-argument = "warn"

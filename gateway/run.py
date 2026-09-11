@@ -3177,7 +3177,7 @@ _RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTE
 
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
-    return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
+    return min(30 * (2 ** min(max(attempt - 1, 0), 4)), _RECONNECT_BACKOFF_CAP)
 
 
 def _reconnect_needs_attention(info: dict, now: float) -> bool:

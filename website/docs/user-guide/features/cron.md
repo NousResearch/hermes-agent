@@ -1168,3 +1168,30 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+
+## Diagnose an unattended job
+
+`hermes cron doctor` inspects enabled jobs without executing prompts or
+posting messages. Add `--json` for the selected model, delivery destination,
+last execution, last successful execution, and next scheduled run. It flags
+missing working directories or scripts, unresolved destinations, overdue
+schedules, execution failures, and delivery failures separately.
+
+```bash
+hermes cron doctor
+hermes cron doctor --json
+hermes cron doctor --check-provider
+```
+
+The default check stays offline. `--check-provider` also resolves provider
+credentials and may refresh OAuth tokens; it does not make an inference
+request. A resolved credential is not proof that the provider has quota or
+that Slack will accept a message. The command exits with 1 when a job needs
+attention and 0 when the performed checks pass. Paused jobs are excluded.
+Older jobs may have no recorded successful timestamp until they next succeed.
+
+If Codex reports `refresh_token_reused`, create a separate Hermes login with
+`hermes auth add openai-codex --type oauth`. Run a job explicitly with
+`hermes cron run <job-id>` when an end-to-end execution and delivery test is
+needed; that command performs the job's real work and sends its normal output.

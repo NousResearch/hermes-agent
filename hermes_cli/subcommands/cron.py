@@ -181,7 +181,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_notepad.add_argument("key", nargs="?", help="Notepad key (get/set/delete)")
     cron_notepad.add_argument("value", nargs="?", help="Value to store (set)")
 
-    cron_subparsers.add_parser("doctor", help="Check scheduled jobs for common health issues")
+    cron_doctor = cron_subparsers.add_parser("doctor", help="Check scheduled jobs for common health issues")
+    _flag(cron_doctor, "--json", help="Print structured job health, effective models, and delivery targets")
+    _flag(cron_doctor, "--check-provider", help="Resolve provider credentials (may refresh OAuth); does not run jobs")
 
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)

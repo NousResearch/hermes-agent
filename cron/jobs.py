@@ -2221,6 +2221,7 @@ def _record_run_outcome(
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
     job["last_error"] = None if success else error
     if success:
+        job["last_success_at"] = now
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
         job.pop("preflight_alerted", None)

@@ -147,6 +147,11 @@ def _transport_is_dead(transport) -> bool:
     return getattr(transport, "_closed", None) is True
 
 
+def _is_hosted_room_session(session: dict) -> bool:
+    """In-process Group Chat sessions: ``source=bot_room`` and/or ``room_plumbing``."""
+    return str(session.get("source") or "") == "bot_room" or bool(session.get("room_plumbing"))
+
+
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     """Shared hard exemptions for both reapers (the LRU cap applies them WITHOUT the age gate: eligible the moment
     it loses its client): never evict a session mid-turn, awaiting input, still building, owning live delegated
@@ -157,7 +162,13 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
-    return _transport_is_dead(session.get("transport"))
+    if _transport_is_dead(session.get("transport")):
+        return True
+    # Hosted room sessions are created in-process with no WS client; session.create falls back to
+    # _stdio_transport, which is a live sink for standalone TUI and must stay immortal there. Treating
+    # that fallback (or a missing transport) as a live client pins the bot_room active-session slot
+    # until process exit, so a later worker that wins the driver lease can never admit a turn (#106847).
+    return _is_hosted_room_session(session) and not _session_has_live_transport(session)
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:

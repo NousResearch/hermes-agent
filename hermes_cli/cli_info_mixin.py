@@ -455,6 +455,45 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_goal_command_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True when /goal control commands or /subgoal should be dispatched while the agent runs.
+
+        Commands like ``/goal gate add ...``, ``/goal wait ...``, ``/goal unwait``,
+        ``/goal pause``, ``/goal resume``, ``/goal show``, ``/goal status``, and ``/subgoal``
+        control the active GoalState while an iterative goal loop is executing.
+        Queuing them through ``_pending_input`` defers execution until the goal turn or
+        entire goal is over, leading to 'no active goal' errors (#87446).
+        """
+        from cli import _looks_like_slash_command
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            tokens = text.strip().split(None, 2)
+            base = tokens[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            if not cmd:
+                return False
+            if cmd.name == "subgoal":
+                return True
+            if cmd.name == "goal":
+                sub = tokens[1].lower() if len(tokens) > 1 else ""
+                # Control verbs intentionally own the first-token namespace:
+                # `/goal pause the rollout` is a pause command, not new goal
+                # prose. New goal text must use a non-control first token.
+                if sub in {"gate", "wait", "unwait", "pause", "resume", "status", "show"}:
+                    return True
+                if len(tokens) == 1:
+                    return True
+                return False
+            return False
+        except Exception:
+            return False
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

@@ -3514,8 +3514,11 @@ class _StreamingCall(StreamingWaitMonitor):
         it: on success the response is delivered for this turn WITHOUT latching
         non-streaming (a transient gateway 500 must not permanently disable streaming);
         on a probe 4xx that error REPLACES the opaque 5xx; any other probe failure keeps
-        the original error. Interrupts re-raise (the outer handler routes them). True =
-        handled (caller must not overwrite result); False = propagate ``e``.
+        the original error. The successful delivery is bracketed by its own stream
+        start/end pair (the failed attempt already emitted a terminal end), and a response
+        that cannot be replayed restores the saved preference before propagating ``e``.
+        Interrupts re-raise (the outer handler routes them). True = handled (caller must
+        not overwrite result); False = propagate ``e``.
         """
         status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
         if not isinstance(status, int) or status < 500 or self.deltas_were_sent["yes"]:
@@ -3548,8 +3551,19 @@ class _StreamingCall(StreamingWaitMonitor):
         self._quiet(self.agent._buffer_status,
                     "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded.")
         stream_pref = getattr(self.agent, "_disable_streaming", False)
-        self.result["response"] = self._adopt_final_response(probe)
-        self.agent._disable_streaming = stream_pref  # one-turn recovery, not a session latch
+        try:
+            # The failed attempt already emitted its terminal on_stream_end(finished=False),
+            # so the recovered delivery opens and closes its OWN stream pair — consumers must
+            # never see deltas after that error event.
+            adopted = _with_stream_emitters(self.agent, lambda: self._adopt_final_response(probe))
+        except Exception as adopt_err:
+            # A response we cannot replay must not escape into _call()'s except block, and
+            # must not leave streaming latched off for the session.
+            logger.exception("Non-streaming unmask probe response could not be adopted: %s", adopt_err)
+            return False
+        finally:
+            self.agent._disable_streaming = stream_pref  # one-turn recovery, not a session latch
+        self.result["response"] = adopted
         return True
 
     def _call_wire(self, stream_attempt_id: int):

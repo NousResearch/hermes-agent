@@ -59,14 +59,15 @@ LEDGER_ONLY_TOKENS = {"ledger-only", "ledgeronly", "—", "-", "n/a", "none"}
 # or, when no bundle was made, "... - NOT created (reason)". That line has to carry
 # the REAL zip name and hash before the report counts as complete — a report handed
 # over still reading "HANDOFF_..._PLACEHOLDER.zip (sha256: PLACEHOLDER)" is an
-# unfilled template, not a finished report. Only the zip-name and sha capture groups
-# are inspected, so an explanatory parenthetical that happens to use the word
-# "placeholder" in prose does not trip the check.
-HANDOFF_LINE_RE = re.compile(r"^Handoff bundle:.*$", re.MULTILINE)
+# unfilled template, not a finished report. The *last* such line in the body is the
+# closing line — an earlier one quoting the format (in a fenced block, which is
+# stripped first) is not it. Only the zip-name and sha capture groups are inspected,
+# so a parenthetical that uses the word "placeholder" in prose does not trip it.
+HANDOFF_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+HANDOFF_LINE_RE = re.compile(r"^[ \t]*Handoff bundle:.*$", re.MULTILINE)
 HANDOFF_PARSE_RE = re.compile(
-    r"^Handoff bundle:\s*(?P<zip>[^\s(]+)\s*"
-    r"\(sha256:\s*(?P<sha>[^)]*?)\)\s*-\s*(?P<status>NOT created|created)",
-    re.MULTILINE,
+    r"^[ \t]*Handoff bundle:\s*(?P<zip>[^\s(]+)\s*"
+    r"\(sha256:\s*(?P<sha>[^)]*?)\)\s*-\s*(?P<status>NOT created|created)"
 )
 HEX64_RE = re.compile(r"\A[0-9a-fA-F]{64}\Z")
 HANDOFF_ZIPNAME_RE = re.compile(r"\AHANDOFF_\d{4}-\d\d-\d\d_\d{4}\.zip\Z")
@@ -83,7 +84,9 @@ def check_handoff_line(run: str, report_name: str, rtext: str, f: "Findings") ->
     except ValueError:
         enforced = True
 
-    if not HANDOFF_LINE_RE.search(rtext):
+    body = HANDOFF_FENCE_RE.sub("", rtext)
+    lines = HANDOFF_LINE_RE.findall(body)
+    if not lines:
         if enforced:
             f.fail(
                 f"{run}: report '{report_name}' is missing the mandatory closing "
@@ -92,12 +95,13 @@ def check_handoff_line(run: str, report_name: str, rtext: str, f: "Findings") ->
             )
         return
 
-    m = HANDOFF_PARSE_RE.search(rtext)
+    line = lines[-1].strip()  # the closing line is the last one, outside code fences
+    m = HANDOFF_PARSE_RE.match(line)
     if not m:
         f.fail(
-            f"{run}: report '{report_name}' has a 'Handoff bundle:' line that does "
-            f"not parse — expected 'HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) "
-            f"- created' or '- NOT created (reason)'"
+            f"{run}: report '{report_name}' closing 'Handoff bundle:' line does not "
+            f"parse — expected 'HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) "
+            f"- created' or '- NOT created (reason)'; got '{line[:120]}'"
         )
         return
 

@@ -103,6 +103,33 @@ def test_created_with_short_hash_fails(tmp_path):
     assert "sha256" in rows[0][1]
 
 
+def test_format_quoted_in_a_fenced_block_is_ignored(tmp_path):
+    """A report that documents the line format in a ``` fence must not trip on it —
+    only the real closing line (last, outside fences) is checked."""
+    body = (
+        "RUN-2026-09-11-001 body\n\n"
+        "The rule is:\n\n"
+        "```\n"
+        "Handoff bundle: HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) - created.\n"
+        "```\n\n"
+        f"Handoff bundle: HANDOFF_2026-09-11_0930.zip (sha256: {REAL_SHA}) - created.\n"
+    )
+    levels, _ = _run(tmp_path, body)
+    assert "FAIL" not in levels
+    assert "OK" in levels
+
+
+def test_last_line_is_the_one_checked(tmp_path):
+    """An earlier prose mention that is fine does not save a broken closing line."""
+    body = (
+        f"An earlier note: Handoff bundle: HANDOFF_2026-09-11_0900.zip (sha256: {REAL_SHA}) - created.\n\n"
+        "Handoff bundle: HANDOFF_2026-09-11_PLACEHOLDER.zip (sha256: PLACEHOLDER) - created.\n"
+    )
+    levels, rows = _run(tmp_path, body)
+    assert "FAIL" in levels
+    assert "unfilled template" in rows[0][1]
+
+
 def test_end_to_end_real_ledger_stays_complete(tmp_path):
     """The check as wired into main() still exits 0 against the shipped ledger."""
     mod = _load_module()

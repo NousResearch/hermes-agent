@@ -175,9 +175,11 @@ now pass); `tests/test_report_completeness_handoff_line.py` **7 passed** (new);
   `Handoff bundle:` line, or one whose zip name still contains `PLACEHOLDER` /
   isn't `HANDOFF_<YYYY-MM-DD_HHMM>.zip`, or whose `sha256` isn't 64 hex, is now a
   **FAIL** — so `collect-logs.{ps1,sh}` (which both delegate here) will not report
-  `COMPLETE`. `- NOT created (reason)` is accepted; only the zip-name and sha
-  capture groups are inspected, so an explanatory parenthetical that uses the
-  word "placeholder" in prose does not trip it. Reports dated `2026-09-09` and
+  `COMPLETE`. `- NOT created (reason)` is accepted; the check reads the **last**
+  `Handoff bundle:` line in the body with fenced ``` blocks stripped first (a
+  report that quotes the line format is not tripped by it), and inspects only the
+  zip-name and sha capture groups, so a parenthetical that uses the word
+  "placeholder" in prose does not trip it either. Reports dated `2026-09-09` and
   earlier (written before the owner's standing rule) are not retroactively failed
   for a missing line. `SESSION-REPORT-TEMPLATE.md` gains the line as a filled-in
   skeleton with a "never leave PLACEHOLDER" note; `logs/ledger/README.md`

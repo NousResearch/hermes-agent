@@ -2543,6 +2543,33 @@ class TestConfigRoundTrip:
 
 
 
+    @pytest.mark.parametrize("partial", [True, False], ids=["partial", "full"])
+    def test_unrelated_settings_save_preserves_explicit_nulls(self, partial):
+        from hermes_cli.config import get_config_path, load_config, read_raw_config
+
+        seed = {
+            "_config_version": DEFAULT_CONFIG["_config_version"],
+            "runtime": {"nofile_soft_limit": None},
+            "prompt_caching": {"cache_ttl": None},
+            "x_null_preservation": {"optional": None, "keep": "value"},
+        }
+        get_config_path().write_text(yaml.safe_dump(seed), encoding="utf-8")
+        payload = {} if partial else self.client.get("/api/config").json()
+        payload.setdefault("display", {})["skin"] = "mono"
+
+        response = self.client.put("/api/config", json={"config": payload})
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        raw = read_raw_config()
+        assert raw["runtime"]["nofile_soft_limit"] is None
+        assert raw["prompt_caching"]["cache_ttl"] is None
+        assert raw["x_null_preservation"] == seed["x_null_preservation"]
+        assert raw["display"]["skin"] == "mono"
+        reloaded = load_config()
+        assert reloaded["runtime"]["nofile_soft_limit"] is None
+        assert reloaded["prompt_caching"]["cache_ttl"] is None
+
     def test_round_trip_preserves_schema_invisible_nested_keys(self):
         """Nested keys that aren't in CONFIG_SCHEMA must also survive a
         round-trip. Deep-merge is required — a shallow merge would drop

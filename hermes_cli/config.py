@@ -1690,6 +1690,8 @@ def _strip_default_values(
     when equal to the default. Dicts whose every child is stripped are removed entirely so
     default-only subtrees never bloat ``config.yaml``."""
     preserve_keys = {("_config_version",)} | set(preserve_keys or ())
+    # None is a valid authored value, not a signal to remove the node.
+    dropped = object()
 
     def _strip(value: Any, default: Any, path: Tuple[str, ...]) -> Any:
         if path in preserve_keys:
@@ -1697,10 +1699,11 @@ def _strip_default_values(
         if isinstance(value, dict) and value:
             default_dict = default if isinstance(default, dict) else {}
             stripped = {k: _strip(v, default_dict.get(k), path + (k,)) for k, v in value.items()}
-            return {k: v for k, v in stripped.items() if v is not None} or None
-        return None if value == default else copy.deepcopy(value)
+            return {k: v for k, v in stripped.items() if v is not dropped} or dropped
+        return dropped if value == default else copy.deepcopy(value)
 
-    return _strip(config, defaults, ()) or {}
+    stripped = _strip(config, defaults, ())
+    return {} if stripped is dropped else stripped
 
 
 def split_model_config_default(raw_default: Any) -> tuple[str, str]:

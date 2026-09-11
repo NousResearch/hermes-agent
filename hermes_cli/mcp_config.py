@@ -858,6 +858,97 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+def cmd_mcp_log(args):
+    """Display wire-frame JSON-RPC diagnostics for an MCP server (~/.hermes/logs/mcp/<server>.jsonl)."""
+    import json
+    import time
+    from tools.mcp_wire_log import get_mcp_wire_log_path, is_wire_log_enabled
+
+    server_name = getattr(args, "name", "").strip()
+    if not server_name:
+        _error("Server name is required. Usage: hermes mcp log <server> [--follow] [--lines N]")
+        return
+
+    log_path = get_mcp_wire_log_path(server_name)
+    if not log_path.exists():
+        _warning(f"No wire-frame log found for server '{server_name}' at {log_path}")
+        if not is_wire_log_enabled(server_name):
+            _info("Wire-frame logging is currently disabled.")
+            _info("To enable wire-frame logging, set 'mcp.wire_log: true' in config.yaml or run with HERMES_MCP_WIRE_LOG=1.")
+        return
+
+    lines_count = getattr(args, "lines", 50) or 50
+    follow = getattr(args, "follow", False)
+    raw = getattr(args, "raw", False)
+
+    def _render_line(line_str: str) -> None:
+        line_str = line_str.strip()
+        if not line_str:
+            return
+        if raw:
+            print(line_str)
+            return
+        try:
+            record = json.loads(line_str)
+            ts = record.get("timestamp", "")
+            direction = record.get("direction", "")
+            frame = record.get("frame", {})
+
+            dir_label = (
+                color("-> SEND", Colors.CYAN)
+                if direction == "send"
+                else color("<- RECV", Colors.GREEN)
+            )
+            summary = ""
+            if isinstance(frame, dict):
+                method = frame.get("method")
+                rpc_id = frame.get("id")
+                if method:
+                    summary = f"method={method}"
+                    if rpc_id is not None:
+                        summary += f" (id={rpc_id})"
+                elif rpc_id is not None:
+                    if "result" in frame:
+                        summary = f"response for id={rpc_id} (result)"
+                    elif "error" in frame:
+                        err_info = frame.get("error")
+                        summary = color(f"error for id={rpc_id}: {err_info}", Colors.RED)
+                    else:
+                        summary = f"id={rpc_id}"
+                elif "error" in frame:
+                    summary = color(f"error: {frame.get('error')}", Colors.RED)
+                else:
+                    summary = str(list(frame.keys()))
+            else:
+                summary = str(frame)
+
+            print(f"[{color(ts, Colors.DIM)}] {dir_label} {summary}")
+            if isinstance(frame, dict) and "params" in frame:
+                params_str = json.dumps(frame["params"], ensure_ascii=False)
+                if len(params_str) > 140:
+                    params_str = params_str[:140] + "..."
+                print(color(f"      params: {params_str}", Colors.DIM))
+        except Exception:
+            print(line_str)
+
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+            for line in all_lines[-lines_count:]:
+                _render_line(line)
+
+            if follow:
+                _info(f"Following live wire-frame log for '{server_name}' (Ctrl+C to stop)...")
+                while True:
+                    line = f.readline()
+                    if line:
+                        _render_line(line)
+                    else:
+                        time.sleep(0.2)
+    except KeyboardInterrupt:
+        print()
+
+
 _MCP_USAGE = (
     "hermes mcp                                    Open the catalog picker (default)",
     "hermes mcp catalog                            List Nous-approved MCPs",
@@ -872,6 +963,7 @@ _MCP_USAGE = (
     "hermes mcp configure <name>                   Toggle tools",
     "hermes mcp login <name>                       Re-authenticate OAuth",
     "hermes mcp reauth <name> | --all              Re-auth one or all OAuth servers",
+    "hermes mcp log <name> [--follow]              View JSON-RPC wire-frame diagnostics",
 )
 
 
@@ -900,6 +992,7 @@ def mcp_command(args):
         "add": cmd_mcp_add, "remove": cmd_mcp_remove, "rm": cmd_mcp_remove, "list": cmd_mcp_list,
         "ls": cmd_mcp_list, "test": cmd_mcp_test, "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
+        "log": cmd_mcp_log, "logs": cmd_mcp_log,
     }.get(action)
     if handler:
         handler(args)

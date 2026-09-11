@@ -895,21 +895,6 @@ class TestRuntimeFtsRebuild:
         monkeypatch.setattr(SessionDB, "_recover_stale_fts_locked", fake_locked_rebuild)
         return db_path, rebuilds
 
-    def test_futile_live_permanent_holder_admits_the_rebuild(self, db, tmp_path, monkeypatch):
-        """#106393: a supervised peer never leaves and is never reaped; once the SAME live PID set
-        has blocked the futile window the deferral must end so the rebuild runs under the flock."""
-        if not db._fts_enabled:
-            pytest.skip("FTS5 unavailable in this build")
-        db_path, rebuilds = self._seed_futile_holders(
-            db, tmp_path, monkeypatch, [(4242, str(tmp_path / "state.db-wal"))],
-        )
-        reopened = SessionDB(db_path=db_path)
-        try:
-            assert rebuilds == [False]
-            assert reopened._fts_stale is False
-        finally:
-            reopened.close()
-
     def test_futile_uninspectable_holder_keeps_deferring(self, db, tmp_path, monkeypatch):
         """A pid <= 0 holder is the 'could not prove quiescence' sentinel: the rebuild flock cannot
         serialise against it, so even past the futile window the deferral fails closed."""

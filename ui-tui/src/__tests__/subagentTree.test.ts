@@ -386,6 +386,14 @@ describe('fmtDuration', () => {
     expect(fmtDuration(134)).toBe('2m 14s')
     expect(fmtDuration(605)).toBe('10m 5s')
   })
+
+  it('includes hours for long durations', () => {
+    expect(fmtDuration(3600)).toBe('1h 0m')
+    expect(fmtDuration(3661)).toBe('1h 1m 1s')
+    expect(fmtDuration(7205)).toBe('2h 0m 5s')
+    expect(fmtDuration(7500)).toBe('2h 5m 0s')
+    expect(fmtDuration(86400)).toBe('24h 0m')
+  })
 })
 
 describe('topLevelSubagents', () => {

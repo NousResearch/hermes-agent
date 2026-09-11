@@ -643,8 +643,18 @@ class GeminiNativeClient:
         self.close()
 
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
-                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+                   "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+        # This client authenticates to Google's native v1beta endpoint via
+        # ``x-goog-api-key``.  An ``Authorization: Bearer`` header inherited
+        # through ``default_headers`` (e.g. copied from an OpenAI-compat or
+        # aggregator profile) makes Google treat the call as an OAuth2 flow and
+        # reject the API key with 401 Unauthorized.  Strip any Authorization
+        # header (case-insensitively -- ``default_headers`` is caller-supplied)
+        # so the API-key auth always wins.
+        for key in [k for k in headers if k.lower() == "authorization"]:
+            del headers[key]
+        return headers
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

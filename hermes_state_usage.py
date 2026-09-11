@@ -70,6 +70,21 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen"""
 
+_DAILY_USAGE_UPSERT_SQL = """INSERT INTO session_daily_usage (
+                   session_id, day, api_call_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, day) DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd"""
+
 
 # Kwargs forwarded verbatim from update_token_counts / record_auxiliary_usage into
 # _record_model_usage (the per-route attribution row).
@@ -310,7 +325,10 @@ class SessionUsageMixin:
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+                """SELECT model, billing_provider, api_call_count, input_tokens, output_tokens,
+                          cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                          estimated_cost_usd, actual_cost_usd
+                   FROM sessions WHERE id = ?""", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
@@ -327,6 +345,34 @@ class SessionUsageMixin:
                        billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
             conn.execute(sql, params)
+            daily_values = {
+                "api_call_count": api_call_count,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "estimated_cost_usd": float(estimated_cost_usd or 0.0),
+                "actual_cost_usd": (
+                    existing.get("actual_cost_usd") or 0.0
+                    if absolute and actual_cost_usd is None
+                    else float(actual_cost_usd or 0.0)
+                ),
+            }
+            if absolute:
+                daily_values = {
+                    key: value - (existing.get(key) or 0)
+                    for key, value in daily_values.items()
+                }
+            if any(daily_values.values()):
+                day = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+                conn.execute(
+                    _DAILY_USAGE_UPSERT_SQL,
+                    (session_id, day, *(daily_values[key] for key in (
+                        "api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
+                        "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
+                    ))),
+                )
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)
         self._execute_write(_do)

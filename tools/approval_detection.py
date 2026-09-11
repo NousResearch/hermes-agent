@@ -282,18 +282,17 @@ DANGEROUS_PATTERNS = [
     # for "c" also matched --norc/--rcfile/--restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    # Split-call bypass of the curl|sh pattern above: a script fetched or written in one tool call
-    # (`curl -o x.sh ...`, `write_file`) and handed to an interpreter or run directly in the NEXT
-    # call carries no dangerous keyword of its own -- covers the case the pipe pattern cannot see.
-    # `chmod +x ... && ./x` on one line is already caught above; this is the standalone forms it
-    # misses (no chmod, or the download and exec are two separate agent turns).
-    (r'\b(sudo\s+)?(bash|sh|zsh|ksh)\s+(?:-\S+\s+)*\S*\.sh\b', "execute a shell script file"),
-    (r'(^|&&|;)\s*(sudo\s+)?\./\S+', "execute a relative-path file directly"),
     # Global/system package-manager installs: pulls new, arbitrary code onto the machine from a
     # registry -- the same risk class as a curl|bash installer above, just via pip/npm/pipx/uv
     # instead of a raw pipe. Deliberately narrow: project-scoped installs (`npm install` with no
-    # -g, `pip install -r requirements.txt`) are routine agent dev work and stay unflagged.
-    (r'\b(pip3?|uv\s+pip)\s+install\b(?!.*(-r\s|--requirement))', "pip install of an arbitrary package"),
+    # -g, `pip install -r requirements.txt`, `pip install -e .`/`--editable .` of the local project,
+    # `pip install --target .`/`./<dir>` into a local directory, and self-upgrading pip itself) are
+    # routine dev work and stay unflagged; an editable/target install of a REMOTE source (a URL,
+    # VCS spec, or any path other than `.`/`./...`) still flags, since that pulls arbitrary code
+    # same as a plain install would.
+    (r'\b(pip3?|uv\s+pip)\s+install\b'
+     r'(?!.*(-r\s|--requirement\b|-e\s+\.(?:\s|$)|--editable\s+\.(?:\s|$)|--target\s+\.(?:/|\s|$)|(-U\s+|--upgrade\s+)pip\b))',
+     "pip install of an arbitrary package"),
     (r'\bnpm\s+(install|i|add)\s+(-g|--global)\b', "global npm install"),
     (r'\bpipx\s+install\b', "pipx install"),
     (r'\buv\s+tool\s+install\b', "uv tool install"),

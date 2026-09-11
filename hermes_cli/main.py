@@ -2556,9 +2556,10 @@ def cmd_dashboard(args):
     # named-profile re-exec could leak that profile's higher limit into the
     # machine/default dashboard, whose lower policy intentionally cannot undo it.
     # This also covers Desktop SSH's isolated `serve` child, which does not route.
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    from hermes_cli.resource_limits import apply_nofile_soft_limit, apply_process_hardening
 
     apply_nofile_soft_limit()
+    apply_process_hardening()
 
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)

@@ -1388,10 +1388,12 @@ def start_server(
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
-    # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    # applies the same RLIMIT_NOFILE floor and process hardening (policy in
+    # resource_limits, #81547).
+    from hermes_cli.resource_limits import apply_nofile_soft_limit, apply_process_hardening
 
     apply_nofile_soft_limit()
+    apply_process_hardening()
 
     import uvicorn  # noqa: F401 — fail fast (before any side effects) when the dashboard extra is missing
 

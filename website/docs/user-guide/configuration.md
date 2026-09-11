@@ -87,6 +87,26 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+### Process hardening
+
+The same startup surfaces also harden the process's own kernel surface, so a
+crash cannot leak the provider credentials held in memory:
+
+```yaml
+security:
+  process_hardening: core-only   # core-only | full | off
+```
+
+- `core-only` (default) drops the core-dump limit (`RLIMIT_CORE = 0`).
+- `full` additionally refuses debugger attach — Linux `PR_SET_DUMPABLE=0`,
+  macOS `PT_DENY_ATTACH`. Opt-in, because it breaks `gdb`/`lldb` attach.
+- `off` disables the step; `0`, `false`, and `null` are accepted spellings.
+
+Every step is best-effort: Windows, a kernel that refuses the calls, or a
+malformed value all leave startup unchanged (fail open), and processes spawned
+afterwards inherit the result. The lever itself lives in
+`hermes_cli/resource_limits.py` next to the `RLIMIT_NOFILE` floor.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database

@@ -1620,6 +1620,12 @@ DEFAULT_CONFIG = {
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         "redact_secrets": True,
+        # Hardening the agent process applies to itself at startup: "core-only" (default) drops
+        # the core-dump limit so a crash cannot write in-memory provider credentials to disk;
+        # "full" additionally refuses debugger attach (Linux PR_SET_DUMPABLE=0, macOS
+        # PT_DENY_ATTACH) and is opt-in because it breaks gdb/lldb attach; "off" disables.
+        # Applied by hermes_cli/resource_limits.py next to the RLIMIT_NOFILE floor.
+        "process_hardening": "core-only",
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
         "allow_data_training_tiers_noninteractive": False,

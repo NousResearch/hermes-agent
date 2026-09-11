@@ -324,3 +324,46 @@ def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:
     assert chunk.read_text(encoding="utf-8") == patched
 
 
+def test_spectrum_patch_rejects_unknown_poll_mapper_in_later_chunk(
+    tmp_path: Path,
+) -> None:
+    """An unchanged mixed mapper must not hide an unpatchable poll mapper."""
+    dist = tmp_path / "node_modules" / "@spectrum-ts" / "imessage" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "a-messages.js").write_text(
+        "\n".join(
+            (
+                "const buildUnwrappedContentMessage = async () => {};",
+                "const rebuildFromAppleMessage = async () => {};",
+                "const toInboundMessages = async () => {};",
+                "const parts = toOrderedParts(message.content.text, attachments);",
+            )
+        ),
+        encoding="utf-8",
+    )
+    poll = dist / "b-polls.js"
+    unknown_shape = _tabify(
+        """
+const toCachedPoll = (input) => {
+  const poll = asPoll({
+    title: normalizeTitle(input.title),
+    options: input.options.map((optionInfo) => ({ title: optionInfo.text }))
+  });
+  return { poll };
+};
+"""
+    )
+    poll.write_text(unknown_shape, encoding="utf-8")
+
+    result = subprocess.run(
+        ["node", str(_PATCHER), str(tmp_path)],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "expected exactly one empty inbound poll title match, found 0" in result.stderr
+    assert poll.read_text(encoding="utf-8") == unknown_shape
+

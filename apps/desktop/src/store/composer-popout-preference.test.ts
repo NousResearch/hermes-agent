@@ -57,9 +57,9 @@ describe('composer pop-out preference', () => {
     })
   })
 
-  it('keeps pop-out gestures enabled by default', async () => {
+  it('locks the composer to the dock by default (#70422, #101318)', async () => {
     const store = await loadStore()
 
-    expect(store.$composerPopoutGesturesEnabled.get()).toBe(true)
+    expect(store.$composerPopoutGesturesEnabled.get()).toBe(false)
   })
 })

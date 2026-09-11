@@ -210,7 +210,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   if (!flow) {
     return (
       <p className="text-xs text-muted-foreground">
-        {ownerFailure === `${storedId}:${runtimeId}` ? t.connectors.ownerMissing : 'Checking your apps…'}
+        {ownerFailure === `${storedId}:${runtimeId}` ? t.connectors.ownerMissing : t.connectors.checking}
       </p>
     )
   }

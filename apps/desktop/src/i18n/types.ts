@@ -59,6 +59,12 @@ export interface Translations {
     retry: string
     grant: string
     connected: string
+    checking: string
+    waitingSignIn: string
+    notConnected: string
+    notAvailable: string
+    startWith: (count: number) => string
+    startWithout: string
     skipped: string
     disabled: string
     failed: string

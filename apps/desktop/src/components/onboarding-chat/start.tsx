@@ -6,11 +6,13 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { isFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { latestConnectorPart } from '@/lib/connector-tools'
 import { canStartWithConnections } from '@/lib/first-build-start'
 import { $firstBuildConnections, startFirstBuild } from '@/store/first-build-connectors'
 
 export function OnboardingStart() {
+  const { t } = useI18n()
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const $latest = useMemo(() => computed(view.$messages, latestConnectorPart), [view.$messages])
@@ -44,7 +46,7 @@ export function OnboardingStart() {
       size="xs"
       variant="secondary"
     >
-      {count ? `Start the task with ${count} apps connected` : 'Start without connections'}
+      {count ? t.connectors.startWith(count) : t.connectors.startWithout}
     </Button>
   )
 }

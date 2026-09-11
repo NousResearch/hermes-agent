@@ -65,15 +65,15 @@ export function FirstBuildConnectorOffer({
                 {t.connectors.connected}
               </>
             ) : row.phase === 'timeout' ? (
-              "Didn't connect"
+              t.connectors.notConnected
             ) : row.phase === 'error' ? (
               row.error === 'unavailable' ? (
-                'Not available'
+                t.connectors.notAvailable
               ) : (
                 t.connectors.statusError
               )
             ) : (
-              'Waiting for you to finish signing in…'
+              t.connectors.waitingSignIn
             )}
           </span>
           {row.connectUrl && row.phase !== 'connected' && !window.hermesDesktop?.openExternal ? (

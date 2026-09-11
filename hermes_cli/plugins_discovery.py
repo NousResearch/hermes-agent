@@ -118,6 +118,11 @@ def scan_directory(
             manifest = parse_manifest_file(manifest_file, child, source, prefix)
             if manifest is not None:
                 manifests.append(manifest)
+        elif child.name.startswith(".") and depth >= 1:
+            # Multi-harness repos carry sibling manifests for other tools (.claude-plugin/,
+            # .cursor-plugin/, ...) beside their .hermes-plugin/plugin.yaml; those plugin.json
+            # files are not Agent Plugins packages and would warn on every boot.
+            logger.debug("Skipping %s (dot-dir without plugin.yaml)", child)
         elif portable_file.exists() or portable_file.is_symlink():
             try:
                 manifests.append(portable_plugin_manifest(child, source, prefix))

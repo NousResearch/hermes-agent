@@ -112,6 +112,30 @@ class TestCategoryNamespaceRecursion:
         ]
         assert non_bundled == []
 
+    def test_foreign_harness_manifests_in_dot_dirs_are_not_parsed(self, tmp_path, monkeypatch, caplog):
+        """A multi-harness plugin repo (obra/superpowers) ships ``.claude-plugin/plugin.json``,
+        ``.cursor-plugin/plugin.json`` etc. beside its ``.hermes-plugin/plugin.yaml``. Those
+        dot-dirs are other tools' manifests, not portable Agent Plugins packages; the recursion
+        into the repo must skip them instead of warning on every boot."""
+        import os
+        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
+        repo = hermes_home / "plugins" / "multi-harness"
+        _write_plugin(hermes_home / "plugins", ["multi-harness", ".hermes-plugin"])
+        for foreign in (".claude-plugin", ".cursor-plugin", ".kimi-plugin"):
+            (repo / foreign).mkdir()
+            (repo / foreign / "plugin.json").write_text('{"name": "multi-harness", "version": "1.0.0"}')
+
+        with caplog.at_level("WARNING"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert "multi-harness/.hermes-plugin" in mgr._plugins
+        foreign_warnings = [
+            rec.getMessage() for rec in caplog.records
+            if "Failed to parse" in rec.getMessage() and "-plugin/plugin.json" in rec.getMessage()
+        ]
+        assert foreign_warnings == []
+
 
 
 # ── Kind parsing ───────────────────────────────────────────────────────────

@@ -245,7 +245,7 @@ def _get_approval_timeout() -> int:
     single config-read site keeps every consumer platform-safe at once."""
     try:
         raw = int(_get_approval_config().get("timeout", 300))
-    except (ValueError, TypeError):
+    except (OverflowError, ValueError, TypeError):
         return 300
     try:
         from agent.deadline import MAX_SAFE_TIMEOUT_S

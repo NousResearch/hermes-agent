@@ -84,19 +84,29 @@ def stage_manager_runtime(
     offline: bool = False, wheelhouse: Path | None = None, cache: Path | None = None,
 ) -> Path:
     """Stage PM's independent dependency graph using its private toolchain."""
-    from pm.environment import managed_environment
+    from pm._uv import _toolchain
     from pm.runtime_stage import stage_runtime
 
     destination, python = Path(destination).absolute(), Path(python).absolute()
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"environment destination already exists: {destination}")
-    environment = managed_environment(destination, python=python,
-                                      cache=Path(cache) if cache is not None else None, explicit=True,
-                                      offline=offline, output=sys.stderr)
-    return stage_runtime(environment.uv, python, destination,
-                         project=Path(project) if project is not None else None,
-                         offline=offline, wheelhouse=Path(wheelhouse) if wheelhouse is not None else None,
-                         cache=Path(cache) if cache is not None else None)
+    # Tools are staged before this bootstrap: acquiring them here would need
+    # the TLS dependencies in the very runtime we are constructing.
+    tools = _toolchain(realize=False)
+    if tools is None:
+        raise InstallError("pm-runtime", "stage pinned tools before building the manager runtime")
+    destination.mkdir(parents=True)
+    try:
+        executable = stage_runtime(tools[0], python, destination,
+                                   project=Path(project) if project is not None else None,
+                                   offline=offline, wheelhouse=Path(wheelhouse) if wheelhouse is not None else None,
+                                   cache=Path(cache) if cache is not None else None)
+        from pm.lock import _write
+        _write(destination / "pm-runtime.json", {})
+        return executable
+    except BaseException:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
 def _environment_root(name: str, root: Path | None) -> Path:

@@ -134,6 +134,14 @@ def test_available_counts_sys_modules_fakes(monkeypatch, extra, module):
     assert extras.available(extra) is True
 
 
+def test_google_readiness_requires_its_oauth_imports(monkeypatch):
+    present = {"googleapiclient", "google.auth", "google_auth_httplib2"}
+    monkeypatch.setattr(extras, "_importable", lambda name: name in present)
+    assert not extras.available("google")
+    present.add("google_auth_oauthlib.flow")
+    assert extras.available("google")
+
+
 def test_available_unknown_extra_uses_underscore_guess(monkeypatch):
     monkeypatch.setitem(sys.modules, "some_new_thing", SimpleNamespace())
     assert extras.available("some-new-thing") is True

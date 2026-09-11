@@ -14,6 +14,7 @@ from pm import paths
 from pm.package import InstallError
 from pm.runtime import runtime_python
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm.test_runtime_wheelhouse import locked_wheelhouse  # noqa: F401
 
 
 @pytest.fixture(scope="module")
@@ -453,6 +454,60 @@ def test_worker_death_reports_transport_failure(client, monkeypatch, isolated_py
     monkeypatch.setattr(client, "runtime_command", lambda path: [str(isolated_python), "-I", "-c", "import os; os._exit(7)"])
     with pytest.raises(InstallError, match="worker.*result"):
         client.ensure("node", explicit=True)
+
+
+def test_foreign_checkout_sync_uses_its_own_pm_generation(client, tmp_path, monkeypatch, isolated_python):
+    from pm import venv_is_current
+    from hermes_cli.runtime_paths import selected_venv, runtime_facts_path
+
+    uv = shutil.which("uv")
+    assert uv
+    worker = Path(client.__file__).with_name("worker.py")
+    script = (
+        "import runpy, sys; "
+        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
+        "import pm._uv; "
+        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
+        f"__import__('pathlib').Path({sys.executable!r})); "
+        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
+    )
+    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
+    foreign = tmp_path / "other checkout"
+    foreign.mkdir()
+    (foreign / "pyproject.toml").write_text(
+        '[project]\nname="foreign-proof"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\n', encoding="utf-8")
+    client.lock_project(foreign, offline=True, explicit=True)
+    assert not venv_is_current(project_root=foreign)
+    original_root = paths.repo_root()
+    client.sync_venv([], project_root=foreign, plugin_dirs=[], explicit=True)
+    selected = selected_venv(foreign)
+    assert selected != foreign / "venv"
+    assert selected.is_relative_to(runtime_facts_path(foreign).parent)
+    assert runtime_facts_path(foreign).is_file()
+    assert venv_is_current(project_root=foreign)
+    assert paths.repo_root() == original_root
+    assert not runtime_facts_path(original_root).exists()
+
+
+def test_cold_manager_build_does_not_bootstrap_a_worker(client, tmp_path, monkeypatch, locked_wheelhouse):
+    import pm
+
+    wheels, _ = locked_wheelhouse
+
+    uv = shutil.which("uv")
+    assert uv
+    monkeypatch.setattr(client, "runtime_command", lambda *a, **kw: pytest.fail("manager build requested itself"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable))
+                        if kwargs == {"realize": False} else pytest.fail("bootstrap tried to install tools"))
+    project = Path(__file__).resolve().parents[2] / "pm"
+    python = pm.stage_manager_runtime(python=Path(sys.executable), destination=tmp_path / "manager",
+                                     project=project, wheelhouse=wheels, offline=True)
+    result = subprocess.run([str(python), "-I", "-c", "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(FileExistsError):
+        pm.stage_manager_runtime(python=Path(sys.executable), destination=python.parent.parent)
 
 
 def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(client, tmp_path, monkeypatch, isolated_python):

@@ -269,10 +269,11 @@ def stage_manager_runtime(
     *, python: Path, destination: Path, project: Path | None = None,
     offline: bool = False, wheelhouse: Path | None = None, cache: Path | None = None,
 ) -> Path:
-    return Path(_python_operation("stage_manager_runtime", {
-        "python": Path(python), "destination": Path(destination), "project": project,
-        "offline": offline, "wheelhouse": wheelhouse, "cache": cache,
-    }))
+    # PM cannot dispatch the construction of its own offline runtime through
+    # that runtime. The stdlib-only bootstrap shares the private build engine.
+    from pm.operations import stage_manager_runtime as stage
+    return stage(python=Path(python), destination=Path(destination), project=project,
+                 offline=offline, wheelhouse=wheelhouse, cache=cache)
 
 
 def ensure_environment(
@@ -302,9 +303,16 @@ def ensure_python_tool(
 
 
 def venv_is_current(*, project_root: Path | None = None) -> bool:
-    from pm.ensure import venv_is_current as direct
-
-    return direct(project_root=project_root)
+    """Check through a ready PM, never bootstrap dependencies for a probe."""
+    if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
+        from pm.ensure import venv_is_current as direct
+        return direct(project_root=project_root)
+    try:
+        return bool(_request("venv_is_current", {}, project_root=project_root))
+    except InstallError as exc:
+        if exc.package == "pm-runtime":
+            return False  # Without its checker, currency cannot be established.
+        raise
 
 
 def check_project_lock(source: Path, *, python: Path | None = None, cache: Path | None = None,

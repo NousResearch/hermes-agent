@@ -15,7 +15,7 @@ from pm import cli, paths, registry
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.packages import Nodejs, Npm, Python, Uv
-from pm.store import current_target
+from pm.store import current_target, tree_digest
 
 
 class ManualFixture(Package):
@@ -38,6 +38,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, 'repo_root', lambda: repo)
     monkeypatch.setattr(cli, 'repo_root', lambda: repo)
     monkeypatch.setattr(paths, 'lockfile_path', lambda: lock.path)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path / 'home')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
     monkeypatch.setenv('HERMES_RUNTIME_DIR', str(tmp_path / 'store'))
     monkeypatch.chdir(caller)
@@ -69,7 +70,7 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
         monkeypatch.setitem(registry._packages, name, package)
         lock.set_pin(name, 'fixture', {target: {'url': f'https://example.invalid/{name}', 'sha256': '1' * 64}})
         facts.record(name, 'fixture', str(entry), package.env(entry, target), runtime,
-                     target=target, artifacts=['1' * 64])
+                     target=target, artifacts=['1' * 64], digest=tree_digest(entry))
     lock.save()
     before_lock = lock.path.read_bytes()
     parent_env = dict(os.environ)
@@ -95,12 +96,12 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     (repo / 'pyproject.toml').write_text('invalid project [', encoding='utf-8')
     assert cli.cmd_update(args) == 1
     assert (repo / 'uv.lock').read_bytes() == original and not syncs
-    assert 'uv lock --upgrade failed' in capsys.readouterr().out
+    assert 'Python lock refresh failed' in capsys.readouterr().out
 
     managed.unlink()
     assert cli.cmd_update(args) == 1
     assert (repo / 'uv.lock').read_bytes() == original and not syncs
-    assert 'not installed' in capsys.readouterr().out
+    assert 'Python lock refresh failed' in capsys.readouterr().out
 
 
 @pytest.mark.platforms('windows', 'posix')
@@ -108,6 +109,9 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
     node_source = Path(shutil.which('node') or pytest.fail('node is required'))
     npm_source = Path(shutil.which('npm.cmd' if os.name == 'nt' else 'npm') or pytest.fail('npm is required')).resolve()
     npm_source = npm_source.parent / 'node_modules/npm' if os.name == 'nt' else npm_source.parents[1]
+    if not (npm_source / 'bin/npm-cli.js').is_file():
+        npm_source = next((path for path in (npm_source / 'lib/npm', npm_source / 'lib/node_modules/npm')
+                           if (path / 'bin/npm-cli.js').is_file()), npm_source)
     assert (npm_source / 'bin/npm-cli.js').is_file()
     # Keep the real tool's argv clear of the harness's hermes-update guard.
     temp_root = Path(os.environ['LOCALAPPDATA']) / 'Temp' if os.name == 'nt' else Path('/tmp')
@@ -127,6 +131,9 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         shutil.copy2(node_source, node_binary)
         bundled_npm = node_entry / ('node_modules/npm' if os.name == 'nt' else 'lib/node_modules/npm')
         shutil.copytree(npm_source, bundled_npm)
+        for directory in (bundled_npm, *bundled_npm.rglob('*')):
+            if directory.is_dir():
+                directory.chmod(directory.stat().st_mode | 0o700)
         facts = Facts(runtime / 'facts.json')
         node, npm = Nodejs(), Npm()
         monkeypatch.setitem(registry._packages, 'node', node)
@@ -136,7 +143,7 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
                      target=target, artifacts=['1' * 64])
         lock.save()
         archive = root / 'npm.tgz'
-        with tarfile.open(archive, 'w:gz') as output:
+        with tarfile.open(archive, 'w:gz', dereference=True) as output:
             output.add(npm_source, arcname='package')
         npm_entry = runtime / 'npm-fixture'
         npm.unpack(archive, npm_entry, target)

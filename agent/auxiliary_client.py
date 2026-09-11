@@ -3016,11 +3016,18 @@ _PAYMENT_KEYWORDS = (
 )
 
 
+def _has_weekly_usage_limit(text: str) -> bool:
+    """Match weekly quota walls even when providers insert window details."""
+    return bool(re.search(r"\\bweekly\\b.{0,80}\\busage limit\\b", text))
+
+
 def _is_payment_error(exc: Exception) -> bool:
     """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
     status = getattr(exc, "status_code", None)
+    message = str(exc).lower()
     return status == 402 or (
-        status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
+        status in {403, 404, 429, None}
+        and (_contains_any(message, _PAYMENT_KEYWORDS) or _has_weekly_usage_limit(message))
     )
 
 

@@ -1413,6 +1413,25 @@ class TestIsPaymentError:
         setattr(exc, "status_code", 403)
         assert _is_payment_error(exc) is True
 
+    @pytest.mark.parametrize("message", [
+        "You've reached your weekly (7-day) usage limit.",
+        "Weekly rolling 7 day usage limit exhausted.",
+    ])
+    def test_weekly_usage_limit_with_window_details_is_payment(self, message):
+        exc = Exception(message)
+        exc.status_code = 403
+        assert _is_payment_error(exc) is True
+
+    def test_weekly_rate_limit_is_not_mistaken_for_payment(self):
+        exc = Exception("Weekly request rate limit exceeded; retry after 60 seconds")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is False
+
+    def test_weekly_usage_limit_is_still_status_gated(self):
+        exc = Exception("You've reached your weekly (7-day) usage limit.")
+        exc.status_code = 401
+        assert _is_payment_error(exc) is False
+
 
     def test_404_generic_not_found_is_not_payment(self):
         exc = Exception("Not Found")
@@ -1883,6 +1902,35 @@ class TestAuxiliaryFallbackLayering:
         mock_chain.assert_called()
         assert fallback_client.chat.completions.create.called
         # Main agent fallback should NOT be needed when chain succeeds
+        mock_main.assert_not_called()
+
+    def test_kimi_parenthesized_weekly_quota_triggers_configured_fallback(self):
+        primary_client = MagicMock()
+        quota_err = Exception(
+            "Error code: 403 - You've reached your weekly (7-day) usage limit."
+        )
+        quota_err.status_code = 403
+        primary_client.chat.completions.create.side_effect = quota_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback response")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "kimi-for-coding")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("kimi-coding", "kimi-for-coding", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](custom)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe this image"}],
+            )
+
+        assert result.choices[0].message.content == "fallback response"
+        assert mock_chain.call_count == 1
+        assert mock_chain.call_args.args[:2] == ("vision", "kimi-coding")
+        assert mock_chain.call_args.kwargs["reason"] == "payment error"
         mock_main.assert_not_called()
 
 

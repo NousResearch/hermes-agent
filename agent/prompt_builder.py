@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import sys
 import threading
 from collections import OrderedDict
@@ -25,6 +26,9 @@ from agent.skill_utils import (
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
+)
+from tools.skills_tool_setup import (
+    _get_required_commands, _get_required_environment_variables, evaluate_skill_readiness,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write
@@ -1068,7 +1072,9 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v3 added readiness prerequisites (required_environment_variables/required_commands).
+_SKILLS_SNAPSHOT_VERSION = 3
+_TRACKED_SKILL_PREREQS: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1079,6 +1085,7 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
+        _TRACKED_SKILL_PREREQS.clear()
     try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
@@ -1140,10 +1147,14 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
     platforms = frontmatter.get("platforms") or []
     platforms = [platforms] if isinstance(platforms, str) else platforms
+    req_envs = [e["name"] for e in _get_required_environment_variables(frontmatter) if not e.get("optional")]
+    req_cmds = _get_required_commands(frontmatter)
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "required_environment_variables": req_envs,
+        "required_commands": req_cmds,
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1253,6 +1264,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
 def _collect_extra_skills(
     root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
     *, desc_prefix: str, log_fmt: str,
+    all_req_envs: Optional[set[str]] = None, all_req_cmds: Optional[set[str]] = None,
 ) -> None:
     """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
     for skill_file in skill_files:
@@ -1263,7 +1275,16 @@ def _collect_extra_skills(
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
             claimed.add(fm_name)
-            skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
+            if all_req_envs is not None:
+                all_req_envs.update(entry.get("required_environment_variables") or [])
+            if all_req_cmds is not None:
+                all_req_cmds.update(entry.get("required_commands") or [])
+            final_desc = f"{desc_prefix}{entry['description']}".strip()
+            is_ready, missing = evaluate_skill_readiness(entry)
+            if not is_ready and missing:
+                marker = f"[needs setup: {', '.join(missing)}]"
+                final_desc = f"{final_desc} {marker}".strip() if final_desc else marker
+            skills_by_category.setdefault(entry["category"], []).append((fm_name, final_desc))
         except Exception as e:
             logger.debug(log_fmt, skill_file, e)
 
@@ -1282,6 +1303,10 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
         if len(name_owners[fm]) > 1:
             desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
+        is_ready, missing = evaluate_skill_readiness(entry)
+        if not is_ready and missing:
+            marker = f"[needs setup: {', '.join(missing)}]"
+            desc = f"{desc} {marker}".strip() if desc else marker
         skills_by_category.setdefault(category, []).append((fm, desc))
 
 
@@ -1300,6 +1325,14 @@ def _render_skills_index(
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
     ) if demoted else ""
+    has_unready = any(
+        "[needs setup:" in desc
+        for entries in skills_by_category.values()
+        for _, desc in entries
+    )
+    setup_note = (
+        "\n(Skills marked [needs setup] have missing prerequisites — offer setup or an alternative instead of attempting them.)"
+    ) if has_unready else ""
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
@@ -1335,6 +1368,7 @@ def _render_skills_index(
         "</available_skills>\n\n"
         "Only proceed without loading a skill if genuinely none are relevant to the task."
         + hidden_note
+        + setup_note
     )
 
 
@@ -1347,17 +1381,29 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
-    cache_key = (
-        str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
+
+    skills_dir_key = str(skills_dir)
+    tracked_prereqs = None
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        tracked_prereqs = _TRACKED_SKILL_PREREQS.get(skills_dir_key)
+
+    base_cache_key = (
+        skills_dir_key, tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
     )
-    with _SKILLS_PROMPT_CACHE_LOCK:
-        cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None:
-            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
-            return cached
+
+    if tracked_prereqs is not None:
+        tracked_envs, tracked_cmds = tracked_prereqs
+        env_vars_present = frozenset(v for v in tracked_envs if os.getenv(v))
+        commands_present = frozenset(c for c in tracked_cmds if shutil.which(c))
+        cache_key = base_cache_key + (env_vars_present, commands_present)
+        with _SKILLS_PROMPT_CACHE_LOCK:
+            cached = _SKILLS_PROMPT_CACHE.get(cache_key)
+            if cached is not None:
+                _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+                return cached
 
     def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
@@ -1382,13 +1428,21 @@ def _build_skills_system_prompt_inner(
         if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
     ]
 
+    all_req_envs: set[str] = set()
+    all_req_cmds: set[str] = set()
+    for entry, _ in candidates:
+        if isinstance(entry, dict):
+            all_req_envs.update(entry.get("required_environment_variables") or [])
+            all_req_cmds.update(entry.get("required_commands") or [])
+
     # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].
     project_names: set[str] = set()
     if project_dirs:
         from agent.skill_utils import iter_project_skill_files
         for proj_dir in (d for d in project_dirs if d.exists()):
             _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, project_names, skills_by_category,
-                                  desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s")
+                                  desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s",
+                                  all_req_envs=all_req_envs, all_req_cmds=all_req_cmds)
     # Drop shadowed entries BEFORE org labeling so collision flags don't fire on intentional overrides.
     _label_visible_entries([e for e in visible_entries if _entry_name(e) not in project_names], skills_by_category)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
@@ -1405,14 +1459,23 @@ def _build_skills_system_prompt_inner(
     seen_skill_names: set[str] = {name for cat in skills_by_category.values() for name, _ in cat}
     for ext_dir in (d for d in external_dirs if d.exists()):
         _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
-                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
+                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s",
+                              all_req_envs=all_req_envs, all_req_cmds=all_req_cmds)
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
+    f_envs = frozenset(all_req_envs)
+    f_cmds = frozenset(all_req_cmds)
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        _TRACKED_SKILL_PREREQS[skills_dir_key] = (f_envs, f_cmds)
+    env_vars_present = frozenset(v for v in f_envs if os.getenv(v))
+    commands_present = frozenset(c for c in f_cmds if shutil.which(c))
+    final_cache_key = base_cache_key + (env_vars_present, commands_present)
+
     result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
     with _SKILLS_PROMPT_CACHE_LOCK:
-        _SKILLS_PROMPT_CACHE[cache_key] = result
-        _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+        _SKILLS_PROMPT_CACHE[final_cache_key] = result
+        _SKILLS_PROMPT_CACHE.move_to_end(final_cache_key)
         while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
             _SKILLS_PROMPT_CACHE.popitem(last=False)
     return result

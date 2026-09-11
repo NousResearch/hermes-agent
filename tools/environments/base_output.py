@@ -7,6 +7,7 @@ stdout drain thread used by ``BaseEnvironment._wait_for_process``.
 
 import codecs
 import os
+import re
 import select
 import subprocess
 import threading
@@ -23,6 +24,104 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
 _SPILL_MAX_AGE_S = 7 * 86400
+
+# macOS 27 libmalloc lite-mode spam. Presence of MallocStackLogging (value
+# ignored) makes every spawned process emit ``comm(pid) MallocStackLogging: …``
+# on stderr. Hermes merges stderr into stdout, so those lines contaminate
+# ``cat``/``sha256sum``/``wc`` captures and produce spurious post-write
+# verification failures. Strip at the capture boundary so file ops and the
+# terminal tool both see clean payloads. Optional ``N|`` prefix covers
+# read_file's line-numbered gutter. Idempotent. ``comm(pid)`` and the gutter
+# are independently optional so ``MallocStackLogging:`` (bare) and
+# ``1234|MallocStackLogging:`` (gutter-only) both match.
+#
+# The anchor accepts plain line-start (``^`` under MULTILINE), right-after-BEL
+# (``\x07``) and right-after-ST (``\x1b\\``): login shells with iTerm2 shell
+# integration print OSC-1337 escapes terminated by BEL (or ST) with no
+# trailing newline immediately before the shell-startup MSL line, gluing the
+# MSL text onto the previous "line" so a pure ``^`` anchor never matches.
+_MSL_LINE_RE = re.compile(
+    r"(?:^|(?<=\x07)|(?<=\x1b\\))(?:\d{1,7}\|)?(?:[A-Za-z0-9_.+\-]+\(\d+\) )?MallocStackLogging:[^\n]*\n?",
+    re.MULTILINE,
+)
+
+
+def strip_malloc_stack_logging(text: str) -> str:
+    """Remove macOS 27 MallocStackLogging stderr lines from captured output."""
+    if not text or "MallocStackLogging" not in text:
+        return text
+    return _MSL_LINE_RE.sub("", text)
+
+
+class _MslStreamStripper:
+    """Strip MallocStackLogging lines from streamed subprocess output.
+
+    The capture-boundary ``strip_malloc_stack_logging`` runs at result
+    assembly — too late: MSL emitted at process exit floods the tail buffer
+    of the bounded collector, evicting real payload before the strip can run.
+    Stripping during the drain loop keeps MSL out of the collector entirely,
+    so the 40/60 head/tail budget stays intact for real output.
+
+    Line-buffered: any partial trailing line from the previous chunk is
+    held in ``_carry`` and prepended to the next chunk so MSL split across
+    4 KB read boundaries still gets matched. ``flush()`` emits any held
+    carry on EOF.
+
+    Fast path: when ``"MallocStackLogging"`` is not in ``carry + chunk``,
+    the regex is skipped entirely — zero cost on healthy systems.
+    """
+
+    __slots__ = ("_carry",)
+
+    def __init__(self) -> None:
+        self._carry: str = ""
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            out = self._carry
+            self._carry = ""
+            return out
+
+        combined = self._carry + chunk
+
+        # Split off the trailing partial line (everything after the last
+        # newline) so the regex sees only complete lines. The partial is
+        # held for the next feed to handle MSL split across read
+        # boundaries.
+        if combined.endswith("\n"):
+            emit_combined = combined
+            trailing_partial = ""
+        else:
+            nl = combined.rfind("\n")
+            if nl == -1:
+                emit_combined = ""
+                trailing_partial = combined
+            else:
+                emit_combined = combined[: nl + 1]
+                trailing_partial = combined[nl + 1 :]
+
+        # Fast path: no MSL substring anywhere — emit the complete-lines
+        # portion unchanged and hold the partial.
+        if "MallocStackLogging" not in combined:
+            self._carry = trailing_partial
+            return emit_combined
+
+        # Slow path: run the regex on the complete-lines portion only
+        # (the partial is held back so it can be re-evaluated when the
+        # next chunk arrives).
+        cleaned = _MSL_LINE_RE.sub("", emit_combined)
+        self._carry = trailing_partial
+        return cleaned
+
+    def flush(self) -> str:
+        """Emit any held carry (call once at EOF)."""
+        carried = self._carry
+        self._carry = ""
+        if not carried:
+            return ""
+        if "MallocStackLogging" not in carried:
+            return carried
+        return _MSL_LINE_RE.sub("", carried)
 
 
 class _BoundedOutputCollector:
@@ -200,7 +299,10 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
 
 def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:
     """Assemble a wait result, attaching spill metadata when overflow occurred."""
-    result = {"output": rendered, "returncode": returncode}
+    # Post-capture MSL strip: safety net for any path that bypassed the drain
+    # loop's _MslStreamStripper (custom adapters, RPC reads). Cheap and
+    # idempotent — a no-op unless "MallocStackLogging" appears.
+    result = {"output": strip_malloc_stack_logging(rendered), "returncode": returncode}
     spill = collector.close_spill()
     if spill:
         result["output_total_chars"] = collector.total_chars
@@ -371,6 +473,10 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
     # ``Popen``) so binary or mis-encoded output is preserved with U+FFFD substitution rather than
     # clobbering the whole buffer.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    # MSL must never enter the bounded collector: emitted in bulk at process
+    # exit, it would evict real payload from the 40/60 head/tail budget
+    # before any post-capture strip could run.
+    msl = _MslStreamStripper()
     try:
         fd = stream.fileno()
     except Exception:  # mocks / in-memory adapters without a real descriptor
@@ -379,12 +485,12 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
         if not isinstance(fd, int) or fd < 0:
             for piece in stream:
                 if piece is not None:
-                    output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
+                    output.append(msl.feed(decoder.decode(piece) if isinstance(piece, bytes) else str(piece)))
         elif os.name == "nt":
             while chunk := os.read(fd, 4096):
-                output.append(decoder.decode(chunk))
+                output.append(msl.feed(decoder.decode(chunk)))
         else:
-            _drain_fd_select(proc, fd, output, decoder, stop)
+            _drain_fd_select(proc, fd, output, decoder, stop, msl)
     except Exception:
         pass  # closed fd / broken stream: keep what was captured
     finally:
@@ -392,12 +498,15 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
         try:
             tail = decoder.decode(b"", final=True)
             if tail:
-                output.append(tail)
+                output.append(msl.feed(tail))
+            carried = msl.flush()
+            if carried:
+                output.append(carried)
         except Exception:
             pass
 
 
-def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None, msl=None) -> None:
     """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
     when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
     idle_after_exit = 0
@@ -415,7 +524,8 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
                 return
             if not chunk:
                 return  # true EOF — all writers closed
-            output.append(decoder.decode(chunk))
+            decoded = decoder.decode(chunk)
+            output.append(msl.feed(decoded) if msl is not None else decoded)
             idle_after_exit = 0
         elif proc.poll() is not None:
             # bash is gone and the pipe was idle ~100ms; allow two more cycles

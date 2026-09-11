@@ -260,3 +260,37 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+class TestMslNoiseStrippedFromPhaseAndReadiness:
+    """2026-08-31 capture sites added to ``agent/verify/runner.py`` — phase
+    subprocesses bypass ``BaseEnvironment.execute()`` so the drain-loop
+    stripper never sees their bytes. Plain ``strip_malloc_stack_logging`` is
+    applied at both capture points instead."""
+
+    def test_msl_noise_stripped_from_output(self, tmp_path):
+        recipe = Recipe(
+            name="x",
+            test=[
+                "printf 'real payload\\nlibsystem_malloc(99) MallocStackLogging: lite mode\\nmore real\\n'"
+            ],
+        )
+        result = run_verify(tmp_path, recipe, skip_start=True)
+        assert result.ok
+        assert "MallocStackLogging" not in result.phases[0].output_tail
+        assert "real payload" in result.phases[0].output_tail
+        assert "more real" in result.phases[0].output_tail
+
+    def test_readiness_output_tail_strips_msl_noise(self, tmp_path):
+        # Start a one-shot shell that prints MSL and exits; readiness will
+        # fail (no HTTP server), but the captured output_tail must already be
+        # clean so a tool consumer reading it sees nothing but the
+        # MallocStackLogging text.
+        recipe = Recipe(
+            name="x",
+            start="printf 'libmalloc(1) MallocStackLogging: lite mode\\n'",
+            port=1,
+        )
+        result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=1.0)
+        assert result.readiness is not None
+        assert "MallocStackLogging" not in result.readiness.output_tail

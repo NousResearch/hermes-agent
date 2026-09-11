@@ -3903,19 +3903,26 @@ def read_worker_log(
         return None
     try:
         if tail_bytes is None:
-            return path.read_text(encoding="utf-8", errors="replace")
-        size = path.stat().st_size
-        with open(path, "rb") as f:
-            if size > tail_bytes:
-                f.seek(size - tail_bytes)
-                # Skip the partial first line unless the window has no newline
-                # at all (readline() would eat everything).
-                probe = f.tell()
-                if not f.readline().endswith(b"\n") and f.tell() >= size:
-                    f.seek(probe)
-            return f.read().decode("utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            size = path.stat().st_size
+            with open(path, "rb") as f:
+                if size > tail_bytes:
+                    f.seek(size - tail_bytes)
+                    # Skip the partial first line unless the window has no newline
+                    # at all (readline() would eat everything).
+                    probe = f.tell()
+                    if not f.readline().endswith(b"\n") and f.tell() >= size:
+                        f.seek(probe)
+                text = f.read().decode("utf-8", errors="replace")
     except OSError:
         return None
+    # Worker subprocesses are spawned with ``stdout=log_f`` directly to a file
+    # by the OS — the on-disk file is contaminated by macOS 27 MallocStackLogging.
+    # Strip on read so ``hermes kanban log`` and the dashboard drawer see clean
+    # output. No carry state needed: this is a one-shot full read.
+    from tools.environments.base_output import strip_malloc_stack_logging
+    return strip_malloc_stack_logging(text)
 
 
 # --- Assignee enumeration (known profiles + per-profile board stats) ---

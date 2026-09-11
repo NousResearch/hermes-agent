@@ -140,6 +140,13 @@ def _wrap_command_script(
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
     parts += restore
     parts += [
+        # macOS 27 (Tahoe) injects MallocStackLogging into GUI-session
+        # environments and the beta enables lite-mode malloc stack logging on
+        # mere PRESENCE of the variable (value ignored, even "no"); every
+        # spawned process then emits MallocStackLogging lines to stderr, which
+        # we merge into stdout. Unset so tool subprocesses run quiet; harmless
+        # elsewhere.
+        "unset MallocStackLogging MallocStackLoggingNoCompact 2>/dev/null || true",
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.

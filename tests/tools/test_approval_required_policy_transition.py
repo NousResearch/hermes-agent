@@ -3,9 +3,10 @@
 The approvals config is live (mtime-keyed reload), and a grant's key carries the rule's ``review``.
 Qualifying the key alone only *hides* a grant while the other policy is active: after
 ``smart -> human -> smart`` the original key is current again and the pre-tightening grant would
-run the command with no guardian call and no prompt. Contract (PR #106779 review, F-001): the first
-match under a new policy discards the other policy's session AND permanent grants, so the restored
-policy starts from zero — including after a restart that reloads ``command_allowlist``.
+run the command with no guardian call and no prompt. Contract (PR #106779 review, F-001): the moment
+the process sees the rule under a new policy — any guarded command, matching or not, or the allowlist
+load at startup — it discards the other policy's session AND permanent grants, so the restored policy
+starts from zero, including after a restart that reloads ``command_allowlist``.
 
 Driven through the REAL config path (temp ``HERMES_HOME``, file rewrites, cache invalidated by
 mtime), not a patched ``_get_approval_config``.
@@ -42,13 +43,13 @@ def live_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
     def set_review(review):
-        current = yaml.safe_load(path.read_text()) if path.exists() else {}
+        current = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
         current.update({
             "approvals": {"mode": "smart", "command_approval_required": [
                 {"pattern": PATTERN, "description": "kubectl on admin", "review": review}]},
             "security": {"tirith_enabled": False},
         })
-        path.write_text(yaml.safe_dump(current))
+        path.write_text(yaml.safe_dump(current), encoding="utf-8")
         # The reload is keyed on (mtime_ns, size) and "smart" -> "human" keeps the size: stamp a
         # strictly increasing mtime so the test proves the live reload path instead of depending on
         # filesystem timestamp resolution — the cache is never cleared by hand after setup.
@@ -57,6 +58,7 @@ def live_config(tmp_path, monkeypatch):
 
     clock = {"ns": time.time_ns()}
     hc._LOAD_CONFIG_CACHE.clear()
+    set_review.path = path
     set_review("smart")
     yield set_review
     hc._LOAD_CONFIG_CACHE.clear()
@@ -70,6 +72,7 @@ def isolated_state(monkeypatch):
     monkeypatch.setattr(approval_module, "_permanent_approved", set())
     monkeypatch.setattr(approval_module, "_session_approved", {})
     monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None, raising=False)
+    approval_floors._observed_review.clear()
     try:
         yield session
     finally:
@@ -202,3 +205,81 @@ def test_same_policy_keeps_its_grant(live_config, isolated_state, guardian, monk
     live_config("smart")  # rewrite, same policy
     assert check_all_command_guards(KUBECTL, "local")["approved"] is True
     assert seen == [True] and guardian == [KUBECTL]
+
+
+UNRELATED = "ls -la /tmp"
+
+
+class TestRoundTripWithNoMatchingCommandInBetween:
+    """The human interval is observed by an unrelated command only: the transition, not a match, revokes."""
+
+    def test_session_grant_cli(self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "session", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+
+        live_config("human")
+        assert check_all_command_guards(UNRELATED, "local")["approved"] is True
+        assert _rule_key("smart") not in approval_module._session_approved.get(isolated_state, set()), \
+            "seeing the rule under human revoked the smart grant without a matching command"
+
+        live_config("smart")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_session_grant_gateway(self, live_config, isolated_state, guardian, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        answers = iter(["session", "deny"])
+        notified = []
+
+        def notify(data):
+            notified.append(data["allow_permanent"])
+            approval_module.resolve_gateway_approval(isolated_state, next(answers))
+
+        approval_module.register_gateway_notify(isolated_state, notify)
+        try:
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+            live_config("human")
+            assert check_all_command_guards(UNRELATED, "local")["approved"] is True
+            live_config("smart")
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        finally:
+            approval_module.unregister_gateway_notify(isolated_state)
+        assert guardian == [KUBECTL, KUBECTL] and notified == [True, True]
+
+    def test_permanent_grant_across_restart_cli(self, live_config, isolated_state, guardian, monkeypatch):
+        """The policy flips while the process is down: the allowlist load at startup is the observation."""
+        seen = _cli_prompt(monkeypatch, "always", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+
+        live_config("human")
+        _simulate_restart(monkeypatch)
+        assert _rule_key("smart") not in approval_module._permanent_approved, \
+            "loading the allowlist under the human policy dropped the smart Always"
+        assert _rule_key("smart") not in (yaml.safe_load(live_config.path.read_text(encoding="utf-8")).get("command_allowlist") or []), \
+            "and rewrote config.yaml without it"
+
+        live_config("smart")
+        _simulate_restart(monkeypatch)
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True]
+
+    def test_permanent_grant_across_restart_gateway(self, live_config, isolated_state, guardian, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        answers = iter(["always", "deny"])
+        notified = []
+
+        def notify(data):
+            notified.append(data["allow_permanent"])
+            approval_module.resolve_gateway_approval(isolated_state, next(answers))
+
+        approval_module.register_gateway_notify(isolated_state, notify)
+        try:
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+            live_config("human")
+            _simulate_restart(monkeypatch)
+            live_config("smart")
+            _simulate_restart(monkeypatch)
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        finally:
+            approval_module.unregister_gateway_notify(isolated_state)
+        assert guardian == [KUBECTL, KUBECTL] and notified == [True, True]

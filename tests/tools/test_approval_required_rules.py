@@ -41,6 +41,7 @@ def approvals_config(monkeypatch):
 
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: state["config"])
     approval_floors._warned_review_values.clear()
+    approval_floors._observed_review.clear()
     return set_rules
 
 
@@ -341,6 +342,26 @@ class TestSmartReview:
 
 
 # --- plugin pre_tool_call approve directives ------------------------------------------------------------------------
+
+    def test_pattern_gate_consults_guardian_first(self, approvals_config, isolated_state, cli, monkeypatch,
+                                                  guardian):
+        """``check_dangerous_command`` (the pattern-only gate) runs a ``review: smart`` rule through the
+        guardian like a built-in dangerous pattern: APPROVE runs it with no prompt."""
+        approvals_config([KUBECTL_RULE], mode="smart")
+        monkeypatch.setattr(approval_module, "prompt_dangerous_approval",
+                            lambda *a, **k: pytest.fail("guardian APPROVE must not prompt"))
+        result = check_dangerous_command(KUBECTL, "local")
+        assert result["approved"] is True and result.get("smart_approved") is True
+        assert len(guardian) == 1 and "kubectl on admin" in guardian[0][1]
+
+    def test_pattern_gate_escalate_prompts_with_always(self, approvals_config, isolated_state, cli, monkeypatch,
+                                                       guardian):
+        approvals_config([KUBECTL_RULE], mode="smart")
+        guardian.verdict("escalate")
+        seen = _prompt(monkeypatch, "once")
+        assert check_dangerous_command(KUBECTL, "local")["approved"] is True
+        assert len(guardian) == 1 and seen == [True]
+
 
 class TestPluginReview:
     def test_default_review_never_consults_guardian(self, approvals_config, isolated_state, cli, monkeypatch,

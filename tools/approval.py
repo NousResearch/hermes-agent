@@ -31,8 +31,8 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_approval_required_rule,
-    _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
+    _approval_required_rules, _command_matches_permanent_allowlist, _hardline_block_result,
+    _match_approval_required_rule, _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -333,17 +333,23 @@ def is_session_approved(session_key: str, pattern_key: str) -> bool:
 def _revoke_superseded_grants(required) -> None:
     """A review-policy transition is a revocation. The config is live-reloaded and the grant key
     carries the review policy, so a grant taken under the previous policy is merely *hidden* while
-    the other policy is active — and would revive once the operator switches back. Seeing the rule
-    under the current policy drops the superseded key from every session and from the persisted
-    allowlist, so the round trip cannot resurrect it (not even across a restart)."""
+    the other policy is active — and would revive once the operator switches back. Called by the
+    rule parser the moment it sees a pattern under a different review than before (whether or not
+    any command matches), and from :func:`load_permanent_allowlist` so a restart sweeps the persisted
+    allowlist too: drops the superseded key from every session and from the persisted allowlist.
+
+    Everything permanent is read and written through :func:`_permanent_set` / the active profile's
+    config: under the multiplexer a routed profile has its own allowlist and its own ``config.yaml``,
+    and revoking there must neither consult nor rewrite the launch profile's."""
     key = required.superseded_key
     with _lock:
         for approved in _session_approved.values():
             approved.discard(key)
-        persisted = key in _permanent_approved
-        _permanent_approved.discard(key)
+        governing = _permanent_set()
+        persisted = key in governing
+        governing.discard(key)
     if persisted:
-        save_permanent_allowlist(_permanent_approved)
+        _forget_permanent_allowlist_entry(key)
 
 
 def approve_permanent(pattern_key: str):
@@ -423,6 +429,12 @@ def load_permanent_allowlist() -> set:
         load_permanent(patterns)
         with _lock:
             _permanent_baseline_by_home[_baseline_key()] = set(patterns)
+        if patterns:
+            # A review-policy change made while this process was down must not leave the other
+            # policy's Always grant in the persisted allowlist: parsing the rules revokes it.
+            _approval_required_rules()
+            with _lock:
+                patterns &= _permanent_set()
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -461,6 +473,30 @@ def save_permanent_allowlist(patterns: set):
             governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
+
+
+def _forget_permanent_allowlist_entry(key: str) -> None:
+    """Remove one revoked key from the ACTIVE profile's persisted ``command_allowlist``.
+
+    :func:`save_permanent_allowlist` may only ADD (the on-disk list wins for anything this process
+    did not approve itself), so a revocation cannot go through it. This is the one deletion path,
+    and it is narrow on purpose: exactly the superseded grant key, and the baseline moves with it
+    so a later save does not resurrect it from this process's own snapshot.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+        on_disk = list(config.get("command_allowlist", []) or [])
+        if key not in on_disk:
+            with _lock:
+                _permanent_baseline_by_home.get(_baseline_key(), set()).discard(key)
+            return
+        config["command_allowlist"] = sorted(set(on_disk) - {key})
+        save_config(config)
+        with _lock:
+            _permanent_baseline_by_home.get(_baseline_key(), set()).discard(key)
+    except Exception as e:
+        logger.warning("Could not revoke superseded allowlist entry: %s", e)
 
 
 # --- Bypass check (yolo / mode=off) ---------------------------------------------------------------------------------
@@ -1025,7 +1061,6 @@ def check_dangerous_command(command: str, env_type: str,
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
     if required is not None:
-        _revoke_superseded_grants(required)
         is_dangerous, pattern_key, description = True, required.key, required.prompt_description
     else:
         is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -1036,6 +1071,8 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        # A review: smart rule is a built-in dangerous pattern on this gate too: guardian first.
+        smart=required is not None and required.review == "smart" and approval_context._get_approval_mode() == "smart",
         permanent_capable=required is None or required.review != "human",
     )
 
@@ -1131,8 +1168,6 @@ def check_all_command_guards(command: str, env_type: str,
     required = _match_approval_required_rule(command)
     if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
-    if required is not None:
-        _revoke_superseded_grants(required)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each

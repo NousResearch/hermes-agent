@@ -7,7 +7,7 @@ Verifies that ``HermesCLI._handle_update_command`` correctly:
 - Cancels cleanly when ``_prompt_text_input_modal`` returns None (timeout /
   modal dismissed)
 
-Also verifies that ``hermes_cli.main._launch_tui`` correctly handles exit
+Also verifies that ``main_tui_launch._launch_tui`` correctly handles exit
 code 42 (the TUI's signal to trigger an update) by calling
 ``relaunch(["update"], preserve_inherited=False)`` from the Python wrapper
 side.  The companion Vitest (``ui-tui/src/__tests__/createSlashHandler.test.ts``)
@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from cli import HermesCLI
+from hermes_cli import main_tui_launch
 
 
 def _bound(fn, instance):
@@ -76,13 +77,13 @@ def test_managed_install_refuses_and_does_not_set_pending_relaunch(capsys):
         patch("hermes_cli.config.is_managed", return_value=True),
         patch(
             "hermes_cli.config.format_managed_message",
-            return_value="Use `brew upgrade hermes-agent` to update.",
+            return_value="Use `sudo nixos-rebuild switch` to update.",
         ),
     ):
         result = _call(self_)
 
     out = capsys.readouterr().out
-    assert "brew upgrade hermes-agent" in out
+    assert "sudo nixos-rebuild switch" in out
     assert self_._pending_relaunch is None
     assert not result
 

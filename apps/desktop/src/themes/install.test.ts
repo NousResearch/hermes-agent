@@ -21,7 +21,10 @@ const ansiColors = (red: string) => ({
 })
 
 const themeJsonWithAnsi = (type: 'light' | 'dark', background: string, foreground: string, red: string) =>
-  JSON.stringify({ type, colors: { 'editor.background': background, 'editor.foreground': foreground, ...ansiColors(red) } })
+  JSON.stringify({
+    type,
+    colors: { 'editor.background': background, 'editor.foreground': foreground, ...ansiColors(red) }
+  })
 
 describe('buildThemeFromMarketplace', () => {
   it('folds a light + dark variant into one family with both slots', () => {
@@ -77,8 +80,16 @@ describe('buildThemeFromMarketplace', () => {
       extensionId: 'ryanolsonx.solarized',
       displayName: 'Solarized',
       themes: [
-        { label: 'Solarized Light', uiTheme: 'vs', contents: themeJsonWithAnsi('light', '#fdf6e3', '#586e75', '#dc322f') },
-        { label: 'Solarized Dark', uiTheme: 'vs-dark', contents: themeJsonWithAnsi('dark', '#002b36', '#93a1a1', '#ff5f56') }
+        {
+          label: 'Solarized Light',
+          uiTheme: 'vs',
+          contents: themeJsonWithAnsi('light', '#fdf6e3', '#586e75', '#dc322f')
+        },
+        {
+          label: 'Solarized Dark',
+          uiTheme: 'vs-dark',
+          contents: themeJsonWithAnsi('dark', '#002b36', '#93a1a1', '#ff5f56')
+        }
       ]
     }
 
@@ -91,7 +102,9 @@ describe('buildThemeFromMarketplace', () => {
     const result: DesktopMarketplaceThemeResult = {
       extensionId: 'dracula-theme.theme-dracula',
       displayName: 'Dracula',
-      themes: [{ label: 'Dracula', uiTheme: 'vs-dark', contents: themeJsonWithAnsi('dark', '#282a36', '#f8f8f2', '#ff5555') }]
+      themes: [
+        { label: 'Dracula', uiTheme: 'vs-dark', contents: themeJsonWithAnsi('dark', '#282a36', '#f8f8f2', '#ff5555') }
+      ]
     }
 
     const theme = buildThemeFromMarketplace(result)
@@ -112,8 +125,8 @@ describe('buildThemeFromMarketplace', () => {
   })
 
   it('throws when the extension contributes no themes', () => {
-    expect(() =>
-      buildThemeFromMarketplace({ extensionId: 'x.y', displayName: 'X', themes: [] })
-    ).toThrow(/does not contribute/i)
+    expect(() => buildThemeFromMarketplace({ extensionId: 'x.y', displayName: 'X', themes: [] })).toThrow(
+      /does not contribute/i
+    )
   })
 })

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -6,23 +7,49 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { useEffect, useMemo, useState } from 'react'
-import ShikiHighlighter from 'react-shiki'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Streamdown } from 'streamdown'
 
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
+import { RichCodeBlock } from '@/components/assistant-ui/embeds'
+import { CodeEditor } from '@/components/chat/code-editor'
+import { FileDiffPanel } from '@/components/chat/diff-lines'
+import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
+import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
-import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import {
+  desktopFileDiff,
+  desktopFsCacheKey,
+  desktopGitRoot,
+  readDesktopFileDataUrl,
+  readDesktopFileText,
+  writeDesktopFileText
+} from '@/lib/desktop-fs'
+import { Check, Pencil, X } from '@/lib/icons'
+import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { isComposerChord } from '@/lib/keybinds/chords'
+import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { setPreviewDirty } from '@/store/preview-edit'
+import { $connection, $currentCwd } from '@/store/session'
+import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+const SOURCE_CHUNK_LINES = 200
+const SOURCE_LINE_PX = 20
+const SOURCE_OVERSCAN_LINES = 400
+
+// Math plugin for the static file preview, configured once at module scope.
+// Mirrors the chat transcript's plugin (`markdown-text.tsx`) — same memoized
+// KaTeX wrapper, with `singleDollarTextMath: true` so `$x$` renders inline.
+const previewMathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -126,11 +153,26 @@ interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
   dataUrl?: string
+  /** Working-tree-vs-HEAD unified diff, when the file has uncommitted changes. */
+  diff?: string
   error?: string
   language?: string
   loading: boolean
   text?: string
   truncated?: boolean
+}
+
+// True when focus is in a field that should swallow plain keystrokes (so the
+// bare-`e` edit shortcut never fires while the user is typing in the composer,
+// a search box, or the editor itself).
+function isTypableElement(el: Element | null): boolean {
+  if (!el) {
+    return false
+  }
+
+  const tag = el.tagName
+
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
 function filePathForTarget(target: PreviewTarget) {
@@ -184,6 +226,45 @@ function looksBinaryBytes(bytes: Uint8Array) {
   return suspicious / Math.min(bytes.length, 4096) > 0.12
 }
 
+function dataUrlToBlob(dataUrl: string) {
+  const comma = dataUrl.indexOf(',')
+
+  if (comma < 0 || !dataUrl.startsWith('data:')) {
+    throw new Error('Invalid PDF data URL')
+  }
+
+  const metadata = dataUrl
+    .slice(5, comma)
+    .split(';')
+    .map(part => part.trim().toLowerCase())
+
+  const payload = dataUrl.slice(comma + 1)
+
+  if (metadata[0] !== 'application/pdf' || !metadata.slice(1).includes('base64')) {
+    throw new Error('Invalid PDF data URL type')
+  }
+
+  let binary: string
+
+  try {
+    binary = atob(decodeURIComponent(payload))
+  } catch {
+    throw new Error('Invalid PDF data URL payload')
+  }
+
+  if (!binary.startsWith('%PDF-')) {
+    throw new Error('Invalid PDF file header')
+  }
+
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: 'application/pdf' })
+}
+
 async function readTextPreview(filePath: string) {
   try {
     return await readDesktopFileText(filePath)
@@ -226,7 +307,11 @@ const MD_TAG_CLASSES = {
   ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
   blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
-  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono'
+  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
+  hr: 'my-6 border-border',
+  th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
+  td: 'px-3 py-2 align-top text-sm leading-relaxed',
+  thead: 'bg-muted/35 text-muted-foreground'
 } as const
 
 function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
@@ -260,18 +345,53 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
     )
   }
 
+  const code = String(children).replace(/\n$/, '')
+
+  const highlighted = <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
+
+  // ```mermaid / ```svg fences route to the shared lazy renderers (same
+  // registry the chat transcript uses); everything else stays on Shiki.
+  return <RichCodeBlock code={code} fallback={highlighted} language={language} />
+}
+
+function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
   return (
-    <ShikiHighlighter
-      addDefaultStyles={false}
-      as="div"
-      defaultColor="light-dark()"
-      delay={80}
-      language={language}
-      showLanguage={false}
-      theme={SHIKI_THEME}
+    <div className="mb-4 w-full overflow-x-auto rounded-lg border border-border last:mb-0">
+      <table
+        className={cn(
+          'm-0 w-full min-w-[18rem] border-collapse [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+          className
+        )}
+        {...rest}
+      />
+    </div>
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+      src={src}
+      {...rest}
+    />
+  )
+}
+
+function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+  const isExternal = /^https?:\/\//i.test(href || '')
+
+  return (
+    <a
+      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
+      href={href}
+      rel={isExternal ? 'noopener noreferrer' : undefined}
+      target={isExternal ? '_blank' : undefined}
+      {...rest}
     >
-      {String(children).replace(/\n$/, '')}
-    </ShikiHighlighter>
+      {children}
+    </a>
   )
 }
 
@@ -286,40 +406,120 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  hr: tagged('hr'),
+  table: MarkdownTable,
+  th: tagged('th'),
+  td: tagged('td'),
+  thead: tagged('thead'),
+  img: MarkdownImage,
+  a: MarkdownLink
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ text }: { text: string }) {
+  const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={{ math: previewMathPlugin }}
+      >
+        {mathText}
       </Streamdown>
     </div>
   )
 }
 
-function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+export function PreviewModeSwitcher({
+  active,
+  modes,
+  onSelect,
+  trailing
+}: {
+  active: PreviewViewMode
+  modes: PreviewViewMode[]
+  onSelect: (mode: PreviewViewMode) => void
+  trailing?: ReactNode
+}) {
   const { t } = useI18n()
+  const showModes = modes.length > 1
+
+  if (!showModes && !trailing) {
+    return null
+  }
+
+  const label: Record<PreviewViewMode, string> = {
+    diff: t.preview.diff,
+    rendered: t.preview.renderedPreview,
+    source: t.preview.source
+  }
 
   return (
-    <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
-      <button
-        className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
-        onClick={onToggle}
-        type="button"
-      >
-        {asSource ? t.preview.renderedPreview : t.preview.source}
-      </button>
+    // Fixed height so the header is byte-identical between read and edit modes —
+    // swapping the trailing controls must never move the body below it.
+    <div className="flex h-7 shrink-0 items-center justify-end gap-3 border-b border-border/40 px-3">
+      {showModes &&
+        modes.map(mode => (
+          <button
+            className={cn(
+              'text-[0.625rem] font-bold underline-offset-4 transition-colors',
+              mode === active
+                ? 'text-foreground underline decoration-current/30'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            key={mode}
+            onClick={() => onSelect(mode)}
+            type="button"
+          >
+            {label[mode]}
+          </button>
+        ))}
+      {trailing && <div className="flex items-center gap-1.5">{trailing}</div>}
     </div>
   )
 }
 
-// Gutter and Shiki output share `font-mono text-xs leading-relaxed py-3` so
-// each line aligns vertically. The selection overlay relies on the same
-// `text-xs * leading-relaxed = 1.21875rem` line-height to position itself.
-const SOURCE_LINE_HEIGHT_REM = 1.21875
-const SOURCE_PAD_Y_REM = 0.75
+// Cancel / Save controls rendered as the header's trailing slot (not a bar of
+// their own) so edit mode reuses the read-mode header row verbatim.
+function EditControls({
+  dirty,
+  onCancel,
+  onSave,
+  saving
+}: {
+  dirty: boolean
+  onCancel: () => void
+  onSave: () => void
+  saving: boolean
+}) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      <button
+        className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        onClick={onCancel}
+        type="button"
+      >
+        <X className="size-3" />
+        {t.common.cancel}
+      </button>
+      <button
+        className="flex items-center gap-1 rounded-md bg-primary px-2 py-0.5 text-[0.625rem] font-bold text-primary-foreground shadow-xs transition-opacity hover:opacity-90 disabled:opacity-50"
+        disabled={!dirty || saving}
+        onClick={onSave}
+        type="button"
+      >
+        <Check className="size-3" />
+        {saving ? t.common.saving : t.common.save}
+      </button>
+    </>
+  )
+}
 
 interface LineSelection {
   end: number
@@ -335,13 +535,31 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+/** Windowed, Shiki-highlighted source. The gutter's line selection produces a
+ *  `path:line` composer ref, so it is inert without a `filePath` (artifact
+ *  content has no path to reference lines against). */
+export function SourceView({ filePath, language, text }: { filePath?: string; language: string; text: string }) {
   const { t } = useI18n()
-  const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
+  const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
+  const lastChunk = chunks.at(-1)
+  const totalLines = lastChunk ? lastChunk.start + lastChunk.lines.length : 0
+
+  const { afterRows, beforeRows, endChunk, onScroll, scrollerRef, startChunk } = useFixedRowWindow({
+    overscanRows: SOURCE_OVERSCAN_LINES,
+    rowPx: SOURCE_LINE_PX,
+    rowsPerChunk: SOURCE_CHUNK_LINES,
+    totalRows: totalLines
+  })
+
+  const visibleChunks = chunks.slice(startChunk, endChunk + 1)
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
   const handleLineClick = (event: ReactMouseEvent, line: number) => {
+    if (!filePath) {
+      return
+    }
+
     if (event.shiftKey && selection) {
       setSelection({ end: Math.max(selection.end, line), start: Math.min(selection.start, line) })
 
@@ -358,6 +576,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }
 
   const handleDragStart = (event: ReactDragEvent<HTMLElement>, line: number) => {
+    if (!filePath) {
+      return
+    }
+
     startLineDrag(event, filePath, inSelection(line) && selection ? selection : { end: line, start: line })
   }
 
@@ -366,12 +588,12 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   // the composer. Capture-phase + stopPropagation so it beats the terminal's
   // global ⌘L handler (which would otherwise grab the native text selection).
   useEffect(() => {
-    if (!selection) {
+    if (!selection || !filePath) {
       return
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isComposerChord(event)) {
         return
       }
 
@@ -384,8 +606,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
 
       event.preventDefault()
       event.stopPropagation()
+      // Insert into and focus the SAME composer — 'active' — so a tile that owns
+      // focus keeps it instead of the ref landing in a tile but main stealing focus.
       requestComposerInsertRefs([ref])
-      requestComposerFocus('main')
+      requestComposerFocus('active')
     }
 
     window.addEventListener('keydown', onKeyDown, { capture: true })
@@ -394,75 +618,100 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }, [filePath, selection])
 
   return (
-    <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">
-      <div className="select-none py-3 text-right text-muted-foreground/55">
-        {Array.from({ length: lineCount }, (_, index) => {
-          const line = index + 1
-          const selected = inSelection(line)
+    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+      <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
+        {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
+        {visibleChunks.map(chunk => (
+          <Fragment key={chunk.start}>
+            <div className="select-none text-right text-muted-foreground/55">
+              {chunk.lines.map((_lineText, offset) => {
+                const line = chunk.start + offset + 1
+                const selected = inSelection(line)
 
-          return (
-            <div
-              className={cn(
-                'cursor-pointer px-3 tabular-nums transition-colors',
-                selected
-                  ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                  : 'hover:text-foreground'
-              )}
-              draggable
-              key={line}
-              onClick={event => handleLineClick(event, line)}
-              onDragStart={event => handleDragStart(event, line)}
-              title={t.preview.sourceLineTitle}
-            >
-              {line}
+                return (
+                  <div
+                    className={cn(
+                      'h-5 w-9 pr-2 leading-5 tabular-nums transition-colors',
+                      filePath && 'cursor-pointer',
+                      selected
+                        ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
+                        : filePath && 'hover:text-foreground'
+                    )}
+                    draggable={Boolean(filePath)}
+                    key={line}
+                    onClick={event => handleLineClick(event, line)}
+                    onDragStart={event => handleDragStart(event, line)}
+                    title={filePath ? t.preview.sourceLineTitle : undefined}
+                  >
+                    {line}
+                  </div>
+                )
+              })}
             </div>
-          )
-        })}
-      </div>
-      <div
-        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!"
-        data-selectable-text="true"
-      >
-        {selection && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bg-amber-200/35 dark:bg-amber-300/10"
-            style={{
-              top: `calc(${SOURCE_PAD_Y_REM}rem + ${selection.start - 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`,
-              height: `calc(${selection.end - selection.start + 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`
-            }}
-          />
-        )}
-        <ShikiHighlighter
-          addDefaultStyles={false}
-          as="div"
-          defaultColor="light-dark()"
-          delay={80}
-          language={language || 'text'}
-          showLanguage={false}
-          theme={SHIKI_THEME}
-        >
-          {text}
-        </ShikiHighlighter>
+            <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
+              <ShikiHighlighter code={chunk.text} language={language || 'text'} theme={SHIKI_THEME} />
+            </div>
+          </Fragment>
+        ))}
+        {afterRows > 0 && <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />}
       </div>
     </div>
   )
 }
 
+export type PreviewViewMode = 'diff' | 'rendered' | 'source'
+
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
-  const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
+  const [pdfError, setPdfError] = useState<string>()
+  const [pdfUrl, setPdfUrl] = useState<string>()
+  // User-picked view; null = auto (diff when changed, else rendered markdown,
+  // else source). Reset when the previewed file changes.
+  const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
+  // Spot-editor state. The editor owns its buffer (keyed by `editorKey`); the
+  // live draft + the snapshot the user started from live in refs so typing
+  // never re-renders this (large) component — `dirty` is the only render-worthy
+  // signal and it flips just once when crossing the clean↔dirty boundary.
+  // `selfReload` re-runs the load after a save without the parent.
+  const [editing, setEditing] = useState(false)
+  const draftRef = useRef('')
+  const baselineRef = useRef('')
+  const [dirty, setDirty] = useState(false)
+  const [editorKey, setEditorKey] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<null | string>(null)
+  const [conflict, setConflict] = useState(false)
+  const [selfReload, setSelfReload] = useState(0)
+  // For the bare-`e` shortcut: the read-view root (to detect focus-within) and a
+  // hover flag (no state — only the keydown handler reads it).
+  const readViewRef = useRef<HTMLDivElement>(null)
+  const hoverRef = useRef(false)
+  const connection = useStore($connection)
+  const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const isPdf = target.previewKind === 'pdf'
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    setUserMode(null)
+    setEditing(false)
+    setDirty(false)
+    setSaving(false)
+    setSaveError(null)
+    setConflict(false)
+    draftRef.current = ''
+    baselineRef.current = ''
+  }, [filePath, reloadKey])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -474,7 +723,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isText) {
+      if (!isImage && !isPdf && !isText) {
         setState({ loading: false })
 
         return
@@ -483,7 +732,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       setState({ loading: true })
 
       try {
-        if (isImage) {
+        if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
@@ -508,6 +757,22 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             text: shouldBlock ? undefined : result.text,
             truncated: result.truncated
           })
+
+          // Best-effort: fetch the file's working-tree-vs-HEAD diff so the
+          // preview can offer a DIFF view when there are uncommitted changes.
+          // Empty (clean file / not a repo / remote) just hides the option.
+          if (!shouldBlock) {
+            try {
+              const root = await desktopGitRoot(filePath)
+              const diff = root ? await desktopFileDiff(root, filePath) : ''
+
+              if (active && diff.trim()) {
+                setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
+              }
+            } catch {
+              // No diff available; the preview just shows source.
+            }
+          }
         }
       } catch (error) {
         if (active) {
@@ -524,7 +789,230 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    fsCacheKey,
+    isImage,
+    isPdf,
+    isText,
+    reloadKey,
+    selfReload,
+    target.dataUrl,
+    target.language
+  ])
+
+  useEffect(() => {
+    setPdfUrl(undefined)
+    setPdfError(undefined)
+
+    if (!isPdf || !state.dataUrl) {
+      return
+    }
+
+    // Chromium's PDF viewer is blank for large data: URLs in an iframe. Use a
+    // blob URL instead, and revoke it when the target or loaded bytes change.
+    if (typeof URL.createObjectURL !== 'function') {
+      setPdfError('PDF preview requires object URL support')
+
+      return
+    }
+
+    let objectUrl: string
+
+    try {
+      objectUrl = URL.createObjectURL(dataUrlToBlob(state.dataUrl))
+      setPdfUrl(objectUrl)
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : String(error))
+
+      return
+    }
+
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [isPdf, state.dataUrl])
+
+  // Editing is only offered for whole, readable text — never images, binaries,
+  // or files we only loaded the first 512 KB of (saving would drop the tail).
+  const canEdit =
+    isText && !isImage && !blockedByTarget && state.text !== undefined && !state.truncated && !state.binary
+
+  // Per-keystroke: update the draft ref (no render) and only set `dirty` when it
+  // actually changes — React bails on an identical value, so a long typing run
+  // triggers a single re-render at most.
+  const handleEditorChange = useCallback((value: string) => {
+    draftRef.current = value
+    const next = value !== baselineRef.current
+    setDirty(prev => (prev === next ? prev : next))
+  }, [])
+
+  // Publish the unsaved state to the rail so the tab can show a modified dot.
+  // Keyed by url; cleared on unmount/tab-change so a stale dot never lingers.
+  useEffect(() => {
+    setPreviewDirty(target.url, editing && dirty)
+
+    return () => setPreviewDirty(target.url, false)
+  }, [target.url, editing, dirty])
+
+  const beginEdit = () => {
+    const text = state.text ?? ''
+    baselineRef.current = text
+    draftRef.current = text
+    setDirty(false)
+    setEditorKey(key => key + 1)
+    setSaving(false)
+    setSaveError(null)
+    setConflict(false)
+    setEditing(true)
+  }
+
+  // Latest `beginEdit` for the keydown listener, so the listener can stay
+  // subscribed across renders without recreating itself or going stale.
+  const beginEditRef = useRef(beginEdit)
+  beginEditRef.current = beginEdit
+
+  // Bare `e` enters edit mode when the file pane is hovered or focused and no
+  // typable field has focus — a fast, button-free path (double-click felt laggy
+  // because of the browser's click-disambiguation delay).
+  useEffect(() => {
+    if (!canEdit || editing) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'e' || event.metaKey || event.ctrlKey || event.altKey) {
+        return
+      }
+
+      if (isTypableElement(document.activeElement)) {
+        return
+      }
+
+      const root = readViewRef.current
+      const focusWithin = Boolean(root && document.activeElement && root.contains(document.activeElement))
+
+      if (!hoverRef.current && !focusWithin) {
+        return
+      }
+
+      event.preventDefault()
+      beginEditRef.current()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [canEdit, editing])
+
+  const cancelEdit = () => {
+    setEditing(false)
+    setSaveError(null)
+    setConflict(false)
+  }
+
+  const discardAndReload = () => {
+    setEditing(false)
+    setConflict(false)
+    setSaveError(null)
+    setSelfReload(n => n + 1)
+  }
+
+  const saveEdit = async (force = false) => {
+    if (saving) {
+      return
+    }
+
+    setSaving(true)
+    setSaveError(null)
+
+    try {
+      // Stale-on-disk guard: re-read what's on disk now and compare to the
+      // snapshot the user started from. If something changed underneath (an
+      // agent edit, an external save), don't clobber it silently — surface the
+      // choice. `force` is the user picking "overwrite" from that banner.
+      if (!force) {
+        try {
+          const current = await readTextPreview(filePath)
+
+          if (!current.binary && (current.text ?? '') !== baselineRef.current) {
+            setConflict(true)
+            setSaving(false)
+
+            return
+          }
+        } catch {
+          // Couldn't re-read for the check — fall through and attempt the write.
+        }
+      }
+
+      await writeDesktopFileText(filePath, draftRef.current)
+      baselineRef.current = draftRef.current
+      setDirty(false)
+      setConflict(false)
+      setEditing(false)
+      notifyWorkspaceChanged()
+      setSelfReload(n => n + 1)
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Rendered before the loading/error branches so a background re-read (file
+  // watcher, workspace tick) can't unmount the editor and drop the draft. Uses
+  // the SAME container + fixed-height header as the read view so entering edit
+  // never shifts the body — only the trailing controls and the body swap.
+  if (editing) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden bg-transparent">
+        <PreviewModeSwitcher
+          active="source"
+          modes={[]}
+          onSelect={() => {}}
+          trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
+        />
+        {conflict && (
+          <div className="shrink-0 border-b border-amber-400/40 bg-amber-50 px-3 py-2 text-[0.7rem] text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
+            <div className="font-semibold">{t.preview.diskChangedTitle}</div>
+            <div className="mt-0.5 leading-relaxed">{t.preview.diskChangedBody}</div>
+            <div className="mt-1.5 flex gap-3">
+              <button
+                className="font-bold underline underline-offset-4 transition-opacity hover:opacity-80"
+                onClick={() => void saveEdit(true)}
+                type="button"
+              >
+                {t.preview.overwrite}
+              </button>
+              <button
+                className="font-bold underline underline-offset-4 transition-opacity hover:opacity-80"
+                onClick={discardAndReload}
+                type="button"
+              >
+                {t.preview.discardReload}
+              </button>
+            </div>
+          </div>
+        )}
+        {saveError && (
+          <div className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[0.7rem] text-destructive">
+            {t.preview.saveFailed(saveError)}
+          </div>
+        )}
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <CodeEditor
+            filePath={filePath}
+            initialValue={baselineRef.current}
+            key={editorKey}
+            onCancel={cancelEdit}
+            onChange={handleEditorChange}
+            onSave={() => void saveEdit()}
+          />
+        </div>
+      </div>
+    )
+  }
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />
@@ -534,8 +1022,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
   }
 
+  if (pdfError) {
+    return <PreviewEmptyState body={pdfError} title={t.preview.unavailable} />
+  }
+
   if (
     !isImage &&
+    !isPdf &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -544,11 +1037,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     return (
       <PreviewEmptyState
-        body={
-          binary
-            ? t.preview.binaryBody(target.label)
-            : t.preview.largeBody(target.label, formatBytes(size))
-        }
+        body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
@@ -569,31 +1058,99 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
+  if (isPdf && state.dataUrl && pdfUrl) {
+    return (
+      <div className="h-full w-full overflow-hidden bg-transparent">
+        <iframe
+          aria-label={target.label}
+          className="h-full w-full border-0 bg-white"
+          src={pdfUrl}
+          title={target.label}
+        />
+      </div>
+    )
+  }
+
+  if (isPdf && state.dataUrl) {
+    return <PageLoader label={t.preview.loading} />
+  }
+
   if (isText && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
-    const showRendered = isMarkdown && !renderMarkdownAsSource
+    const hasDiff = Boolean(state.diff && state.diff.trim())
+    // Order the toggle reads left→right; default lands on the most useful view.
+    const modes: PreviewViewMode[] = []
+
+    if (isMarkdown) {
+      modes.push('rendered')
+    }
+
+    modes.push('source')
+
+    if (hasDiff) {
+      modes.push('diff')
+    }
+
+    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
 
     return (
-      <div className="h-full overflow-auto bg-transparent">
+      <div
+        className="flex h-full flex-col overflow-hidden bg-transparent"
+        onMouseEnter={() => {
+          hoverRef.current = true
+        }}
+        onMouseLeave={() => {
+          hoverRef.current = false
+        }}
+        ref={readViewRef}
+      >
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
             {t.preview.truncated}
           </div>
         )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
-        {showRendered ? (
-          <MarkdownPreview text={state.text} />
-        ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
-        )}
+        <PreviewModeSwitcher
+          active={mode}
+          modes={modes}
+          onSelect={setUserMode}
+          trailing={
+            canEdit ? (
+              <Tip label={`${t.preview.edit} (e)`}>
+                <button
+                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+                  onClick={beginEdit}
+                  type="button"
+                >
+                  <Pencil className="size-3" />
+                  {t.preview.edit}
+                </button>
+              </Tip>
+            ) : null
+          }
+        />
+        <div className="min-h-0 flex-1 overflow-auto">
+          {mode === 'rendered' ? (
+            <MarkdownPreview text={state.text} />
+          ) : mode === 'diff' ? (
+            <FileDiffPanel
+              className="mx-0 mb-0 h-full max-h-none"
+              diff={state.diff ?? ''}
+              fullText={state.text}
+              path={filePath}
+              showLineNumbers
+            />
+          ) : (
+            <SourceView
+              filePath={filePath}
+              language={shikiLanguageForFilename(filePath) || state.language || 'text'}
+              text={state.text}
+            />
+          )}
+        </div>
       </div>
     )
   }
 
-  return (
-    <PreviewEmptyState
-      body={t.preview.noInlineBody(target.mimeType || '')}
-      title={t.preview.noInlineTitle}
-    />
-  )
+  return <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
 }

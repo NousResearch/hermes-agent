@@ -45,7 +45,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Loopback / --insecure mode: the auth gate is off, so /api/auth/me is a
+  // guaranteed 401. Don't fire the request at all — it only produces console
+  // noise ("Failed to load resource: 401") on every dashboard load.
+  const gated =
+    typeof window !== "undefined" && !!window.__HERMES_AUTH_REQUIRED__;
+
   useEffect(() => {
+    if (!gated) return;
     let cancelled = false;
     api
       .getAuthMe()
@@ -70,7 +77,10 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [gated]);
+
+  // Nothing to show in ungated mode — there is no logged-in identity.
+  if (!gated) return null;
 
   if (hidden) return null;
 

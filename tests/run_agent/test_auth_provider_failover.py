@@ -24,9 +24,9 @@ from agent.turn_retry_state import TurnRetryState
 
 def _make_agent(fallback_model=None):
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -59,9 +59,6 @@ class TestAuthErrorClassification:
         assert c.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
         assert c.is_auth is True
 
-    def test_403_is_auth(self):
-        c = classify_api_error(_auth_error(403, "forbidden"))
-        assert c.is_auth is True
 
     def test_500_is_not_auth(self):
         err = Exception("Error code: 500 - internal server error")

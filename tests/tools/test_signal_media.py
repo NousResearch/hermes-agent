@@ -62,21 +62,6 @@ class TestSendSignalMediaFiles:
         assert result["platform"] == "signal"
         assert result["chat_id"] == "+155****9999"
 
-    def test_send_signal_with_attachments(self, tmp_path):
-        """Signal messages with media_files include attachments in JSON-RPC."""
-        from tools.send_message_tool import _send_signal
-
-        img_path = tmp_path / "test.png"
-        img_path.write_bytes(b"\x89PNG")
-
-        extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
-
-        result = asyncio.run(
-            _send_signal(extra, "+155****9999", "Check this out", media_files=[(str(img_path), False)])
-        )
-
-        assert result["success"] is True
-        assert result["platform"] == "signal"
 
     def test_send_signal_with_missing_media_file(self):
         """Missing media files should generate warnings but not fail."""

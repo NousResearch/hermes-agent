@@ -22,15 +22,18 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
     return { type: 'alias', target: o.target }
   }
 
+  const str = (value: unknown) => (typeof value === 'string' ? value : undefined)
+
   if (t === 'skill' && typeof o.name === 'string') {
-    return { type: 'skill', name: o.name, message: typeof o.message === 'string' ? o.message : undefined }
+    return { type: 'skill', name: o.name, message: str(o.message), display: str(o.display) }
   }
 
   if (t === 'send' && typeof o.message === 'string') {
     return {
       type: 'send',
       message: o.message,
-      notice: typeof o.notice === 'string' ? o.notice : undefined,
+      notice: str(o.notice),
+      display: str(o.display)
     }
   }
 
@@ -38,7 +41,7 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
     return {
       type: 'prefill',
       message: o.message,
-      notice: typeof o.notice === 'string' ? o.notice : undefined,
+      notice: typeof o.notice === 'string' ? o.notice : undefined
     }
   }
 

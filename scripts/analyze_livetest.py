@@ -38,10 +38,20 @@ def fmt_bridge_seq(calls):
             inner = (c.get("args") or {}).get("name", "?")
             parts.append(f"tool_call→{inner}")
         elif c["name"] == "tool_search":
-            q = (c.get("args") or {}).get("query", "?")
+            args = c.get("args") or {}
+            qs = args.get("queries")
+            if isinstance(qs, list):
+                q = "; ".join(str(x) for x in qs)
+            else:  # legacy single-query transcripts
+                q = str(args["query"] if "query" in args else "?")
             parts.append(f"search('{q[:30]}')")
         elif c["name"] == "tool_describe":
-            n = (c.get("args") or {}).get("name", "?")
+            args = c.get("args") or {}
+            ns = args.get("names")
+            if isinstance(ns, list):
+                n = ", ".join(str(x) for x in ns)
+            else:  # legacy single-name transcripts
+                n = str(args.get("name", "?"))
             parts.append(f"describe({n})")
     return " → ".join(parts)
 
@@ -59,7 +69,7 @@ def main():
     scenarios = sorted({row["scenario"] for row in summary})
 
     print(f"{'='*78}")
-    print(f"  Live test results: tool_search ENABLED vs DISABLED")
+    print("  Live test results: tool_search ENABLED vs DISABLED")
     print(f"{'='*78}\n")
 
     fails = 0
@@ -73,7 +83,7 @@ def main():
         print(f"┌─ {sid}  ({en['scenario_description']})")
         print(f"│  Prompt: {en['prompt'][:120]}")
         print(f"│  Expected underlying tools: {sorted(expected) or '(none)'}")
-        print(f"│")
+        print("│")
 
         for label, rec in [("ENABLED ", en), ("DISABLED", di)]:
             called_under = [c["name"] for c in rec["underlying_tool_calls"]]
@@ -104,7 +114,7 @@ def main():
         print(f"│  Δ round-trip cost: enabled used {en_bridges + en_underlying} calls vs disabled {di_underlying}  →  +{overhead}")
         print(f"│  Final (enabled):  {(en.get('final_response') or '')[:140]}")
         print(f"│  Final (disabled): {(di.get('final_response') or '')[:140]}")
-        print(f"└──")
+        print("└──")
         print()
 
     print(f"\nFails: {fails}/{2*len(scenarios)}")

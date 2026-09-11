@@ -41,13 +41,26 @@ IGNORED_PATTERNS = [
     re.compile(r"^Copilot$", re.IGNORECASE),
     re.compile(r"^Cursor(\s+Agent)?$", re.IGNORECASE),
     re.compile(r"^Codex$", re.IGNORECASE),
+    re.compile(r"^OpenAI Codex$", re.IGNORECASE),
+    re.compile(r"^CommandCode", re.IGNORECASE),
     re.compile(r"^github-advanced-security(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^GitHub\s*Actions?$", re.IGNORECASE),
     re.compile(r"^github-actions(\[bot\])?$", re.IGNORECASE),
     re.compile(r"^dependabot", re.IGNORECASE),
     re.compile(r"^renovate", re.IGNORECASE),
     re.compile(r"^Hermes\s+(Agent|Audit)$", re.IGNORECASE),
+    re.compile(r"^nousbot(-eng)?$", re.IGNORECASE),
     re.compile(r"^Ubuntu$", re.IGNORECASE),
+    # v0.20.0 audit additions:
+    re.compile(r"^Blut-?Agent$", re.IGNORECASE),          # self-described AI agent account
+    re.compile(r".*\[bot\]$", re.IGNORECASE),             # any GitHub [bot] suffix (hermes-seaeye[bot] etc.)
+    re.compile(r"^TRON$", re.IGNORECASE),                 # AgentMail agent
+    re.compile(r"^Happy$", re.IGNORECASE),                # happy.engineering AI agent
+    re.compile(r"^Orca$", re.IGNORECASE),                 # Stably AI agent
+    # v0.21.0 audit additions:
+    re.compile(r"^Junie$", re.IGNORECASE),                # JetBrains Junie AI agent
+    re.compile(r"^GPT-[\d.]+\s*Codex$", re.IGNORECASE),   # OpenAI Codex model trailer
+    re.compile(r"^cursoragent$", re.IGNORECASE),          # Cursor AI GitHub account
 ]
 
 IGNORED_EMAILS = {
@@ -57,8 +70,18 @@ IGNORED_EMAILS = {
     "cursoragent@cursor.com",
     "hermes@nousresearch.com",
     "hermes-audit@example.com",
+    "nousbot@nousresearch.com",
     "hermes@habibilabs.dev",
     "omx@oh-my-codex.dev",
+    "codex@openai.com",
+    "noreply@commandcode.ai",
+    # v0.20.0 audit additions — AI-agent co-author trailers:
+    "tron-agent@agentmail.to",      # TRON (AgentMail agent)
+    "yesreply@happy.engineering",   # Happy (AI coding agent)
+    "help@stably.ai",               # Orca (Stably AI agent)
+    # v0.21.0 audit additions — AI-agent co-author trailers:
+    "junie@jetbrains.com",          # JetBrains Junie
+    "noreply@openai.com",           # GPT-x Codex model trailer
 }
 
 
@@ -81,7 +104,7 @@ def git(*args, cwd=None):
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         cwd=cwd or str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -106,7 +129,7 @@ def gh_pr_list():
                 "--limit", "300",
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
         )
         if result.returncode != 0:
@@ -407,10 +430,10 @@ def main():
     if all_unknowns:
         print()
         print(f"=== Unknown Emails ({len(all_unknowns)}) ===")
-        print("These emails are not in AUTHOR_MAP and should be added:")
+        print("These emails have no mapping and should be added via:")
         print()
         for email, name in sorted(all_unknowns.items()):
-            print(f'  "{email}": "{name}",')
+            print(f"  python3 scripts/add_contributor.py {email} <github-username>  # {name}")
 
     # ---- Strict mode: fail CI if new unmapped emails are introduced ----
     if args.strict and all_unknowns:
@@ -435,10 +458,10 @@ def main():
         if new_unknowns:
             print()
             print(f"=== STRICT MODE FAILURE: {len(new_unknowns)} new unmapped email(s) ===")
-            print("Add these to AUTHOR_MAP in scripts/release.py before merging:")
+            print("Add mapping files before merging (do NOT edit AUTHOR_MAP):")
             print()
             for email, name in sorted(new_unknowns.items()):
-                print(f'    "{email}": "<github-username>",')
+                print(f"    python3 scripts/add_contributor.py {email} <github-username>  # {name}")
             print()
             print("To find the GitHub username:")
             print("  gh api 'search/users?q=EMAIL+in:email' --jq '.items[0].login'")

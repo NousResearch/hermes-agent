@@ -9,6 +9,8 @@ export interface ActiveTool {
 export interface TodoItem {
   content: string
   id: string
+  /** Optional id of another item — renders this as a nested subtask. */
+  parent?: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
@@ -23,6 +25,9 @@ export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
+  /** Batch (delegation) id — tags `[n/N]` rows so concurrent/nested fan-outs
+   *  are distinguishable. Absent on older gateways. */
+  delegationId?: string
   depth: number
   durationSeconds?: number
   filesRead?: string[]
@@ -92,8 +97,10 @@ export interface DelegationStatus {
 export interface ApprovalReq {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  smartDenied?: boolean
 }
 
 export interface ConfirmReq {
@@ -105,19 +112,45 @@ export interface ConfirmReq {
   title: string
 }
 
+export interface ClarifyBatchQuestion {
+  choices: string[] | null
+  multiSelect?: boolean
+  qid: string
+  question: string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string
   requestId: string
+  /** Batch (multi-question) clarify: present instead of question/choices. */
+  questions?: ClarifyBatchQuestion[]
+  /** Answers already locked server-side (qid → answer): seeded from the
+   *  reconnect replay, updated as the user locks each question. */
+  answers?: Record<string, string>
 }
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string
+  // Unix seconds the message was authored (persisted transcript timestamp on
+  // rehydrate, wall clock at append time for live rows). Rendered as a dim
+  // [HH:MM] label when `display.timestamps` is on (#41531).
+  createdAt?: number
   thinking?: string
+  // MoA reference-model output stored in `thinking` (see turnController's
+  // recordMoaReference): unlike ordinary model reasoning, this is the
+  // user-facing mixture-of-agents process the user opted into, so it stays
+  // visible even when `display.sections.thinking` is hidden.
+  isMoaReference?: boolean
+  // True only while this trail segment's reasoning is being streamed live by
+  // the current turn (see turnController's syncReasoningSegment). Sealed
+  // reasoning segments from earlier in the turn carry no flag, so the TUI can
+  // tell "the reasoning happening right now" apart from finished blocks.
+  isLiveReasoning?: boolean
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
@@ -147,14 +180,24 @@ export interface McpServerStatus {
   transport: string
 }
 
+export interface ProjectInfo {
+  id: string
+  name: string
+  primary_path?: null | string
+  slug: string
+}
+
 export interface SessionInfo {
   cwd?: string
   fast?: boolean
+  install_warning?: string
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  project?: null | ProjectInfo
   reasoning_effort?: string
+  running?: boolean
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
@@ -167,10 +210,19 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  active_subagents?: number
+  /** Rolling mean API latency over the last 10 calls (seconds). */
+  avg_latency_s?: number
+  /** Rolling output tokens/sec over the last 10 calls. */
+  avg_tps?: number
+  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
+  cache_hit_pct?: number
   calls: number
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: string
   cost_usd?: number
@@ -188,6 +240,13 @@ export interface SudoReq {
 export interface SecretReq {
   envVar: string
   prompt: string
+  requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
   requestId: string
 }
 

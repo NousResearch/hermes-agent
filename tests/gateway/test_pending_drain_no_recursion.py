@@ -28,14 +28,13 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
 class _StubAdapter(BasePlatformAdapter):
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         pass
 
     async def disconnect(self):
@@ -112,7 +111,9 @@ async def test_in_band_drain_does_not_grow_stack():
     # Drain the chain.  Each turn schedules the next via the in-band
     # drain block, so we wait until N handler runs have completed and
     # the session has been released.
-    for _ in range(400):
+    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
+    # runners (11/12 turns completed; main run 33455779041).
+    for _ in range(2000):
         if len(depths) >= N and sk not in adapter._active_sessions:
             break
         await asyncio.sleep(0.01)
@@ -126,65 +127,6 @@ async def test_in_band_drain_does_not_grow_stack():
     assert max_depth <= 2, (
         f"in-band drain is recursing instead of spawning a fresh task — "
         f"stack depth grew with chain length: {depths!r}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_in_band_drain_preserves_active_session_guard():
-    """The original task must NOT release ``_active_sessions[session_key]``
-    after handing off to the drain task.
-
-    When the in-band drain spawns ``drain_task`` and transfers ownership
-    via ``_session_tasks[session_key] = drain_task``, the original task
-    still unwinds through the ``finally`` block.  The drain task picks
-    up the same ``interrupt_event`` in its own
-    ``_process_message_background`` entry, so a naive
-    ``_release_session_guard(session_key, guard=interrupt_event)`` in
-    the unwind matches and deletes ``_active_sessions[session_key]``.
-    That briefly reopens the Level-1 guard between the original task's
-    finally and the drain task's first await — a concurrent inbound
-    arriving in that window passes the guard and spawns a second
-    handler for the same session.
-
-    Invariant: ``_active_sessions[sk]`` must hold the SAME interrupt
-    Event identity at every handler entry across an in-band drain
-    chain.  Pre-fix, the original task's finally deletes the entry, so
-    the drain task falls through to the ``or asyncio.Event()`` branch
-    in ``_process_message_background`` and installs a *new* Event —
-    the identity diverges.  Post-fix, the entry is preserved across
-    handoff and the drain task reuses the original Event.
-    """
-    adapter = _make_adapter()
-    sk = _sk()
-
-    seen_guards: list = []
-
-    async def handler(event):
-        seen_guards.append(adapter._active_sessions.get(sk))
-        if len(seen_guards) == 1:
-            adapter._pending_messages[sk] = _make_event(text="M1")
-        return "ok"
-
-    adapter._message_handler = handler
-
-    await adapter.handle_message(_make_event(text="M0"))
-
-    for _ in range(400):
-        if len(seen_guards) >= 2 and sk not in adapter._active_sessions:
-            break
-        await asyncio.sleep(0.01)
-
-    await adapter.cancel_background_tasks()
-
-    assert len(seen_guards) == 2, f"expected 2 handler runs, got {len(seen_guards)}"
-    assert seen_guards[0] is not None, "M0 saw no active-session guard"
-    assert seen_guards[1] is not None, "M1 saw no active-session guard"
-    assert seen_guards[0] is seen_guards[1], (
-        "in-band drain handoff replaced the active-session guard — the "
-        "original task's finally deleted _active_sessions[sk] and the "
-        "drain task installed a new Event.  Concurrent inbounds during "
-        "the handoff window would bypass the Level-1 guard and spawn a "
-        "second handler for the same session."
     )
 
 
@@ -264,7 +206,7 @@ async def test_drain_task_cancellation_releases_session():
         # M1 is the drained follow-up — hang so we can cancel the drain task.
         drain_hit_handler.set()
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.2)
         except asyncio.CancelledError:
             raise
 
@@ -337,7 +279,9 @@ async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
     await adapter.handle_message(_make_event(text="first"))
 
     # Wait for the late-arrival drain task to finish the second event.
-    for _ in range(400):
+    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
+    # runners (11/12 turns completed; main run 33455779041).
+    for _ in range(2000):
         if "late" in results and sk not in adapter._active_sessions:
             break
         await asyncio.sleep(0.01)

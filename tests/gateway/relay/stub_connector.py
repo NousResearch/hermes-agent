@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import InboundHandler
 
@@ -30,17 +30,32 @@ class StubConnector:
         self._passthrough: Optional[Any] = None
         self.connected = False
         self.sent: List[Dict[str, Any]] = []
+        # Per-frame egress platform recorded alongside each sent action (Phase 1.5).
+        self.sent_platforms: List[Optional[str]] = []
         self.interrupts: List[Dict[str, Any]] = []
         self.follow_ups: List[Dict[str, Any]] = []
+        self.follow_up_platforms: List[Optional[str]] = []
+        # The fronted (platform, bot_id) identity set (Phase 1.5). Mirrors the real
+        # transport's _identities so RelayAdapter.fronts_platform resolves; a
+        # single-identity default keeps existing tests' behaviour unchanged.
+        self._identities: List[tuple] = [(descriptor.platform, "")]
         self.chat_info: Dict[str, Dict[str, Any]] = {}
         # Canned result for the next send_outbound (override per-test).
         self.next_send_result: Dict[str, Any] = {"success": True, "message_id": "m1"}
+        # Canned result for the next send_media op (Phase 2; override per-test).
+        self.next_media_result: Dict[str, Any] = {"success": True, "message_id": "md1"}
+        # Canned results for the Phase 3 interactive ops (override per-test).
+        self.next_prompt_result: Dict[str, Any] = {"success": True, "message_id": "pm1"}
+        self.next_react_result: Dict[str, Any] = {"success": True}
         # Canned result for the next send_follow_up (override per-test). Default
         # mimics a resolved capability egress; set success=False to simulate an
         # absent/expired capability or a tenant mismatch on the connector side.
         self.next_follow_up_result: Dict[str, Any] = {"success": True, "message_id": "f1"}
+        # Canned result for the next draft frame (NS-658 live cards). The
+        # sealing frame (final=true) echoes message_id = the stream ts.
+        self.next_draft_result: Dict[str, Any] = {"success": True}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self.connected = True
         return True
 
@@ -64,10 +79,23 @@ class StubConnector:
         (Phase 5 §5.1)."""
         self._passthrough = handler
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        # Record the per-frame egress platform (Phase 1.5) alongside the action so
+        # tests can assert which platform a reply was tagged for.
         self.sent.append(action)
+        self.sent_platforms.append(platform)
         if action.get("op") == "send":
             return dict(self.next_send_result)
+        if action.get("op") == "draft":
+            return dict(self.next_draft_result)
+        if action.get("op") == "send_media":
+            return dict(self.next_media_result)
+        if action.get("op") == "prompt":
+            return dict(self.next_prompt_result)
+        if action.get("op") == "react":
+            return dict(self.next_react_result)
         return {"success": True}
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -76,8 +104,11 @@ class StubConnector:
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         self.interrupts.append({"session_key": session_key, "reason": reason})
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         self.follow_ups.append(action)
+        self.follow_up_platforms.append(platform)
         return dict(self.next_follow_up_result)
 
     # ── test driver ──────────────────────────────────────────────────────

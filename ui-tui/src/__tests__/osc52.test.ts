@@ -4,7 +4,8 @@ import {
   buildOsc52ClipboardQuery,
   OSC52_CLIPBOARD_QUERY,
   parseOsc52ClipboardData,
-  readOsc52Clipboard
+  readOsc52Clipboard,
+  writeOsc52Clipboard
 } from '../lib/osc52.js'
 
 const envBackup = { ...process.env }
@@ -63,5 +64,36 @@ describe('readOsc52Clipboard', () => {
     const send = vi.fn().mockResolvedValue(undefined)
     const flush = vi.fn().mockResolvedValue(undefined)
     await expect(readOsc52Clipboard({ flush, send })).resolves.toBeNull()
+  })
+})
+
+describe('writeOsc52Clipboard', () => {
+  it('wraps writes for tmux passthrough', () => {
+    process.env.TMUX = '/tmp/tmux-123/default,1,0'
+    delete process.env.STY
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as any)
+    writeOsc52Clipboard('hello')
+
+    expect(write).toHaveBeenCalledTimes(1)
+    const seq = String(write.mock.calls[0]?.[0] ?? '')
+    expect(seq).toContain('\x1bPtmux;')
+    expect(seq).toContain(']52;c;')
+
+    write.mockRestore()
+  })
+
+  it('keeps raw OSC52 outside multiplexers', () => {
+    delete process.env.TMUX
+    delete process.env.STY
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as any)
+    writeOsc52Clipboard('hello')
+
+    expect(write).toHaveBeenCalledTimes(1)
+    const seq = String(write.mock.calls[0]?.[0] ?? '')
+    expect(seq.startsWith('\x1b]52;c;')).toBe(true)
+
+    write.mockRestore()
   })
 })

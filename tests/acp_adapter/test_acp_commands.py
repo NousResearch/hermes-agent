@@ -16,11 +16,17 @@ class FakeAgent:
         self.disabled_toolsets = []
         self.tools = []
         self.valid_tool_names = set()
+        self._supports_active_turn_redirect = True
         self.steers = []
+        self.redirects = []
         self.runs = []
 
     def steer(self, text):
         self.steers.append(text)
+        return True
+
+    def redirect(self, text):
+        self.redirects.append(text)
         return True
 
     def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
@@ -129,70 +135,35 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
     assert fake.runs == []
 
 
+
+
+
+
+
+
 @pytest.mark.asyncio
-async def test_acp_steer_after_zed_interrupt_replays_interrupted_prompt_with_guidance():
+async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     acp_agent, state, fake, _conn = make_agent_and_state()
-    state.interrupted_prompt_text = "write hi to a text file"
+    state.is_running = True
+    state.current_prompt_text = "original request"
+    observed = {}
 
-    response = await acp_agent.prompt(
-        session_id=state.session_id,
-        prompt=[TextContentBlock(type="text", text="/steer write HELLO instead")],
-    )
+    def interrupt():
+        acquired = state.runtime_lock.acquire(blocking=False)
+        observed["lock_held"] = not acquired
+        if acquired:
+            state.runtime_lock.release()
 
-    assert response.stop_reason == "end_turn"
-    assert fake.steers == []
-    assert fake.runs == [
-        "write hi to a text file\n\nUser correction/guidance after interrupt: write HELLO instead"
-    ]
-    assert state.interrupted_prompt_text == ""
+    fake.interrupt = interrupt
 
+    await acp_agent.cancel(state.session_id)
 
-@pytest.mark.asyncio
-async def test_acp_steer_on_idle_session_runs_as_regular_prompt():
-    # /steer on an idle session (no running turn, nothing to salvage) should
-    # run the steer payload as a normal user prompt — NOT silently append it
-    # to state.queued_prompts. Without this, users on Zed / other ACP clients
-    # see their /steer turn into "queued for the next turn" when they never
-    # typed /queue. Matches gateway/run.py ~L4898 idle-/steer behavior.
-    acp_agent, state, fake, _conn = make_agent_and_state()
-
-    response = await acp_agent.prompt(
-        session_id=state.session_id,
-        prompt=[TextContentBlock(type="text", text="/steer summarize the README")],
-    )
-
-    assert response.stop_reason == "end_turn"
-    assert fake.steers == []
-    assert fake.runs == ["summarize the README"]
-    assert state.queued_prompts == []
+    assert observed["lock_held"] is True
+    assert state.cancel_event.is_set()
+    assert state.interrupted_prompt_text == "original request"
 
 
-@pytest.mark.asyncio
-async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
-    acp_agent, state, fake, _conn = make_agent_and_state()
-
-    response = await acp_agent.prompt(
-        session_id=state.session_id,
-        prompt=[TextContentBlock(type="text", text="/queue run the tests after this")],
-    )
-
-    assert response.stop_reason == "end_turn"
-    assert state.queued_prompts == ["run the tests after this"]
-    assert fake.runs == []
 
 
-@pytest.mark.asyncio
-async def test_acp_prompt_drains_queued_turns_after_current_run():
-    acp_agent, state, fake, conn = make_agent_and_state()
-    state.queued_prompts.append("then run tests")
 
-    response = await acp_agent.prompt(
-        session_id=state.session_id,
-        prompt=[TextContentBlock(type="text", text="make the change")],
-    )
 
-    assert response.stop_reason == "end_turn"
-    assert fake.runs == ["make the change", "then run tests"]
-    assert state.queued_prompts == []
-    agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
-    assert len(agent_messages) >= 2

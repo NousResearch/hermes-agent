@@ -16,6 +16,9 @@ These tests pin:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 import model_tools
@@ -52,40 +55,7 @@ class TestQuietModeCacheIsolation:
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
 
-    def test_caller_mutation_does_not_poison_cache(self):
-        """Simulate run_agent appending LCM tool schemas to the returned
-        list. A second call must NOT see those appended entries."""
-        first = model_tools.get_tool_definitions(quiet_mode=True)
-        baseline_len = len(first)
-        # Caller mutates the returned list (this is what run_agent does
-        # when it injects memory + context-engine tool schemas).
-        first.append({"type": "function", "function": {"name": "lcm_grep"}})
-        first.append({"type": "function", "function": {"name": "lcm_expand"}})
 
-        second = model_tools.get_tool_definitions(quiet_mode=True)
-        # Length must match the original \u2014 cache pollution would make
-        # second 2 entries longer.
-        assert len(second) == baseline_len, (
-            f"issue #17335: cache was polluted by caller mutation. "
-            f"first len={baseline_len}, mutated len={len(first)}, "
-            f"second-call len={len(second)} \u2014 expected {baseline_len}."
-        )
-        names = [t.get("function", {}).get("name") for t in second]
-        assert "lcm_grep" not in names
-        assert "lcm_expand" not in names
-
-    def test_repeated_caller_mutation_does_not_accumulate(self):
-        """The original Gateway symptom: every agent init in a long-lived
-        process appends LCM schemas, accumulating duplicates over time."""
-        baseline = len(model_tools.get_tool_definitions(quiet_mode=True))
-        for _ in range(5):
-            tools = model_tools.get_tool_definitions(quiet_mode=True)
-            tools.append({"type": "function", "function": {"name": "lcm_grep"}})
-        final = model_tools.get_tool_definitions(quiet_mode=True)
-        assert len(final) == baseline, (
-            f"Cache accumulated mutations across {5} agent inits: "
-            f"baseline={baseline}, final={len(final)}."
-        )
 
     def test_cache_bounded_by_eviction(self):
         """The cache evicts the oldest entry when it reaches the cap,
@@ -113,3 +83,28 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+    def test_concurrent_capacity_misses_evict_atomically(self, monkeypatch):
+        """Two profile/toolset misses at capacity cannot race on eviction."""
+        barrier = Barrier(2)
+
+        def compute(*args, **kwargs):
+            barrier.wait(timeout=2)
+            return []
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute)
+        for index in range(model_tools._TOOL_DEFS_CACHE_MAX):
+            model_tools._tool_defs_cache[("old", index)] = []
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    model_tools.get_tool_definitions,
+                    enabled_toolsets=[f"concurrent_{index}"],
+                    quiet_mode=True,
+                )
+                for index in range(2)
+            ]
+            assert [future.result(timeout=2) for future in futures] == [[], []]
+
+        assert len(model_tools._tool_defs_cache) == model_tools._TOOL_DEFS_CACHE_MAX

@@ -30,13 +30,13 @@ describe('stripGeneratedImageEchoes', () => {
       stripGeneratedImageEchoes('Here you go.\n\n![Generated image](https://cdn.example/cat.png)', [
         'https://cdn.example/cat.png'
       ])
-    ).toBe('Here you go.')
+    ).toBe('Here you go.\n\n')
   })
 
   it('removes media links for generated local image paths', () => {
-    expect(
-      stripGeneratedImageEchoes('Saved image: [Image: cat.png](#media:%2Ftmp%2Fcat.png)', ['/tmp/cat.png'])
-    ).toBe('Saved image:')
+    expect(stripGeneratedImageEchoes('Saved image: [Image: cat.png](#media:%2Ftmp%2Fcat.png)', ['/tmp/cat.png'])).toBe(
+      'Saved image: '
+    )
   })
 })
 
@@ -45,7 +45,12 @@ describe('generatedImageEchoSources', () => {
     expect(
       generatedImageEchoSources([
         {
-          result: { agent_visible_image: '/sandbox/cat.png', host_image: '/host/cat.png', image: '/host/cat.png', success: true },
+          result: {
+            agent_visible_image: '/sandbox/cat.png',
+            host_image: '/host/cat.png',
+            image: '/host/cat.png',
+            success: true
+          },
           toolName: 'image_generate',
           type: 'tool-call'
         }
@@ -55,15 +60,29 @@ describe('generatedImageEchoSources', () => {
 })
 
 describe('dedupeGeneratedImageEchoesInParts', () => {
+  it('preserves timeline identity when there is nothing to strip', () => {
+    const parts = [{ result: {}, toolName: 'read_file', type: 'tool-call' }]
+
+    expect(dedupeGeneratedImageEchoesInParts(parts)).toBe(parts)
+  })
+
   it('keeps the agent prose while removing the duplicated image', () => {
     expect(
       dedupeGeneratedImageEchoesInParts([
         { text: 'Here is your peacock! ![peacock](/host/p.png) Enjoy.', type: 'text' },
-        { result: { host_image: '/host/p.png', image: '/host/p.png', success: true }, toolName: 'image_generate', type: 'tool-call' }
+        {
+          result: { host_image: '/host/p.png', image: '/host/p.png', success: true },
+          toolName: 'image_generate',
+          type: 'tool-call'
+        }
       ])
     ).toEqual([
-      { text: 'Here is your peacock! Enjoy.', type: 'text' },
-      { result: { host_image: '/host/p.png', image: '/host/p.png', success: true }, toolName: 'image_generate', type: 'tool-call' }
+      { text: 'Here is your peacock!  Enjoy.', type: 'text' },
+      {
+        result: { host_image: '/host/p.png', image: '/host/p.png', success: true },
+        toolName: 'image_generate',
+        type: 'tool-call'
+      }
     ])
   })
 
@@ -72,14 +91,24 @@ describe('dedupeGeneratedImageEchoesInParts', () => {
       dedupeGeneratedImageEchoesInParts([
         { text: '![cat](/sandbox/cat.png)', type: 'text' },
         {
-          result: { agent_visible_image: '/sandbox/cat.png', host_image: '/host/cat.png', image: '/host/cat.png', success: true },
+          result: {
+            agent_visible_image: '/sandbox/cat.png',
+            host_image: '/host/cat.png',
+            image: '/host/cat.png',
+            success: true
+          },
           toolName: 'image_generate',
           type: 'tool-call'
         }
       ])
     ).toEqual([
       {
-        result: { agent_visible_image: '/sandbox/cat.png', host_image: '/host/cat.png', image: '/host/cat.png', success: true },
+        result: {
+          agent_visible_image: '/sandbox/cat.png',
+          host_image: '/host/cat.png',
+          image: '/host/cat.png',
+          success: true
+        },
         toolName: 'image_generate',
         type: 'tool-call'
       }

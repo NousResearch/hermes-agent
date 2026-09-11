@@ -63,6 +63,43 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> None:
+    """Progress glyphs must not crash the runner on non-UTF-8 consoles."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "test_probe_smoke.py"
+    probe.write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "cp1252:strict"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "UnicodeEncodeError" not in proc.stdout
+    assert "1 tests passed" in proc.stdout
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
@@ -146,7 +183,11 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -185,3 +226,237 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+# ── Bare pytest-flag passthrough ─────────────────────────────────────────────
+#
+# The runner routes any token starting with ``-`` that isn't one of its own
+# options (``-j``/``--jobs``, ``--paths``, ``--slice``, ``--file-timeout``,
+# ``--generate-slices``, ``--files``, ``--include-integration``) straight
+# through to each per-file pytest invocation — no ``--`` separator required.
+# Before this, a bare ``-q`` errored out with "unrecognized arguments",
+# forcing a retry on every run. These tests are behavior contracts, not
+# snapshots: they assert that bare flags reach pytest and that value-taking
+# flags (``-k expr``) keep their value instead of having it stolen by the
+# positional-path discovery.
+
+
+def _make_probe_dir(tmp_path: Path) -> Path:
+    """Two trivial passing tests, one named test_alpha, one test_beta."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_flagprobe.py").write_text(
+        "def test_alpha():\n    assert True\n\n"
+        "def test_beta():\n    assert True\n"
+    )
+    return probe_dir
+
+
+def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    return subprocess.run(
+        [sys.executable, str(runner), "--paths", str(probe_dir),
+         "-j", "1", "--file-timeout", "30", *extra],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+
+
+
+def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
+    """``-k test_alpha`` reaches pytest as a selector, not as a path.
+
+    The value token (``test_alpha``) must NOT be swallowed by the runner's
+    positional-path discovery — if it were, discovery would look for a path
+    named ``test_alpha``, find nothing, and the run would degrade. We assert
+    the run succeeds AND only one of the two tests was selected (proving the
+    ``-k`` filter actually applied inside pytest).
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "test_alpha")
+    assert proc.returncode == 0, proc.stdout
+    # Exactly one test selected: the per-file summary shows "1✓" (1 passed).
+    # test_beta is deselected by the -k filter.
+    assert "1✓" in proc.stdout or "1 passed" in proc.stdout, proc.stdout
+    assert "2✓" not in proc.stdout, (
+        f"both tests ran — -k filter did not apply:\n{proc.stdout}"
+    )
+
+
+
+
+def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
+    """A positional path arg still overrides discovery (not routed to pytest)."""
+    probe_dir = _make_probe_dir(tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    # Pass the probe dir positionally (no --paths), plus a bare -q.
+    proc = subprocess.run(
+        [sys.executable, str(runner), str(probe_dir), "-j", "1",
+         "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    # Discovery found the probe file (2 tests), proving the positional path
+    # was consumed as a root, not forwarded to pytest as a bad flag.
+    assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
+    """A pass-on-retry is green, loud, and retains the failing traceback."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    marker = tmp_path / "ran-once"
+    probe = tmp_path / "test_flaky_probe.py"
+    probe.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+
+            def test_flaky_once():
+                marker = Path({str(marker)!r})
+                if not marker.exists():
+                    marker.write_text("failed once")
+                    assert False, "simulated first-attempt flake"
+                assert True
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "1",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "FLAKY file" in proc.stdout
+    assert "simulated first-attempt flake" in proc.stdout
+    assert "first-attempt output" in proc.stdout
+    assert "retry output" in proc.stdout
+
+
+
+
+# ---------------------------------------------------------------------------
+# Zero-collection is not a pass; node ids are translated, not dropped.
+#
+# Both behaviors were real foot-guns: a run where NOTHING was collected printed
+# "0 tests passed, 0 failed (100% complete)" (reads green), and a pytest node id
+# (`file.py::Class::test`) was silently discarded by path discovery so the run
+# ended with "No test files to run" while looking like an accepted selector.
+
+
+def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
+    """A -k that matches nothing must FAIL, not report a green summary."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "zzz_matches_nothing")
+    assert proc.returncode == 1, proc.stdout
+    assert "NO TESTS RAN" in proc.stdout
+    assert "NOT a pass" in proc.stdout
+
+
+
+
+def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
+    """``file.py::test_alpha`` runs that test instead of discovering nothing."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "No test files to run" not in proc.stdout
+    assert "node id" in proc.stdout  # explains the translation
+    # Ran exactly the one selected test, not both in the file.
+    assert "1 tests passed" in proc.stdout
+
+
+def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
+    """A caller's own ``-k`` is not overridden by the node-id translation."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-k", "test_beta",
+         "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    # -k test_beta wins: one test ran, and it wasn't filtered to nothing.
+    assert proc.returncode == 0, proc.stdout
+    assert "1 tests passed" in proc.stdout
+
+
+def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
+    """``--paths`` accepts ``os.pathsep``-joined absolute paths.
+
+    On Windows the absolute paths contain drive-letter colons, so a naive
+    ``split(":")`` shreds them into phantom roots and only one (or neither)
+    of the two probe dirs would be discovered.
+    """
+    dir_a = _make_probe_dir(tmp_path)
+    dir_b = tmp_path / "probe_b"
+    dir_b.mkdir()
+    (dir_b / "test_flagprobe_b.py").write_text(
+        "def test_gamma():\n    assert True\n"
+    )
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner),
+         "--paths", os.pathsep.join([str(dir_a), str(dir_b)]),
+         "-j", "1", "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "Discovered 2 test files" in proc.stdout, proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths")
+def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
+    """An absolute ``--paths`` value stays one root on Windows.
+
+    The naive split used to produce a phantom relative root ``'C'`` (the
+    drive letter) alongside the real path; discovery only worked by the
+    accident of ``repo_root / '\\rooted\\rest'`` re-anchoring onto the
+    repo's drive.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q")
+    assert proc.returncode == 0, proc.stdout
+    drive = str(probe_dir)[0]
+    assert f"['{drive}', " not in proc.stdout, (
+        f"drive letter split off as a phantom root:\n{proc.stdout}"
+    )
+    assert "Discovered 1 test files" in proc.stdout, proc.stdout

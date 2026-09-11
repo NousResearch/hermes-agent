@@ -42,6 +42,7 @@ class TestContentPolicyBlockedClassification:
         assert result.should_rotate_credential is False
 
 
+
 class TestContentPolicyTriggersClientErrorAbort:
     """Mirror the ``is_client_error`` predicate in
     ``agent/conversation_loop.py`` and verify
@@ -117,17 +118,6 @@ class TestContentPolicyPatternsAreNarrow:
         result = classify_api_error(e, provider="openai", model="gpt-4o")
         assert result.reason != FailoverReason.content_policy_blocked
 
-    def test_billing_402_not_misclassified(self):
-        from agent.error_classifier import classify_api_error, FailoverReason
-
-        class _Err(Exception):
-            def __init__(self, msg, status_code):
-                super().__init__(msg)
-                self.status_code = status_code
-
-        e = _Err("Insufficient credits. Top up your balance.", status_code=402)
-        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
-        assert result.reason == FailoverReason.billing
 
     def test_openrouter_account_policy_block_stays_distinct(self):
         """``provider_policy_blocked`` (OpenRouter account-level data

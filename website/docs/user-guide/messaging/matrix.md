@@ -24,6 +24,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
+| **LaTeX math** | `$...$` (inline) and `$$...$$` (display) in replies are sent as Element `data-mx-maths` markup, so clients with **Settings → Labs → Render LaTeX maths in messages** typeset them with KaTeX. Unpaired dollars (`$5 or $10`) stay literal, and the plain-text `body` keeps the raw TeX for other clients. |
 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.
@@ -97,6 +98,7 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
 ```
 
 Or via environment variables:
@@ -362,7 +364,7 @@ E2EE requires the `mautrix` library with encryption extras and the `libolm` C li
 pip install 'mautrix[encryption]'
 
 # Or install with hermes extras
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 You also need `libolm` installed on your system:
@@ -417,11 +419,7 @@ In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
 - `matrix_set_presence`
 
 These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-Matrix tools are limited to the current Matrix room by default. Explicit
-cross-room targets require `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`; redaction and
-invite-like cross-room actions additionally require
-`MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true`. If `MATRIX_ALLOWED_ROOMS` is
-set, Matrix tools may only target those rooms.
+If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
 
 Reaction controls use:
 
@@ -445,24 +443,6 @@ MATRIX_MAX_MEDIA_BYTES=104857600
 Inbound media must use Matrix `mxc://` content URIs. Hermes rejects arbitrary
 HTTP(S) media URLs in Matrix events to avoid turning a federated room into an
 unrestricted downloader.
-
-## Synapse Integration Tests
-
-Hermes includes an opt-in Synapse harness for local validation:
-
-```bash
-docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml up -d
-HERMES_MATRIX_SYNAPSE_INTEGRATION=1 \
-  scripts/run_tests.sh -m "integration and matrix_synapse" \
-  tests/e2e/matrix_synapse_gateway/test_gateway.py
-docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml down -v
-```
-
-The harness creates temporary users through Synapse shared-secret registration
-and covers private-room send/receive, named-room invite/join, media
-upload/download, bot response delivery, and startup old-event filtering. E2EE
-smoke coverage is separately marked with `matrix_e2ee` so it can stay opt-in on
-developer machines.
 
 ### Cross-Signing Verification (Recommended)
 
@@ -574,7 +554,7 @@ To find a Room ID: in Element, go to the room → **Settings** → **Advanced** 
 
 Hermes supports the same gateway commands in Matrix that it supports on other
 messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
-`/steer`, `/goal`, `/subgoal`, `/background`, `/bg`, `/btw`, `/tasks`, and
+`/steer`, `/goal`, `/subgoal`, `/bg`, `/btw`, `/tasks`, and
 `/yolo`.
 
 Some Matrix clients reserve leading `/` for local client commands and may not
@@ -644,7 +624,7 @@ pip install 'mautrix[encryption]'
 Or with Hermes extras:
 
 ```bash
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 ### Encryption errors / "could not decrypt event"
@@ -824,7 +804,7 @@ services:
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN pip install 'hermes-agent[matrix]'
+RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 CMD ["hermes", "gateway"]
 ```

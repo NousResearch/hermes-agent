@@ -298,6 +298,6 @@ GitHub 对已认证用户每小时允许 5,000 次 API 请求。每次 PR 审查
 
 - **[基于 Webhook 的 PR 审查](./webhook-github-pr-review.md)** — 在 PR 被打开时立即获得审查（需要公开端点）
 - **[每日简报 Bot](/guides/daily-briefing-bot)** — 将 PR 审查与你的晨间资讯摘要结合
-- **[构建 Plugin](/guides/build-a-hermes-plugin)** — 将审查逻辑封装为可共享的 plugin
+- **[构建 Plugin](/developer-guide/plugins)** — 将审查逻辑封装为可共享的 plugin
 - **[Profiles](/user-guide/profiles)** — 运行一个专属审查器 profile，拥有独立的 memory 和配置
 - **[Fallback Providers](/user-guide/features/fallback-providers)** — 确保在某个 provider 不可用时审查任务仍能正常运行

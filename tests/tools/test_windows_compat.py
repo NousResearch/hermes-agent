@@ -12,7 +12,7 @@ from pathlib import Path
 GUARDED_FILES = [
     "tools/environments/local.py",
     "tools/process_registry.py",
-    "tools/code_execution_tool.py",
+    "tools/code_kernel.py",  # execute_code's child Popen lives in the session kernel
     "gateway/platforms/whatsapp.py",
 ]
 
@@ -44,6 +44,31 @@ class TestNoUnconditionalSetsid:
             assert "attr='setsid'" not in val or "IfExp" in val or "None" in val, (
                 f"{relpath} has unconditional preexec_fn=os.setsid"
             )
+
+
+class TestStartNewSession:
+    """All guarded files must use start_new_session=True instead of preexec_fn."""
+
+    @pytest.mark.parametrize("relpath", GUARDED_FILES)
+    def test_uses_start_new_session(self, relpath):
+        """Each guarded file must use start_new_session instead of preexec_fn.
+
+        The value may be a variable (e.g. ``popen_start_new_session``) when
+        the spawn conditionally uses ``systemd-run --scope`` which creates its
+        own session/cgroup — in that case ``start_new_session=False`` is
+        correct and a literal ``True`` would mask scope-creation failures.
+        """
+        filepath = PROJECT_ROOT / relpath
+        if not filepath.exists():
+            pytest.skip(f"{relpath} not found")
+        source = filepath.read_text(encoding="utf-8")
+        # Files should use start_new_session, not preexec_fn
+        assert "preexec_fn" not in source, (
+            f"{relpath} still uses preexec_fn; use start_new_session=True instead"
+        )
+        assert "start_new_session=" in source, (
+            f"{relpath} missing start_new_session= in Popen call"
+        )
 
 
 class TestIsWindowsConstant:

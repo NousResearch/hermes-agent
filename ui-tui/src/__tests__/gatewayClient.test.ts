@@ -97,7 +97,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
-import { GatewayClient } from '../gatewayClient.js'
+import {
+  GatewayClient,
+  RECONNECT_BASE_MS,
+  RECONNECT_MAX_MS,
+  WS_HEARTBEAT_DEAD_MS,
+  WS_HEARTBEAT_INTERVAL_MS
+} from '../gatewayClient.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -154,6 +160,79 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('drains buffered events on a later microtask, not synchronously inside drain()', async () => {
+    // Regression for #36658: in attach mode the already-running gateway
+    // replays `gateway.ready` the instant the socket connects, so it lands in
+    // bufferedEvents BEFORE the consumer's mount-time subscribe effect runs.
+    // If drain() emitted those synchronously, the gateway.ready handler's
+    // setState cascade would run inside React's first commit -> "Too many
+    // re-renders" (#301). drain() must defer the buffered flush so the first
+    // commit settles first.
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const gatewaySocket = FakeWebSocket.instances[0]!
+
+    gatewaySocket.open()
+    // Server replays ready BEFORE the consumer subscribes (attach-mode timing):
+    gatewaySocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    )
+
+    const order: string[] = []
+
+    gw.on('event', ev => order.push(`event:${ev.type}`))
+    gw.drain()
+    order.push('after-drain')
+
+    // Buffered event must NOT have fired synchronously inside drain():
+    expect(order).toEqual(['after-drain'])
+
+    // ...and must arrive on the next microtask.
+    await vi.waitFor(() => expect(order).toContain('event:gateway.ready'))
+    expect(order).toEqual(['after-drain', 'event:gateway.ready'])
+
+    gw.kill()
+  })
+
+  it('preserves FIFO order when a live event arrives before the deferred flush', async () => {
+    // #36658 hardening: `subscribed` must NOT flip synchronously in drain().
+    // A live event delivered in the window between drain() returning and the
+    // deferred microtask running must still queue BEHIND the chronologically
+    // earlier buffered events, not jump ahead of them.
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const gatewaySocket = FakeWebSocket.instances[0]!
+
+    gatewaySocket.open()
+    // Buffered first (replayed on connect, before subscribe):
+    gatewaySocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    )
+
+    const order: string[] = []
+
+    gw.on('event', ev => order.push(ev.type))
+    gw.drain()
+
+    // A LIVE event arrives synchronously in the post-drain / pre-microtask gap:
+    gatewaySocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } })
+    )
+
+    // Nothing emitted yet (subscribed stays false until the microtask):
+    expect(order).toEqual([])
+
+    await vi.waitFor(() => expect(order.length).toBe(2))
+    // FIFO preserved: the earlier-buffered gateway.ready precedes the live one.
+    expect(order).toEqual(['gateway.ready', 'session.info'])
+
+    gw.kill()
+  })
+
   it('mirrors event frames to sidecar websocket when configured', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
@@ -172,6 +251,9 @@ describe('GatewayClient websocket attach mode', () => {
 
     sidecarSocket.open()
     gw.drain()
+    // drain() flips `subscribed` on a microtask now (#36658); let it settle so
+    // the subsequent live event takes the synchronous publish path.
+    await Promise.resolve()
 
     const eventFrame = JSON.stringify({
       jsonrpc: '2.0',
@@ -206,6 +288,8 @@ describe('GatewayClient websocket attach mode', () => {
 
     sidecarSocket.open()
     gw.drain()
+    // drain() flips `subscribed` on a microtask now (#36658); let it settle.
+    await Promise.resolve()
 
     gw.publishLocalEvent({
       payload: { reason: 'idle_exit_hotkey' },
@@ -227,7 +311,7 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
-  it('emits exit when attached websocket closes', () => {
+  it('emits exit when attached websocket closes', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()
     const exits: Array<null | number> = []
@@ -239,6 +323,9 @@ describe('GatewayClient websocket attach mode', () => {
 
     gatewaySocket.open()
     gw.drain()
+    // drain() flips `subscribed` on a microtask now (#36658); let it settle so
+    // the close below takes the synchronous exit path.
+    await Promise.resolve()
     gatewaySocket.close(1011)
 
     expect(exits).toEqual([1011])
@@ -411,5 +498,129 @@ describe('GatewayClient websocket attach mode', () => {
     expect(tail).not.toContain('token=secret')
 
     gw.kill()
+  })
+
+  it('keeps a healthy idle websocket open when heartbeat acknowledgements arrive (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const socket = FakeWebSocket.instances[0]!
+
+      socket.open()
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+
+      const heartbeat = JSON.parse(socket.sent.at(-1) ?? '{}') as { id: string; method: string }
+
+      expect(heartbeat.method).toBe('gateway.ping')
+      socket.message(JSON.stringify({ id: heartbeat.id, jsonrpc: '2.0', result: { ok: true } }))
+
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+      expect(FakeWebSocket.instances).toHaveLength(1)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('auto-reconnects after a missing heartbeat acknowledgement (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(first.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not heartbeat an older backend that omits the capability', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const socket = FakeWebSocket.instances[0]!
+
+      socket.open()
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: {} }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+      expect(socket.sent).toEqual([])
+      expect(FakeWebSocket.instances).toHaveLength(1)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not double-reconnect when the exit subscriber restarts immediately', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.on('exit', () => gw.start())
+      gw.start()
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.close(1011)
+
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not auto-reconnect after an intentional kill() (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    gw.start()
+    FakeWebSocket.instances[0]!.open()
+    gw.kill() // sets disposed
+    await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + RECONNECT_MAX_MS + 1000)
+    expect(FakeWebSocket.instances.length).toBe(1) // no reconnect attempted
+    vi.useRealTimers()
   })
 })

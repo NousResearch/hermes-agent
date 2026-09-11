@@ -40,9 +40,21 @@ agent verifies the NAS JWT → store CAS claim → run_one_job → re-arm next o
 
 | Hop | Who calls whom | Auth mechanism | Verified by |
 |---|---|---|---|
-| 1 | agent → NAS (`provision`/`cancel`/`list`) | the agent's existing **Nous Portal access token** (Bearer) | NAS (its normal agent-token path) |
+| 1 | agent → NAS (`provision`/`cancel`/`list`) | the agent's existing **Nous Portal access token** (Bearer) — for a hosted agent this is the **bootstrap-session token** NAS planted in `auth.json` (client `hermes-cli-vps`), NOT an `agent:*` client token | NAS (its normal agent-token path) |
 | 2 | scheduler → NAS (`relay`) | the scheduler's request **signature** | NAS (the signature path it already has) |
 | 3 | NAS → agent (`/api/cron/fire`) | a **short-lived NAS-minted JWT** (`aud=agent:{instance_id}`, `purpose=cron_fire`) | agent (PyJWT against NAS JWKS) |
+
+> **Which token, exactly (hop 1).** A hosted agent never holds an `agent:{instance_id}`
+> OAuth client credential — that shape is minted only by the interactive dashboard
+> auth-code grant (a browser user). For all of its own outbound portal calls the
+> agent uses the **bootstrap-session access token** (`resolve_nous_access_token`),
+> minted under the bootstrap-only client `hermes-cli-vps` and seeded into the
+> container on first boot. NAS therefore must resolve the calling agent's instance
+> id from EITHER an `agent:{id}` client (self-hosted/dashboard callers) OR — for the
+> bootstrap token — from `AgentInstance.bootstrapSessionId` matching the token's
+> session id (`sid`), org-scoped. The fire JWT minted at hop 3 still carries
+> `aud=agent:{instance_id}` regardless. (Gating hop 1 on an `agent:*` client alone
+> 403s every real hosted-agent provision — see `src/server/agent-cron/instance-auth.ts`.)
 
 Why NAS-mediated rather than scheduler→agent direct: the scheduler signs with
 **NAS's** keys, which the agent does not (and should not) hold. The agent can
@@ -114,12 +126,26 @@ Arm (or re-arm, idempotently) exactly one one-shot for a job.
 
 ## Inbound `POST /api/cron/fire`  (NAS → agent) — agent side, already implemented
 
-This is the agent endpoint NAS calls in Endpoint 3 step 3. Served by the
-**dashboard app** (`hermes_cli/web_server.py`) — the agent's always-reachable
-public HTTP surface on hosted deployments (the gateway may be idle/scaled down);
-it is in `PUBLIC_API_PATHS` so the dashboard cookie gate lets the bearer-JWT
-callback through to the verifier. (Also registered on the optional
-`APIServerAdapter` for self-host API-server deployments.) The verifier is
+This is the agent endpoint NAS calls in Endpoint 3 step 3. Two hops on hosted
+deployments:
+
+1. **Dashboard app** (`hermes_cli/web_server.py`) — the agent's only public
+   HTTP surface (the Fly proxy exposes exactly one port, the dashboard's). It
+   is in `PUBLIC_API_PATHS` so the dashboard cookie gate lets the bearer-JWT
+   callback through to the verifier. The dashboard verifies the JWT, resolves
+   the job's profile, then **forwards** the fire to hop 2 on loopback with the
+   NAS bearer preserved — it does NOT execute the job itself.
+2. **Gateway `APIServerAdapter`** (`gateway/platforms/api_server.py`, loopback
+   bind, default port 8642) — re-verifies the JWT (defense in depth) and runs
+   the job with the gateway's **live platform adapters**, which is what makes
+   delivery work for relay-fronted logical platforms and E2EE rooms (the
+   standalone send path can serve neither). Self-host API-server deployments
+   that expose the api_server directly hit hop 2 without hop 1.
+
+Gateway unreachable from hop 1 (scale-to-zero wake still booting, restart
+window, api_server disabled) → the dashboard returns **503** and NAS retries
+(non-2xx = retryable, below); the store CAS de-dupes the eventual double fire.
+There is deliberately no in-dashboard execution fallback. The verifier is
 `plugins/cron/chronos/verify.py`.
 
 - **Auth:** `Authorization: Bearer <NAS-minted JWT>`. The agent verifies:

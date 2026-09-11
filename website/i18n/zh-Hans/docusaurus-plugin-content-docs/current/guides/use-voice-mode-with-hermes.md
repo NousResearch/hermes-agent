@@ -57,19 +57,19 @@ What tools do you have available?
 ### CLI 麦克风 + 播放
 
 ```bash
-pip install "hermes-agent[voice]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
 ```
 
 ### 消息平台
 
 ```bash
-pip install "hermes-agent[messaging]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 ```
 
 ### 高级 ElevenLabs TTS
 
 ```bash
-pip install "hermes-agent[tts-premium]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
 ```
 
 ### 本地 NeuTTS（可选）
@@ -81,7 +81,7 @@ python -m pip install -U neutts[all]
 ### 全部安装
 
 ```bash
-pip install "hermes-agent[all]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
 ```
 
 ## 第三步：安装系统依赖
@@ -162,6 +162,7 @@ python -m pip install -U neutts[all]
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"  # TUI：direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
@@ -180,6 +181,18 @@ tts:
 ```
 
 这是适合大多数人的保守默认配置。
+
+在 TUI 中，`voice.submit_mode` 控制转写完成后的行为：
+
+- `direct`（默认）会立即提交转写文本。
+- `draft` 会把转写文本放入输入框，供你编辑或取消，按 Enter 后才发送。
+
+如需可编辑的语音草稿，请设置：
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
 
 如果想改用本地 TTS，将 `tts` 块替换为：
 
@@ -440,7 +453,7 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 如果你想走最短的成功路径：
 
 1. 让文本 Hermes 正常工作
-2. 安装 `hermes-agent[voice]`
+2. 运行 `hermes setup voice` 以启用语音支持
 3. 使用本地 STT + Edge TTS 的 CLI 语音模式
 4. 然后在 Telegram 或 Discord 中启用 `/voice on`
 5. 只有在此之后，再尝试 Discord 语音频道模式

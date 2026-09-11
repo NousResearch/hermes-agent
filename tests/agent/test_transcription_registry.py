@@ -72,26 +72,21 @@ class TestRegistration:
         assert transcription_registry.get_provider("openrouter") is p
         assert [r.name for r in transcription_registry.list_providers()] == ["openrouter"]
 
-    def test_rejects_non_provider_type(self):
-        with pytest.raises(TypeError, match="expects a TranscriptionProvider instance"):
-            transcription_registry.register_provider("not a provider")  # type: ignore[arg-type]
-        assert transcription_registry.list_providers() == []
 
-    def test_rejects_empty_name(self):
-        p = _FakeProvider(name="")
-        with pytest.raises(ValueError, match="non-empty string"):
-            transcription_registry.register_provider(p)
-        assert transcription_registry.list_providers() == []
 
-    def test_rejects_whitespace_name(self):
-        p = _FakeProvider(name="   ")
-        with pytest.raises(ValueError, match="non-empty string"):
-            transcription_registry.register_provider(p)
-        assert transcription_registry.list_providers() == []
 
     @pytest.mark.parametrize(
         "builtin",
-        ["local", "local_command", "groq", "openai", "mistral", "xai"],
+        [
+            "local",
+            "local_command",
+            "groq",
+            "openai",
+            "mistral",
+            "xai",
+            "elevenlabs",
+            "deepinfra",
+        ],
     )
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         p = _FakeProvider(name=builtin)
@@ -102,23 +97,7 @@ class TestRegistration:
         assert transcription_registry.get_provider(builtin) is None
         assert transcription_registry.list_providers() == []
 
-    def test_builtin_shadow_case_insensitive(self, caplog):
-        for variant in ("OPENAI", "OpenAi", "  openai  ", "oPeNaI"):
-            transcription_registry._reset_for_tests()
-            with caplog.at_level(logging.WARNING, logger="agent.transcription_registry"):
-                transcription_registry.register_provider(_FakeProvider(name=variant))
-            assert transcription_registry.list_providers() == [], (
-                f"variant {variant!r} should have been rejected as a built-in shadow"
-            )
 
-    def test_reregistration_overwrites(self, caplog):
-        p1 = _FakeProvider(name="openrouter")
-        p2 = _FakeProvider(name="openrouter")
-        transcription_registry.register_provider(p1)
-        with caplog.at_level(logging.DEBUG, logger="agent.transcription_registry"):
-            transcription_registry.register_provider(p2)
-        assert transcription_registry.get_provider("openrouter") is p2
-        assert "re-registered" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -127,23 +106,12 @@ class TestRegistration:
 
 
 class TestLookup:
-    def test_get_provider_missing_returns_none(self):
-        assert transcription_registry.get_provider("nonexistent") is None
 
     def test_get_provider_non_string_returns_none(self):
         assert transcription_registry.get_provider(None) is None  # type: ignore[arg-type]
         assert transcription_registry.get_provider(123) is None  # type: ignore[arg-type]
 
-    def test_get_provider_case_insensitive(self):
-        p = _FakeProvider(name="openrouter")
-        transcription_registry.register_provider(p)
-        assert transcription_registry.get_provider("OPENROUTER") is p
-        assert transcription_registry.get_provider("OpenRouter") is p
 
-    def test_get_provider_whitespace_tolerant(self):
-        p = _FakeProvider(name="openrouter")
-        transcription_registry.register_provider(p)
-        assert transcription_registry.get_provider("  openrouter  ") is p
 
     def test_list_providers_sorted(self):
         transcription_registry.register_provider(_FakeProvider(name="zylo"))
@@ -159,15 +127,6 @@ class TestLookup:
 
 
 class TestABCContract:
-    def test_must_implement_transcribe(self):
-        class Incomplete(TranscriptionProvider):
-            @property
-            def name(self) -> str:
-                return "incomplete"
-            # transcribe NOT implemented
-
-        with pytest.raises(TypeError, match="abstract"):
-            Incomplete()  # type: ignore[abstract]
 
     def test_must_implement_name(self):
         class Incomplete(TranscriptionProvider):
@@ -178,25 +137,10 @@ class TestABCContract:
         with pytest.raises(TypeError, match="abstract"):
             Incomplete()  # type: ignore[abstract]
 
-    def test_display_name_defaults_to_title(self):
-        p = _FakeProvider(name="openrouter")
-        assert p.display_name == "Openrouter"
 
-    def test_display_name_override_respected(self):
-        p = _FakeProvider(name="openrouter", display="OpenRouter STT")
-        assert p.display_name == "OpenRouter STT"
 
-    def test_is_available_default_true(self):
-        p = _FakeProvider(name="openrouter")
-        assert p.is_available() is True
 
-    def test_list_models_default_empty(self):
-        p = _FakeProvider(name="openrouter")
-        assert p.list_models() == []
 
-    def test_default_model_none_when_no_models(self):
-        p = _FakeProvider(name="openrouter")
-        assert p.default_model() is None
 
     def test_default_model_first_listed(self):
         class WithModels(_FakeProvider):

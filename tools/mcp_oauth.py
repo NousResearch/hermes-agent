@@ -315,14 +315,17 @@ class HermesTokenStorage:
         """Rewrite ``expires_in`` to seconds remaining from the stored absolute ``expires_at`` (not an
         SDK field, so stripped): a relative value reloaded after restart would make ``is_token_valid()``
         True for tokens that expired while down. Legacy files without it use the file mtime, clamped
-        to zero (self-heals on the next ``set_tokens``)."""
+        to a negative TTL once expired (self-heals on the next ``set_tokens``). The negative sentinel
+        matters on coarse clocks: the SDK treats ``time.time() + 0`` as valid on an inclusive boundary."""
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            remaining = absolute_expiry - time.time()
+            data["expires_in"] = int(remaining) if remaining >= 1 else -1
         elif data.get("expires_in") is not None:
             with contextlib.suppress(OSError, TypeError, ValueError):
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
-                data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+                remaining = implied_expiry - time.time()
+                data["expires_in"] = int(remaining) if remaining >= 1 else -1
 
     async def get_tokens(self) -> "OAuthToken | None":
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)

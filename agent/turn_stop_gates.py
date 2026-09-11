@@ -92,8 +92,10 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
 
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
-    only the nudge is flagged synthetic (#65919)."""
-    agent._emit_interim_assistant_message(final_msg)
+    only the nudge is flagged synthetic (#65919). ``force_display`` bypasses the interim
+    dedup/streamed gates so the attempted answer always lands as a standalone permanent
+    bubble (verify-on-stop / pre_verify paths)."""
+    agent._emit_interim_assistant_message(final_msg, force_display=True)
     append_message(messages, final_msg)
     try:
         agent._flush_messages_to_session_db(messages, conversation_history)

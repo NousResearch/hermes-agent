@@ -213,6 +213,21 @@ class TestResumeGuardBoundsWhatResumeLoads:
         assert db.get_resume_message_count(sid) == len(display)
         assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
 
+    def test_replay_dedupe_precedes_background_review_filtering(self, db):
+        sid = "chat"
+        db.create_session(sid, source="desktop")
+        db.append_message(sid, "user", "same")
+        db.append_message(
+            sid, "user", "Review the conversation above and update the skill library now.")
+        db.append_message(sid, "user", "same")
+        db.append_message(sid, "assistant", "curator reply")
+
+        _, display = db.get_resume_conversations(sid)
+
+        assert _texts(display) == [("user", "same")]
+        assert db.get_resume_message_count(sid) == len(display)
+        assert db.assert_resume_safe(sid, max_messages=len(display)) == len(display)
+
     def test_guard_rejects_a_lineage_over_the_limit(self, db):
         from hermes_state import SessionResumeTooLargeError
 

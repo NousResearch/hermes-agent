@@ -976,6 +976,12 @@ class SessionMessagesMixin:
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
+            if include_ancestors:
+                skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)
+                if skip:
+                    continue
+                if exact_clone_key is not None:
+                    exact_user_clones[exact_clone_key] = msg
             if _is_background_review_harness_message(msg):
                 skip_harness_reply = True
                 continue
@@ -983,12 +989,6 @@ class SessionMessagesMixin:
                 skip_harness_reply = False
                 if msg.get("role") == "assistant":
                     continue
-            if include_ancestors:
-                skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)
-                if skip:
-                    continue
-                if exact_clone_key is not None:
-                    exact_user_clones[exact_clone_key] = msg
             messages.append(msg)
             if max_messages is not None and len(messages) >= max_messages:
                 break

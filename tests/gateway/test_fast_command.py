@@ -225,8 +225,10 @@ def test_turn_route_gates_flex_off_aggregator_routes():
         "credential_pool": None,
     }
 
+    # A tier-eligible model id, so it is specifically the ROUTE gate doing the
+    # dropping here — not model eligibility.
     route = gateway_run.GatewayRunner._resolve_turn_agent_config(
-        runner, "hi", "openrouter/openai/gpt-4.1", runtime_kwargs
+        runner, "hi", "gpt-4.1", runtime_kwargs
     )
 
     assert route["runtime"]["provider"] == "openrouter"

@@ -155,17 +155,23 @@ class TestPriorityProcessingModels(unittest.TestCase):
 
 
 class TestTwoLevelModelPaths(unittest.TestCase):
-    """Aggregators route models as ``aggregator/vendor/model``.
+    """Aggregators route models as ``aggregator/vendor/model`` — deliberately NOT eligible.
 
-    Only the aggregator segment was stripped, so ``openrouter/openai/gpt-4.1``
-    reduced to ``openai/gpt-4.1`` and matched no prefix — service_tier was
-    silently dropped for every OpenRouter-routed model.
+    The route gate keeps tier params off aggregator routes regardless, so matching
+    two-level ids would only expose a ``/fast`` toggle on the CLI/gateway (which check
+    the model alone) that confirms FAST and then sends nothing. A single vendor prefix
+    (``openai/gpt-4.1``) still matches — that is the first-party form.
     """
 
-    def test_openrouter_openai_path_supports_fast_mode(self):
+    def test_aggregator_two_level_ids_are_not_eligible(self):
         from hermes_cli.models import model_supports_fast_mode
 
-        assert model_supports_fast_mode("openrouter/openai/gpt-4.1")
+        assert not model_supports_fast_mode("openrouter/openai/gpt-4.1")
+
+    def test_single_vendor_prefix_still_matches(self):
+        from hermes_cli.models import model_supports_fast_mode
+
+        assert model_supports_fast_mode("openai/gpt-4.1")
 
 
 class TestGoogleServiceTier(unittest.TestCase):
@@ -184,15 +190,19 @@ class TestGoogleServiceTier(unittest.TestCase):
             "gemini-3.5-flash-lite",
             "gemini-2.5-pro",
             "google/gemini-3.5-flash",
-            "openrouter/google/gemini-3.5-flash",
         ]:
             assert _is_google_service_tier_model(model), f"{model} should be tier-eligible"
 
     def test_non_gemini_models_not_detected(self):
         from hermes_cli.models import _is_google_service_tier_model
 
-        for model in ["gpt-5.4", "claude-opus-4-6", "openrouter/openai/gpt-4.1"]:
-            assert not _is_google_service_tier_model(model), f"{model} is not a Gemini model"
+        # Two-level aggregator ids are deliberately ineligible (route-gated anyway;
+        # matching them would only expose a lying /fast toggle).
+        for model in [
+            "gpt-5.4", "claude-opus-4-6",
+            "openrouter/openai/gpt-4.1", "openrouter/google/gemini-3.5-flash",
+        ]:
+            assert not _is_google_service_tier_model(model), f"{model} must not be tier-eligible"
 
 
 class TestFlexTier(unittest.TestCase):
@@ -207,7 +217,7 @@ class TestFlexTier(unittest.TestCase):
         from hermes_cli.models import resolve_fast_mode_overrides
 
         assert resolve_fast_mode_overrides(
-            "openrouter/google/gemini-3.5-flash", tier="flex"
+            "google/gemini-3.5-flash", tier="flex"
         ) == {"service_tier": "flex"}
 
     def test_gemini_priority_override(self):
@@ -457,7 +467,7 @@ class TestGeminiVersionGate(unittest.TestCase):
             "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
             "gemini-3-flash-preview", "gemini-3.1-pro-preview",
             "gemini-3.5-flash", "gemini-3.6-flash",
-            "openrouter/google/gemini-3.5-flash",
+            "google/gemini-3.5-flash",
         ]:
             assert _is_google_service_tier_model(model), f"{model} should be eligible"
 

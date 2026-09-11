@@ -97,14 +97,17 @@ def _clone_background_review_messages(messages):
 
 
 def _requested_service_tier(agent) -> str | None:
-    """The service tier this turn asked for, or None — a billing audit field
-    (``hermes_cli/oneshot.py``: pipelines confirm the tier they believe they are paying for went
-    out on the wire). Two config paths write the tier into ``request_overrides``: the fast-mode
-    resolver writes it TOP-LEVEL (the shape the transports send) and a ``custom_providers`` entry
-    nests it under ``extra_body`` (``agent/agent_init.py``) — reading only ``extra_body`` reported
-    None for every fast-mode turn, so both are read, top-level winning because that is what the
-    transport puts on the request. ``speed: fast`` (Anthropic Fast Mode) is deliberately not
-    reported — a different parameter, not a service tier."""
+    """The service tier this turn REQUESTED via pinned ``request_overrides``, or None.
+
+    A billing audit field (``hermes_cli/oneshot.py``) — but a *request*-side reading, not proof
+    of emission: a transport may still strip the tier on an ineligible route (xAI Responses,
+    older Gemini), and bounded ``auto``/``cold`` windows applied per request by
+    ``agent.fast_mode`` are not reflected here. Two config paths write the tier into
+    ``request_overrides``: the fast-mode resolver writes it TOP-LEVEL (the shape the transports
+    send) and a ``custom_providers`` entry nests it under ``extra_body``
+    (``agent/agent_init.py``) — reading only ``extra_body`` reported None for every fast-mode
+    turn, so both are read, top-level winning. ``speed: fast`` (Anthropic Fast Mode) is
+    deliberately not reported — a different parameter, not a service tier."""
     overrides = getattr(agent, "request_overrides", None) or {}
     if not isinstance(overrides, dict):
         return None

@@ -985,13 +985,10 @@ def provider_label(provider: Optional[str]) -> str:
 
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """OpenAI flagship eligible for Priority Processing. Codex-series excluded — the Codex Responses
-    API doesn't accept ``service_tier``. A second-level ``openai/`` sub-prefix is stripped so
-    ``openrouter/openai/gpt-4.1`` (→ ``openai/gpt-4.1``) still matches; only ``openai/`` is stripped
-    to keep the fix targeted."""
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    if raw.startswith("openai/"):
-        raw = raw[len("openai/"):]
-    base = raw.split(":")[0]
+    API doesn't accept ``service_tier``. Two-level aggregator ids (``openrouter/openai/gpt-4.1``)
+    deliberately do NOT match: the route gate keeps tier params off aggregator routes anyway, so
+    matching them would only expose a ``/fast`` toggle that confirms and then sends nothing."""
+    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
     return bool(base) and "codex" not in base and base.startswith(tuple(_OPENAI_FAST_MODE_PREFIXES))
 
 
@@ -1011,13 +1008,10 @@ def _is_google_service_tier_model(model_id: Optional[str]) -> bool:
     Both docs list the same ``gemini-2.5+`` family, so match ``gemini-*`` by
     pattern rather than pinning a version list that goes stale each release.
     """
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    # Same two-level handling as the OpenAI check: 'openrouter/google/gemini-x'
-    # reduces to 'google/gemini-x'. Gemma/Lyria are deliberately not matched —
-    # service tiers apply to Gemini only.
-    if raw.startswith("google/"):
-        raw = raw[len("google/"):]
-    base = raw.split(":")[0]
+    # Two-level aggregator ids ('openrouter/google/gemini-x') deliberately do
+    # NOT match — same reasoning as the OpenAI check. Gemma/Lyria are also not
+    # matched: service tiers apply to Gemini only.
+    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
     match = re.match(r"gemini-(\d+)(?:\.(\d+))?", base)
     if not match:
         return False

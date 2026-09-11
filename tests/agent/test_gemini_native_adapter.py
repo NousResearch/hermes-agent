@@ -691,6 +691,7 @@ def test_build_gemini_request_emits_top_level_service_tier():
 
     request = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.6-flash",
         service_tier="flex",
     )
 
@@ -712,10 +713,30 @@ def test_build_gemini_request_accepts_priority():
 
     request = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.6-flash",
         service_tier="priority",
     )
 
     assert request["service_tier"] == "priority"
+
+
+def test_build_gemini_request_drops_tier_for_pre_2_5_models():
+    """Adapter-level defense: a stale pinned tier must never 400 the session.
+
+    A tier pinned into request_overrides at build survives a runtime ``/model``
+    switch verbatim, and Gemini's native REST rejects the whole request on an
+    unexpected body field — so the adapter drops the field for models Google
+    does not list as tier-eligible, rather than hard-failing every turn.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-2.0-flash",
+        service_tier="flex",
+    )
+
+    assert "service_tier" not in request
 
 
 def test_native_client_sends_service_tier_on_the_wire(monkeypatch):

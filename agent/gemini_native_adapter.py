@@ -95,6 +95,23 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
+def gemini_supports_service_tier(model: str) -> bool:
+    """Gemini 2.5+ accepts the top-level ``service_tier`` generateContent field; older models
+    reject the whole request on an unexpected body field (400 INVALID_ARGUMENT).
+
+    Last-line defense, duplicating the eligibility gate in
+    ``hermes_cli.models._is_google_service_tier_model`` at the adapter: a tier pinned into
+    ``request_overrides`` at agent build survives a runtime ``/model`` switch verbatim
+    (``_apply_switched_provider_request_overrides`` keeps ``service_tier``/``speed``), so
+    without this gate a switch from a tier-eligible Gemini to an older one would hard-fail
+    every subsequent turn until ``/fast off``.
+    """
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", bare_gemini_model_id(model).lower())
+    if not match:
+        return False
+    return (int(match.group(1)), int(match.group(2) or 0)) >= (2, 5)
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -408,10 +425,11 @@ def build_gemini_request(
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Gemini takes the tier as a top-level body field, a sibling of ``contents`` — NOT inside
     # generationConfig, where it would be ignored and billed at the standard rate. Accepted
-    # values are "flex" and "priority"; omitting the field means standard.
+    # values are "flex" and "priority"; omitting the field means standard. Dropped (not sent)
+    # for models that would 400 on the field — see gemini_supports_service_tier.
     #   https://ai.google.dev/gemini-api/docs/flex-inference
     #   https://ai.google.dev/gemini-api/docs/generate-content/priority-inference
-    if service_tier:
+    if service_tier and gemini_supports_service_tier(model):
         request["service_tier"] = str(service_tier).strip().lower()
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (

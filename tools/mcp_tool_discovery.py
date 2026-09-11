@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
@@ -454,6 +454,50 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     with _core._lock:
         server_name = _core._mcp_tool_server_names.get(tool_name)
         return bool(server_name and server_name in _core._parallel_safe_servers)
+
+
+def snapshot_live_mcp_server(name: str) -> Optional[Any]:
+    """Return the process-owned live session for ``name``, or ``None``.
+
+    Used by health / ``hermes mcp test`` so they do not open a second Streamable
+    HTTP session against hosts that evict the first (Slack MCP). A live session
+    with zero tools is still returned — empty ``_tools`` is not "no session".
+    Parked servers (``session is None``) and servers owned by another multiplex
+    profile return ``None``.
+    """
+    current_scope = _core._mcp_registry_scope()
+    with _core._lock:
+        if not _core._server_visible_in_scope(name, current_scope):
+            return None
+        server = _core._servers.get(name)
+        if server is None or getattr(server, "session", None) is None:
+            return None
+        return server
+
+
+def mcp_server_owned_or_connecting(name: str) -> bool:
+    """True if this process has claimed ``name`` (live, parked, or connecting) in the current profile scope."""
+    current_scope = _core._mcp_registry_scope()
+    with _core._lock:
+        if not _core._server_visible_in_scope(name, current_scope):
+            return False
+        return name in _core._servers or name in _core._server_connecting
+
+
+def mcp_event_loop_is_current() -> bool:
+    """True when the caller is running on the dedicated MCP event-loop thread."""
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    with _core._lock:
+        loop = _core._mcp_loop
+    return loop is not None and running is loop
+
+
+def mcp_event_loop_is_running() -> bool:
+    """True when the dedicated MCP loop exists and is running (any thread)."""
+    return _loop._running_loop() is not None
 
 
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:

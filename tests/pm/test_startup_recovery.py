@@ -16,6 +16,12 @@ from pm.packages import uv_env
 from pm.store import current_target, sha256_file, tree_digest
 from tests.pm.test_workspace_build_inputs import _wheel
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 @pytest.mark.parametrize("marker_name", [".update-incomplete", ".lazy-refresh-incomplete", None, "manual", "baseline"])
 def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, marker_name):

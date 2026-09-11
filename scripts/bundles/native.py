@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
+import argparse
 from pathlib import Path
 
-from pm.cli import _install_names, _run_live
+from pm.cli import _install_names
 from pm.ensure import _store, _facts, _lockfile, uv as pm_uv
 from pm.lock import Facts
 from pm.registry import get_package, walk
@@ -74,14 +78,25 @@ def stage_pm_runtime(root: Path, uv: Path, python: Path, repo: Path, *, offline:
 
 
 def stage_native(args) -> int:
-    previous = os.environ.get("HERMES_RUNTIME_DIR")
-    try:
-        return _stage_native(args)
-    finally:
-        if previous is None:
-            os.environ.pop("HERMES_RUNTIME_DIR", None)
-        else:
-            os.environ["HERMES_RUNTIME_DIR"] = previous
+    """Provision in a child with build-owned HOME/cache/PM roots."""
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "manifest.json").unlink(missing_ok=True)
+    root = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix=".build-", dir=out) as work:
+        env = {**os.environ, "HOME": work, "USERPROFILE": work,
+               "HERMES_HOME": str(Path(work) / ".hermes"),
+               "HERMES_RUNTIME_DIR": str(out / "tools"),
+               "HERMES_PYTHON_SRC_ROOT": str(root),
+               "XDG_CACHE_HOME": str(Path(work) / "cache"),
+               "XDG_CONFIG_HOME": str(Path(work) / "config"),
+               "UV_CACHE_DIR": str(Path(work) / "uv-cache"),
+               "PYTHONPATH": os.pathsep.join([str(root), *filter(None, sys.path)])}
+        command = [sys.executable, "-B", "-m", "scripts.bundles.native", "--out", str(out),
+                   "--ref", args.ref or "HEAD", "--source", str(root)]
+        for name, product in getattr(args, "frontends", {}).items():
+            command += [f"--{name}", str(product)]
+        return subprocess.run(command, cwd=root, env=env).returncode
 
 
 def _stage_native(args) -> int:
@@ -103,11 +118,13 @@ def _stage_native(args) -> int:
 
     repo_dir = out / "hermes-agent"
     ref = args.ref or "HEAD"
-    from scripts.bundles.payload import snapshot, write_manifest, relativize_links
+    from scripts.bundles.payload import snapshot
     print(f"staging repo snapshot ({ref})…", flush=True)
-    snapshot(paths.repo_root(), ref, repo_dir)
-
-    os.environ["HERMES_RUNTIME_DIR"] = str(store_dir)
+    snapshot(getattr(args, "source", None) or paths.repo_root(), ref, repo_dir)
+    # PM's provider code reads its adjacent lock. Never combine that tool graph
+    # with a revision selecting different pins.
+    if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
+        raise ValueError("selected revision's PM lock differs from the builder; use a checkout at that revision")
 
     names = [
         n for n in _bundle_package_names()
@@ -146,6 +163,8 @@ def _stage_native(args) -> int:
         _store().entry(python_fact["entry"]), current_target()
     )
 
+    if python_bin is None:
+        raise FileNotFoundError("staged Python executable is missing")
     stage_pm_runtime(out, Path(uv_bin), python_bin, repo_dir)
     print("✓ pm-runtime (independent locked dependencies)", flush=True)
 
@@ -163,16 +182,17 @@ def _stage_native(args) -> int:
         # sdist builds at the machine's real toolchain.
         env.setdefault("AR", "/usr/bin/ar")
         env.setdefault("CC", "clang")
-    for cmd in (
-        [uv_bin, "venv", "--relocatable", "--python", str(python_bin), str(venv_dir)],
-        [uv_bin, "sync", "--frozen", "--all-extras", "--active"],
-    ):
-        print(f"  venv: $ {' '.join(cmd)}", flush=True)
-        code, tail = _run_live(cmd, cwd=repo_dir, env=env)
-        if code != 0:
-            print(f"✗ venv: {' '.join(cmd[1:3])} failed:\n{tail}")
-            return 1
-    print("✓ venv (relocatable, all extras, on the staged interpreter)")
+    from scripts.build.python_env import build_python_environment
+    from pm.package import InstallError
+
+    cache = Path(os.environ["UV_CACHE_DIR"])
+    try:
+        build_python_environment(source=repo_dir, python=python_bin, uv=Path(uv_bin),
+                                 out=venv_dir, env=env, cache=cache, all_extras=True)
+    except InstallError as exc:
+        print(f"✗ venv: {exc}")
+        return 1
+    print("✓ venv (all extras, on the staged interpreter)")
 
     # Inventory the staged interpreter before publishing the bundle contract.
     from pm.features import FeatureProbeError, installed_extras, write_features
@@ -190,12 +210,10 @@ def _stage_native(args) -> int:
     # mutable-venv rebuild from the bundle near-free (`uv sync --offline`
     # from a warm cache probed at 0.4s vs 1.2s cold) — the blow-away-on-
     # update contract depends on it.
-    from pm.packages import uv_cache_dir as bundle_uv_cache_dir
-
     payload_cache = out / "uv-cache"
     if payload_cache.exists():
         shutil.rmtree(payload_cache, ignore_errors=True)
-    src_cache = bundle_uv_cache_dir()
+    src_cache = cache
     if src_cache.is_dir():
         print(f"  uv-cache: copying {src_cache} → payload...", flush=True)
         stage_uv_cache(src_cache, payload_cache)
@@ -210,12 +228,37 @@ def _stage_native(args) -> int:
 
     if failed:
         return 1
-    relativize_links(out)
     from scripts.bundles.payload import record_tools
     recorded = {name: fact["entry"] for name in names if (fact := _facts().get(name)) and "entry" in fact}
     record_tools(out, paths.lockfile_path(), current_target(), recorded)
-    write_manifest(out, target=current_target(), repo="hermes-agent", ref=ref)
+    from scripts.build.agent import assemble
+    from scripts.build.inputs import AgentInputs, RESOURCE_ENV, dependency_site
+
+    assemble(AgentInputs(
+        project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
+        placement="contained", target=current_target(), python=python_bin,
+        site_packages=dependency_site(venv_dir, python_fact["version"], current_target()), environment=venv_dir,
+        tools=store_dir, pm_runtime=out / "pm-runtime", ref=ref,
+        resources={name: repo_dir / name for name in RESOURCE_ENV},
+        frontends=getattr(args, "frontends", {}), features=out / "enabled-features.json",
+    ), out)
     print(f"✓ manifest ({out / 'manifest.json'})")
     return 1 if failed else 0
 
 
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--ref", default="HEAD")
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--tui", type=Path)
+    parser.add_argument("--web", type=Path)
+    args = parser.parse_args()
+    args.frontends = {name: path for name in ("tui", "web") if (path := getattr(args, name)) is not None}
+    return _stage_native(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

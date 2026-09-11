@@ -14,11 +14,17 @@
  */
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { parseArgs } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env = process.env } = {}) {
+  const { values } = parseArgs({ args, options: {
+    source: { type: 'string' }, out: { type: 'string' }, check: { type: 'boolean' }
+  } })
+  const source = path.resolve(values.source ?? root)
+  const out = path.resolve(values.out ?? source)
   const childEnv = { ...env }
   // Parent payload paths must not shadow the isolated build dependencies.
   delete childEnv.PYTHONPATH
@@ -26,9 +32,10 @@ export function generateIcons(args = [], { root = repoRoot, run = spawnSync, env
   const result = run('uv', [
     'run', '--isolated', '--locked', '--only-group', 'icon-build',
     // PM copies its wheel cache into payloads. Keep build wheels outside it.
-    '--cache-dir', path.join(root, '.cache', 'icon-build'),
-    'python', path.join(root, 'scripts', 'generate_icons.py'), ...args
-  ], { cwd: root, stdio: 'inherit', windowsHide: true, env: childEnv })
+    '--cache-dir', path.join(source, '.cache', 'icon-build'),
+    'python', path.join(root, 'scripts', 'generate_icons.py'), '--source', source, '--out', out,
+    ...(values.check ? ['--check'] : [])
+  ], { cwd: source, stdio: 'inherit', windowsHide: true, env: childEnv })
   if (result.error) {
     console.error('[generate-icons] failed to launch icon generator:', result.error.message)
     console.error('[generate-icons] uv is required to run the isolated icon-build group')

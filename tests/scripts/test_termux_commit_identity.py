@@ -58,4 +58,4 @@ def test_deb_identity_refusal_leaves_payload_and_output_untouched(tmp_path):
     (payload / 'app/pyproject.toml').write_text('[project]\nversion="9.9.9"\n', encoding='utf-8')
     assert 'version' in invoke(['--commit', commit]).lower()
     (payload / 'app/pyproject.toml').write_bytes((repo / 'pyproject.toml').read_bytes())
-    assert 'payload missing python/' in invoke(['--commit', commit])
+    assert '--tui-product is required' in invoke(['--commit', commit])

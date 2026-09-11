@@ -36,8 +36,10 @@ function fixture() {
   }
   delete env.PYTHONHOME
   delete env.PYTHONPATH
+  // The digest hook only needs the manifest to mark the payload as present.
+  fs.writeFileSync(path.join(payload, 'manifest.json'), '{}')
   execFileSync(python, ['-c',
-    'from pathlib import Path; import sys; from scripts.bundles.payload import record_tools, write_manifest; from pm.store import current_target; root=Path(sys.argv[1]); write_manifest(root,target=current_target(),repo="repo"); record_tools(root,Path("pm/lock.json"),current_target(),{"uv":"uv"})',
+    'from pathlib import Path; import sys; from scripts.bundles.payload import record_tools; from pm.store import current_target; root=Path(sys.argv[1]); record_tools(root,Path("pm/lock.json"),current_target(),{"uv":"uv"})',
     payload], { cwd: repo, env, encoding: 'utf8' })
   const facts = path.join(payload, 'tools', 'facts.json')
   const before = JSON.parse(fs.readFileSync(facts, 'utf8'))

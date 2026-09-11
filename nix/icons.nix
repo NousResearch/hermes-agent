@@ -10,11 +10,6 @@ let
   };
 in
 runCommand "hermes-icons" { nativeBuildInputs = [ iconBuildVenv ]; } ''
-  cp -r ${src} source
-  chmod -R u+w source
-  cd source
-  python scripts/generate_icons.py
-  python scripts/generate_icons.py --check
-  mkdir -p $out
-  cp -r apps web website $out/
+  python ${src}/scripts/generate_icons.py --source ${src} --out $out
+  python ${src}/scripts/generate_icons.py --source ${src} --out $out --check
 ''

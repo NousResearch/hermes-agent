@@ -15,6 +15,12 @@ from pm.package import InstallError
 from pm.packages import Python, Uv
 from pm.store import current_target
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 @pytest.fixture
 def installed_uv(tmp_path, monkeypatch):

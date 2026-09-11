@@ -443,6 +443,7 @@ class Venv(StatePackage):
         import uuid
         from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
         from pm.ensure import uv as pm_uv
+        from pm.environment import PythonEnvironment
         from pm.lock import Facts
         from pm.workspace import enabled_member_dirs, lock_and_sync
 
@@ -452,18 +453,16 @@ class Venv(StatePackage):
         uv_bin, env = pm_uv(explicit=repair)
         if uv_bin is None:
             raise InstallError(self.name, "uv is not installed")
-        env["UV_PROJECT_ENVIRONMENT"] = str(candidate)
-        env.pop("UV_NO_CONFIG", None)  # project indexes/sources belong to the project
+        environment = PythonEnvironment(
+            uv=Path(uv_bin), python=Path(env["UV_PYTHON"]), destination=candidate,
+            cache=Path(env["UV_CACHE_DIR"]), env=env,
+            offline=env.get("UV_OFFLINE") == "1",
+        )
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
-            create = subprocess.run(
-                [uv_bin, "venv", "--relocatable", str(candidate)],
-                env=env, capture_output=True, text=True, timeout=120,
-            )
-            if create.returncode:
-                raise InstallError(self.name, f"uv venv failed: {create.stderr[-600:]}")
+            environment.create()
             prior = Facts(runtime_facts_path(project), strict=repair).get("venv") or {}
             replay = None
             if repair and ("environment" in prior or "resolved_lock" in prior):
@@ -479,18 +478,13 @@ class Venv(StatePackage):
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
             lock_and_sync(members, extras, venv_dir=candidate, root=generation / "workspace",
-                          seed_lock=seed, frozen=repair or not members, env=env, replay=replay)
+                          seed_lock=seed, frozen=repair or not members, replay=replay,
+                          source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
-            python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-            checked = subprocess.run(
-                [uv_bin, "pip", "check", "--python", str(python)],
-                env=env, capture_output=True, text=True, timeout=60,
-            )
-            if checked.returncode:
-                raise InstallError(self.name, f"dependency validation failed: {checked.stderr[-600:]}")
+            environment.check()
             if repair:
                 from pm.recovery import validate_environment
-                validate_environment(python, env=env, cwd=resolved_lock.parent)
+                validate_environment(environment.executable, env=env, cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise

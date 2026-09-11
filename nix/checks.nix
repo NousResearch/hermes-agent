@@ -991,17 +991,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # Verify every pyproject.toml [project.scripts] entry has a wrapped binary
+        # Exercise every declared command and the environment delivered by
+        # makeWrapper, plus the shared assembler's store-reference contract.
         entry-points-sync = pkgs.runCommand "hermes-entry-points-sync" { } ''
-          set -e
-          echo "=== Checking entry points match pyproject.toml [project.scripts] ==="
-          for bin in hermes hermes-agent hermes-acp; do
-            test -x ${hermes-agent}/bin/$bin || (echo "FAIL: $bin binary missing from Nix package"; exit 1)
-            echo "PASS: $bin present"
-          done
-
+          ${hermes-agent.python}/bin/python3 ${./tests/agent-references.py} \
+            ${hermes-agent} ${../pyproject.toml} ${hermes-agent.agentInputsFile}
           mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify CLI subcommands are accessible

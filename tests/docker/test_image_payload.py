@@ -39,6 +39,9 @@ with Image.open('/opt/hermes/hermes_cli/web_dist/favicon.ico') as image:
     assert image.width > 0 and image.height > 0
 assert importlib.util.find_spec('resvg_py') is None
 assert not Path('/opt/hermes/.cache/icon-build').exists()
+assert not Path('/opt/hermes/node_modules/vite').exists()
+assert not Path('/opt/hermes/node_modules/esbuild').exists()
+assert Path('/opt/hermes/node_modules/typescript/bin/tsc').is_file()
 """
     result = subprocess.run(
         ["docker", "run", "--rm", "--network", "none", "--user", "hermes",

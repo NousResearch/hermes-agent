@@ -9,11 +9,14 @@ import sys
 
 import pytest
 
-from scripts.bundles.payload import plant_surfaces, posix_launcher, project_entries, relativize_links, snapshot, write_manifest, stage_launchers
+from scripts.bundles.payload import relativize_links, snapshot
+from scripts.build.inputs import project_entries
+from scripts.build.agent import plant_surfaces
+from scripts.build.launchers import posix_launcher
 from scripts.bundles.desktop import release_version
 
 
-def test_snapshot_and_manifest_are_shared_by_both_layouts(tmp_path):
+def test_snapshot_preserves_declared_entries_in_both_layouts(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
@@ -26,11 +29,9 @@ def test_snapshot_and_manifest_are_shared_by_both_layouts(tmp_path):
         root = tmp_path / repo_name
         root.mkdir()
         snapshot(source, "HEAD", root / repo_name)
-        manifest = write_manifest(root, target=target, repo=repo_name)
-        assert project_entries(root / manifest["repo"]) == {"custom": "entry:run"}
+        assert project_entries(root / repo_name / "pyproject.toml") == {"custom": "entry:run"}
         assert not (root / repo_name / "untracked").exists()
         assert not (root / repo_name / ".git").exists()
-        assert json.loads((root / "manifest.json").read_text(encoding="utf-8-sig")) == manifest
     assert release_version(source, "v1.2.3") == "1.2.3"
     with pytest.raises(ValueError):
         release_version(source, "v1.2.4")
@@ -38,73 +39,31 @@ def test_snapshot_and_manifest_are_shared_by_both_layouts(tmp_path):
 
 def test_surfaces_require_complete_outputs_and_replace_stale_files(tmp_path):
     source, repo = tmp_path / "build", tmp_path / "payload"
-    tui = source / "ui-tui/dist"
+    tui = source / "tui/dist"
     web = source / "hermes_cli/web_dist"
     tui.mkdir(parents=True)
     web.mkdir(parents=True)
     (tui / "entry.js").write_text("built tui", encoding="utf-8")
+    (tui.parent / "package.json").write_text('{"type":"module"}', encoding="utf-8")
     (web / "index.html").write_text("built web", encoding="utf-8")
-    plant_surfaces(repo, source)
+    plant_surfaces(repo, {"tui": tui.parent, "web": web})
     (repo / "hermes_cli/web_dist/stale").write_text("old", encoding="utf-8")
-    plant_surfaces(repo, source)
+    plant_surfaces(repo, {"tui": tui.parent, "web": web})
     assert not (repo / "hermes_cli/web_dist/stale").exists()
     assert (repo / "hermes_cli/tui_dist/entry.js").read_text(encoding="utf-8-sig") == "built tui"
     (web / "index.html").unlink()
     with pytest.raises(FileNotFoundError):
-        plant_surfaces(repo, source)
+        plant_surfaces(repo, {"tui": tui.parent, "web": web})
 
 
 def test_wrapper_rejects_unresolved_template_fields(tmp_path, monkeypatch):
-    from scripts.bundles import payload
+    from scripts.build import launchers
 
     template = tmp_path / "launcher_wrapper.py"
     template.write_text('entry = "__HERMES_ENTRY_MODULE__"\nmissing = "__HERMES_NEW__"\n', encoding="utf-8")
-    monkeypatch.setattr(payload, "__file__", str(tmp_path / "payload.py"))
+    monkeypatch.setattr(launchers, "__file__", str(tmp_path / "payload.py"))
     with pytest.raises(ValueError, match="__HERMES_NEW__"):
-        payload.render_wrapper("entry:run", "../app", "../venv/Lib/site-packages")
-
-
-def test_launcher_stage_reads_declared_entries_and_drops_stale_names(tmp_path, monkeypatch):
-    from pathlib import Path
-    from types import SimpleNamespace
-    from pm.lock import Facts
-    from pm.store import current_target
-
-    root = tmp_path / "payload"
-    repo, tools = root / "app", root / "tools"
-    repo.mkdir(parents=True)
-    tools.mkdir()
-    interpreter = tools / "python/python.exe"
-    interpreter.parent.mkdir()
-    interpreter.write_bytes(b"fixture interpreter")
-    (repo / "pyproject.toml").write_text('[project.scripts]\ncustom="entry:run"\n', encoding="utf-8")
-    Facts(tools / "facts.json").record("python", "3.11.16", "python", {}, tools)
-    manifest = write_manifest(root, target=current_target(), repo="app")
-    site = "venv/Lib/site-packages" if current_target().startswith("win32") else "venv/lib/python3.11/site-packages"
-    (root / site).mkdir(parents=True)
-    (root / "bin").mkdir()
-    (root / "bin/removed-entry").write_text("old", encoding="utf-8")
-    monkeypatch.setattr("pm.registry.get_package", lambda _: SimpleNamespace(binary=lambda *args: interpreter))
-    calls = []
-
-    def mint(argv, *, env, check):
-        calls.append(json.loads(env["HERMES_MINT_SPECS"]))
-        compile(Path(env["HERMES_MINT_WRAPPER"]).read_text(encoding="utf-8-sig"), "wrapper", "exec")
-        (root / "bin/custom.exe").write_bytes(b"mint fixture")
-
-    assert stage_launchers(root, manifest, run=mint) == ["custom"]
-    assert not (root / "bin/removed-entry").exists()
-    if current_target().startswith("win32"):
-        assert calls == [[{"name": "custom", "module": "entry", "func": "run"}]]
-    else:
-        assert (root / "bin/custom").is_file()
-    published = json.loads((root / "manifest.json").read_text(encoding="utf-8-sig"))
-    assert published["launchers"] == ["custom"]
-    assert published["runtime"] == {
-        "repoDir": "app", "toolsDir": "tools", "storePython": "tools/python/python.exe",
-        "sitePackages": site,
-        "commands": {"custom": "bin/custom.exe" if current_target().startswith("win32") else "bin/custom"},
-    }
+        launchers.render_wrapper("entry:run", "../app", "../venv/Lib/site-packages")
 
 
 @pytest.mark.platforms("posix")

@@ -23,6 +23,12 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 def _write_project(root: Path) -> None:
     """A project whose [tool.uv] the lock depends on: hide it and uv
     rejects the lock (the #82446 shape)."""

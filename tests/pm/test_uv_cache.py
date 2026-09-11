@@ -8,6 +8,12 @@ import pytest
 
 import pm.packages as pkgs
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 def test_uv_env_pins_cache_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(pkgs, "uv_cache_dir", lambda: tmp_path / "c")

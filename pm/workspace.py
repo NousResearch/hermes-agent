@@ -11,7 +11,10 @@ import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from pm.environment import PythonEnvironment
 
 from pm import paths
 from pm.package import InstallError
@@ -141,7 +144,8 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None) -> tuple[Path, bool]:
+def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None, *,
+                        source: Optional[Path] = None) -> tuple[Path, bool]:
     """(Re)generate the workspace root's pyproject.toml from core's
     pyproject + the enabled plugin members. Idempotent — same inputs,
     same bytes. Returns (root, changed): changed is True when the member
@@ -149,12 +153,12 @@ def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None) ->
     the signal to re-seed the resolution from the committed lock."""
     if root is None:
         root = workspace_root()
-    source = paths.repo_root().resolve()
+    source = (paths.repo_root() if source is None else source).resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
         raise InstallError("venv", "workspace must not replace the core source")
     root.mkdir(parents=True, exist_ok=True)
 
-    core_pyproject = paths.repo_root() / "pyproject.toml"
+    core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
     members = [_member_rel(root, _workspace_member(source, root, identity=identity))
@@ -172,7 +176,7 @@ def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None) ->
         changed = target.read_text(encoding="utf-8") != text
     except OSError:
         changed = True
-    _copy_core_inputs(paths.repo_root(), root)
+    _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
     return root, changed
 
@@ -185,7 +189,7 @@ def build_root(plugin_dirs: list[Path], root: Optional[Path] = None) -> Path:
     return generated
 
 
-def _seed_lock(root: Path, seed_lock: Optional[Path] = None) -> None:
+def _seed_lock(root: Path, seed_lock: Optional[Path] = None, *, source: Optional[Path] = None) -> None:
     """Seed the generated root's uv.lock with the CURRENT resolution.
 
     Seed precedence: the parent-supplied ``seed_lock`` path first, then
@@ -206,7 +210,7 @@ def _seed_lock(root: Path, seed_lock: Optional[Path] = None) -> None:
         if existing.is_file():
             seed_lock = existing
         else:
-            seed_lock = paths.repo_root() / "uv.lock"
+            seed_lock = (paths.repo_root() if source is None else source) / "uv.lock"
     if not seed_lock.is_file():
         return  # nothing committed to seed from; uv resolves from scratch
     (root / "uv.lock").write_bytes(seed_lock.read_bytes())
@@ -424,6 +428,8 @@ def lock_and_sync(
     seed_lock: Optional[Path] = None,
     frozen: bool = False,
     replay: Optional[Path] = None,
+    source: Optional[Path] = None,
+    environment: PythonEnvironment | None = None,
 ) -> None:
     """Build the root, then `uv lock` + `uv sync --frozen --extra ...`.
 
@@ -436,18 +442,21 @@ def lock_and_sync(
     gets a COPY — the live process environment is never mutated. ``replay``
     copies a recorded sibling workspace and uses its lock without resolution
     or plugin discovery; it is reserved for restoring an existing selection.
+    ``source`` and ``environment`` bypass live source/tool discovery when supplied;
+    the environment owns the child process policy, cache and interpreter.
 
     Raises a CLASSIFIED InstallError on failure: ResolutionConflict only
     for a confirmed resolver conflict; network, build and tool failures
     stay generic InstallError — they are not evidence of a dependency
     conflict and must not disable plugins.
     """
-    from pm.ensure import uv as pm_uv
+    if environment is not None and environment.destination != venv_dir:
+        raise ValueError("workspace and environment destinations differ")
 
     if replay is None:
-        generated, changed = _generate_pyproject(plugin_dirs, root)
+        generated, changed = _generate_pyproject(plugin_dirs, root, source=source)
         if changed:
-            _seed_lock(generated, seed_lock)
+            _seed_lock(generated, seed_lock, source=source)
     else:
         import shutil
 
@@ -459,35 +468,16 @@ def lock_and_sync(
         generated = root
         frozen = True
 
-    uv_bin, run_env = pm_uv(base_env=env)
-    if uv_bin is None:
-        raise InstallError("venv", "PM's uv and Python are required; run `hermes pm install`")
-    run_env.pop("UV_NO_CONFIG", None)
-    run_env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    if environment is None:
+        from pm.ensure import uv as pm_uv
+        from pm.environment import PythonEnvironment
 
-    import subprocess
-
-    if not frozen:
-        lock = subprocess.run(
-            [uv_bin, "lock"], cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800
+        uv_bin, run_env = pm_uv(base_env=env)
+        if uv_bin is None:
+            raise InstallError("venv", "PM's uv and Python are required; run `hermes pm install`")
+        environment = PythonEnvironment(
+            uv=Path(uv_bin), python=Path(run_env["UV_PYTHON"]), destination=venv_dir,
+            cache=Path(run_env["UV_CACHE_DIR"]), env=run_env,
+            offline=run_env.get("UV_OFFLINE") == "1",
         )
-        if lock.returncode != 0:
-            raise classify_uv_failure("lock", lock.returncode, lock.stderr or lock.stdout)
-
-    # --all-packages is REQUIRED: plain `uv sync --frozen` installs only the
-    # ROOT project's deps — workspace-member deps are locked by `uv lock`
-    # but silently never reach site-packages (probed live 2026-09-03: a
-    # member's pyfiglet stayed absent from site-packages under plain
-    # --frozen, present under --all-packages). The union's whole contract
-    # is that plugin deps ride the venv; without this flag every member
-    # install is a silent no-op.
-    cmd = [uv_bin, "sync", "--frozen", "--all-packages"]
-    for extra in sorted(set(extras or [])):
-        cmd += ["--extra", extra]
-    sync = subprocess.run(cmd, cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800)
-    if sync.returncode != 0:
-        # --frozen means the lock already resolved; a sync failure here is
-        # install/download/tooling, never a NEW resolution conflict.
-        raise classify_uv_failure(
-            "sync", sync.returncode, sync.stderr or sync.stdout
-        )
+    environment.sync(generated, extras=extras or (), frozen=frozen)

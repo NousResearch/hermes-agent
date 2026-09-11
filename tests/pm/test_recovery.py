@@ -15,6 +15,12 @@ from pm.lock import Facts
 from pm.packages import uv_env
 from tests.pm.test_workspace_build_inputs import _wheel
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 @pytest.mark.parametrize("failure", [None, "missing_distribution", "broken_module"])
 def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):

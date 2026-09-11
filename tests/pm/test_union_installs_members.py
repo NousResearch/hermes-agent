@@ -18,6 +18,12 @@ import pytest
 
 import pm.workspace as ws
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 def _site_packages(venv: Path) -> Path:
     """The fixture supplies this interpreter as the PM toolchain."""

@@ -1,7 +1,7 @@
 """A relayed dm into a live Bot Chat keeps its sender all the way into ``run_conversation``.
 
-The relay handler stamps the author as an in-process ``DeliveryAuthor``; ``prompt.submit`` accepts only
-that object, so a dashboard client cannot claim a bot identity through the same RPC.
+The relay bridge forwards authors to canonical authority, never to UI execution.
+The retained prompt path accepts only an in-process ``DeliveryAuthor`` object.
 """
 
 from __future__ import annotations
@@ -57,19 +57,29 @@ def turn_env(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "_get_usage", lambda agent: {})
 
 
-def test_live_relay_stamps_the_sender_as_a_delivery_author(tmp_path, monkeypatch):
+def test_live_relay_forwards_sender_to_canonical_authority(tmp_path, monkeypatch):
+    from tools import bot_live_delivery
+
     home = tmp_path / ".hermes"
     (home / "profiles" / "ops").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     submitted = []
-    monkeypatch.setitem(srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
-    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
-    monkeypatch.setitem(srv._sessions, "live-ops",
-                        {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []})
+    receipt = {"status": "queued", "delivery_id": "a" * 32, "admission_id": "admission"}
+    monkeypatch.setattr(bot_live_delivery, "authority_delivery",
+                        lambda target, params: submitted.append((target, params)) or receipt)
+    monkeypatch.setitem(srv._methods, "prompt.submit",
+                        lambda *a: pytest.fail("relay must not execute through the UI"))
+    monkeypatch.setattr(srv, "current_transport", lambda: None)
 
-    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", "from_profile": "coder", "from_handle": "coder"}))
+    response = srv._methods["bot_relay.deliver"](1, {
+        "id": "a" * 32, "profile": "ops", "message": "ping",
+        "from_profile": "coder", "from_handle": "coder",
+    })
 
-    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}]
+    assert _result(response) == receipt
+    assert submitted == [(home / "profiles" / "ops", {
+        "id": "a" * 32, "profile": "ops", "message": "ping", "author": AUTHOR,
+    })]
 
 
 def test_prompt_submit_refuses_a_client_supplied_author(monkeypatch):

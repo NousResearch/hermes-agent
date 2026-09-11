@@ -22,10 +22,11 @@ class _FakeAuthority:
             record = self.records[params["id"]] = dict(
                 status="queued", delivery_id=params["id"], profile_home=str(Path(home).resolve()),
                 session_id="local-bot", message=params["message"], admission_id="adm-" + params["id"][:6],
-                reply="")
+                reply="", **({"author": params["author"]} if "author" in params else {}))
             with mailbox._locked(home) as root:
                 mailbox._write(root / f"{params['id']}.json", record)
-        elif record["message"] != params["message"]:
+        elif (record["message"] != params["message"]
+              or record.get("author") != params.get("author")):
             raise ValueError("admission_conflict")
         return {k: record[k] for k in ("status", "delivery_id", "profile_home", "session_id", "reply")}
 
@@ -118,14 +119,18 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
         db.close()
 
 
-def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
+def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
     author = {"id": "bot:coder", "name": "coder", "is_bot": True}
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author)
-    assert queued["author"] == author
+    assert authority.calls[-1][1]["author"] == author
+    assert authority.records["b" * 32]["author"] == author
     assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author) == queued
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
-    assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+    mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+    assert "author" not in authority.calls[-1][1]

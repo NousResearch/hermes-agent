@@ -419,8 +419,11 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return system_uv
     with suppress(Exception):
         print("  → Termux detected: trying to install uv for faster dependency updates...")
+        # Bounded like every other network step in the update path: a stalled
+        # PyPI/proxy must halt this optional bootstrap, not `hermes update`.
         result = subprocess.run(
-            pip_cmd + ["install", "uv", "--only-binary", ":all:"], cwd=_m().PROJECT_ROOT, check=False)
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"], cwd=_m().PROJECT_ROOT, check=False,
+            timeout=600)
         if result.returncode != 0:
             return None
     return resolve_uv() or shutil.which("uv")

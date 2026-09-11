@@ -3,6 +3,7 @@ Shared by hermes_state and its mixins; string predicates match wrapped RPC
 strings as well as live sqlite3 exceptions."""
 
 import errno
+import re
 import sqlite3
 
 # Malformed schema: ``sqlite_master`` itself is inconsistent (typically a DUPLICATE
@@ -74,8 +75,8 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
-    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "replaced",
-    "deleted_wal", "disk", "unknown",
+    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
+    "replaced", "deleted_wal", "disk", "unknown",
 )
 
 
@@ -87,6 +88,38 @@ PERSISTENCE_ERROR_CAUSES = (
 _DB_CORRUPTION_MARKERS = (
     "malformed", "file is not a database", "not a database", "database corruption",
 )
+
+# The module constant exists on Python 3.11+; the numeric value is stable across SQLite releases.
+SQLITE_CORRUPT_VTAB = getattr(sqlite3, "SQLITE_CORRUPT_VTAB", 267)
+
+# Every FTS object hangs off this prefix: the virtual tables and their _data/_idx/_content/
+# _docsize/_config shadow b-trees. FTS5 names the table in its own corruption reports.
+_FTS_OBJECT_RE = re.compile(r"\bmessages_fts\w*")
+
+
+def is_fts_scoped_corruption_error(exc_or_str) -> bool:
+    """Corruption SQLite itself attributes to the FTS index layer: the ONE provenance rule
+    shared by the write-repair gate (``SessionDB._is_fts_write_corruption_error``), the
+    gateway transcript retry and :func:`classify_persistence_error` (#96038, #97794).
+
+    A known result code outranks prose: ``SQLITE_CORRUPT_VTAB`` is FTS-scoped even with
+    the generic malformed-image text older SQLite builds emit, while bare ``SQLITE_CORRUPT``
+    / ``SQLITE_NOTADB`` carry no object scope and any other known code contradicts
+    FTS-looking prose, so both fail closed. Only without a code (Python < 3.11, RPC-wrapped
+    strings) does the text decide, and then only an ``fts5:`` corruption report or a
+    corruption marker that names a ``messages_fts*`` object counts.
+    """
+    if exc_or_str is None:
+        return False
+    code = getattr(exc_or_str, "sqlite_errorcode", None)
+    if code is not None:
+        return code == SQLITE_CORRUPT_VTAB
+    text = (exc_or_str if isinstance(exc_or_str, str) else str(exc_or_str)).lower()
+    if not _FTS_OBJECT_RE.search(text):
+        return False
+    if text.startswith("fts5:") and "corrupt" in text:
+        return True
+    return any(marker in text for marker in _DB_CORRUPTION_MARKERS)
 
 
 class CompressionSessionClosedError(RuntimeError):
@@ -205,8 +238,10 @@ def classify_persistence_error(exc_or_str) -> str:
     matches: "locked" = busy, retry; "disk" = full/read-only/permissions;
     "compression" = a live lease refused the write; "compression_closed" = adopt
     the rotated session id; "turn_lease" = fencing, not storage; "corrupt" =
-    file damage (repair path, not disk space); "replaced" = main-file replacement;
-    "deleted_wal" = a retired sidecar generation requiring capture inspection."""
+    file damage (repair path, not disk space); "fts_index" = SQLite scoped the
+    corruption to the FTS index (the transcript store is not damaged); "replaced" =
+    main-file replacement; "deleted_wal" = a retired sidecar generation requiring
+    capture inspection."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,
@@ -216,6 +251,10 @@ def classify_persistence_error(exc_or_str) -> str:
     for exc_type, cause in _PERSISTENCE_CAUSE_BY_TYPE:
         if isinstance(exc_or_str, exc_type):
             return cause
+    # Provenance before prose: an FTS-scoped result code (or, without one, an fts5 report
+    # naming messages_fts*) is index damage, never whole-file corruption (#97794).
+    if is_fts_scoped_corruption_error(exc_or_str):
+        return "fts_index"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:
         if any(marker in text for marker in markers):

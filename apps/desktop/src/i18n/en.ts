@@ -32,10 +32,9 @@ export const en: Translations = {
     ownerMissing: 'Reopen this conversation to manage its connections.',
     search: 'Find an app',
     empty: 'No matching apps',
-    continue: 'Continue in chat',
-    continueBusy: 'Waiting for this turn to finish',
-    continueFailed: 'Could not continue. Try again.',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    connectTitle: app => `Connect ${app}?`,
+    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
     execution: 'Connector tools'
   },
   sessionImport: {

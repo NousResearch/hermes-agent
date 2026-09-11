@@ -32,10 +32,9 @@ export const zh: Translations = {
     ownerMissing: '请重新打开此对话以管理连接。',
     search: '查找应用',
     empty: '没有匹配的应用',
-    continue: '在对话中继续',
-    continueBusy: '等待当前操作完成',
-    continueFailed: '无法继续，请重试。',
     disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    connectTitle: app => `连接 ${app}？`,
+    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
     execution: '连接器工具'
   },
   sessionImport: {

@@ -141,6 +141,9 @@ class TestConcurrentReadersDoNotRaceTheWriter:
             # are drained. Not reachable concurrently with writers.
             "__init__", "_open_writer", "_connect_and_init",
             "_connect_and_init_with_lock_patience", "close",
+            # Lost-generation settlement: called only from close()'s
+            # `with self._lock` body (locked transitively, not lexically).
+            "_settle_lost_generation_locked",
         }
 
         def is_lock_with(node):

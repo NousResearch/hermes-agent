@@ -382,7 +382,7 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
-      plugins: string
+      vault: string
     }
     plugins: {
       title: string
@@ -398,11 +398,6 @@ export interface Translations {
       kinds: { bundled: string; disk: string; runtime: string }
       agentHalfMissing: string
       agentHalfMissingTip: string
-      agent: {
-        title: string
-        movedToCapabilities: string
-        openCapabilities: string
-      }
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -413,7 +408,7 @@ export interface Translations {
         includesHeading: string
         agentLabel: string
         desktopLabel: string
-        agentTargetLocal: (profile: string) => string
+        agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
@@ -423,6 +418,7 @@ export interface Translations {
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string
+        desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
         securityHeading: string
@@ -433,6 +429,10 @@ export interface Translations {
         gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
+        pinToCommit: string
+        pinToCommitPlaceholder: string
+        pinToCommitHint: string
+        pinToCommitInvalid: string
         install: string
         installing: string
         probing: string
@@ -444,6 +444,76 @@ export interface Translations {
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string
+      }
+    }
+    vault: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      loadFailed: string
+      empty: string
+      emptyDesc: string
+      add: string
+      addTitle: string
+      addDescription: string
+      added: string
+      adding: string
+      addConfirm: string
+      kindField: string
+      kinds: Record<'address' | 'login' | 'payment', string>
+      labelField: string
+      labelPlaceholder: string
+      labelRequired: string
+      originField: string
+      originPlaceholder: string
+      originPlaceholderCheckout: string
+      originInvalid: string
+      identifierTypeField: string
+      identifierTypes: Record<'email' | 'phone' | 'username', string>
+      identifierField: string
+      identifierShown: (identifier: string) => string
+      passwordField: string
+      loginFieldsRequired: string
+      cardNumberField: string
+      cardNameField: string
+      expMonthField: string
+      expYearField: string
+      cvcField: string
+      postalField: string
+      addressLine1Field: string
+      addressLine2Field: string
+      cityField: string
+      stateField: string
+      countryField: string
+      optional: string
+      createdOn: (date: string) => string
+      deleteAction: string
+      otpField: string
+      otpPlaceholder: string
+      otpHint: string
+      twoFactorBadge: string
+      deleteTitle: string
+      deleteDescription: (label: string) => string
+      deleteConfirm: string
+      sources: {
+        title: string
+        blurb: string
+        toggleFailed: string
+        notInstalled: (name: string) => string
+        disabledDesc: string
+        lockedDesc: string
+        unlockedDesc: string
+        statusLocked: string
+        statusNotDetected: string
+        statusOff: string
+        statusUnlocked: string
+        unlock: string
+        unlocking: string
+        lock: string
+        unlocked: (name: string) => string
+        unlockTitle: (name: string) => string
+        unlockDescription: string
+        masterPasswordPlaceholder: string
       }
     }
     notifications: {
@@ -1323,6 +1393,23 @@ export interface Translations {
     skillArchivedMessage: string
     tabPlugins: string
     plugins: {
+      agentTitle: string
+      agentBlurb: string
+      pageBlurb: string
+      halfDesktop: string
+      halfDesktopHint: string
+      halfAgent: string
+      halfAgentIn: (profile: string) => string
+      defaultProfile: string
+      kindAgent: string
+      kindDesktop: string
+      kindBoth: string
+      installAgentHere: string
+      installAgentHereTip: (profile: string) => string
+      installAgentHereNoOrigin: string
+      desktopHalfPending: string
+      desktopHalfPendingTip: string
+      emptyAll: string
       empty: string
       emptyHint: string
       loadFailed: string
@@ -1335,6 +1422,8 @@ export interface Translations {
       catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
+      pinnedProvenance: (sha: string) => string
+      pinnedBadge: (sha: string) => string
       tierOfficial: string
       tierCommunity: string
       updateToPin: (sha: string) => string
@@ -1691,6 +1780,38 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
+    restartNeeded: string
+    restartNow: string
+    restarting: string
+    restartFailedManual: string
+    telegramQr: {
+      title: string
+      subtitle: string
+      quickSetup: string
+      recommended: string
+      quickHelp: string
+      createWithQr: string
+      starting: string
+      replaceWarning: string
+      scanHint: string
+      waiting: string
+      expiresIn: (remaining: string) => string
+      expired: string
+      openTelegram: string
+      ready: string
+      allowedUsers: string
+      ownerDetected: string
+      addAtLeastOne: string
+      userIdPlaceholder: string
+      add: string
+      numericOnly: string
+      saveAndRestart: string
+      applying: string
+      pairingExpired: string
+      stillWaiting: (detail: string) => string
+      savedRestarting: string
+      savedRestartFailed: (detail: string) => string
+    }
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
   }
@@ -2679,6 +2800,53 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
+  freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
+    // First-launch introduction (ready screen + composer strip).
+    readyTitle: string
+    readyCaption: string
+    begin: string
+    signInInstead: string
+    otherProviders: string
+    stripTitle: string
+    stripBody: string
+    openModelPicker: string
+    dismiss: string
+    // Statusbar chip.
+    statusLabel: (model: string) => string
+    // Sign-in dialog.
+    signIn: string
+    signInHeading: string
+    settingUp: string
+    codeBody: string
+    copyLink: string
+    doNotShare: string
+    waiting: string
+    finishingHeading: string
+    finishingBody: string
+    signedInAs: (email: string) => string
+    signedIn: string
+    completedBody: string
+    defaultModel: string
+    change: string
+    done: string
+    notNow: string
+    tryAgain: string
+    startAgain: string
+    didNotComplete: string
+    rejectedBody: string
+    supersededBody: string
+    timedOutHeading: string
+    timedOutBody: string
+    retiredBody: string
+    errorBody: string
+    alreadySignedInHeading: string
+    alreadySignedInBody: string
+  }
+
   modelPicker: {
     title: string
     current: string
@@ -2803,6 +2971,7 @@ export interface Translations {
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
+      toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
@@ -3261,6 +3430,28 @@ export interface Translations {
     secretTitle: string
     secretDesc: string
     secretPlaceholder: string
+    vaultUnlockSendFailed: string
+    vaultUnlockTitle: (name: string) => string
+    vaultUnlockDesc: (name: string) => string
+    vaultSaveSendFailed: string
+    vaultSaveTitle: (site: string) => string
+    vaultSaveDesc: (origin: string) => string
+    vaultSaveIdentifierLabel: string
+    vaultSaveIdentifierPlaceholder: string
+    vaultSavePasswordPlaceholder: string
+    vaultSaveFootnote: string
+    vaultSaveDecline: string
+    vaultSaveConfirm: string
+    vaultCodeSendFailed: string
+    vaultCodeTitle: (site: string) => string
+    vaultCodeDesc: (site: string) => string
+    vaultCodeLabel: string
+    vaultCodeFootnote: string
+    vaultCodeSkip: string
+    vaultCodeConfirm: string
+    vaultUnlockPlaceholder: string
+    vaultUnlockKeepLocked: string
+    vaultUnlockConfirm: string
   }
 
   desktop: {

@@ -35,6 +35,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
@@ -821,12 +822,25 @@ export function SkillsView({
   // Browse Hub). Lets the user configure ANY profile's capabilities — on any
   // registered gateway — without switching the whole app. Only meaningful
   // with >1 option; hidden otherwise to avoid clutter.
+  // Plugins embeds the selector in its Agent-column header (compact, no label,
+  // no border): desktop halves on that page are app-level and must not read as
+  // governed by "Configuring: <profile>".
+  const compactSelector = mode === 'plugins'
+  const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
+
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
-      <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
-        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+      <div
+        className={cn(
+          'flex min-w-0 items-center gap-2',
+          compactSelector ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+        )}
+      >
+        {!compactSelector && (
+          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+        )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className="h-7 w-56 text-xs">
+          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -863,14 +877,23 @@ export function SkillsView({
           active, so Skills / Tools / MCP all read and write the SAME selected
           profile. */}
       <div className="flex h-full flex-col">
-        {profileScopeSelector}
+        {/* Plugins renders the selector INSIDE its agent section: desktop
+            plugins on that page belong to the app, not to any profile, and
+            must not sit under a "Configuring: <profile>" header. */}
+        {mode !== 'plugins' && profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
             {mode === 'plugins' ? (
-              // Agent plugins for the scoped profile: installed list on top,
-              // the live catalog picker underneath (same shape as Skills).
-              // Keyed on scope so a profile/connection switch reloads the list.
-              <PluginsTab key={`plugins-${scopeKey}`} profile={scopeProfile} />
+              // Agent plugins for the scoped profile (selector in the section
+              // header), app-level desktop plugins, the live catalog picker
+              // underneath. Keyed on scope so a profile/connection switch
+              // reloads the agent list.
+              <PluginsTab
+                key={`plugins-${scopeKey}`}
+                profile={scopeProfile}
+                scopeLabel={scopeLabel}
+                scopeSelector={profileScopeSelector}
+              />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a

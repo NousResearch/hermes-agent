@@ -2949,7 +2949,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+            # default's listener (and stops polling for it).
+            from agent.secret_scope import UnscopedSecretError, get_secret
+            try:
+                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
+            except UnscopedSecretError:
+                webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:

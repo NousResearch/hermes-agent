@@ -108,10 +108,20 @@ def _teardown(db: "SessionDB") -> None:
     """Close a shared instance, clearing its registry-owned flag first."""
     with contextlib.suppress(Exception):
         db._shared_registry_owned = False
+    _close_quietly(db, "Error closing shared SessionDB")
+
+
+def _close_quietly(db: "SessionDB", debug_message: str) -> None:
+    """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
+    not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
     try:
         db.close()
-    except Exception:
-        logger.debug("Error closing shared SessionDB", exc_info=True)
+    except Exception as exc:
+        from hermes_state_dbfile import RetiredGenerationCaptureError
+        if isinstance(exc, RetiredGenerationCaptureError):
+            logger.error("SessionDB for %s did not settle at close: %s", _db_path_of(db), exc)
+        else:
+            logger.debug(debug_message, exc_info=True)
 
 
 def _path_lifecycle_lock_locked(path: Path) -> threading.Lock:
@@ -378,10 +388,7 @@ def release_or_close(db: "SessionDB") -> None:
     """Release a shared instance, or close it when it is not registry-managed. Drop-in for a
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):
-        try:
-            db.close()
-        except Exception:
-            logger.debug("release_or_close fallback close failed", exc_info=True)
+        _close_quietly(db, "release_or_close fallback close failed")
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

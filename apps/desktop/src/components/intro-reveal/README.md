@@ -1,31 +1,35 @@
 # Intro reveal
 
-The cinematic runs in a transparent Electron window at `?win=intro`.
-It covers the primary display and plays over the desktop while the app hides.
-The surface owns its animation clock and synthesized sound; it has no gateway.
-The main renderer owns the phase and the persistent seen key.
+An idealized chat types a request, works through tools and a cube viewport,
+streams a reply, expands into parallel agents, then closes on the brand.
+The seven beats take 22 seconds, followed by a 900 ms dissolve. Reduced motion
+shows the brand briefly. Sound defaults on and respects the haptics mute preference.
+Fonts are the existing Collapse and JetBrains Mono faces.
 
-The seven beats are ask, send, working, reply, everywhere, brand and dissolve.
-Typing, tool activity, the cube and sound follow the same score.
-Normal playback lasts 22 seconds; the exit dissolve lasts 900 ms.
-Reduced motion shows the brand briefly. Click, Enter or Escape skips.
-Sound defaults on and respects the existing haptics mute preference.
+Eligibility is `guestOnboardingEnabled && !firstRunSkipped && !hasSeenIntroReveal()`.
+Electron sets the flag from `HERMES_GUEST_ONBOARDING=1` or `--guest-onboarding`.
+The gate queues the guided chat on completion; the chat gate acknowledges the
+free-tier notice as the cinematic starts. With the flag off, neither gate starts.
 
-There is one launch gate, enabled by `HERMES_GUEST_ONBOARDING=1` or
-`--guest-onboarding`. Preload exposes that decision as `guestOnboardingEnabled`.
-First-run eligibility also requires an unseen intro and no first-run skip.
-With the launch gate off, neither the store nor native IPC opens the film.
+| Piece | Path |
+| --- | --- |
+| Main-window gate and conductor | `index.tsx` |
+| Phase, seen-key ownership and IPC listeners | `../../store/intro-reveal.ts` |
+| Overlay boot and surface | `intro-root.tsx`, `intro-reveal-surface.tsx` |
+| Clock, score, cube and synthesized sound | `use-intro-clock.ts`, `timeline.ts`, `viewport-cube.ts`, `sound.ts` |
+| Constellation, brand and text effects | `scenes/` |
+| Native window and preload bridge | `../../../electron/intro-reveal-window.ts`, `../../../electron/preload.ts` |
 
-The renderer deadman is 26 seconds. The independent native watchdog is
-34 seconds, deliberately longer; both return the main window if playback stalls.
-Finishing records seen, clears the phase and requests `{showMain: true}`.
-The guided-chat edge and app-shell mount arrive with the later gate/handoff steps.
+The transparent native window (`?win=intro`) covers the primary display while
+the main app hides. The overlay owns the clock because the hidden main renderer's
+animation frames are throttled. The main renderer owns the phase and seen key.
 
-Rehearse from `apps/desktop` with isolated app state:
+The screen must ALWAYS come back. Four independent layers:
 
-```sh
-intro_tmp=$(mktemp -d /tmp/hermes-intro.XXXXXX)
-env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME="$intro_tmp/.hermes" HERMES_DESKTOP_USER_DATA_DIR="$intro_tmp/electron-user-data" npm run dev
-```
+1. Normal completion: the overlay clock finishes → main renderer closes it.
+2. Esc/click: local close with a 1.2s fallback that bypasses the main renderer.
+3. Local deadman: the overlay force-closes itself `INTRO_DEADMAN_MS` after
+   mount, even with all IPC dead.
+4. Main-process watchdog (34s) destroys the window unconditionally.
 
-Collapse comes from the UI package; JetBrains Mono comes from desktop styles.
+Rehearsal with isolated state: see [Desktop Engineering Guide](../../../AGENTS.md#rehearsing-the-guided-onboarding).

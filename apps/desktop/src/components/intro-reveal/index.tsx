@@ -13,8 +13,7 @@ import {
 import { $desktopOnboarding } from '@/store/onboarding'
 import { beginOnboardingFlow, queueGuideAfterIntro } from '@/store/onboarding-gate'
 
-import { IntroRevealSurface } from './intro-reveal-surface'
-import { INTRO_DEADMAN_MS, INTRO_EXIT_MS, INTRO_WALL_MS } from './timeline'
+import { INTRO_DEADMAN_MS, INTRO_EXIT_MS } from './timeline'
 
 interface IntroRevealGateProps {
   enabled: boolean
@@ -23,7 +22,6 @@ interface IntroRevealGateProps {
 export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
   const onboarding = useStore($desktopOnboarding)
   const intro = useStore($introReveal)
-  const nativeSurface = Boolean(window.hermesDesktop?.introReveal)
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
   useEffect(() => {
@@ -59,7 +57,7 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
       return
     }
 
-    const total = reduceMotion ? 2600 : nativeSurface ? INTRO_DEADMAN_MS : INTRO_WALL_MS
+    const total = reduceMotion ? 2600 : INTRO_DEADMAN_MS
 
     const id = window.setTimeout(
       intro.phase === 'leaving' ? finishIntroReveal : leaveIntroReveal,
@@ -67,15 +65,7 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
     )
 
     return () => window.clearTimeout(id)
-  }, [intro.phase, nativeSurface, reduceMotion])
+  }, [intro.phase, reduceMotion])
 
-  if (!enabled || !isIntroRevealEnabled() || intro.phase === 'hidden' || nativeSurface) {
-    return null
-  }
-
-  return (
-    <div className="fixed inset-0 z-(--z-onboarding)">
-      <IntroRevealSurface onSkip={leaveIntroReveal} />
-    </div>
-  )
+  return null
 }

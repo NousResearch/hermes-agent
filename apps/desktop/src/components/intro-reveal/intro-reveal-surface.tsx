@@ -7,22 +7,17 @@ import { cn } from '@/lib/utils'
 import { BrandClose } from './scenes/brand'
 import { SideAgents } from './scenes/side-agents'
 import { BLUE, BLUE_DIM, EASE, NOUS_SHADOW } from './scenes/style'
-import { decoded } from './scenes/text'
+import { decoded, SPINNER } from './scenes/text'
 import { INTRO_BEATS, INTRO_PROMPT, INTRO_REPLY_WORDS, INTRO_TOOL_ROWS } from './timeline'
 import { useIntroClock } from './use-intro-clock'
 import { viewportSlot } from './viewport-cube'
 
 const INTRO_BEAT_INDEX: Record<string, number> = Object.fromEntries(INTRO_BEATS.map((b, i) => [b.id, i]))
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const SKIP = 'Skip'
 const SURFACES = 'Desktop · Messages · Phone · Anywhere'
 
-interface IntroRevealSurfaceProps {
-  onSkip?: () => void
-}
-
-export function IntroRevealSurface({ onSkip }: IntroRevealSurfaceProps = {}) {
-  const { frame, leaving, faded, skip, glowRef, stageRef, brandRef, viewportRef } = useIntroClock(onSkip)
+export function IntroRevealSurface() {
+  const { frame, leaving, faded, skip, glowRef, stageRef, brandRef, viewportRef } = useIntroClock()
   const everywhere = frame.beat >= INTRO_BEAT_INDEX.everywhere
   const brand = frame.beat >= INTRO_BEAT_INDEX.brand
 

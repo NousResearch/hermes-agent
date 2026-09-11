@@ -1,5 +1,7 @@
 const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
 
+export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
 export const scrambleGlyph = (i: number, tick: number) => {
   const n = (i * 2654435761 + tick * 40503) >>> 0
 

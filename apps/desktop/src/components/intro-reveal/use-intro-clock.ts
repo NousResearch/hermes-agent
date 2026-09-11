@@ -75,7 +75,7 @@ function frameAt(t: number, beat: number): Frame {
   return { beat, replyWords, tick: Math.floor(t / 45), toolDone, toolShown, typed }
 }
 
-export function useIntroClock(onSkip?: () => void) {
+export function useIntroClock() {
   const glowRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const brandRef = useRef<HTMLDivElement>(null)
@@ -88,17 +88,11 @@ export function useIntroClock(onSkip?: () => void) {
   const skip = useCallback(() => {
     setClockLeaving(true)
 
-    if (onSkip) {
-      onSkip()
-
-      return
-    }
-
     window.hermesDesktop?.introReveal?.skip?.()
     window.setTimeout(() => {
       void window.hermesDesktop?.introReveal?.close?.({ showMain: true }).catch(() => undefined)
     }, 1200)
-  }, [onSkip])
+  }, [])
 
   useEffect(() => {
     const id = window.setTimeout(() => {

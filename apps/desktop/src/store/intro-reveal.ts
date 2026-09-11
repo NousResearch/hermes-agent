@@ -1,3 +1,12 @@
+/**
+ * The main renderer owns the phase; the native overlay owns the clock because
+ * animation frames in the hidden main window are throttled. Native skip/close
+ * events return here so every exit records seen and restores the main window.
+ *
+ * This store alone owns hermes-intro-reveal-seen-v1. First-run eligibility is
+ * guest onboarding enabled, not explicitly skipped, and not seen. The gate
+ * observes completion to queue the guided chat without coupling this store to it.
+ */
 import { atom } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'

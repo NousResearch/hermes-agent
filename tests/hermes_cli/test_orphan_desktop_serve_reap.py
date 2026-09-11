@@ -388,3 +388,102 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
 
     assert terms == []
     assert result["matched"] == []
+
+
+def test_reap_spares_backend_still_actively_forwarded_by_client():
+    """A superseded backend with an active client must not be reaped."""
+    scanned = [
+        (901, "hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-owner-nonce abcd"),
+        (902, "hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-owner-nonce efgh"),
+    ]
+    terms: list[int] = []
+    live = {901, 902}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return None
+            raise ProcessLookupError()
+        if sig == 15:
+            terms.append(pid)
+            live.discard(pid)
+        elif sig == 9:
+            live.discard(pid)
+        return None
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+        patch("sys.platform", "darwin"),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+            active_connections_fn=lambda pid: pid == 901,
+            log_recently_written_fn=lambda _pid: False,
+        )
+
+    assert 901 not in terms
+    assert 901 not in result["matched"]
+    assert set(result["matched"]) == {902}
+    assert set(terms) == {902}
+    assert set(result["killed"]) == {902}
+
+
+def test_reap_spares_backend_with_fresh_log_but_no_open_connection(tmp_path):
+    """A live polling backend may have no open connection at reap time."""
+    ownership_id = "c" * 32
+    nonce = "d" * 16
+    lock_root = tmp_path / "desktop-ssh"
+    (lock_root / ownership_id).mkdir(parents=True)
+    log_path = lock_root / ownership_id / f"{nonce}.log"
+    log_path.write_text("HERMES_BACKEND_READY port=41355\\n")
+
+    scanned = [
+        (
+            911,
+            f"hermes serve --isolated --host 127.0.0.1 --port 0 "
+            f"--ssh-session-token-file {lock_root}/{ownership_id}/{nonce}.token",
+        ),
+        (912, "hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-owner-nonce deadbeef"),
+    ]
+    terms: list[int] = []
+    live = {911, 912}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return None
+            raise ProcessLookupError()
+        if sig == 15:
+            terms.append(pid)
+            live.discard(pid)
+        elif sig == 9:
+            live.discard(pid)
+        return None
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+        patch("sys.platform", "darwin"),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+            active_connections_fn=lambda _pid: False,
+            log_recently_written_fn=lambda pid: pid == 911,
+        )
+
+    assert 911 not in terms
+    assert 911 not in result["matched"]
+    assert set(result["matched"]) == {912}
+    assert set(terms) == {912}
+    assert set(result["killed"]) == {912}

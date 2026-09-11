@@ -594,9 +594,66 @@ def _process_age_seconds(pid: int) -> float:
     return max(0.0, _time.time() - _psutil.Process(pid).create_time())
 
 
+def _process_has_active_connections(pid: int) -> bool:
+    """Return True when a backend process has an established TCP client.
+
+    A superseded Desktop backend can look orphaned after its lock is replaced
+    while an SSH local forward is still using it. Probe failures return False
+    so cleanup never becomes less effective because of a best-effort check.
+    """
+    try:
+        import psutil as _psutil
+
+        return any(conn.status == _psutil.CONN_ESTABLISHED for conn in _psutil.Process(pid).net_connections())
+    except Exception:
+        return False
+
+
+_REAP_LOG_ACTIVITY_WINDOW_SECONDS = 60.0
+
+
+def _process_log_recently_written(
+    pid: int, window_seconds: float = _REAP_LOG_ACTIVITY_WINDOW_SECONDS
+) -> bool:
+    """Return True when the Desktop is still polling the backend.
+
+    Desktop health polls do not keep a websocket open, so a live backend may
+    have no ESTABLISHED connection at the instant of the reap. Each backend
+    writes its poll activity to the log adjacent to its session token.
+    """
+    import time as _time
+
+    try:
+        import psutil as _psutil
+
+        cmdline = _psutil.Process(pid).cmdline()
+    except Exception:
+        return False
+
+    log_path = None
+    try:
+        for index, arg in enumerate(cmdline):
+            if arg == "--ssh-session-token-file" and index + 1 < len(cmdline):
+                token_path = cmdline[index + 1]
+                if token_path.endswith(".token"):
+                    log_path = token_path[: -len(".token")] + ".log"
+                break
+    except Exception:
+        return False
+
+    if not log_path:
+        return False
+
+    try:
+        return _time.time() - os.path.getmtime(log_path) <= window_seconds
+    except Exception:
+        return False
+
+
 def _reap_orphaned_desktop_local_serves(
     *, reason: str = "orphaned desktop-local hermes serve", signal_term=None, signal_kill=None,
-    sleep_fn=None, lock_owned_pids_fn=None, process_age_seconds_fn=None) -> dict[str, list]:
+    sleep_fn=None, lock_owned_pids_fn=None, process_age_seconds_fn=None,
+    active_connections_fn=None, log_recently_written_fn=None) -> dict[str, list]:
     """Kill leftover Desktop-local ``hermes serve`` backends with no parent. Never raises.
 
     When Electron dies uncleanly its ``serve --host 127.0.0.1 --port 0`` children are
@@ -614,6 +671,8 @@ def _reap_orphaned_desktop_local_serves(
     sleep_fn = sleep_fn or _time.sleep
     lock_owned_pids_fn = lock_owned_pids_fn or _lock_owned_serve_pids
     process_age_seconds_fn = process_age_seconds_fn or _process_age_seconds
+    active_connections_fn = active_connections_fn or _process_has_active_connections
+    log_recently_written_fn = log_recently_written_fn or _process_log_recently_written
     if sys.platform == "win32":  # Windows desktop uses taskkill tree teardown
         return _empty_result()
 
@@ -637,9 +696,21 @@ def _reap_orphaned_desktop_local_serves(
     except Exception:
         return _empty_result()
     owned_now = _owned_pids()  # re-read: a lock may have been written since the scan
-    matched = [pid for pid, cmd in scanned
-               if _is_desktop_local_serve_cmdline(cmd) and pid not in owned_now
-               and _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)]
+    matched = []
+    for pid, cmd in scanned:
+        if not _is_desktop_local_serve_cmdline(cmd) or pid in owned_now:
+            continue
+        try:
+            orphaned = _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)
+            # A superseded backend may be lockless while the Desktop still
+            # forwards to it. Never reap a backend with positive liveness
+            # evidence: an open client connection or a freshly-written poll
+            # log. Probe failures are intentionally fail-closed in helpers.
+            in_use = active_connections_fn(pid) or log_recently_written_fn(pid)
+        except Exception:
+            continue
+        if orphaned and not in_use:
+            matched.append(pid)
     if not matched:
         return _empty_result()
     killed: list[int] = []

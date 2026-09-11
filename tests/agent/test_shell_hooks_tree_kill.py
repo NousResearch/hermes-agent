@@ -164,7 +164,7 @@ def test_interrupt_kills_hook_and_propagates(tmp_path):
     """
     marker = tmp_path / "hook.pid"
     script = tmp_path / "hook.sh"
-    script.write_text(f"#!/bin/bash\necho $$ > {marker}\nsleep 300\n")
+    script.write_text(f'#!/bin/bash\necho $$ > "{marker}"\nsleep 300\n')
     script.chmod(0o755)
 
     def interrupt_once_running():

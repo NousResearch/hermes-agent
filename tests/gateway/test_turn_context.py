@@ -69,6 +69,37 @@ class TestTurnRunner:
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
 
+    def test_normal_gateway_turn_selects_gateway_prepared_timestamp_handling(self, monkeypatch):
+        """The normal TurnRunner route must not fall back to the direct-agent default."""
+        from gateway.run_turn_runner import TurnRunner
+
+        class _Agent:
+            def run_conversation(self, user_message, **kwargs):
+                self.user_message = user_message
+                self.kwargs = kwargs
+                return {"final_response": "done", "messages": []}
+
+        agent = _Agent()
+        gateway_runner = _make_runner(TurnContext())._runner
+        gateway_runner._consume_pending_native_image_paths = lambda session_key: []
+        ctx = TurnContext(
+            message="gateway message",
+            session_id="session",
+            session_key="session",
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user"),
+        )
+        monkeypatch.setattr("gateway.run._wrap_current_message_with_observed_context", lambda message, _context: message)
+        monkeypatch.setattr("tools.approval.register_gateway_notify", lambda *_args: None)
+        monkeypatch.setattr("tools.approval.unregister_gateway_notify", lambda *_args: None)
+
+        result = TurnRunner(gateway_runner, ctx)._run_conversation_with_approval(
+            agent, [], None, None, None,
+        )
+
+        assert result["final_response"] == "done"
+        assert agent.user_message == "gateway message"
+        assert agent.kwargs["message_timestamp_handling"] == "gateway_prepared"
+
     def test_normal_response_preserves_compression_exhausted(self):
         """A non-empty exhaustion response must still reach auto-reset consumers."""
 

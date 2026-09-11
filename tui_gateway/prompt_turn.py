@@ -147,7 +147,7 @@ class _TurnScopes:
     terminal: Any = None
 
 
-def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
+def _route_turn_images(agent, prompt: Any, images: list[str], *, timestamp: float | None = None) -> Any:
     """Run message for a turn with attached images: "native" content parts, or "text" path
     references the agent analyzes in-loop (never blocking submit on vision calls).
     Decision table: agent/image_routing.py."""
@@ -167,7 +167,8 @@ def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
     if mode != "native":
         return _build_image_ref_message(prompt, images)
     try:
-        parts, skipped = build_native_content_parts(prompt, images)
+        parts, skipped = build_native_content_parts(
+            _render_native_image_caption(prompt, timestamp), images)
         if skipped:
             print(
                 f"[tui_gateway] native image attachment skipped {len(skipped)} unreadable path(s)",
@@ -430,6 +431,32 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    persist_user_timestamp: float | None = None
+
+
+def _prepare_native_image_caption(prompt: Any) -> tuple[Any, float | None]:
+    """Normalize a fresh image caption and capture its admission timestamp."""
+    if not isinstance(prompt, str):
+        return prompt, None
+    from agent.message_timestamps import (
+        prepare_fresh_user_message,
+    )
+    from hermes_time import get_timezone
+
+    return prepare_fresh_user_message(prompt, time.time(), tz=get_timezone())
+
+
+def _render_native_image_caption(prompt: Any, timestamp: float | None) -> Any:
+    """Render the normalized caption only for successful native image packaging."""
+    if not isinstance(prompt, str) or not prompt:
+        return prompt
+    from agent.message_timestamps import message_timestamps_enabled, render_user_content_with_timestamp
+    from hermes_cli.config import load_config_readonly
+    from hermes_time import get_timezone
+
+    if message_timestamps_enabled(load_config_readonly()):
+        return render_user_content_with_timestamp(prompt, timestamp, tz=get_timezone())
+    return prompt
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -489,8 +516,11 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
             return None
         prompt = ctx.message
+    if images:
+        prompt, st.persist_user_timestamp = _prepare_native_image_caption(prompt)
     st.prompt_text = prompt if isinstance(prompt, str) else ""
-    run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
+    run_message: Any = (
+        _route_turn_images(agent, prompt, images, timestamp=st.persist_user_timestamp) if images else prompt)
     st.tts_queue, st.thinking_started = _start_turn_voice()
     # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
@@ -531,6 +561,8 @@ def _invoke_agent(
         "stream_callback": _stream,
         "persist_user_message": (
             _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+    if st.persist_user_timestamp is not None:
+        run_kwargs["persist_user_timestamp"] = st.persist_user_timestamp
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):

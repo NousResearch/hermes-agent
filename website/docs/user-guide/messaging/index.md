@@ -465,10 +465,22 @@ temporal reasoning ("you asked this morning…", noticing a long gap). It is
 **not** added to assistant messages or the system prompt.
 
 ```yaml
+# CLI, native TUI/Dashboard/Desktop/Relay, ACP, API and direct-agent turns.
+# Omit or use null to inherit the legacy gateway setting for these non-gateway paths.
+message_timestamps:
+  enabled: true
+
+# Messaging gateway turns use only this setting.
 gateway:
   message_timestamps:
-    enabled: false   # set true to show send-times to the model
+    enabled: true
 ```
+
+The top-level setting controls non-gateway agent entrypoints when it is an
+explicit Boolean. Otherwise they fall back to `gateway.message_timestamps.enabled`.
+Messaging gateway turns always use only the nested gateway setting, so a global
+`false` does not disable an enabled bot and a global `true` does not enable a
+disabled bot.
 
 Persisted transcripts always stay clean — the timestamp is stored as message
 metadata regardless of this toggle, so enabling it later also surfaces

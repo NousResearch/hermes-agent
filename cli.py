@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
+from hermes_cli import pt_input_extras_parser
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
@@ -70,6 +71,19 @@ try:
     _pt_extras.install_keypress_data_normalization()
     _pt_extras.install_ignored_terminal_sequences()
     del _pt_extras
+except Exception:
+    pass
+
+try:
+    # Decode the extended-key grammars rather than relying on the tables above having a
+    # cell for every key x modifier x lock-state. Installed last and consulted only after
+    # ANSI_SEQUENCES misses, so every mapping above wins -- including the application
+    # decisions the protocol has no opinion about. Its own try/except because a failure
+    # here must not take the alias installers down with it.
+    from hermes_cli import pt_input_extras_parser as _csi_u
+
+    _csi_u.install()
+    del _csi_u
 except Exception:
     pass
 import threading
@@ -2001,7 +2015,11 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[>4m"  # reset modifyOtherKeys
     "\x1b[0m\x1b[?25h"  # reset attributes, show cursor
 )
-_KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
+# Flag 4 makes the terminal state the shifted key rather than leaving it to be inferred,
+# which is what makes a non-US layout decodable (#100169). It is additive --- a terminal
+# without it omits the field --- but the spelling it produces has no entry in
+# ANSI_SEQUENCES, so it is only safe with pt_input_extras_parser installed below.
+_KITTY_KEYBOARD_PUSH_SEQ = pt_input_extras_parser.push()
 _MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
 _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 

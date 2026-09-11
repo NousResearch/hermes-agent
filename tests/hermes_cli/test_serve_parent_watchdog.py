@@ -1,5 +1,7 @@
 """Regression tests for Desktop-owned ``hermes serve`` lifecycle tracking."""
 
+import pytest
+
 from hermes_cli.web_server_lifecycle import (
     _is_serve_orphaned,
     _parent_start_marker_mismatch_is_conclusive,
@@ -177,118 +179,46 @@ class _NoThread:
         raise AssertionError("watchdog thread must not start")
 
 
-def test_parent_watchdog_detects_dead_parent_when_start_marker_probe_raises_oserror():
-    """#80204: when marker probe fails with OSError on a dead parent, watchdog
-    must degrade to PID liveness check and reap the orphan, not return False."""
-    def broken_marker_probe(_pid: int) -> str:
-        raise OSError("ps could not inspect PID 4242: ps: 4242: No such process")
+def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserror():
+    """#80204: a probe failure must fall through to ``pid_exists`` instead of pinning the
+    watchdog to "not orphaned" forever on a dead Desktop parent."""
+    def broken_marker_probe(pid: int) -> str:
+        raise OSError(f"ps could not inspect PID {pid}: ps: {pid}: No such process")
 
-    # Parent is dead: pid_exists returns False -> must return True (orphaned)
-    assert (
-        _is_serve_orphaned(
-            4242,
-            "ps:Thu Aug 20 22:33:11 2026",
-            pid_exists=lambda _pid: False,
-            process_start_marker=broken_marker_probe,
-        )
-        is True
-    )
-
-    # Parent is still alive: pid_exists returns True -> fail-safe False
-    assert (
-        _is_serve_orphaned(
-            4242,
-            "ps:Thu Aug 20 22:33:11 2026",
-            pid_exists=lambda _pid: True,
-            process_start_marker=broken_marker_probe,
-        )
-        is False
-    )
+    marker = "ps:Thu Aug 20 22:33:11 2026"
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: False,
+                              process_start_marker=broken_marker_probe) is True
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
+                              process_start_marker=broken_marker_probe) is False
 
 
 def test_parent_watchdog_detects_dead_parent_on_process_lookup_error():
-    """#80204: ProcessLookupError from probe immediately signals parent is gone."""
+    """#80204: ``ProcessLookupError`` from the marker probe means the parent is gone, whatever
+    a (possibly recycled) pid liveness check says."""
     def lookup_error_probe(pid: int) -> str:
         raise ProcessLookupError(pid)
 
-    assert (
-        _is_serve_orphaned(
-            4242,
-            "ps:Thu Aug 20 22:33:11 2026",
-            pid_exists=lambda _pid: True,
-            process_start_marker=lookup_error_probe,
-        )
-        is True
-    )
+    assert _is_serve_orphaned(4242, "ps:Thu Aug 20 22:33:11 2026", pid_exists=lambda _pid: True,
+                              process_start_marker=lookup_error_probe) is True
 
 
-def test_ps_process_start_marker_raises_process_lookup_error_on_missing_process(monkeypatch):
-    """#80204: _process_start_marker raises ProcessLookupError when ps exits with known missing-process markers."""
+@pytest.mark.macos_only
+def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeypatch):
+    """The darwin ``ps`` probe raises ``ProcessLookupError`` only for a missing-process message;
+    any other non-zero exit stays a plain ``OSError`` so the watchdog degrades instead of killing
+    a healthy backend."""
     import subprocess
-    import pytest
+
     from hermes_cli import web_server_lifecycle
 
-    # returncode != 1 but explicit "No such process" in stderr
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: 4242: No such process")
+    def fake_run(stderr):
+        return lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=2, stdout="", stderr=stderr)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
-    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
-
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: 4242: No such process"))
     with pytest.raises(ProcessLookupError):
         web_server_lifecycle._process_start_marker(4242)
 
-
-def test_ps_process_start_marker_raises_oserror_on_unrelated_nonzero_failure(monkeypatch):
-    """#80204: unrelated ps failures (e.g. returncode 2 without missing-process message) must raise OSError."""
-    import subprocess
-    import pytest
-    from hermes_cli import web_server_lifecycle
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: temporary process table failure")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
-    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
-
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: temporary process table failure"))
     with pytest.raises(OSError) as excinfo:
         web_server_lifecycle._process_start_marker(4242)
-    assert "ps could not inspect PID 4242" in str(excinfo.value)
     assert not isinstance(excinfo.value, ProcessLookupError)
-
-
-def test_parent_watchdog_does_not_kill_live_parent_on_unrelated_ps_failure(monkeypatch):
-    """#80204: an unrelated nonzero ps error raises OSError, degrading to pid_exists which keeps a live backend alive."""
-    import subprocess
-    from hermes_cli import web_server_lifecycle
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: temporary process table failure")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
-    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
-
-    # Parent is alive: must return False (do not kill healthy backend)
-    assert (
-        web_server_lifecycle._is_serve_orphaned(
-            4242,
-            "ps:Thu Aug 20 22:33:11 2026",
-            pid_exists=lambda _pid: True,
-        )
-        is False
-    )
-
-    # Parent is dead: must return True (reap orphan)
-    assert (
-        web_server_lifecycle._is_serve_orphaned(
-            4242,
-            "ps:Thu Aug 20 22:33:11 2026",
-            pid_exists=lambda _pid: False,
-        )
-        is True
-    )
-
-

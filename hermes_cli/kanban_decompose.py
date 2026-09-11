@@ -296,6 +296,21 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     )
 
 
+def _is_spawnable_assignee(assignee: Optional[str]) -> bool:
+    """True if *assignee* is empty (unassigned) or resolves to a real profile.
+
+    False means the task was deliberately parked under a non-profile name —
+    the same containment convention the dispatcher already respects via
+    ``has_spawnable_ready``/``profile_exists`` (#62985)."""
+    if not assignee:
+        return True
+    try:
+        return profiles_mod.profile_exists(assignee)
+    except Exception as exc:
+        logger.warning("decompose: failed to resolve assignee %r as a profile: %s", assignee, exc)
+        return False
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -308,6 +323,11 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    if not _is_spawnable_assignee(task.assignee):
+        # Mirrors the dispatcher's has_spawnable_ready/profile_exists gate (#62985): a task
+        # deliberately parked under a non-profile assignee must stay parked, not get silently
+        # fanned out and reassigned to the orchestrator/default_assignee.
+        return DecomposeOutcome(task_id, False, f"assignee {task.assignee!r} is not a spawnable profile — parked")
 
     routing = _load_routing()
     raw, reason = _call_aux(
@@ -337,6 +357,29 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
     return [row.id for row in rows]
+
+
+def list_spawnable_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+    """Like ``list_triage_ids``, but excludes tasks parked under a non-spawnable
+    assignee (see ``_is_spawnable_assignee`` / #62985).
+
+    The auto-decompose tick consumes this so it doesn't burn its per-tick attempt
+    budget on cards ``decompose_task`` rejects every time — parked cards never leave
+    triage, so enough of them ahead of an eligible card in priority order would
+    starve it indefinitely. Manual/CLI/dashboard listing paths keep using
+    ``list_triage_ids`` unfiltered, so a user can still see their own parked cards.
+    Each distinct assignee is resolved once per call: one coherent profile snapshot
+    per tick, no repeated lookups for a board full of same-assignee cards."""
+    with kbc.connect_closing() as conn:
+        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
+    spawnable_by_assignee: dict[Optional[str], bool] = {}
+    spawnable_ids: list[str] = []
+    for row in rows:
+        if row.assignee not in spawnable_by_assignee:
+            spawnable_by_assignee[row.assignee] = _is_spawnable_assignee(row.assignee)
+        if spawnable_by_assignee[row.assignee]:
+            spawnable_ids.append(row.id)
+    return spawnable_ids
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -66,7 +66,12 @@ def _compute_host_turn_frame(
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
-        "queued_prompt_generation": queued_prompt_generation}
+        "queued_prompt_generation": queued_prompt_generation,
+        # #101416: vouch that this process already holds the registry lease for this session, so
+        # the child adopts it as an inert token instead of re-claiming and being fenced out by
+        # our own entry ("Session ... already has a live owner"). No lease held = no vouch, and
+        # the child keeps its legacy self-claim path (fail-closed refusal on conflict).
+        "parent_owns_active_session_lease": session.get("active_session_lease") is not None}
 
 
 def _metadata_mirror(session: dict | None) -> dict:

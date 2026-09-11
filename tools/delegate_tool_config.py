@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import get_fallback_chain
@@ -103,6 +104,121 @@ def _get_independent_completions() -> bool:
     """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
+
+# ---------------------------------------------------------------------------
+# Per-session children budget (#52484)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MAX_CHILDREN_PER_SESSION = 10
+
+# Per-parent-session total count of subagent children spawned. Counts children
+# that have been dispatched (sync or background) and is NOT decremented when
+# they finish, so a runaway parent cannot spawn an unbounded total across turns.
+# The key is the parent agent's session_id when available; otherwise the parent
+# agent's id() is used as a process-local fallback for tests / non-session callers.
+# Protected by _session_children_lock.
+_session_children_lock = threading.Lock()
+_session_children_counts: Dict[str, int] = {}
+
+
+def _get_max_children_per_session() -> int:
+    """delegation.max_children_per_session (floor 1, 0 disables).
+
+    Caps the total number of subagent children a single parent session may
+    spawn across all delegate_task calls. Independent of max_concurrent_children
+    (per-batch parallel limit) and max_spawn_depth (nesting limit).
+    """
+    val = _cfg().get("max_children_per_session")
+    if val is not None:
+        try:
+            ival = int(val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_children_per_session=%r is not a valid integer; "
+                "using default %d",
+                val,
+                _DEFAULT_MAX_CHILDREN_PER_SESSION,
+            )
+            return _DEFAULT_MAX_CHILDREN_PER_SESSION
+        if ival == 0:
+            return 0  # disabled
+        return max(1, ival)
+    return _DEFAULT_MAX_CHILDREN_PER_SESSION
+
+
+def _session_budget_key(parent_agent) -> str:
+    """Return a stable key for per-session children budget tracking.
+
+    Prefers the parent agent's session_id because it survives turn-level agent
+    recreation. Falls back to the parent object's id() for tests or callers
+    without a session_id.
+    """
+    session_id = getattr(parent_agent, "session_id", None)
+    if session_id:
+        return str(session_id)
+    return f"__parent_id_{id(parent_agent)}"
+
+
+def _reserve_session_children_budget(parent_agent, n_tasks: int) -> Optional[str]:
+    """Reserve `n_tasks` slots in the parent session's children budget.
+
+    Returns None on success, or a user-facing error string if the cap would be
+    exceeded. Thread-safe.
+    """
+    if n_tasks <= 0:
+        return None
+    # Late-import from the facade so monkeypatching tools.delegate_tool._get_max_children_per_session
+    # is the seam (AGENTS.md: "Patch where production reads").
+    from tools.delegate_tool import _get_max_children_per_session
+    cap = _get_max_children_per_session()
+    if cap == 0:
+        return None
+    key = _session_budget_key(parent_agent)
+    with _session_children_lock:
+        current = _session_children_counts.get(key, 0)
+        if current + n_tasks > cap:
+            return (
+                f"Session children cap reached ({current}/{cap} subagents already "
+                f"dispatched in this session). This delegate_task request would add "
+                f"{n_tasks} more, which exceeds the configured limit. "
+                f"Raise delegation.max_children_per_session in config.yaml to allow "
+                f"more subagents per session, or batch work into fewer calls."
+            )
+        _session_children_counts[key] = current + n_tasks
+    return None
+
+
+def _release_session_children_budget(parent_agent, n_tasks: int) -> None:
+    """Release `n_tasks` slots from the parent session's children budget.
+
+    Called only when reserved children are cancelled before they are actually
+    dispatched (e.g. child construction failed). Finished children do NOT release
+    their slots because the cap is a per-session total, not a concurrency limit.
+    Thread-safe.
+    """
+    if n_tasks <= 0:
+        return
+    key = _session_budget_key(parent_agent)
+    with _session_children_lock:
+        current = _session_children_counts.get(key, 0)
+        new = max(0, current - n_tasks)
+        if new:
+            _session_children_counts[key] = new
+        else:
+            _session_children_counts.pop(key, None)
+
+
+def cleanup_session_budget(session_id: str) -> None:
+    """Drop the per-session children budget entry for *session_id*.
+
+    Called by the session-delete path so the module-level dict does not grow
+    unbounded in long-running gateway processes. Safe to call with an unknown
+    / already-removed session_id (no-op). Thread-safe.
+    """
+    if not session_id:
+        return
+    with _session_children_lock:
+        _session_children_counts.pop(str(session_id), None)
 
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own

@@ -293,6 +293,13 @@ class SessionMaintenanceMixin:
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all pruned sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     def _page_pragmas(self, names: Tuple[str, ...], fail_msg: str) -> Optional[list]:

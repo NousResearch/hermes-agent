@@ -29,10 +29,11 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
-    _subagent_auto_approve, _subagent_auto_deny,
+    _get_max_children_per_session, _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback,
+    _get_worktree_isolation, _inherit_parent_capabilities, _load_config, _merge_request_overrides,
+    _release_session_children_budget, _reserve_session_children_budget, _resolve_child_credential_pool,
+    _resolve_child_runtime, _resolve_delegation_credentials, _session_children_counts,
+    _session_children_lock, _subagent_auto_approve, _subagent_auto_deny, cleanup_session_budget,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -483,11 +484,26 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
-    )
+    n_tasks = len(task_list or [])
+    # Reserve only after fallible pre-dispatch setup, but before building any
+    # child. This keeps concurrent calls atomic without leaking budget when
+    # setup fails. A build failure below releases the complete reservation.
+    budget_error = _reserve_session_children_budget(parent_agent, n_tasks)
+    if budget_error:
+        return tool_error(budget_error)
+
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        )
+    except Exception:
+        # No child is dispatched until the complete construction loop succeeds.
+        # Roll back the whole reservation even when earlier children built.
+        _release_session_children_budget(parent_agent, n_tasks)
+        raise
     if err:
+        _release_session_children_budget(parent_agent, n_tasks)
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
@@ -523,7 +539,21 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         "each ungrouped task / `group` returns on its own"
         if independent_completions else "one message per call"
     )
-    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
+    # Per-session total budget clause (#52484). Stated here because it applies to
+    # both single-task and batch calls and is not a per-task parameter.
+    try:
+        max_per_session = _get_max_children_per_session()
+    except Exception:
+        max_per_session = 10
+    if max_per_session == 0:
+        session_budget_clause = (
+            "SESSION BUDGET: unlimited; positive config enables the cap.\n\n"
+        )
+    else:
+        session_budget_clause = (
+            f"SESSION BUDGET: {max_per_session}/parent session; 0=unlimited.\n\n"
+        )
+    return _DESCRIPTION_HEAD.format(delivery=delivery) + session_budget_clause + restrictions_rule + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "

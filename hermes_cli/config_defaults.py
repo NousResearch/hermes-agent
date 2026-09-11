@@ -1257,6 +1257,10 @@ DEFAULT_CONFIG = {
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
+        # Total child sessions a parent may create across repeated
+        # delegate_task calls. Unlike max_concurrent_children, completed
+        # children still consume this budget. Set to 0 to disable the cap.
+        "max_children_per_session": 10,
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"

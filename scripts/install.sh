@@ -45,6 +45,17 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+# Failure-triggered fallbacks are never geo-detected or inferred from IP data.
+# The official endpoint is always attempted first. GIT_FALLBACK_REPO_URL is
+# explicitly opt-in (unset by default) to ensure unauthenticated third-party
+# source mirrors are not contacted automatically; it should be paired with
+# a pinned --commit check for upstream provenance. UV_FALLBACK_INDEX defaults
+# to a community mirror because uv.lock preserves Tier-0 cryptographic hash
+# verification regardless of index.
+GIT_FALLBACK_REPO_URL="${GIT_FALLBACK_REPO_URL:-}"
+UV_FALLBACK_INDEX="${UV_FALLBACK_INDEX-https://pypi.tuna.tsinghua.edu.cn/simple}"
+CLONE_SOURCE_URL="$REPO_URL_HTTPS"
+UV_SELECTED_INDEX="${UV_DEFAULT_INDEX:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -1469,6 +1480,111 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+FETCH_USED_MIRROR=false
+FETCH_MIRROR_REF=""
+
+is_canonical_nous_remote() {
+    local url="$1"
+    case "$url" in
+        "https://github.com/NousResearch/hermes-agent" | \
+        "https://github.com/NousResearch/hermes-agent.git" | \
+        "git@github.com:NousResearch/hermes-agent" | \
+        "git@github.com:NousResearch/hermes-agent.git" | \
+        "ssh://git@github.com/NousResearch/hermes-agent" | \
+        "ssh://git@github.com/NousResearch/hermes-agent.git" )
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+fetch_branch_with_fallback() {
+    # Official-first is the important part of this ladder. A mirror is tried
+    # only after git has returned a real fetch failure; no IP or region data is
+    # consulted. For existing checkouts with a fork remote, fallback stays
+    # scoped to that fork or fails closed rather than switching to an upstream
+    # mirror. For canonical Nous origin, mirror fetches go into a dedicated
+    # fallback-mirror ref namespace once provenance is verified.
+    FETCH_USED_MIRROR=false
+    FETCH_MIRROR_REF=""
+    local origin_url
+    origin_url="$(git remote get-url origin 2>/dev/null || git config --get remote.origin.url || true)"
+
+    if git fetch origin "$BRANCH"; then
+        CLONE_SOURCE_URL="origin"
+        return 0
+    fi
+
+    # An intentional fork remote must not be silently replaced by a Nous mirror.
+    if [ -n "$origin_url" ] && ! is_canonical_nous_remote "$origin_url"; then
+        log_error "Official fetch from fork remote 'origin' ($origin_url) failed."
+        log_error "Refusing to overwrite fork tracking ref with upstream fallback mirror."
+        return 1
+    fi
+
+    if [ -z "$GIT_FALLBACK_REPO_URL" ]; then
+        return 1
+    fi
+
+    log_warn "The official repository fetch failed; retrying with the configured fallback mirror..."
+    local mirror_ref="refs/remotes/fallback-mirror/$BRANCH"
+    if git fetch "$GIT_FALLBACK_REPO_URL" "$BRANCH:$mirror_ref"; then
+        local expected_commit="${INSTALL_COMMIT:-${GIT_FALLBACK_EXPECTED_COMMIT:-}}"
+        if [ -n "$expected_commit" ]; then
+            if ! git cat-file -e "$expected_commit^{commit}" 2>/dev/null; then
+                log_error "Fallback mirror ref $mirror_ref does not contain expected commit $expected_commit."
+                git update-ref -d "$mirror_ref" 2>/dev/null || true
+                return 1
+            fi
+        fi
+        FETCH_USED_MIRROR=true
+        FETCH_MIRROR_REF="$mirror_ref"
+        CLONE_SOURCE_URL="$GIT_FALLBACK_REPO_URL"
+        log_success "Repository fetched through the fallback mirror into $mirror_ref (configured origin preserved)"
+        return 0
+    fi
+    return 1
+}
+
+verify_mirror_checkout() {
+    # Git object hashes prove transport integrity, not that a public mirror
+    # served the upstream history. Run fsck before accepting the tree, verify
+    # the checkout contains and resolves the expected commit if pinned, and
+    # reset the checkout's remote to the official URL so a mirror cannot
+    # silently become the long-term update target.
+    local expected_commit="${INSTALL_COMMIT:-${GIT_FALLBACK_EXPECTED_COMMIT:-}}"
+    if ! git -C "$INSTALL_DIR" fsck --full --no-progress >/dev/null 2>&1; then
+        log_error "Fallback mirror returned a checkout that failed Git object verification."
+        return 1
+    fi
+    local head_commit
+    if ! head_commit="$(git -C "$INSTALL_DIR" rev-parse --verify HEAD 2>/dev/null)"; then
+        log_error "Fallback mirror returned a checkout without a valid commit."
+        return 1
+    fi
+    if [ -n "$expected_commit" ]; then
+        if ! git -C "$INSTALL_DIR" cat-file -e "$expected_commit^{commit}" 2>/dev/null; then
+            log_error "Fallback mirror returned history that does not contain expected commit $expected_commit."
+            return 1
+        fi
+        local expected_sha
+        expected_sha="$(git -C "$INSTALL_DIR" rev-parse "$expected_commit^{commit}" 2>/dev/null || true)"
+        if [ "$head_commit" != "$expected_sha" ]; then
+            if ! git -C "$INSTALL_DIR" checkout --detach "$expected_commit" >/dev/null 2>&1; then
+                log_error "Fallback mirror commit ($head_commit) does not match expected upstream commit ($expected_sha)."
+                return 1
+            fi
+        fi
+    fi
+    if ! git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL_HTTPS" >/dev/null 2>&1; then
+        log_error "Could not restore the official origin after the mirror checkout."
+        return 1
+    fi
+    return 0
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
@@ -1517,15 +1633,25 @@ clone_repo() {
             # branches — on a non-single-branch checkout that turns each update
             # into a multi-minute download that can stall the installer.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
+            if ! fetch_branch_with_fallback; then
+                log_error "Failed to fetch the repository from the official endpoint and the fallback mirror."
+                exit 1
+            fi
             git checkout "$BRANCH"
             # Managed installs should follow origin/$BRANCH exactly. If the
             # checkout has diverged (or has local-only commits), ff-only pull
             # cannot succeed — mirror ``hermes update`` and reset to the
             # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+            if [ "$FETCH_USED_MIRROR" != true ]; then
+                if ! git pull --ff-only origin "$BRANCH"; then
+                    log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                    git reset --hard "origin/$BRANCH"
+                fi
+            elif [ -n "$FETCH_MIRROR_REF" ]; then
+                if ! git merge --ff-only "$FETCH_MIRROR_REF"; then
+                    log_warn "Fast-forward not possible; resetting managed install to $FETCH_MIRROR_REF..."
+                    git reset --hard "$FETCH_MIRROR_REF"
+                fi
             fi
 
             if [ -n "$autostash_ref" ]; then
@@ -1649,8 +1775,22 @@ EOF
                     rm -rf "$INSTALL_DIR" 2>/dev/null
                 fi
             fi
+            if [ "$clone_ok" != true ] && [ -n "$GIT_FALLBACK_REPO_URL" ]; then
+                log_warn "Official GitHub clone failed; retrying with the configured fallback mirror..."
+                rm -rf "$INSTALL_DIR" 2>/dev/null
+                if git clone --depth 1 --single-branch --branch "$BRANCH" \
+                     "$GIT_FALLBACK_REPO_URL" "$INSTALL_DIR"; then
+                    if verify_mirror_checkout; then
+                        CLONE_SOURCE_URL="$GIT_FALLBACK_REPO_URL"
+                        clone_ok=true
+                        log_success "Cloned via fallback mirror (Git objects verified)"
+                    else
+                        rm -rf "$INSTALL_DIR" 2>/dev/null
+                    fi
+                fi
+            fi
             if [ "$clone_ok" = true ]; then
-                log_success "Cloned via HTTPS"
+                [ "$CLONE_SOURCE_URL" = "$REPO_URL_HTTPS" ] && log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
                 exit 1
@@ -1677,7 +1817,7 @@ EOF
         # current venv. Only pin when the target is not already an ancestor of
         # HEAD; a fresh clone has no such ancestry and pins normally.
         if ! git cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
-            if ! git fetch origin "$INSTALL_COMMIT"; then
+            if ! git fetch "$CLONE_SOURCE_URL" "$INSTALL_COMMIT"; then
                 log_error "Could not fetch commit $INSTALL_COMMIT from origin."
                 log_error "Abbreviated SHAs are not supported — use the full 40-char hash."
                 log_error "Find it with: git ls-remote origin | grep <short-sha>"
@@ -1774,6 +1914,39 @@ run_locked_uv_sync() {
     sync_rc=$?
     rmdir "$isolated_uv_config" 2>/dev/null || true
     return "$sync_rc"
+}
+
+run_locked_uv_sync_with_fallback() {
+    local project_env="$1"
+    local configured_index="${UV_DEFAULT_INDEX:-}"
+
+    if run_locked_uv_sync "$project_env"; then
+        UV_SELECTED_INDEX="$configured_index"
+        return 0
+    fi
+
+    # Never replace an explicit user index. The fallback is a second measured
+    # attempt only when the default uv route failed and no override was set.
+    if [ -n "$configured_index" ] || [ -z "$UV_FALLBACK_INDEX" ]; then
+        return 1
+    fi
+
+    log_warn "The default Python package index failed; retrying the locked sync with the configured fallback index..."
+    if UV_DEFAULT_INDEX="$UV_FALLBACK_INDEX" run_locked_uv_sync "$project_env"; then
+        UV_SELECTED_INDEX="$UV_FALLBACK_INDEX"
+        export UV_DEFAULT_INDEX="$UV_FALLBACK_INDEX"
+        log_success "Locked Python sync succeeded through the fallback index"
+        return 0
+    fi
+    return 1
+}
+
+run_uv() {
+    if [ -n "${UV_SELECTED_INDEX:-}" ]; then
+        UV_DEFAULT_INDEX="$UV_SELECTED_INDEX" "$UV_CMD" "$@"
+    else
+        "$UV_CMD" "$@"
+    fi
 }
 
 install_deps() {
@@ -1927,7 +2100,7 @@ install_deps() {
         # (redirected to an empty XDG dir), preserving the #21269 guarantee.
         # Runtime code does the same before its locked syncs
         # (hermes_cli/managed_uv.py).
-        if run_locked_uv_sync "$INSTALL_DIR/venv"; then
+        if run_locked_uv_sync_with_fallback "$INSTALL_DIR/venv"; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -2008,7 +2181,7 @@ PY
     install_tier() {
         local name="$1"; local spec="$2"
         log_info "Trying tier: $name ..."
-        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+        if run_uv pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
             log_success "Main package installed ($name)"
             _installed=true
             _tier_name="$name"

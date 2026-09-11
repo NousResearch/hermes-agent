@@ -10,10 +10,24 @@ import { resumeStoredRuntimeSession, SessionRecoveryAborted, withSessionNotFound
 
 afterEach(() => {
   clearSingleFlightSessionResumeState()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
 describe('singleFlightSessionResume', () => {
+  it('allows a valid resume to settle inside the ordinary gateway request budget', async () => {
+    vi.useFakeTimers()
+
+    const flight = singleFlightSessionResume(
+      'stored-slow',
+      () => new Promise<string>(resolve => setTimeout(() => resolve('runtime-slow'), 25_000))
+    )
+
+    await vi.advanceTimersByTimeAsync(25_000)
+
+    await expect(flight).resolves.toBe('runtime-slow')
+  })
+
   it('two concurrent resume callers for the same stored id produce ONE session.resume RPC', async () => {
     const requestGateway = vi.fn(async (method: string) => {
       expect(method).toBe('session.resume')

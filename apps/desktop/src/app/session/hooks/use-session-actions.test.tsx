@@ -75,6 +75,7 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { singleFlightSessionResume } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -1068,6 +1069,7 @@ function ResumeTimerHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
@@ -1249,6 +1251,67 @@ describe('resumeSession failure recovery', () => {
     // The window is no longer silently stranded: the failure latch is armed for
     // the stored session, which use-route-resume consumes to retry.
     expect($resumeFailedSessionId.get()).toBe('stored-1')
+  })
+
+  it('times out when joining an earlier never-settling resume and releases the shared flight for retry', async () => {
+    vi.useFakeTimers()
+
+    let resumeCalls = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method !== 'session.resume') {
+        return {} as never
+      }
+
+      resumeCalls += 1
+
+      return {
+        info: {},
+        message_count: 0,
+        messages: [],
+        messages_omitted: true,
+        resumed: 'stored-1',
+        running: false,
+        session_id: 'runtime-retry',
+        session_key: 'stored-1'
+      } as never
+    })
+
+    // The initial prefetch and post-timeout fallback both fail, matching an
+    // unresumable/unreachable row whose RPC never settles.
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('network down'))
+
+    // Another resume surface wins the module-level flight before the route
+    // resolver starts. The resolver must still inherit the shared deadline;
+    // putting a timeout only inside its callback cannot bound this join path.
+    const earlierFlight = singleFlightSessionResume('stored-1', () => new Promise<never>(() => undefined))
+    earlierFlight.catch(() => undefined)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    expect(resume).not.toBeNull()
+
+    let firstResume!: Promise<unknown>
+    await act(async () => {
+      firstResume = resume!('stored-1', true)
+      await vi.advanceTimersByTimeAsync(35_000)
+      await firstResume
+    })
+
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+    expect(resumeCalls).toBe(0)
+
+    // The shared timeout removes exactly the stale flight. A later retry must
+    // dispatch a fresh RPC rather than rejoin the permanently pending request.
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await act(async () => {
+      await resume!('stored-1', true)
+    })
+
+    expect(resumeCalls).toBe(1)
+    expect($activeSessionId.get()).toBe('runtime-retry')
+    expect($resumeFailedSessionId.get()).toBeNull()
   })
 
   it('does NOT arm the failure latch when the resume RPC fails but the REST fallback paints history', async () => {

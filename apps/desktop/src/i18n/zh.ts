@@ -210,7 +210,11 @@ export const zh: Translations = {
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用'
+      unavailable: '语音不可用',
+      liveEnded: '实时语音会话已结束',
+      liveError: '实时语音',
+      liveDelegationFailed: '无法将请求交给 Hermes',
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -825,7 +829,12 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        voiceChatMode: '语音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人设'
+        }
       },
       stt: {
         enabled: '语音转文字',
@@ -972,7 +981,13 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        voiceChatMode:
+          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',

@@ -256,6 +256,10 @@ export interface Translations {
       transcriptionUnavailable: string
       tryRecordingAgain: string
       unavailable: string
+      liveEnded: string
+      liveError: string
+      liveDelegationFailed: string
+      liveUnavailable: (reason: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.

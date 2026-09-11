@@ -216,7 +216,11 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable'
+      unavailable: 'Voice unavailable',
+      liveEnded: 'Live voice session ended',
+      liveError: 'Live voice',
+      liveDelegationFailed: 'Could not hand the request to Hermes',
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',

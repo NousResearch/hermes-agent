@@ -1115,6 +1115,19 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
+        # How the Desktop voice conversation is wired:
+        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
+        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
+        #              DELEGATES every real request to Hermes (any model / provider you have
+        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        "voice_chat_mode": "chained",
+        "gpt_live": {
+            "model": "gpt-live-1",
+            "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
+            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
+            "instructions": "",
+            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+        },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,

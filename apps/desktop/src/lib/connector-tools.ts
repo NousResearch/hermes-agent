@@ -1,3 +1,6 @@
+import { isRecord } from '@assistant-ui/core/internal'
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+
 /** Connector names/results as presentation data, never authorization. */
 export interface ConnectorRow {
   connector: string
@@ -8,19 +11,30 @@ export interface ConnectorRow {
   description?: string
 }
 
-export const recordOf = (value: unknown): Record<string, unknown> => {
-  if (typeof value === 'string') {
+export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+export const recordOf = (value: ToolCallMessagePart['result']): ToolCallMessagePart['args'] => {
+  const text = connectorText(value)
+
+  if (text !== undefined) {
     try {
-      return recordOf(JSON.parse(value))
+      return recordOf(JSON.parse(text))
     } catch {
       return {}
     }
   }
 
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  // SAFETY: tool payloads arrive as JSON-RPC or stored JSON; the object guard excludes arrays and primitives.
+  return isRecord(value) ? (value as ToolCallMessagePart['args']) : {}
 }
 
-const TITLES: Record<string, string> = {
+interface ConnectorTitles {
+  [slug: string]: string
+}
+
+const TITLES: ConnectorTitles = {
   gmail: 'Gmail',
   googlecalendar: 'Google Calendar',
   googledrive: 'Google Drive',
@@ -44,7 +58,12 @@ export function connectorToolName(name: string): { connector: string; action: st
   return match ? { connector: match[1], action: match[2].replace(/_/g, ' ').toLowerCase() } : null
 }
 
-export function connectorCalls(name: string, args: unknown): { name: string; arguments: unknown }[] {
+interface ConnectorCall {
+  name: string
+  arguments: ToolCallMessagePart['result']
+}
+
+export function connectorCalls(name: string, args: ToolCallMessagePart['result']): ConnectorCall[] {
   if (connectorToolName(name)) {
     return [{ name, arguments: args }]
   }
@@ -59,46 +78,62 @@ export function connectorCalls(name: string, args: unknown): { name: string; arg
   return calls.flatMap(item => {
     const call = recordOf(item)
 
-    return typeof call.name === 'string' && connectorToolName(call.name)
-      ? [{ name: call.name, arguments: call.arguments }]
-      : []
+    const callName = connectorText(call.name)
+
+    return callName !== undefined && connectorToolName(callName) ? [{ name: callName, arguments: call.arguments }] : []
   })
 }
 
-export function connectionRows(args: unknown, result: unknown): ConnectorRow[] {
+export function connectionRows(
+  args: ToolCallMessagePart['result'],
+  result: ToolCallMessagePart['result']
+): ConnectorRow[] {
   const input = recordOf(args)
   const output = recordOf(result)
   const rows = new Map<string, ConnectorRow>()
 
-  const add = (item: unknown) => {
-    if (typeof item === 'string') {
-      if (/^[a-z0-9_-]+$/i.test(item)) {
-        rows.set(item, rows.get(item) ?? { connector: item })
+  const add = (item: ToolCallMessagePart['result']) => {
+    const slug = connectorText(item)
+
+    if (slug !== undefined) {
+      if (/^[a-z0-9_-]+$/i.test(slug)) {
+        rows.set(slug, rows.get(slug) ?? { connector: slug })
       }
 
       return
     }
 
     const row = recordOf(item)
+    const connector = connectorText(row.connector)
 
-    if (typeof row.connector !== 'string' || !/^[a-z0-9_-]+$/i.test(row.connector)) {
+    if (connector === undefined || !/^[a-z0-9_-]+$/i.test(connector)) {
       return
     }
 
-    rows.set(row.connector, {
-      ...rows.get(row.connector),
-      connector: row.connector,
-      ...(typeof row.connected === 'boolean' ? { connected: row.connected } : {}),
-      ...(typeof row.enabled === 'boolean' ? { enabled: row.enabled } : {}),
-      ...(typeof row.connectionStatus === 'string' ? { connectionStatus: row.connectionStatus } : {}),
-      ...(typeof row.name === 'string' ? { name: row.name } : {}),
-      ...(typeof row.description === 'string' ? { description: row.description } : {})
-    })
+    const merged: ConnectorRow = { ...rows.get(connector), connector }
+
+    if (row.connected === true || row.connected === false) {
+      merged.connected = row.connected
+    }
+
+    if (row.enabled === true || row.enabled === false) {
+      merged.enabled = row.enabled
+    }
+
+    for (const key of ['connectionStatus', 'name', 'description'] as const) {
+      const text = connectorText(row[key])
+
+      if (text !== undefined) {
+        merged[key] = text
+      }
+    }
+
+    rows.set(connector, merged)
   }
 
   if (Array.isArray(input.connectors)) {
     input.connectors.forEach(add)
-  } else if (typeof input.connectors === 'string') {
+  } else if (connectorText(input.connectors) !== undefined) {
     add(input.connectors)
   }
 
@@ -112,15 +147,17 @@ export function connectionRows(args: unknown, result: unknown): ConnectorRow[] {
 }
 
 /** Token-bearing auth links are opened only by a deliberate user action. */
-export function connectorAuthorizationUrl(value: unknown): string | null {
-  if (typeof value !== 'string') {
+export function connectorAuthorizationUrl(value: ToolCallMessagePart['result']): string | null {
+  const text = connectorText(value)
+
+  if (text === undefined) {
     return null
   }
 
   try {
-    const url = new URL(value)
+    const url = new URL(text)
 
-    return url.protocol === 'https:' && !url.username && !url.password ? value : null
+    return url.protocol === 'https:' && !url.username && !url.password ? text : null
   } catch {
     return null
   }

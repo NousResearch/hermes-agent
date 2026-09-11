@@ -12,7 +12,13 @@ vi.mock('@/components/assistant-ui/tool/fallback', () => ({
 afterEach(cleanup)
 
 it('keeps each connector result paired with its app', () => {
-  const props = {
+  const props: ToolCallMessagePartProps = {
+    type: 'tool-call',
+    argsText: '',
+    status: { type: 'complete' },
+    addResult: vi.fn(),
+    resume: vi.fn(),
+    respondToApproval: vi.fn(),
     toolName: 'tool_call',
     toolCallId: 'batch',
     args: {
@@ -22,10 +28,10 @@ it('keeps each connector result paired with its app', () => {
       ]
     },
     result: { results: [{ response: 'mail result' }, { response: 'slack result' }] }
-  } as ToolCallMessagePartProps
+  }
 
   render(<ConnectorExecution {...props} />)
-  const rows = screen.getAllByTestId('tool-result').map(row => JSON.parse(row.textContent!))
+  const rows = screen.getAllByTestId('tool-result').map(row => JSON.parse(row.textContent ?? ''))
 
   expect(rows).toEqual([
     { toolName: 'Gmail: list messages', result: { response: 'mail result' } },
@@ -36,7 +42,13 @@ it('keeps each connector result paired with its app', () => {
 it('preserves the full disclosure for mixed remote batches', () => {
   const result = { results: [{ response: 'remote result' }, { response: 'mail result' }] }
 
-  const props = {
+  const props: ToolCallMessagePartProps = {
+    type: 'tool-call',
+    argsText: '',
+    status: { type: 'complete' },
+    addResult: vi.fn(),
+    resume: vi.fn(),
+    respondToApproval: vi.fn(),
     toolName: 'tool_call',
     toolCallId: 'mixed',
     args: {
@@ -46,8 +58,8 @@ it('preserves the full disclosure for mixed remote batches', () => {
       ]
     },
     result
-  } as ToolCallMessagePartProps
+  }
 
   render(<ConnectorExecution {...props} />)
-  expect(JSON.parse(screen.getByTestId('tool-result').textContent!)).toEqual({ toolName: 'tool_call', result })
+  expect(JSON.parse(screen.getByTestId('tool-result').textContent ?? '')).toEqual({ toolName: 'tool_call', result })
 })

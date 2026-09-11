@@ -99,15 +99,13 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   )
 }
 
-export function ConnectorOffer({
-  flow,
-  busy,
-  onContinue
-}: {
+interface ConnectorOfferProps {
   flow: ReturnType<typeof createConnectorFlow>
   busy: boolean
   onContinue: (text: string) => Promise<void>
-}) {
+}
+
+export function ConnectorOffer({ flow, busy, onContinue }: ConnectorOfferProps) {
   const state = useStore(flow.state)
   const { t } = useI18n()
   const copy = t.connectors
@@ -273,7 +271,10 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
         String(recordOf(item.error).code ?? '')
       )
     })
-    .map(call => connectorToolName(call.name)!.connector)
+    .map(call => {
+      // SAFETY: connectorCalls includes only names accepted by connectorToolName.
+      return connectorToolName(call.name)!.connector
+    })
 
   return (
     <>
@@ -282,12 +283,13 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
           props.toolName === 'tool_call' ? (results[index] ?? (output.error ? output : undefined)) : props.result
 
         const result = recordOf(item)
+        // SAFETY: connectorCalls includes only names accepted by connectorToolName.
         const identity = connectorToolName(call.name)!
 
         return (
           <ToolFallback
             {...props}
-            args={recordOf(call.arguments) as ToolCallMessagePartProps['args']}
+            args={recordOf(call.arguments)}
             isError={Boolean(result.error) || props.isError === true}
             key={`${props.toolCallId}:${index}`}
             result={props.result === undefined ? undefined : (item ?? { error: 'Missing connector result' })}

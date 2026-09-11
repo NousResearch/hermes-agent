@@ -1,9 +1,9 @@
-import type { ThreadMessage } from '@assistant-ui/react'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
+import type * as Gateway from '@/store/gateway'
 import { setSessionOwnerHint } from '@/store/session'
 
 import { assistantMessage, stubThreadEnvironment, ThreadRuntime, userMessage } from './test-utils'
@@ -11,7 +11,7 @@ import { Thread } from './thread'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@/store/gateway', async original => ({
-  ...(await original<Record<string, unknown>>()),
+  ...(await original<typeof Gateway>()),
   requestGatewayForAgent: request
 }))
 stubThreadEnvironment()
@@ -41,8 +41,14 @@ it.each([undefined, false, true])(
       result: { connectors: [{ connector: 'gmail' }] }
     }
 
+    const message = assistantMessage()
+
+    if (message.role !== 'assistant') {
+      throw new Error('Expected an assistant message fixture')
+    }
+
     const assistant = {
-      ...assistantMessage(),
+      ...message,
       content: [
         {
           type: 'tool-call' as const,
@@ -74,11 +80,12 @@ it.each([undefined, false, true])(
 
     render(
       <SessionViewProvider value={view}>
-        <ThreadRuntime messages={[userMessage(), assistant as ThreadMessage]}>
+        <ThreadRuntime messages={[userMessage(), assistant]}>
           <Thread />
         </ThreadRuntime>
       </SessionViewProvider>
     )
+
     if (guestOnboardingEnabled !== true) {
       expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
       expect(request).not.toHaveBeenCalled()

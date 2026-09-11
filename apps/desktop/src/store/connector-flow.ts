@@ -14,7 +14,7 @@ export interface ConnectorFlowState {
   error?: string
 }
 export interface ConnectorFlowDeps {
-  request: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  request: <T>(method: string, params: { session_id: string; connectors?: string[]; reconnect?: boolean }) => Promise<T>
   open: (url: string) => Promise<void>
   delay?: () => Promise<void>
   now?: () => number
@@ -50,7 +50,7 @@ export function createConnectorFlow(sessionId: string, seeds: ConnectorRow[], de
       session_id: sessionId
     })
 
-    if (typeof response.available !== 'boolean' || !Array.isArray(response.connectors)) {
+    if ((response.available !== true && response.available !== false) || !Array.isArray(response.connectors)) {
       throw new Error('Invalid connector status response')
     }
 
@@ -73,7 +73,7 @@ export function createConnectorFlow(sessionId: string, seeds: ConnectorRow[], de
       // replace a targeted offer with every app the gateway happens to know.
       const wanted = seeds.length ? seeds : response.connectors
 
-      const rows = wanted.map(seed => {
+      const rows = wanted.map((seed): ConnectorFlowRow => {
         const live = response.connectors.find(row => row.connector === seed.connector)
         const previous = current.rows.find(row => row.connector === seed.connector)
         const phase = previous?.phase ?? 'idle'
@@ -92,7 +92,7 @@ export function createConnectorFlow(sessionId: string, seeds: ConnectorRow[], de
                 : ['opening', 'waiting'].includes(phase)
                   ? phase
                   : 'idle'
-        } as ConnectorFlowRow
+        }
       })
 
       state.set({ loading: false, available: response.available, rows })

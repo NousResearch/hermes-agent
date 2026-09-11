@@ -38,7 +38,7 @@ describe('connector lifecycle', () => {
   it('ignores a late connect response after cancellation without opening a browser', async () => {
     const h = harness()
     await h.flow.refresh()
-    let resolve!: (value: unknown) => void
+    let resolve!: (value: { results: { connector: string; status: string; connect_url: string }[] }) => void
     h.request.mockImplementationOnce(
       () =>
         new Promise(r => {
@@ -93,7 +93,7 @@ describe('connector lifecycle', () => {
 it('ignores stale refresh after a user skips and restores status after disposal without reconnecting', async () => {
   const h = harness()
   await h.flow.refresh()
-  let resolve!: (value: unknown) => void
+  let resolve!: (value: { available: boolean; connectors: (typeof gmail)[] }) => void
   h.request.mockImplementationOnce(
     () =>
       new Promise(r => {

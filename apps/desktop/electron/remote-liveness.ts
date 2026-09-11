@@ -1,3 +1,5 @@
+import { isMissingHealthEndpointError } from './backend-health'
+
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Probe cheap
@@ -102,9 +104,22 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/health', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-    })
+    try {
+      await probe(connection, '/api/health', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    } catch (healthError) {
+      // A remote that predates /api/health would otherwise 404 every dispatch,
+      // retire the tunnel and reconnect forever; the boot probe falls back the
+      // same way (backend-health.ts).
+      if (!isMissingHealthEndpointError(healthError)) {
+        throw healthError
+      }
+
+      await probe(connection, '/api/status', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)

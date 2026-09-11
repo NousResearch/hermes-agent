@@ -329,6 +329,36 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
   })
+
+  it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
+    const legacy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const legacyPromise = Promise.resolve(legacy)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const probe = vi.fn(async (_connection, path) => {
+      if (path === '/api/health') {
+        throw new Error('404: Not Found')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: legacyPromise,
+        currentConnectionPromise: () => legacyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(legacy)
+
+    expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
 })
 
 describe('revalidatePooledRemoteBackends', () => {

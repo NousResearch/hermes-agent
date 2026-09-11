@@ -392,6 +392,7 @@ export const es: Translations = {
     resetScopeToast: "{scope} restablecido a los valores predeterminados — revisa y guarda para que persista",
     rawYaml: "Configuración YAML en bruto",
     searchResults: "Resultados de búsqueda",
+    searchPlaceholder: "Buscar campos de configuración...",
     fields: "campo{s}",
     noFieldsMatch: 'Ningún campo coincide con "{query}"',
     configSaved: "Configuración guardada",

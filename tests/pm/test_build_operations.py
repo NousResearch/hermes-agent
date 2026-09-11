@@ -50,7 +50,7 @@ def locked_source(tmp_path, build_tools):
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
     )
     lock_project(source, python=Path(sys.executable), cache=tmp_path / "cache",
-                 env=build_tools, offline=True)
+                 env=build_tools, offline=True, explicit=True)
     return source
 
 
@@ -67,11 +67,11 @@ def test_check_lock_never_changes_source(locked_source, tmp_path, build_tools, l
     before = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
     if lock_state == "current":
         check_project_lock(source, python=Path(sys.executable), cache=tmp_path / "cache",
-                           env=build_tools, offline=True)
+                           env=build_tools, offline=True, explicit=True)
     else:
         with pytest.raises(InstallError):
             check_project_lock(source, python=Path(sys.executable), cache=tmp_path / "cache",
-                               env=build_tools, offline=True)
+                               env=build_tools, offline=True, explicit=True)
     assert {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()} == before
     assert not (source / ".venv").exists()
 
@@ -87,7 +87,7 @@ def test_frozen_export_keeps_markers_and_excludes_build_metadata(locked_source, 
     before = {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
     out = tmp_path / "export directory" / "requirements.txt"
     export_requirements(source, out, extras=["chosen", "chosen"], python=Path(sys.executable),
-                        cache=tmp_path / "cache", env=build_tools)
+                        cache=tmp_path / "cache", env=build_tools, explicit=True)
     text = out.read_text(encoding="utf-8")
     requirements = {r.name: r for r in map(Requirement, text.splitlines())}
     assert set(requirements) == {"base-dep", "chosen-dep"}
@@ -121,10 +121,10 @@ def test_frozen_export_preserves_git_commit_pin(locked_source, tmp_path, build_t
     manifest = locked_source / "pyproject.toml"
     manifest.write_text(manifest.read_text().replace('"base-dep==1.0"', json.dumps(f"git-dep @ {url}")),
                         encoding="utf-8")
-    lock_project(locked_source, python=Path(sys.executable), cache=tmp_path / "cache", env=build_tools)
+    lock_project(locked_source, python=Path(sys.executable), cache=tmp_path / "cache", env=build_tools, explicit=True)
     before = (locked_source / "uv.lock").read_bytes()
     out = tmp_path / "git-requirements.txt"
-    export_requirements(locked_source, out, cache=tmp_path / "cache", env=build_tools)
+    export_requirements(locked_source, out, cache=tmp_path / "cache", env=build_tools, explicit=True)
     requirement = Requirement(out.read_text(encoding="utf-8").strip())
     assert requirement.name == "git-dep"
     assert requirement.url == url
@@ -149,8 +149,7 @@ def test_requirements_build_installs_offline_markers_and_seals_only_build_pth(tm
     executable = build_requirements_environment(
         ["app-dep==1.0; python_version >= '3'", "missing-dep==1.0; python_version < '2'"],
         out=out, python=Path(sys.executable), wheelhouse=wheels, cache=tmp_path / "cache",
-        env=env, offline=True, sealed=sealed,
-    )
+        env=env, offline=True, sealed=sealed, explicit=True)
     result = json.loads(_run(
         [str(executable), "-I", "-c", "import sys, json, app_dep, leaf_dep, importlib.util; "
          "print(json.dumps([app_dep.__version__, leaf_dep.__version__, sys.base_prefix, "
@@ -174,7 +173,7 @@ def test_failed_requirement_build_removes_only_its_candidate(tmp_path, build_too
     wheel = _wheel(wheels, "app_dep")
     previous = tmp_path / "previous"
     executable = build_requirements_environment(["app-dep==1.0"], out=previous, wheelhouse=wheels,
-                                               env=build_tools, cache=tmp_path / "cache", offline=True)
+                                               env=build_tools, cache=tmp_path / "cache", offline=True, explicit=True)
     previous_cfg = (previous / "pyvenv.cfg").read_bytes()
     python = Path(sys.executable)
     if failure == "create":
@@ -191,11 +190,11 @@ def test_failed_requirement_build_removes_only_its_candidate(tmp_path, build_too
     out = tmp_path / "candidate"
     with pytest.raises(InstallError, match="dependency validation" if failure == "check" else None):
         build_requirements_environment(["app-dep==1.0"], out=out, python=python, wheelhouse=wheels,
-                                       env=build_tools, cache=tmp_path / "cold-cache", offline=True)
+                                       env=build_tools, cache=tmp_path / "cold-cache", offline=True, explicit=True)
     assert not out.exists()
     with pytest.raises(FileExistsError):
         build_requirements_environment(["app-dep==1.0"], out=previous, wheelhouse=wheels,
-                                       env=build_tools, cache=tmp_path / "cache", offline=True)
+                                       env=build_tools, cache=tmp_path / "cache", offline=True, explicit=True)
     assert (previous / "pyvenv.cfg").read_bytes() == previous_cfg
     assert _run([str(executable), "-I", "-c", "import app_dep; print(app_dep.__version__)"],
                 cwd=tmp_path, env=build_tools) == "1.0"
@@ -236,16 +235,54 @@ def test_wheelhouse_cannot_fall_back_to_index_or_build_source(tmp_path, build_to
     out = tmp_path / "candidate"
     with pytest.raises(InstallError):
         build_requirements_environment(["leaf-dep==1.0"], out=out, wheelhouse=wheels,
-                                       env=env, cache=tmp_path / "cache", offline=True)
+                                       env=env, cache=tmp_path / "cache", offline=True, explicit=True)
     assert not out.exists()
     # Both alternate sources really work when there is no wheelhouse restriction.
     for name, settings in (("index", env), ("source", dict(build_tools, UV_NO_INDEX="1", UV_FIND_LINKS=str(wheels)))):
         executable = build_requirements_environment(
             ["leaf-dep==1.0"], out=tmp_path / f"from-{name}", env=settings,
-            cache=tmp_path / f"{name}-cache", offline=True,
-        )
+            cache=tmp_path / f"{name}-cache", offline=True, explicit=True)
         assert _run([str(executable), "-I", "-c", "import leaf_dep; print(leaf_dep.__version__)"],
                     cwd=tmp_path, env=build_tools) == "1.0"
+
+
+@pytest.mark.parametrize("operation", ["check", "export", "build"])
+def test_ready_tools_do_not_bypass_disabled_lazy_operations(locked_source, tmp_path, build_tools, monkeypatch, operation):
+    import importlib
+    from pm import build_requirements_environment, check_project_lock, export_requirements
+
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: False)
+    out = tmp_path / "blocked-output"
+    before = {p.name: p.read_bytes() for p in locked_source.iterdir() if p.is_file()}
+    actions = {
+        "check": lambda: check_project_lock(locked_source, env=build_tools, cache=tmp_path / "cache"),
+        "export": lambda: export_requirements(locked_source, out, env=build_tools, cache=tmp_path / "cache"),
+        "build": lambda: build_requirements_environment(["base-dep==1.0"], out=out, env=build_tools,
+                                                       cache=tmp_path / "cache", offline=True),
+    }
+    with pytest.raises(InstallError, match="lazy installs are disabled"):
+        actions[operation]()
+    assert not out.exists()
+    assert {p.name: p.read_bytes() for p in locked_source.iterdir() if p.is_file()} == before
+    # Passive lock validation is safe with already-ready tools and no network.
+    check_project_lock(locked_source, env=build_tools, cache=tmp_path / "cache", offline=True)
+
+
+def test_prune_cache_does_not_acquire_a_missing_toolchain(tmp_path, monkeypatch):
+    import importlib
+    import pm.paths
+    from pm import prune_cache
+
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    store = tmp_path / "empty-store"
+    monkeypatch.setattr(pm.paths, "store_root", lambda: store)
+    monkeypatch.setattr(pm.paths, "writable_store_root", lambda: store)
+    monkeypatch.setattr(pm.paths, "facts_path", lambda: store / "facts.json")
+    monkeypatch.setattr(importlib.import_module("pm.ensure"), "ensure",
+                        lambda *args, **kwargs: pytest.fail("cache pruning must not acquire tools"))
+    with pytest.raises(InstallError, match="pinned toolchain is unavailable"):
+        prune_cache(tmp_path / "cache")
+    assert not store.exists()
 
 
 @pytest.mark.parametrize("ci", [False, True])
@@ -265,8 +302,7 @@ def test_prune_cache_preserves_downloaded_wheels_unless_ci(tmp_path, build_tools
     requirement = f"cached-dep @ http://127.0.0.1:{server.server_port}/{wheel.name}"
     try:
         executable = build_requirements_environment(
-            [requirement], out=tmp_path / "first", cache=cache, env=build_tools,
-        )
+            [requirement], out=tmp_path / "first", cache=cache, env=build_tools, explicit=True)
     finally:
         server.shutdown()
         server.server_close()
@@ -277,9 +313,9 @@ def test_prune_cache_preserves_downloaded_wheels_unless_ci(tmp_path, build_tools
     out = tmp_path / "second"
     if ci:
         with pytest.raises(InstallError):
-            build_requirements_environment([requirement], out=out, cache=cache, env=build_tools, offline=True)
+            build_requirements_environment([requirement], out=out, cache=cache, env=build_tools, offline=True, explicit=True)
         assert not out.exists()
     else:
-        second = build_requirements_environment([requirement], out=out, cache=cache, env=build_tools, offline=True)
+        second = build_requirements_environment([requirement], out=out, cache=cache, env=build_tools, offline=True, explicit=True)
         assert _run([str(second), "-I", "-c", "import cached_dep; print(cached_dep.__version__)"],
                     cwd=tmp_path, env=build_tools) == "1.0"

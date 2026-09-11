@@ -108,11 +108,11 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
 def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
-                        output: TextIO | None = None) -> PythonEnvironment:
+                        output: TextIO | None = None, realize: bool = True) -> PythonEnvironment:
     from pm._uv import _toolchain
     from pm.packages import uv_cache_dir
 
-    tools = _toolchain(explicit=explicit)
+    tools = _toolchain(explicit=explicit, realize=realize)
     if tools is None:
         raise InstallError("venv", "PM's pinned toolchain is unavailable")
     uv, pinned_python = tools
@@ -221,7 +221,8 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 
-    def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = ()) -> None:
+    def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
+                            timeout: int = 1800) -> None:
         from pm.workspace import classify_uv_failure
 
         command = ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
@@ -229,44 +230,37 @@ class PythonEnvironment:
                    "--format", "requirements-txt", "--output-file", str(out)]
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
-        result = self._run(command, cwd=source, timeout=1800)
+        result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
 
     def install_requirements(self, requirements: Sequence[str], *, wheelhouse: Path | None = None) -> None:
-        from pm.workspace import classify_uv_failure
-
         if not requirements:
             return
         # A file avoids command-line length limits and shell/marker quoting.
         with tempfile.TemporaryDirectory(prefix="pm-requirements-") as temporary:
             requirements_file = Path(temporary) / "requirements.txt"
             requirements_file.write_text("\n".join(requirements) + "\n", encoding="utf-8")
-            command = ["pip", "install", "--no-config", "--python", str(self.executable),
-                       "--requirements", str(requirements_file)]
-            if wheelhouse is not None:
-                command += ["--no-index", "--only-binary", ":all:",
-                            "--find-links", str(wheelhouse)]
-            result = self._run(command, cwd=self.destination.parent, timeout=1800)
+            self._install_requirements_file(requirements_file, wheelhouse=wheelhouse)
+
+    def _install_requirements_file(self, requirements: Path, *, wheelhouse: Path | None = None,
+                                   timeout: int = 1800) -> None:
+        from pm.workspace import classify_uv_failure
+
+        command = ["pip", "install", "--no-config", "--python", str(self.executable),
+                   "--requirements", str(requirements)]
+        if wheelhouse is not None:
+            command += ["--no-index", "--only-binary", ":all:",
+                        "--find-links", str(wheelhouse.absolute())]
+        result = self._run(command, cwd=requirements.parent, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
 
     def install_wheelhouse(self, source: Path, wheelhouse: Path, *, timeout: int = 1800) -> None:
         """Install rebuilt wheels whose hashes the bundle manifest owns, not uv.lock."""
-        from pm.workspace import classify_uv_failure
-
         requirements = source / "requirements.txt"
-        commands = [
-            ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
-             "--no-emit-project", "--no-hashes", "--output-file", str(requirements)],
-            ["pip", "install", "--python", str(self.executable), "--no-index",
-             "--only-binary", ":all:", "--find-links", str(wheelhouse.absolute()),
-             "-r", str(requirements)],
-        ]
-        for command in commands:
-            result = self._run(command, cwd=source, timeout=timeout)
-            if result.returncode:
-                raise classify_uv_failure(command[0], result.returncode, result.stderr or result.stdout)
+        self.export_requirements(source, requirements, timeout=timeout)
+        self._install_requirements_file(requirements, wheelhouse=wheelhouse, timeout=timeout)
         self.check()
 
     def prune_cache(self, *, ci: bool = False) -> None:

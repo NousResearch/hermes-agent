@@ -15,7 +15,10 @@ def check_project_lock(
 ) -> None:
     """Reject a missing or stale lock without rewriting source or creating a venv."""
     from pm.environment import managed_environment
+    from pm.operations import _require_install_allowed
 
+    if not offline:
+        _require_install_allowed(explicit)
     source = Path(source).absolute()
     if not (source / "pyproject.toml").is_file():
         raise InstallError("venv", f"project manifest is missing: {source}")
@@ -33,7 +36,9 @@ def export_requirements(
 ) -> None:
     """Export locked runtime requirements, preserving markers and direct URL pins."""
     from pm.environment import managed_environment
+    from pm.operations import _require_install_allowed
 
+    _require_install_allowed(explicit)
     source, out = Path(source).absolute(), Path(out).absolute()
     if not (source / "pyproject.toml").is_file():
         raise InstallError("venv", f"project manifest is missing: {source}")
@@ -60,8 +65,9 @@ def build_requirements_environment(
     this invocation's exclusively claimed output, not prior builds.
     """
     from pm.environment import managed_environment, prune_site_pth
-    from pm.operations import _requirements
+    from pm.operations import _require_install_allowed, _requirements
 
+    _require_install_allowed(explicit)
     requirements = _requirements(requirements) if requirements or isinstance(requirements, str) else []
     out = Path(out).absolute()
     wheelhouse = Path(wheelhouse).absolute() if wheelhouse is not None else None
@@ -92,5 +98,5 @@ def prune_cache(cache: Path, *, ci: bool = False) -> None:
     from pm.environment import managed_environment
 
     cache = Path(cache).absolute()
-    environment = managed_environment(cache, cache=cache, explicit=True, output=sys.stderr)
+    environment = managed_environment(cache, cache=cache, realize=False, output=sys.stderr)
     environment.prune_cache(ci=ci)

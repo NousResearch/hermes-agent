@@ -384,7 +384,7 @@ export function useVoiceConversation({
     }
 
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
-      isPlaying: () => $voicePlayback.get().status === 'speaking',
+      isPlaying: () => ['speaking', 'paused'].includes($voicePlayback.get().status),
       onSpeech: () => {
         bargeCapturePendingRef.current = true
         bargedRef.current = true

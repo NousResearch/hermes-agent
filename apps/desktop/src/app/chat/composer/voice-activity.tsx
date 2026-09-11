@@ -3,9 +3,10 @@ import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
+import { iconSize, Loader2, Mic, Pause, Play, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { stopVoicePlayback } from '@/lib/voice-playback'
+import { stopVoicePlayback, toggleVoicePlaybackPaused } from '@/lib/voice-playback'
+import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
 
 import type { VoiceActivityState } from './types'
@@ -213,11 +214,15 @@ export function VoicePlaybackActivity() {
 
   const preparing = playback.status === 'preparing'
 
-  const title = preparing
-    ? t.composer.preparingAudio
-    : playback.source === 'voice-conversation'
-      ? t.composer.speakingResponse
-      : t.composer.readingAloud
+  const paused = playback.status === 'paused'
+
+  const title = paused
+    ? t.composer.playbackPaused
+    : preparing
+      ? t.composer.preparingAudio
+      : playback.source === 'voice-conversation'
+        ? t.composer.speakingResponse
+        : t.composer.readingAloud
 
   return (
     <div
@@ -234,9 +239,22 @@ export function VoicePlaybackActivity() {
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate font-medium text-foreground/85">{title}</span>
-        {!preparing && <PlaybackWaveform audioElement={playback.audioElement} />}
+        {!preparing && !paused && <PlaybackWaveform audioElement={playback.audioElement} />}
       </div>
 
+      {!preparing && (
+        <Button
+          aria-label={paused ? t.composer.resumePlayback : t.composer.pausePlayback}
+          onClick={() =>
+            void toggleVoicePlaybackPaused().catch(error => notifyError(error, t.notifications.voice.playbackFailed))
+          }
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          {paused ? <Play /> : <Pause />}
+        </Button>
+      )}
       <Button
         className="h-6 shrink-0 gap-1 rounded-full px-2 text-[0.6875rem]"
         onClick={stopVoicePlayback}
@@ -245,7 +263,7 @@ export function VoicePlaybackActivity() {
         variant="ghost"
       >
         <VolumeX className={iconSize.xs} />
-        Stop
+        {t.composer.stopPlayback}
       </Button>
     </div>
   )

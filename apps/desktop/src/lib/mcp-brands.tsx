@@ -21,8 +21,10 @@ import {
   SiGmail,
   SiGooglecalendar,
   SiGoogledrive,
+  SiGooglesheets,
   SiHuggingface,
   SiIntercom,
+  SiJira,
   SiLinear,
   SiN8n,
   SiNetlify,
@@ -35,9 +37,11 @@ import {
   SiStripe,
   SiSupabase,
   SiTelegram,
+  SiTodoist,
   SiUnrealengine,
   SiVercel,
   SiWebflow,
+  SiYoutube,
   SiZapier
 } from '@icons-pack/react-simple-icons'
 import { IconBrandSlack } from '@tabler/icons-react'
@@ -62,11 +66,17 @@ export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   github: { Icon: SiGithub, color: '#181717', monochrome: true },
   gitlab: { Icon: SiGitlab, color: '#FC6D26' },
   gmail: { Icon: SiGmail, color: '#EA4335' },
+  // Gateway spelling (connector slugs), plus the hyphenated form MCP server
+  // names tend to use.
+  googlecalendar: { Icon: SiGooglecalendar, color: '#4285F4' },
   'google-calendar': { Icon: SiGooglecalendar, color: '#4285F4' },
+  googledrive: { Icon: SiGoogledrive, color: '#4285F4' },
   'google-drive': { Icon: SiGoogledrive, color: '#4285F4' },
+  googlesheets: { Icon: SiGooglesheets, color: '#34A853' },
   hugging_face: { Icon: SiHuggingface, color: '#FFD21E' },
   huggingface: { Icon: SiHuggingface, color: '#FFD21E' },
   intercom: { Icon: SiIntercom, color: '#6AFDEF' },
+  jira: { Icon: SiJira, color: '#0052CC' },
   linear: { Icon: SiLinear, color: '#5E6AD2' },
   n8n: { Icon: SiN8n, color: '#EA4B71' },
   netlify: { Icon: SiNetlify, color: '#00C7B7' },
@@ -84,9 +94,11 @@ export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   stripe: { Icon: SiStripe, color: '#635BFF' },
   supabase: { Icon: SiSupabase, color: '#3FCF8E' },
   telegram: { Icon: SiTelegram, color: '#26A5E4' },
+  todoist: { Icon: SiTodoist, color: '#E44332' },
   'unreal-engine': { Icon: SiUnrealengine, color: '#0E1128', monochrome: true },
   vercel: { Icon: SiVercel, color: '#000000', monochrome: true },
   webflow: { Icon: SiWebflow, color: '#146EF5' },
+  youtube: { Icon: SiYoutube, color: '#FF0000' },
   zapier: { Icon: SiZapier, color: '#FF4A00' }
 }
 

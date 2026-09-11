@@ -3,26 +3,33 @@ import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
-// Preferences for the first build’s optional connector offer. The live catalog,
-// not this display list, decides which apps are available to connect. Marks
-// resolve through the shared ConnectorLogo ladder: curated brand glyph first,
-// the product's own favicon, monogram last.
+// Preferences for the first build’s optional connector offer. Every id here is
+// a real slug from the deployed connector catalog (manage_connections
+// action="status"), spelled the way the gateway spells it — the picks are
+// matched against that catalog and an app it does not carry cannot be
+// offered, so a pretty name with no slug behind it is a promise the build
+// chat has to walk back ("Spotify isn't in the connector list"). Marks resolve
+// through the shared ConnectorLogo ladder: curated brand glyph first, the
+// product's own favicon, monogram last.
 //
 // Connectors are the apps Hermes reads and acts on FOR the user. Chat channels
 // (Discord, Telegram, WhatsApp) are how a user talks TO Hermes — those live on
 // the Messaging page, and offering them here as if they were data sources
-// taught users the wrong thing about what "connect" does.
+// taught users the wrong thing about what "connect" does. GitHub is not a
+// connector either: the agent already has git and gh in the terminal.
 export const CONNECTORS: Array<{ homepage?: string; id: string; name: string }> = [
   { id: 'gmail', name: 'Gmail' },
-  { id: 'google-calendar', name: 'Calendar' },
-  { id: 'google-drive', name: 'Drive' },
+  { id: 'googlecalendar', name: 'Calendar' },
+  { id: 'googledrive', name: 'Drive' },
+  { id: 'googlesheets', name: 'Sheets' },
   { id: 'slack', name: 'Slack' },
-  { id: 'github', name: 'GitHub' },
   { id: 'notion', name: 'Notion' },
   { id: 'linear', name: 'Linear' },
+  { id: 'jira', name: 'Jira' },
   { id: 'figma', name: 'Figma' },
-  { id: 'spotify', name: 'Spotify' },
-  { id: 'stripe', name: 'Stripe' }
+  { homepage: 'https://outlook.live.com', id: 'outlook', name: 'Outlook' },
+  { id: 'todoist', name: 'Todoist' },
+  { id: 'youtube', name: 'YouTube' }
 ]
 
 // Big accent swatches, Dia-style. Each seeds `retintTheme` through the accent

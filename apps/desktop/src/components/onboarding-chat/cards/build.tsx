@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { handoffReceiptKey, quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
@@ -18,6 +19,7 @@ import {
   $handoffError,
   $setupHandoff,
   firstTaskTitle,
+  guideSourceConnectionId,
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
@@ -110,16 +112,19 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
-  let error = useStore($handoffError)
-  let completed = false
+  const receipt = useMemo(() => {
+    try {
+      return {
+        completed: !!storedId && readGuideHandoffReceipt(storedId).receipt?.status === 'accepted',
+        error: null
+      }
+    } catch (error) {
+      return { completed: false, error: String(error) }
+    }
+  }, [storedId, state?.phase])
 
-  try {
-    completed =
-      !!storedId &&
-      readGuideHandoffReceipt(storedId).receipt?.status === 'accepted'
-  } catch (receiptError) {
-    error = String(receiptError)
-  }
+  const error = useStore($handoffError) ?? receipt.error
+  const completed = receipt.completed
 
   useEffect(() => {
     if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || completed) {
@@ -160,6 +165,36 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const failed = state?.phase === 'error' || error !== null
   const title = state?.sessionTitle ?? firstTaskTitle(task)
 
+  const retry = async () => {
+    if (state?.phase !== 'error') {
+      return
+    }
+
+    try {
+      if (receipt.error && storedId) {
+        quarantineHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(storedId), storedId))
+      }
+
+      if (!state.guide && storedId && runtimeId) {
+        const owner = await resolveSessionOwner(storedId)
+        assertSessionOwnerResolved(owner, { method: 'onboarding.handoff', sessionId: storedId })
+        $setupHandoff.set({
+          ...state,
+          guide: {
+            storedId,
+            runtimeId,
+            connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
+            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+          }
+        })
+      }
+
+      retrySetupHandoff()
+    } catch (error) {
+      $handoffError.set(String(error))
+    }
+  }
+
   return (
     <div className="my-3 flex max-w-md items-center gap-2 text-sm" data-onboarding-card>
       <StatusDot live={!settled && !failed} />
@@ -170,8 +205,8 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             ? `${title} was started — find it in your sessions`
             : `Opening ${title}\u2026`}
       </span>
-      {failed && (
-        <Button disabled={locked} onClick={retrySetupHandoff} size="sm" variant="text">
+      {state?.phase === 'error' && (
+        <Button disabled={locked} onClick={() => void retry()} size="sm" variant="text">
           Retry first build
         </Button>
       )}

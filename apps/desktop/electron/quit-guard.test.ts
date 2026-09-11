@@ -31,7 +31,10 @@ test('quitPromptFor stays out of the way when nothing is running', () => {
 })
 
 test('quitPromptFor stays out of the way during an update handoff', () => {
-  assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, true), null)
+  const work = mergeActiveWork([normalizeActiveWork({ count: 2, titles: ['Fix login'] })])
+
+  assert.ok(quitPromptFor(work, false))
+  assert.equal(quitPromptFor(work, true), null)
 })
 
 test('quitPromptFor names the running chats', () => {
@@ -58,5 +61,18 @@ test('quitPromptFor speaks singular for one chat', () => {
 
   assert.ok(prompt)
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
-  assert.ok(prompt.detail.includes('mid-turn'))
+})
+
+test('active-work reports with unknown lifecycle keep a scoped confirmation, not a work-loss claim', () => {
+  // The real IPC summary has no connection identity or Desktop-tool activity.
+  // Neither named nor untitled work proves it is independent of the client.
+  for (const titles of [[], ['Fix login']]) {
+    const work = mergeActiveWork([normalizeActiveWork({ count: 1, titles })])
+    const prompt = quitPromptFor(work, false)
+
+    assert.ok(prompt)
+    assert.match(prompt.detail, /[Rr]unning and queued work on a persistent gateway continues after Desktop quits/)
+    assert.match(prompt.detail, /[Aa]ctivity that depends on this app or an older connection may be interrupted/)
+    assert.doesNotMatch(prompt.detail, /work.*(?:lost|stops)|stops the agent|all work continues/i)
+  }
 })

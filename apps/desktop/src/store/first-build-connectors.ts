@@ -142,7 +142,14 @@ export function watchFirstBuildWait(
 
   const output = recordOf(part.result)
   const polling = part.result === undefined || output.status === 'pending'
-  const connected = new Set(Array.isArray(output.connectors) ? output.connectors : [])
+  const connected = new Set(
+    (Array.isArray(output.connectors) ? output.connectors : []).flatMap(item => {
+      const entry = recordOf(item)
+      const slug = connectorText(item) ?? connectorText(entry.connector)
+
+      return slug !== undefined && entry.connected !== false ? [slug] : []
+    })
+  )
   const pending = new Set(Array.isArray(output.pending) ? output.pending : [])
   const previous = $firstBuildConnections.get()[storedId]
 

@@ -58,7 +58,8 @@ it('polls through a pending bounce, reconciles unavailable apps, and stops when 
   expect(request).toHaveBeenCalledTimes(calls)
 })
 
-it('keeps interruption phases and prevents a stale poll from overwriting a settled timeout', async () => {
+it.each([{ connector: 'gmail', connected: true, enabled: true }, 'gmail'])(
+  'keeps interruption phases and prevents a stale poll from overwriting a settled timeout (%j)', async gmail => {
   vi.useFakeTimers()
   markFirstBuildSession('build')
   const pending = deferred<unknown>()
@@ -70,7 +71,15 @@ it('keeps interruption phases and prevents a stale poll from overwriting a settl
     'runtime',
     {
       ...part,
-      result: { status: 'timeout', connectors: ['gmail'], pending: ['googlecalendar', 'notion'] }
+      result: {
+        status: 'timeout',
+        connectors: [
+          gmail,
+          { connector: 'googlecalendar', connected: false, enabled: true },
+          { connector: 'notion', connected: false, enabled: true }
+        ],
+        pending: ['googlecalendar', 'notion']
+      }
     },
     request
   )

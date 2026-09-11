@@ -18,6 +18,13 @@ import uuid
 from pm.package import InstallError
 
 
+def _require_install_allowed(explicit: bool) -> None:
+    from pm.ensure import _refuse_lazy, lazy_installs_allowed
+
+    if not explicit and not lazy_installs_allowed():
+        raise _refuse_lazy("venv", "Python dependency operation requires an explicit request")
+
+
 def build_environment(
     *, source: Path, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
@@ -41,6 +48,7 @@ def build_environment(
         raise InstallError("venv", f"frozen build requires a lock: {source / 'uv.lock'}")
     if out.exists() or out.is_symlink():
         raise FileExistsError(f"environment destination already exists: {out}")
+    _require_install_allowed(explicit)
     environment = managed_environment(
         out, python=Path(python) if python is not None else None,
         cache=Path(cache) if cache is not None else None, env=env,
@@ -71,6 +79,7 @@ def lock_project(
     source = Path(source).absolute()
     if not (source / "pyproject.toml").is_file():
         raise InstallError("venv", f"project manifest is missing: {source}")
+    _require_install_allowed(explicit)
     environment = managed_environment(
         source / ".venv", python=Path(python) if python is not None else None,
         cache=Path(cache) if cache is not None else None, env=env,

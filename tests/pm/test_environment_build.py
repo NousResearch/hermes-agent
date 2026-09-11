@@ -152,7 +152,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     monkeypatch.setattr(pm.workspace, "enabled_member_dirs", lambda: pytest.fail("user plugins"))
     before = dict(os.environ)
     locked = (source / "uv.lock").read_bytes()
-    executable = build_environment(
+    executable = build_environment(explicit=True,
         source=source, python=Path(sys.executable), out=tmp_path / "native environment",
         cache=tmp_path / "cache", env=env, all_extras=True, offline=True,
         sealed=sealed,
@@ -183,7 +183,7 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     locked = (source / "uv.lock").read_bytes()
     from pm import build_environment
 
-    executable = build_environment(source=source, python=Path(sys.executable),
+    executable = build_environment(explicit=True, source=source, python=Path(sys.executable),
                                    out=tmp_path / "docker env", cache=tmp_path / "cache", env=env,
                                    no_install_project=True, offline=True, **selection)
     assert executable.is_file()
@@ -323,14 +323,14 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
 
     source, uv, env = installable_project
     previous = tmp_path / "previous"
-    executable = build_environment(source=source, python=Path(sys.executable),
+    executable = build_environment(explicit=True, source=source, python=Path(sys.executable),
                                           out=previous, env=env, cache=tmp_path / "cache", offline=True)
     cfg = (previous / "pyvenv.cfg").read_bytes()
     source_lock = (source / "uv.lock").read_bytes()
     # Check destination refusal with valid inputs. The contract does not specify
     # which error comes first when the source is also damaged.
     with pytest.raises(FileExistsError):
-        build_environment(source=source, python=Path(sys.executable),
+        build_environment(explicit=True, source=source, python=Path(sys.executable),
                           out=previous, env=env, cache=tmp_path / "cache", offline=True)
     if damage == "source":
         (source / "root_app.py").unlink()
@@ -343,7 +343,7 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
         (source / "uv.lock").unlink()
     candidate = tmp_path / "candidate"
     with pytest.raises(InstallError, match="dependency validation" if damage == "check" else "uv sync|frozen build requires a lock"):
-        build_environment(source=source, python=Path(sys.executable),
+        build_environment(explicit=True, source=source, python=Path(sys.executable),
                                  out=candidate, env=env, cache=tmp_path / "cold-cache", offline=True)
     assert not candidate.exists()
     assert (previous / "pyvenv.cfg").read_bytes() == cfg

@@ -179,7 +179,7 @@ function Section({ title, right, children, className }) {
 }
 
 // ── time charts ──────────────────────────────────────────────────────────────────────────
-function PeriodBar({ win, setWin, usage, loading }) {
+function PeriodBar({ win, setWin, usage, loading, failed }) {
   const ref = useRef(null);
   // keep the active chip in view on a phone — scroll the chip row only, never the page
   useEffect(() => {
@@ -196,8 +196,8 @@ function PeriodBar({ win, setWin, usage, loading }) {
             title={lastLabel(w)} onClick={() => setWin(w)}>{k}</button>
         ))}
       </div>
-      <span className="fm-muted fm-small fm-period-note">
-        {loading ? "updating…" : usage ? `${bucketName(usage.bucket)} bars · ${ago(usage.generated_at)}` : ""}
+      <span className={cls("fm-small fm-period-note", failed ? "fm-warn-line" : "fm-muted")}>
+        {failed ? "usage unavailable — retrying" + (usage ? " · showing " + ago(usage.generated_at) : "") : loading ? "updating…" : usage ? `${bucketName(usage.bucket)} bars · ${ago(usage.generated_at)}` : "loading usage…"}
       </span>
     </div>
   );
@@ -275,7 +275,7 @@ function helperGroups(aux) {
 function AgentCard({ doc, p, drift, use, spark, win, onOpen }) {
   const a = doc.agents[p];
   const aux = a.aux || {};
-  const top = use.hosts.sort((x, y) => y[1] - x[1])[0];
+  const top = use ? use.hosts.slice().sort((x, y) => y[1] - x[1])[0] : null;
   return (
     <article className={cls("fm-card", drift && "fm-card--drift")} onClick={onOpen} role="button" tabIndex={0}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}>
@@ -304,10 +304,14 @@ function AgentCard({ doc, p, drift, use, spark, win, onOpen }) {
       <footer className="fm-card-foot">
         {spark ? <Spark values={spark} label={`${a.name || p}: calls over the last ${periodName(win)}`} /> : null}
         <span className="fm-card-win">{periodShort(win)}</span>
-        <span><b>{num(use.calls)}</b> calls</span>
-        <span><b>{money(use.billed, 3)}</b> billed</span>
-        <span><b>{num(use.ma)}</b> on subscription</span>
-        {top ? <span className="fm-muted" title="most calls served by">via {top[0]}</span> : null}
+        {use ? (
+          <Fragment>
+            <span><b>{num(use.calls)}</b> calls</span>
+            <span><b>{money(use.billed, 3)}</b> billed</span>
+            <span><b>{num(use.ma)}</b> on subscription</span>
+            {top ? <span className="fm-muted" title="most calls served by">via {top[0]}</span> : null}
+          </Fragment>
+        ) : <span className="fm-muted">usage loading…</span>}
       </footer>
     </article>
   );
@@ -329,18 +333,19 @@ function FleetView({ state, doc, usage, win, onOpen }) {
   const empty = { calls: 0, billed: 0, ma: 0, hosts: [] };
   const tot = Object.values(byP).reduce((a, u) => ({ calls: a.calls + u.calls, billed: a.billed + u.billed, ma: a.ma + u.ma }), { calls: 0, billed: 0, ma: 0 });
   const models = doc.models || {};
+  const k = (v, f) => (usage ? f(v) : "—");
   return (
     <Fragment>
       <div className="fm-stats">
-        <Stat label={`Calls · ${periodShort(win)}`} value={num(tot.calls)} sub={lastLabel(win).toLowerCase()} />
-        <Stat label={`Billed · ${periodShort(win)}`} value={money(tot.billed, 2)} sub="OpenRouter, real invoices" tone="money" />
-        <Stat label="ModelArk subscription" value={num(tot.ma) + " calls"} sub={tot.calls ? Math.round((100 * tot.ma) / tot.calls) + "% of all calls · $0" : "$0"} tone="sub" />
+        <Stat label={`Calls · ${periodShort(win)}`} value={k(tot.calls, num)} sub={lastLabel(win).toLowerCase()} />
+        <Stat label={`Billed · ${periodShort(win)}`} value={k(tot.billed, (v) => money(v, 2))} sub="OpenRouter, real invoices" tone="money" />
+        <Stat label="ModelArk subscription" value={k(tot.ma, (v) => num(v) + " calls")} sub={tot.calls ? Math.round((100 * tot.ma) / tot.calls) + "% of all calls · $0" : "$0"} tone="sub" />
         <Stat label="Registry" value={Object.keys(models).length + " models"} sub={Object.values(models).filter((m) => m.provider === "modelark").length + " subscription · " + Object.values(models).filter((m) => m.provider === "openrouter").length + " OpenRouter"} />
         <Stat label="Sync" value={Object.keys(state.drift || {}).length ? Object.keys(state.drift).length + " drifted" : "all 9 in sync"} tone={Object.keys(state.drift || {}).length ? "warn" : "ok"} sub={"revision " + state.revision} />
       </div>
       <div className="fm-grid">
         {state.profiles.map((p) => (
-          <AgentCard key={p} doc={doc} p={p} drift={(state.drift || {})[p]} use={byP[p] || empty} win={win}
+          <AgentCard key={p} doc={doc} p={p} drift={(state.drift || {})[p]} use={usage ? byP[p] || empty : null} win={win}
             spark={usage && usage.by_profile ? ((usage.by_profile[p] || {}).calls || (usage.series || []).map(() => 0)) : null} onOpen={() => onOpen(p)} />
         ))}
       </div>
@@ -643,7 +648,7 @@ function ModelDetail({ draft, alias, setDraft, usage, win }) {
                 <span className="fm-bar-val">{num(u.calls)} · {money(u.billed, 3)}</span>
               </div>
             ))}
-            {!totalCalls ? <div className="fm-muted fm-small">No calls in this window.</div> : null}
+            {!usage ? <div className="fm-muted fm-small">Loading usage…</div> : !totalCalls ? <div className="fm-muted fm-small">No calls in this window.</div> : null}
           </div>
         </Section>
       </div>
@@ -898,6 +903,8 @@ function ModelsPage() {
   const [rootEl, setRootEl] = useState(null);
   const [width, setWidth] = useState(900);
   const [uLoading, setULoading] = useState(false);
+  const [uErr, setUErr] = useState(0);        // consecutive failed usage loads
+  const retryT = useRef(null);
   const useq = useRef(0);
   const [tab, setTab] = useState("fleet");
   const [agent, setAgent] = useState("root");
@@ -931,10 +938,24 @@ function ModelsPage() {
   const bucket = pickBucket(win, chartW);
   const loadUsage = useCallback(() => {
     const q = ++useq.current; setULoading(true);
+    clearTimeout(retryT.current);
     return fetchJSON(`${API}/usage?window=${win}&bucket=${bucket}&tz=${encodeURIComponent(TZ)}`)
-      .then((u) => { if (q === useq.current) { setUsage(u); setULoading(false); } })
-      .catch(() => { if (q === useq.current) setULoading(false); });
+      .then((u) => { if (q === useq.current) { setUsage(u); setULoading(false); setUErr(0); } })
+      .catch(() => {
+        if (q !== useq.current) return;
+        // e.g. the dashboard restarting under an open page: retry soon — even in a background tab — rather
+        // than leave every figure at nothing until the next minute's poll
+        setULoading(false);
+        setUErr((n) => { if (n < 6) retryT.current = setTimeout(() => loadUsageRef.current(), 4000 * (n + 1)); return n + 1; });
+      });
   }, [win, bucket]);
+  const loadUsageRef = useRef(loadUsage);
+  loadUsageRef.current = loadUsage;
+  useEffect(() => {
+    const onVis = () => { if (!document.hidden) { loadUsageRef.current(); load(); } };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); clearTimeout(retryT.current); };
+  }, [load]);
 
   useEffect(() => { load(); }, []);
   useEffect(() => { loadUsage(); const t = setInterval(() => { if (!document.hidden) loadUsage(); }, win <= 10800 ? 30000 : 60000); return () => clearInterval(t); }, [loadUsage]);
@@ -990,7 +1011,7 @@ function ModelsPage() {
         {TABS.map(([k, l]) => <button key={k} className={cls("fm-tab", tab === k && "is-active")} onClick={() => setTab(k)}>{l}</button>)}
       </nav>
       {movedUnder ? <div className="fm-note fm-note--warn">Someone applied a change while you were editing (now revision {state.revision}). Preview will refuse a stale edit — discard and redo it.</div> : null}
-      {tab === "fleet" || tab === "models" || tab === "costs" ? <PeriodBar win={win} setWin={setWin} usage={shown} loading={uLoading} /> : null}
+      {tab === "fleet" || tab === "models" || tab === "costs" ? <PeriodBar win={win} setWin={setWin} usage={shown} loading={uLoading} failed={uErr > 0} /> : null}
       <main className={cls("fm-main", stale && "is-stale")}>
         {tab === "fleet" ? <FleetView state={state} doc={doc} usage={shown} win={shown ? shown.window : win} onOpen={(p) => { setAgent(p); setTab("agent"); }} /> : null}
         {tab === "agent" ? <AgentView state={state} draft={draft} setDraft={setDraft} p={agent} setP={setAgent} /> : null}

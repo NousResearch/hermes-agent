@@ -55,7 +55,7 @@
       return /* @__PURE__ */ h("span", { className: cls("fm-badge", tone && "fm-badge--" + tone), title }, children);
     }, Section = function({ title, right, children, className }) {
       return /* @__PURE__ */ h("section", { className: cls("fm-section", className) }, title ? /* @__PURE__ */ h("header", { className: "fm-section-head" }, /* @__PURE__ */ h("h3", null, title), right) : null, children);
-    }, PeriodBar = function({ win, setWin, usage, loading }) {
+    }, PeriodBar = function({ win, setWin, usage, loading, failed }) {
       const ref = useRef(null);
       useEffect(() => {
         const box = ref.current, el = box && box.querySelector(".is-active");
@@ -74,7 +74,7 @@
           onClick: () => setWin(w)
         },
         k
-      ))), /* @__PURE__ */ h("span", { className: "fm-muted fm-small fm-period-note" }, loading ? "updating\u2026" : usage ? `${bucketName(usage.bucket)} bars \xB7 ${ago(usage.generated_at)}` : ""));
+      ))), /* @__PURE__ */ h("span", { className: cls("fm-small fm-period-note", failed ? "fm-warn-line" : "fm-muted") }, failed ? "usage unavailable \u2014 retrying" + (usage ? " \xB7 showing " + ago(usage.generated_at) : "") : loading ? "updating\u2026" : usage ? `${bucketName(usage.bucket)} bars \xB7 ${ago(usage.generated_at)}` : "loading usage\u2026"));
     }, Spark = function({ values, label, height }) {
       const v = values || [];
       const max = Math.max(0, ...v);
@@ -130,7 +130,7 @@
     }, AgentCard = function({ doc, p, drift, use, spark, win, onOpen }) {
       const a = doc.agents[p];
       const aux = a.aux || {};
-      const top = use.hosts.sort((x, y) => y[1] - x[1])[0];
+      const top = use ? use.hosts.slice().sort((x, y) => y[1] - x[1])[0] : null;
       return /* @__PURE__ */ h(
         "article",
         {
@@ -142,7 +142,7 @@
         },
         /* @__PURE__ */ h("header", { className: "fm-card-head" }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "fm-card-name" }, a.name || p, " ", a.locked ? /* @__PURE__ */ h("span", { className: "fm-lock", title: "Locked \u2014 changes need an explicit unlock" }, "\u{1F512}") : null), /* @__PURE__ */ h("div", { className: "fm-card-role" }, a.role || p)), /* @__PURE__ */ h("div", { className: "fm-card-badges" }, drift ? /* @__PURE__ */ h(Badge, { tone: "warn", title: drift.join("\n") }, "drift") : /* @__PURE__ */ h(Badge, { tone: "ok" }, "in sync"), a.reasoning ? /* @__PURE__ */ h(Badge, { title: "agent default reasoning" }, a.reasoning) : null)),
         /* @__PURE__ */ h("dl", { className: "fm-slots" }, /* @__PURE__ */ h("dt", null, "Main"), /* @__PURE__ */ h("dd", null, /* @__PURE__ */ h(Chain, { doc, chain: chainOf(a.main) })), /* @__PURE__ */ h("dt", null, "Subagents"), /* @__PURE__ */ h("dd", null, /* @__PURE__ */ h(Chain, { doc, chain: chainOf(a.subagents), empty: "inherit main" })), a.cron ? /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("dt", null, "Cron"), /* @__PURE__ */ h("dd", null, /* @__PURE__ */ h(Chain, { doc, chain: chainOf(a.cron) }))) : null, /* @__PURE__ */ h("dt", null, "Vision"), /* @__PURE__ */ h("dd", null, /* @__PURE__ */ h(Chain, { doc, chain: chainOf(aux.vision), empty: "main model" })), helperGroups(aux).map((g) => /* @__PURE__ */ h(Fragment, { key: g.tasks.join() }, /* @__PURE__ */ h("dt", { title: g.tasks.join(", ") }, g.tasks.length > 1 ? "Helpers \xD7" + g.tasks.length : TASK_LABEL[g.tasks[0]] || g.tasks[0]), /* @__PURE__ */ h("dd", null, /* @__PURE__ */ h(Chain, { doc, chain: g.chain }), g.reasoning ? /* @__PURE__ */ h("span", { className: "fm-tag fm-tag--r" }, g.reasoning) : null)))),
-        /* @__PURE__ */ h("footer", { className: "fm-card-foot" }, spark ? /* @__PURE__ */ h(Spark, { values: spark, label: `${a.name || p}: calls over the last ${periodName(win)}` }) : null, /* @__PURE__ */ h("span", { className: "fm-card-win" }, periodShort(win)), /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, num(use.calls)), " calls"), /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, money(use.billed, 3)), " billed"), /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, num(use.ma)), " on subscription"), top ? /* @__PURE__ */ h("span", { className: "fm-muted", title: "most calls served by" }, "via ", top[0]) : null)
+        /* @__PURE__ */ h("footer", { className: "fm-card-foot" }, spark ? /* @__PURE__ */ h(Spark, { values: spark, label: `${a.name || p}: calls over the last ${periodName(win)}` }) : null, /* @__PURE__ */ h("span", { className: "fm-card-win" }, periodShort(win)), use ? /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, num(use.calls)), " calls"), /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, money(use.billed, 3)), " billed"), /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, num(use.ma)), " on subscription"), top ? /* @__PURE__ */ h("span", { className: "fm-muted", title: "most calls served by" }, "via ", top[0]) : null) : /* @__PURE__ */ h("span", { className: "fm-muted" }, "usage loading\u2026"))
       );
     }, usageByProfile = function(usage) {
       const out = {};
@@ -162,14 +162,15 @@
       const empty = { calls: 0, billed: 0, ma: 0, hosts: [] };
       const tot = Object.values(byP).reduce((a, u) => ({ calls: a.calls + u.calls, billed: a.billed + u.billed, ma: a.ma + u.ma }), { calls: 0, billed: 0, ma: 0 });
       const models = doc.models || {};
-      return /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("div", { className: "fm-stats" }, /* @__PURE__ */ h(Stat, { label: `Calls \xB7 ${periodShort(win)}`, value: num(tot.calls), sub: lastLabel(win).toLowerCase() }), /* @__PURE__ */ h(Stat, { label: `Billed \xB7 ${periodShort(win)}`, value: money(tot.billed, 2), sub: "OpenRouter, real invoices", tone: "money" }), /* @__PURE__ */ h(Stat, { label: "ModelArk subscription", value: num(tot.ma) + " calls", sub: tot.calls ? Math.round(100 * tot.ma / tot.calls) + "% of all calls \xB7 $0" : "$0", tone: "sub" }), /* @__PURE__ */ h(Stat, { label: "Registry", value: Object.keys(models).length + " models", sub: Object.values(models).filter((m) => m.provider === "modelark").length + " subscription \xB7 " + Object.values(models).filter((m) => m.provider === "openrouter").length + " OpenRouter" }), /* @__PURE__ */ h(Stat, { label: "Sync", value: Object.keys(state.drift || {}).length ? Object.keys(state.drift).length + " drifted" : "all 9 in sync", tone: Object.keys(state.drift || {}).length ? "warn" : "ok", sub: "revision " + state.revision })), /* @__PURE__ */ h("div", { className: "fm-grid" }, state.profiles.map((p) => /* @__PURE__ */ h(
+      const k = (v, f) => usage ? f(v) : "\u2014";
+      return /* @__PURE__ */ h(Fragment, null, /* @__PURE__ */ h("div", { className: "fm-stats" }, /* @__PURE__ */ h(Stat, { label: `Calls \xB7 ${periodShort(win)}`, value: k(tot.calls, num), sub: lastLabel(win).toLowerCase() }), /* @__PURE__ */ h(Stat, { label: `Billed \xB7 ${periodShort(win)}`, value: k(tot.billed, (v) => money(v, 2)), sub: "OpenRouter, real invoices", tone: "money" }), /* @__PURE__ */ h(Stat, { label: "ModelArk subscription", value: k(tot.ma, (v) => num(v) + " calls"), sub: tot.calls ? Math.round(100 * tot.ma / tot.calls) + "% of all calls \xB7 $0" : "$0", tone: "sub" }), /* @__PURE__ */ h(Stat, { label: "Registry", value: Object.keys(models).length + " models", sub: Object.values(models).filter((m) => m.provider === "modelark").length + " subscription \xB7 " + Object.values(models).filter((m) => m.provider === "openrouter").length + " OpenRouter" }), /* @__PURE__ */ h(Stat, { label: "Sync", value: Object.keys(state.drift || {}).length ? Object.keys(state.drift).length + " drifted" : "all 9 in sync", tone: Object.keys(state.drift || {}).length ? "warn" : "ok", sub: "revision " + state.revision })), /* @__PURE__ */ h("div", { className: "fm-grid" }, state.profiles.map((p) => /* @__PURE__ */ h(
         AgentCard,
         {
           key: p,
           doc,
           p,
           drift: (state.drift || {})[p],
-          use: byP[p] || empty,
+          use: usage ? byP[p] || empty : null,
           win,
           spark: usage && usage.by_profile ? (usage.by_profile[p] || {}).calls || (usage.series || []).map(() => 0) : null,
           onOpen: () => onOpen(p)
@@ -419,7 +420,7 @@
         ))))) : null,
         m.provider === "modelark" ? /* @__PURE__ */ h("div", { className: "fm-subhead" }, "Usage \xB7 ", periodShort(win), totalCalls ? " \xB7 " + num(totalCalls) + " calls" : "") : null,
         spark && totalCalls ? /* @__PURE__ */ h(Spark, { values: spark, height: 30, label: `${m.short || alias}: calls over the last ${periodName(win)}` }) : null,
-        /* @__PURE__ */ h("div", { className: "fm-hostuse" }, Object.entries(hostUse).sort((a, b) => b[1].calls - a[1].calls).map(([host, u]) => /* @__PURE__ */ h("div", { key: host, className: "fm-bar-row" }, /* @__PURE__ */ h("span", { className: "fm-bar-label" }, host), /* @__PURE__ */ h("span", { className: "fm-bar" }, /* @__PURE__ */ h("span", { style: { width: (totalCalls ? 100 * u.calls / totalCalls : 0) + "%" } })), /* @__PURE__ */ h("span", { className: "fm-bar-val" }, num(u.calls), " \xB7 ", money(u.billed, 3)))), !totalCalls ? /* @__PURE__ */ h("div", { className: "fm-muted fm-small" }, "No calls in this window.") : null)
+        /* @__PURE__ */ h("div", { className: "fm-hostuse" }, Object.entries(hostUse).sort((a, b) => b[1].calls - a[1].calls).map(([host, u]) => /* @__PURE__ */ h("div", { key: host, className: "fm-bar-row" }, /* @__PURE__ */ h("span", { className: "fm-bar-label" }, host), /* @__PURE__ */ h("span", { className: "fm-bar" }, /* @__PURE__ */ h("span", { style: { width: (totalCalls ? 100 * u.calls / totalCalls : 0) + "%" } })), /* @__PURE__ */ h("span", { className: "fm-bar-val" }, num(u.calls), " \xB7 ", money(u.billed, 3)))), !usage ? /* @__PURE__ */ h("div", { className: "fm-muted fm-small" }, "Loading usage\u2026") : !totalCalls ? /* @__PURE__ */ h("div", { className: "fm-muted fm-small" }, "No calls in this window.") : null)
       )), m.provider === "openrouter" ? /* @__PURE__ */ h(Section, { title: "Hosts", right: /* @__PURE__ */ h("span", { className: "fm-muted fm-small" }, (m.rules || {}).first_host ? `rule: ${m.rules.first_host} first` : "", (m.rules || {}).min_uptime ? ` \xB7 later hosts \u2265 ${m.rules.min_uptime}% uptime` : "") }, /* @__PURE__ */ h(
         HostTable,
         {
@@ -564,6 +565,8 @@
       const [rootEl, setRootEl] = useState(null);
       const [width, setWidth] = useState(900);
       const [uLoading, setULoading] = useState(false);
+      const [uErr, setUErr] = useState(0);
+      const retryT = useRef(null);
       const useq = useRef(0);
       const [tab, setTab] = useState("fleet");
       const [agent, setAgent] = useState("root");
@@ -610,15 +613,37 @@
       const loadUsage = useCallback(() => {
         const q = ++useq.current;
         setULoading(true);
+        clearTimeout(retryT.current);
         return fetchJSON(`${API}/usage?window=${win}&bucket=${bucket}&tz=${encodeURIComponent(TZ)}`).then((u) => {
           if (q === useq.current) {
             setUsage(u);
             setULoading(false);
+            setUErr(0);
           }
         }).catch(() => {
-          if (q === useq.current) setULoading(false);
+          if (q !== useq.current) return;
+          setULoading(false);
+          setUErr((n) => {
+            if (n < 6) retryT.current = setTimeout(() => loadUsageRef.current(), 4e3 * (n + 1));
+            return n + 1;
+          });
         });
       }, [win, bucket]);
+      const loadUsageRef = useRef(loadUsage);
+      loadUsageRef.current = loadUsage;
+      useEffect(() => {
+        const onVis = () => {
+          if (!document.hidden) {
+            loadUsageRef.current();
+            load();
+          }
+        };
+        document.addEventListener("visibilitychange", onVis);
+        return () => {
+          document.removeEventListener("visibilitychange", onVis);
+          clearTimeout(retryT.current);
+        };
+      }, [load]);
       useEffect(() => {
         load();
       }, []);
@@ -701,7 +726,7 @@
       return /* @__PURE__ */ h("div", { className: "fm-root", ref: setRootEl }, /* @__PURE__ */ h("header", { className: "fm-head" }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h1", null, "Fleet Models"), /* @__PURE__ */ h("div", { className: "fm-sub" }, "Every agent's waterfall from one file \u2014 ", /* @__PURE__ */ h("code", null, "~/.hermes/fleet/models.yaml"), " \xB7 revision ", state.revision, " \xB7 ", state.doc.updated_by || "\u2014", " ", ago(state.doc.updated_at))), /* @__PURE__ */ h("div", { className: "fm-row" }, /* @__PURE__ */ h(Badge, { tone: "ok", title: "data_collection: deny on every OpenRouter call" }, "no-training \xB7 deny"), /* @__PURE__ */ h(Badge, { tone: state.runtime.aux_routing_seam ? "ok" : "warn", title: "helper calls follow each model's pins (fleet-models plugin)" }, state.runtime.aux_routing_seam ? "helper routing on" : "helper routing off"), state.validation.errors.length ? /* @__PURE__ */ h(Badge, { tone: "bad", title: state.validation.errors.join("\n") }, state.validation.errors.length, " rule breach") : null, /* @__PURE__ */ h("button", { className: "fm-btn", onClick: () => {
         load();
         loadUsage();
-      } }, "Refresh"))), /* @__PURE__ */ h("nav", { className: "fm-tabs" }, TABS.map(([k, l]) => /* @__PURE__ */ h("button", { key: k, className: cls("fm-tab", tab === k && "is-active"), onClick: () => setTab(k) }, l))), movedUnder ? /* @__PURE__ */ h("div", { className: "fm-note fm-note--warn" }, "Someone applied a change while you were editing (now revision ", state.revision, "). Preview will refuse a stale edit \u2014 discard and redo it.") : null, tab === "fleet" || tab === "models" || tab === "costs" ? /* @__PURE__ */ h(PeriodBar, { win, setWin, usage: shown, loading: uLoading }) : null, /* @__PURE__ */ h("main", { className: cls("fm-main", stale && "is-stale") }, tab === "fleet" ? /* @__PURE__ */ h(FleetView, { state, doc, usage: shown, win: shown ? shown.window : win, onOpen: (p) => {
+      } }, "Refresh"))), /* @__PURE__ */ h("nav", { className: "fm-tabs" }, TABS.map(([k, l]) => /* @__PURE__ */ h("button", { key: k, className: cls("fm-tab", tab === k && "is-active"), onClick: () => setTab(k) }, l))), movedUnder ? /* @__PURE__ */ h("div", { className: "fm-note fm-note--warn" }, "Someone applied a change while you were editing (now revision ", state.revision, "). Preview will refuse a stale edit \u2014 discard and redo it.") : null, tab === "fleet" || tab === "models" || tab === "costs" ? /* @__PURE__ */ h(PeriodBar, { win, setWin, usage: shown, loading: uLoading, failed: uErr > 0 }) : null, /* @__PURE__ */ h("main", { className: cls("fm-main", stale && "is-stale") }, tab === "fleet" ? /* @__PURE__ */ h(FleetView, { state, doc, usage: shown, win: shown ? shown.window : win, onOpen: (p) => {
         setAgent(p);
         setTab("agent");
       } }) : null, tab === "agent" ? /* @__PURE__ */ h(AgentView, { state, draft, setDraft, p: agent, setP: setAgent }) : null, tab === "models" ? /* @__PURE__ */ h(ModelsView, { draft, setDraft, usage: shown, win: shown ? shown.window : win, sel: modelSel, setSel: setModelSel }) : null, tab === "costs" ? /* @__PURE__ */ h(CostsView, { doc, usage: shown, win: shown ? shown.window : win, width: chartW }) : null, tab === "decisions" ? /* @__PURE__ */ h(DecisionsView, { state, draft, setDraft, onRevert: revert }) : null), dirty ? /* @__PURE__ */ h("div", { className: "fm-dock" }, /* @__PURE__ */ h("span", null, /* @__PURE__ */ h("b", null, "Unsaved changes"), " ", /* @__PURE__ */ h("span", { className: "fm-muted" }, "\u2014 nothing reaches the fleet until you apply")), /* @__PURE__ */ h("span", { className: "fm-row" }, /* @__PURE__ */ h("button", { className: "fm-btn", onClick: () => {

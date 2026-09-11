@@ -1,6 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { $dismissedAutoProjectIds, $sidebarProjectFilter } from '@/store/layout'
+import { $projectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
@@ -79,7 +82,11 @@ vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
-  projectRootCwd: vi.fn(() => '')
+  // Mirror the real store's rule: primary folder, else first repo with one.
+  projectRootCwd: vi.fn(
+    (node: { path?: null | string; repos?: { path?: null | string }[] }) =>
+      (node?.path || node?.repos?.find(repo => repo.path)?.path || '').trim()
+  )
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -286,5 +293,74 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The "Move to project" submenu must offer the SAME project set the sidebar
+// overview shows: a dismissed auto-project and a project excluded by the
+// persisted sidebar filter must not be move targets. Drive the real
+// interaction: open the kebab menu, then click the submenu trigger (Radix
+// opens subs on click; the parent menu stays open). The real layout store is
+// loaded (no mock) so the real filterVisibleProjects + persistent atoms run.
+// Store mutations are wrapped in act() so the menu re-renders before asserting.
+describe('Move to project mirrors the sidebar view filters', () => {
+  async function openMoveToProjectSubmenu() {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    const subTrigger = screen.getByRole('menuitem', { name: 'Move to project' })
+    fireEvent.click(subTrigger)
+  }
+
+  it('offers visible projects and hides dismissed auto-projects', async () => {
+    $projectTree.set([
+      { id: 'p-ghost', isAuto: false, isNoProject: false, label: 'Ghost Recon', path: 'H:/workspace/Projects/Ghost Recon Stage 2/.re', repos: [], sessionCount: 1 },
+      { id: 'p-x4', isAuto: true, isNoProject: false, label: 'x4-projects', path: 'C:/Users/gmkon/x4-projects', repos: [], sessionCount: 0 }
+    ])
+    $dismissedAutoProjectIds.set([])
+    $sidebarProjectFilter.set([])
+
+    await openMoveToProjectSubmenu()
+
+    // Both visible projects are move targets.
+    expect(await screen.findByRole('menuitem', { name: 'Ghost Recon' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'x4-projects' })).toBeTruthy()
+
+    // Dismiss the auto-project in the sidebar: the menu must follow (the
+    // reported bug was that it did not).
+    act(() => $dismissedAutoProjectIds.set(['p-x4']))
+    expect(screen.queryByRole('menuitem', { name: 'x4-projects' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Ghost Recon' })).toBeTruthy()
+
+    // Re-showing it restores the target.
+    act(() => $dismissedAutoProjectIds.set([]))
+    expect(await screen.findByRole('menuitem', { name: 'x4-projects' })).toBeTruthy()
+  })
+
+  it('hides projects excluded by the persisted sidebar project filter', async () => {
+    $projectTree.set([
+      { id: 'p-ghost', isAuto: false, isNoProject: false, label: 'Ghost Recon', path: 'H:/workspace/Projects/Ghost Recon Stage 2/.re', repos: [], sessionCount: 1 },
+      { id: 'p-ue5', isAuto: false, isNoProject: false, label: 'UE5 Tactical Shooter', path: 'G:/Projects/Unreal Projects/test2', repos: [], sessionCount: 2 }
+    ])
+    $dismissedAutoProjectIds.set([])
+    $sidebarProjectFilter.set([])
+
+    await openMoveToProjectSubmenu()
+
+    expect(await screen.findByRole('menuitem', { name: 'UE5 Tactical Shooter' })).toBeTruthy()
+
+    // Narrow the sidebar to Ghost Recon only: the menu must follow.
+    act(() => $sidebarProjectFilter.set(['p-ghost']))
+    expect(screen.queryByRole('menuitem', { name: 'UE5 Tactical Shooter' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Ghost Recon' })).toBeTruthy()
+
+    // Clearing the filter restores the target.
+    act(() => $sidebarProjectFilter.set([]))
+    expect(await screen.findByRole('menuitem', { name: 'UE5 Tactical Shooter' })).toBeTruthy()
   })
 })

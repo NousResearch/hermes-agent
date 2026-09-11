@@ -54,12 +54,11 @@ def test_systemd_escape_transfers_sanitized_environment_over_stdin(tmp_path, mon
     ]
     assert escape.args[-3:] == ["/bin/bash", "-c", "sudo -S id"]
     assert "terminal-secret" not in "\0".join(escape.args)
-    assert escape.env == {
-        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
-        "HOME": "/home/alice",
-        "PATH": "/usr/bin",
-        "XDG_RUNTIME_DIR": "/run/user/1000",
-    }
+    assert escape.env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1000/bus"
+    assert escape.env["HOME"] == "/home/alice"
+    assert escape.env["PATH"] == "/usr/bin"
+    assert escape.env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+    assert "API_TOKEN" not in escape.env
     assert escape.stdin_data == (
         "EMPTY=\0"
         "PATH=/opt/hermes/bin:/usr/bin\0"

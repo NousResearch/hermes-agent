@@ -1170,6 +1170,13 @@ def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
+    from tui_gateway.usage_provider import _usage_provider_lines
+
+    account_lines, rate_limit_lines = _usage_provider_lines(session)
+    if account_lines:
+        usage["account_lines"] = account_lines
+    if rate_limit_lines:
+        usage["rate_limit_lines"] = rate_limit_lines
     # Nous credits are agent-independent (portal fetch); fail-open when absent.
     with contextlib.suppress(Exception):
         from agent.account_usage import nous_credits_lines

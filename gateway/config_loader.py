@@ -186,6 +186,7 @@ def _str_keyed(value: Any) -> Any:
 
 _TELEGRAM = frozenset({Platform.TELEGRAM})
 _DISCORD_SLACK = frozenset({Platform.DISCORD, Platform.SLACK})
+_SIGNAL = frozenset({Platform.SIGNAL})
 
 def _plain(*keys: str) -> tuple:
     """Keys copied verbatim into ``extra`` for every platform."""
@@ -207,6 +208,7 @@ _SHARED_KEYS: tuple = (
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
         "group_policy", "group_allow_from", "group_allow_admin_from", "group_user_allowed_commands",
     ),
+    ("shared_account_group_only", _SIGNAL, None),
     ("channel_skill_bindings", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),

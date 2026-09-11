@@ -1026,6 +1026,28 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     return _process_is_stopped(existing_pid)
 
 
+def list_scoped_locks(
+    scope: Optional[str] = None,
+    *,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List machine-local scoped-lock records in deterministic order."""
+    records: list[dict[str, Any]] = []
+    for lock_path in sorted(_get_lock_dir().glob("*.lock")):
+        record = _read_json_file(lock_path)
+        if record is None or (scope is not None and record.get("scope") != scope):
+            continue
+        owner_pid = _pid_from_record(record)
+        if (
+            active_only
+            and owner_pid != os.getpid()
+            and _scoped_lock_record_is_stale(record, owner_pid)
+        ):
+            continue
+        records.append(dict(record))
+    return records
+
+
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):

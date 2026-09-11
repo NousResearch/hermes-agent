@@ -4,6 +4,7 @@ and SIGNAL_ACCOUNT."""
 
 import asyncio
 import base64
+import hashlib
 import itertools
 import json
 import logging
@@ -38,6 +39,7 @@ from gateway.platforms.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
+from gateway.status import acquire_scoped_lock, list_scoped_locks, release_scoped_lock
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+_SIGNAL_STARTUP_SCOPE = "signal-phone-startup"
 
 # Magic-byte prefixes checked before delegating to the shared audio/AV sniffer.
 _MAGIC_EXTENSIONS = ((b"\x89PNG", ".png"), (b"\xff\xd8", ".jpg"), (b"GIF8", ".gif"), (b"%PDF", ".pdf"))
@@ -61,6 +64,49 @@ _SKIP_IMAGE_LOG = {
     "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
+
+
+def _signal_group_scope(account: str) -> str:
+    account_hash = hashlib.sha256(account.encode("utf-8")).hexdigest()[:16]
+    return f"signal-phone-group-{account_hash}"
+
+
+def _active_signal_scoped_lock(scope: str, identity: str) -> Optional[dict]:
+    """Return the active exact marker, including one owned by this process."""
+    identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return next(
+        (
+            record
+            for record in list_scoped_locks(scope, active_only=True)
+            if record.get("identity_hash") == identity_hash
+        ),
+        None,
+    )
+
+
+def _release_signal_scoped_lock(scope: str, identity: str) -> None:
+    """Release one exact marker and verify that this process no longer owns it."""
+    release_scoped_lock(scope, identity)
+    identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    if any(
+        record.get("identity_hash") == identity_hash
+        and record.get("pid") == os.getpid()
+        for record in list_scoped_locks(scope)
+    ):
+        raise OSError(f"Signal scoped lock is still owned after release: {scope}")
+
+
+def _release_signal_claims(claims: List[Tuple[str, str]]) -> None:
+    """Attempt every claim release, then re-raise the first failure."""
+    first_error: Optional[Exception] = None
+    for scope, identity in claims:
+        try:
+            _release_signal_scoped_lock(scope, identity)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
 
 
 def _parse_comma_list(value: str) -> List[str]:
@@ -186,6 +232,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.shared_account_group_only = extra.get("shared_account_group_only", False)
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
@@ -218,20 +265,180 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        self._signal_group_claims: List[Tuple[str, str]] = []
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s", self.http_url,
                     redact_phone(self.account), "enabled" if self.group_allow_from else "disabled")
 
+    def _release_signal_routing_locks(self) -> None:
+        first_error: Optional[Exception] = None
+        claims = list(self._signal_group_claims)
+        self._signal_group_claims.clear()
+        try:
+            _release_signal_claims(claims)
+        except Exception as exc:
+            first_error = exc
+
+        try:
+            self._release_platform_lock()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+
+        if first_error is not None:
+            raise first_error
+
+    def _acquire_signal_routing_locks(self) -> bool:
+        """Reserve this account mode and the complete assigned group set."""
+        coordinator_holder = _active_signal_scoped_lock(
+            _SIGNAL_STARTUP_SCOPE, self.account
+        )
+        if coordinator_holder is None:
+            coordinator_acquired, coordinator_holder = acquire_scoped_lock(
+                _SIGNAL_STARTUP_SCOPE,
+                self.account,
+                metadata={"platform": "signal", "signal_mode": "startup"},
+            )
+        else:
+            coordinator_acquired = False
+        if not coordinator_acquired:
+            logger.error("Signal: account listener setup is already in progress")
+            self._set_fatal_error(
+                "signal_account_coordinator_lock",
+                "Signal account listener setup is already in progress",
+                retryable=True,
+            )
+            return False
+
+        routing_acquired = False
+        try:
+            if self.shared_account_group_only:
+                normal_holder = _active_signal_scoped_lock("signal-phone", self.account)
+                if normal_holder is None:
+                    normal_available, normal_holder = acquire_scoped_lock(
+                        "signal-phone",
+                        self.account,
+                        metadata={"platform": "signal", "signal_mode": "normal-probe"},
+                    )
+                else:
+                    normal_available = False
+                if not normal_available:
+                    owner_pid = normal_holder.get("pid") if isinstance(normal_holder, dict) else None
+                    logger.error(
+                        "Signal: account is held by a normal or legacy listener%s",
+                        f" (PID {owner_pid})" if owner_pid else "",
+                    )
+                    self._set_fatal_error(
+                        "signal_legacy_account_lock",
+                        "Signal account is held by a normal or legacy listener",
+                        retryable=True,
+                    )
+                    return False
+                _release_signal_scoped_lock("signal-phone", self.account)
+
+                groups = sorted(set(self.group_allow_from))
+                group_scope = _signal_group_scope(self.account)
+                claims: List[Tuple[str, str]] = []
+                try:
+                    for group_id in groups:
+                        existing = _active_signal_scoped_lock(group_scope, group_id)
+                        if existing is None:
+                            acquired, _ = acquire_scoped_lock(
+                                group_scope,
+                                group_id,
+                                metadata={"platform": "signal", "signal_mode": "shared-group"},
+                            )
+                        else:
+                            acquired = False
+                        if not acquired:
+                            logger.error("Signal: group is assigned to another shared profile")
+                            self._set_fatal_error(
+                                "signal_account_group_lock",
+                                "A Signal group is assigned to another shared profile",
+                                retryable=True,
+                            )
+                            return False
+                        claims.append((group_scope, group_id))
+                finally:
+                    if len(claims) != len(groups):
+                        _release_signal_claims(claims)
+                self._signal_group_claims = claims
+                routing_acquired = True
+                return True
+
+            if list_scoped_locks(_signal_group_scope(self.account), active_only=True):
+                logger.error("Signal: account is in use by shared group-only listeners")
+                self._set_fatal_error(
+                    "signal_account_group_lock",
+                    "Signal account is in use by shared group-only listeners",
+                    retryable=True,
+                )
+                return False
+
+            # Preserve the original account-wide scope and --replace behavior.
+            if (
+                _active_signal_scoped_lock("signal-phone", self.account) is not None
+                and not getattr(self, "_platform_lock_takeover_allowed", False)
+            ):
+                self._set_fatal_error(
+                    "signal-phone_lock",
+                    "Signal account already in use. Stop the other gateway first.",
+                    retryable=True,
+                )
+                return False
+            try:
+                acquired = self._acquire_platform_lock(
+                    "signal-phone", self.account, "Signal account"
+                )
+            except Exception:
+                self._platform_lock_scope = None
+                self._platform_lock_identity = None
+                raise
+            if acquired:
+                routing_acquired = True
+            else:
+                self._platform_lock_scope = None
+                self._platform_lock_identity = None
+            return acquired
+        finally:
+            try:
+                _release_signal_scoped_lock(_SIGNAL_STARTUP_SCOPE, self.account)
+            except Exception:
+                if routing_acquired:
+                    try:
+                        self._release_signal_routing_locks()
+                    except Exception:
+                        logger.exception(
+                            "Signal: failed to roll back routing ownership after "
+                            "startup coordinator release failed"
+                        )
+                raise
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to signal-cli daemon and start SSE listener."""
+        if not isinstance(self.shared_account_group_only, bool):
+            logger.error("Signal: shared_account_group_only must be a boolean value")
+            return False
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
             return False
-        lock_acquired = False  # scoped lock prevents duplicate Signal listeners for the same phone
+
+        if self.shared_account_group_only:
+            if not self.group_allow_from:
+                logger.error("Signal: shared_account_group_only requires an explicit group allowlist")
+                return False
+            if "*" in self.group_allow_from:
+                logger.error("Signal: shared_account_group_only does not permit a wildcard group allowlist")
+                return False
+
+        lock_acquired = False
         try:
-            if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
+            if not self._acquire_signal_routing_locks():
                 return False
             lock_acquired = True
         except Exception as e:
+            if self.shared_account_group_only:
+                logger.error("Signal: could not acquire routing locks: %s", e)
+                return False
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # See #18451.
@@ -258,7 +465,7 @@ class SignalAdapter(BasePlatformAdapter):
             if not self._running:
                 await self._close_client()
                 if lock_acquired:
-                    self._release_platform_lock()
+                    self._release_signal_routing_locks()
 
     async def _close_client(self) -> None:
         if self.client:
@@ -281,7 +488,7 @@ class SignalAdapter(BasePlatformAdapter):
             task.cancel()
         self._typing_tasks.clear()
         await self._close_client()
-        self._release_platform_lock()
+        self._release_signal_routing_locks()
         logger.info("Signal: disconnected")
 
     async def _handle_sse_line(self, line: str) -> None:
@@ -371,7 +578,11 @@ class SignalAdapter(BasePlatformAdapter):
         if not sent_msg or not isinstance(sent_msg, dict):
             return None
         dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
-        if dest != self._account_normalized and not (sent_msg.get("groupInfo") or {}).get("groupId"):
+        group_id = (sent_msg.get("groupInfo") or {}).get("groupId")
+        if self.shared_account_group_only and dest == self._account_normalized and not group_id:
+            logger.debug("Signal: ignoring Note to Self in shared account group-only mode")
+            return None
+        if dest != self._account_normalized and not group_id:
             return None
         if self._consume_sent_timestamp(sent_msg.get("timestamp")):
             return None  # echo of our own outbound reply
@@ -444,6 +655,9 @@ class SignalAdapter(BasePlatformAdapter):
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
+        if self.shared_account_group_only and not is_group:
+            logger.debug("Signal: ignoring DM in shared account group-only mode")
+            return
         if is_group and not self._group_allowed(group_id):
             return
         chat_id = f"group:{group_id}" if is_group else sender

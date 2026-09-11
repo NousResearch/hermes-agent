@@ -494,10 +494,21 @@ def _chat_messages_to_responses_input(
         emit(message_items, msg)
         if not message_items:
             # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
-            fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
+            # BUT a trailing function_call is itself a following item — and several Responses backends
+            # (Volcengine ARK api/plan) reject a synthetic {"role":"assistant","content":""} item with
+            # 400 MissingParameter: missing input.content (#volc-vision, reproduced on v0.21 2026-09-07:
+            # any thinking-only + tool-call assistant turn 400s on its next replay). So compute the
+            # function_call items first and only fall back to "" when nothing follows the reasoning.
+            tool_call_items = _replay_tool_call_items(msg, start_index=len(items))
+            fallback = content_parts or (
+                content_text if content_text.strip()
+                else "" if reasoning_items and not tool_call_items else None
+            )
             if fallback is not None:
                 emit([{"role": "assistant", "content": fallback}], msg)
-        emit(_replay_tool_call_items(msg, start_index=len(items)), msg)
+        else:
+            tool_call_items = _replay_tool_call_items(msg, start_index=len(items))
+        emit(tool_call_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.

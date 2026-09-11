@@ -404,7 +404,7 @@ def test_sensitive_normalization_controls_pass(code):
     'import pandas as pd\npd.DataFrame({"a": [1]}).to_csv(path="/root/.ssh/x")',
     # non-dataframe writers with sensitive path args
     'import matplotlib.pyplot as plt\nplt.savefig("/root/.ssh/plot.png")',
-    'import numpy as np\nnp.savez("/root/.hermes/x.npz", a=1)',
+    'import numpy as np\nnp.savez("/root/.hermes/auth.json", a=1)',
     # destructive file ops on sensitive paths → hard-blocked via touches_path
     'import shutil\nshutil.copy("/root/.ssh/id_rsa", "/tmp")',
     'import os\nos.remove("/root/.ssh/authorized_keys")',

@@ -1299,15 +1299,49 @@ def _execute_code_has_dangerous_ops(code: str):
 # surface belongs to the runtime/sandbox boundary.
 
 # Sensitive prefixes mirrored from tools/file_tools._SENSITIVE_PATH_PREFIXES
-# plus the Hermes/SSH trees (same class of protected destination #49578
-# names).  Matched after ~/env expansion and normpath.
+# plus the credential trees (#49578 names the same class of destination).
+# Matched after ~/env expansion and normpath.
 _EXEC_CODE_SENSITIVE_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/", "/private/etc/",
     "/private/var/db/", "/private/var/root/",
     "/run/", "/var/run/",
 )
-_EXEC_CODE_SENSITIVE_HOME_TREES = (".ssh", ".hermes", ".aws", ".gnupg")
+_EXEC_CODE_SENSITIVE_HOME_TREES = (".ssh", ".aws", ".gnupg")
 _EXEC_CODE_SENSITIVE_EXACT = {"/var/run/docker.sock", "/run/docker.sock"}
+
+# Inside the Hermes home only the *boundaries* are protected, not the tree.  The agent
+# legitimately writes skills data, logs, cache and its own checkout there — the file-tool path
+# exempts the home for exactly that reason (file_tools_write_guards) — and a blanket rule makes
+# ordinary work an unapprovable dead end (2026-09-11: a skills reference JSON hard-blocked with
+# no path forward).  What stays protected is the set that actually moves the security boundary:
+# the guard's own enforcement path, credentials/config, and instruction surfaces.
+_EXEC_CODE_HERMES_HOME_PROTECTED_BASENAMES = frozenset({
+    "config.yaml", ".env", "auth.json", "auth.lock", "credentials.json",
+})
+# Prefixes (relative to the Hermes home).  "approval_" covers the whole decomposed family
+# (approval_detection / floors / prompt / gateway_wait / smart / human_wait / context).
+_EXEC_CODE_HERMES_HOME_PROTECTED_SUBPATHS = (
+    "hermes-agent/tools/approval.py",
+    "hermes-agent/tools/approval_",
+    "hermes-agent/tools/exec_code_policy.py",
+    "hermes-agent/agent/turn_tool_round.py",
+    "hooks/",
+    "scripts/hook-",
+)
+# Instruction files steer the agent from ANY directory (mirrors
+# file_tools_write_guards._PROTECTED_INSTRUCTION_BASENAMES, which gates them behind approval —
+# execute_code has no approval path, so the mirror-safe choice is to hard-block).
+_EXEC_CODE_PROTECTED_INSTRUCTION_BASENAMES = frozenset({
+    "agents.md", "claude.md", "soul.md", ".cursorrules",
+})
+
+# Calls on these namespaces mutate interpreter state only — no filesystem effect — so a sensitive
+# path appearing as their argument is data, not a destination (2026-09-11 false positive:
+# `sys.path.insert(0, "/root/.hermes/hermes-agent")` in a read-only diagnostic script).
+_EXEC_CODE_IN_PROCESS_NAMESPACES = frozenset({
+    "sys.path", "sys.argv", "sys.modules", "sys.meta_path", "sys.path_hooks",
+})
+
 
 # 只读/查询方法白名单（2026-08-25 补：#49578 残余面——pandas/numpy 等库
 # 写方法的路径参数绕过 open()/Path() 形状检测）。带敏感路径参数的方法调用
@@ -1525,9 +1559,61 @@ def _resolve_path_ctor_target(ctor: ast.Call, raw_aliases, imports) -> str | Non
     return posixpath.join(*parts)
 
 
+def _hermes_home_candidates() -> tuple:
+    """Hermes-home roots whose *boundaries* stay protected.
+
+    Both the HOME-based default and an explicit ``HERMES_HOME`` override count: a relocated
+    install protects the same boundaries, and isolated/test runs point the override at a temp dir.
+    """
+    homes = []
+    env_home = os.environ.get("HERMES_HOME")
+    if env_home:
+        homes.append(env_home)
+    homes.append(os.path.expanduser("~/.hermes"))
+    return tuple(dict.fromkeys(homes))
+
+
+def _hermes_home_is_protected(normalized: str, hermes_norm: str) -> bool:
+    """True only for the protected *boundaries* inside the Hermes home.
+
+    Everything else under the home (skills data, logs, cache, the checkout) stays writable:
+    it is normal agent workspace, reachable through the file tools too.
+    """
+    if not (normalized == hermes_norm or normalized.startswith(hermes_norm + "/")):
+        return False
+    rel = normalized[len(hermes_norm):].lstrip("/")
+    base = posixpath.basename(rel).lower()
+    if base in _EXEC_CODE_HERMES_HOME_PROTECTED_BASENAMES:
+        return True
+    for sub in _EXEC_CODE_HERMES_HOME_PROTECTED_SUBPATHS:
+        if rel == sub.rstrip("/") or rel.startswith(sub):
+            return True
+    return False
+
+
+def _is_in_process_namespace_call(func) -> bool:
+    """True for attribute calls rooted at a pure in-process namespace (``sys.path.insert``).
+
+    Such calls change interpreter state only — no destination is written — so a sensitive path in
+    their arguments is data, not an effect (2026-09-11 false positive).
+    """
+    parts = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return False
+    parts.append(node.id)
+    chain = ".".join(reversed(parts))
+    return any(chain == ns or chain.startswith(ns + ".")
+               for ns in _EXEC_CODE_IN_PROCESS_NAMESPACES)
+
+
 def _write_target_is_sensitive(path: str) -> bool:
     """True if *path* targets a protected destination (mirrors the file-tool
-    sensitive-path invariant from #49578)."""
+    sensitive-path invariant from #49578): credentials, system dirs, the guard's
+    own enforcement path, and agent-instruction files — not whole directory trees."""
     if not path:
         return False
     expanded = os.path.expanduser(os.path.expandvars(path))
@@ -1543,11 +1629,21 @@ def _write_target_is_sensitive(path: str) -> bool:
     for prefix in _EXEC_CODE_SENSITIVE_PREFIXES:
         if normalized.startswith(prefix):
             return True
-    # Hermes home tree (config/env live here — approvals.mode etc.)
-    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    hermes_norm = posixpath.normpath(hermes_home.replace("\\", "/"))
-    if normalized == hermes_norm or normalized.startswith(hermes_norm + "/"):
+        # The protected directory itself (``os.chdir("/etc")``): a later relative write would land
+        # inside it, and the trailing-slash prefix test alone would let that through.
+        if normalized == prefix.rstrip("/"):
+            return True
+    # Instruction files steer the agent from any directory (same scope decision as the file-tool
+    # gate, which routes them to approval; execute_code has no approval path → hard block).
+    if posixpath.basename(normalized).lower() in _EXEC_CODE_PROTECTED_INSTRUCTION_BASENAMES:
         return True
+    # Hermes home: boundaries only (enforcement path / config + credentials / hooks).  Both the
+    # HOME-based default and a HERMES_HOME override count — a relocated home protects the same
+    # boundaries, and test/isolated runs point HERMES_HOME at a temp dir.
+    for hermes_home in _hermes_home_candidates():
+        hermes_norm = posixpath.normpath(hermes_home.replace("\\", "/"))
+        if _hermes_home_is_protected(normalized, hermes_norm):
+            return True
     # Home trees that gate agent security: .ssh, .aws, .gnupg
     home = os.path.expanduser("~")
     home_norm = posixpath.normpath(home.replace("\\", "/"))
@@ -1668,6 +1764,10 @@ def _execute_code_touches_sensitive_path(code: str) -> str | None:
             continue
 
         if method in _EXEC_CODE_READONLY_QUERY_NAMES:
+            continue
+        # In-process namespaces (sys.path / sys.argv / sys.modules): mutating them writes no
+        # destination, so a sensitive path in the arguments is data, not an effect.
+        if _is_in_process_namespace_call(func):
             continue
         # open()/Path() 写形状已在 _execute_code_has_sensitive_write 单独
         # 处理；这里跳过避免重复判定（其只读形态合法，不升级）。

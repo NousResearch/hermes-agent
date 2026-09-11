@@ -1084,6 +1084,97 @@ def test_unresolvable_launch_cli_reaches_panel(monkeypatch):
     assert result["approved"] is False
 
 
+# ── 目标边界收窄（2026-09-11）：按「效果边界」判定，而不是按目录树 ──────────
+# 实测生产误报两例（当天）：
+#   19:41 `open(".../skills/.../references/tracked-prs.json","w")` —— 技能数据，被整个
+#         ~/.hermes 树的粗暴规则硬阻断（不可审批，任务无路可走）
+#   23:05 `sys.path.insert(0, "/root/.hermes/hermes-agent")` —— 纯进程内调用，无写效果
+# 现在保护的是真正移动安全边界的目标：凭据/配置、守卫自身的执行路径、指令文件、
+# 系统目录、凭据树；其余在她的工作区（技能数据/日志/缓存/仓库普通文件）静默放行。
+BOUNDARY_BLOCKED = [
+    'open("/root/.hermes/config.yaml", "w").write("x")',
+    'open("~/.hermes/config.yaml", "w").write("x")',
+    'open("/root/.hermes/.env", "a").write("x")',
+    'open("/root/.hermes/auth.json", "w").write("x")',
+    # 守卫自身的执行路径：改写=解除拦截
+    'open("/root/.hermes/hermes-agent/tools/approval.py", "w").write("x")',
+    'open("/root/.hermes/hermes-agent/tools/approval_detection.py", "w").write("x")',
+    'open("/root/.hermes/hermes-agent/tools/exec_code_policy.py", "w").write("x")',
+    'open("/root/.hermes/hermes-agent/agent/turn_tool_round.py", "w").write("x")',
+    'open("/root/.hermes/scripts/hook-approval-flash-start.py", "w").write("x")',
+    # 指令文件（任意目录）：文件工具侧走审批，execute_code 无审批路径 → 硬阻断
+    'open("/root/proj/AGENTS.md", "w").write("x")',
+    # 原有边界不回归
+    'open("/etc/passwd", "w").write("x")',
+    'import os\nos.chdir("/etc")',
+]
+
+BOUNDARY_ALLOWED = [
+    'open("/root/.hermes/skills/devops/x/references/tracked-prs.json", "w").write("x")',
+    'open("/root/.hermes/skills/devops/x/SKILL.md", "w").write("x")',
+    'open("/root/.hermes/logs/x.log", "a").write("x")',
+    'open("/root/.hermes/hermes-agent/README.md", "w").write("x")',
+    'open("/root/proj/notes.md", "w").write("x")',
+    'import sys\nsys.path.insert(0, "/root/.hermes/hermes-agent")',
+    'import sys\nsys.argv.append("/root/.hermes/config.yaml")',
+]
+
+
+@pytest.mark.parametrize("code", BOUNDARY_BLOCKED)
+def test_protected_boundary_targets_blocked(code):
+    """Either layer may be the one that recognises the boundary (writes → layer 4,
+    argument references like ``os.chdir`` → layer 4b)."""
+    assert (_execute_code_has_sensitive_write(code)
+            or _execute_code_touches_sensitive_path(code)) is not None
+
+
+@pytest.mark.parametrize("code", BOUNDARY_ALLOWED)
+def test_workspace_targets_allowed(code):
+    assert _execute_code_has_sensitive_write(code) is None
+    assert _execute_code_touches_sensitive_path(code) is None
+
+
+def test_production_false_positive_skills_json_write_is_allowed(monkeypatch):
+    """2026-09-11 19:41 生产误报：写技能数据（非边界）必须放行（原为不可审批硬阻断）。"""
+    import tools.approval as approval_module
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
+    code = (
+        "import json\n"
+        "p = \"/root/.hermes/skills/devops/hermes-local-patches/references/tracked-prs.json\"\n"
+        "d = json.load(open(p))\n"
+        "json.dump(d, open(p, \"w\"), ensure_ascii=False)\n"
+    )
+    assert check_execute_code_guard(code, "local")["approved"] is True
+
+
+def test_production_false_positive_sys_path_insert_is_allowed(monkeypatch):
+    """2026-09-11 23:05 生产误报：进程内命名空间操作（无写效果）必须放行。"""
+    import tools.approval as approval_module
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, '/root/.hermes/hermes-agent')\n"
+        "raw = open('/root/.hermes/cache/blocked-scripts/x.sh', encoding='utf-8').read()\n"
+        "print(len(raw))\n"
+    )
+    assert check_execute_code_guard(code, "local")["approved"] is True
+
+
+@pytest.mark.parametrize("code", [f"import os\nos.remove({t!r})" for t in (
+    "/root/.hermes/x.npz", "/root/.hermes/skills/devops/x/references/tracked-prs.json",
+    "/root/.hermes/hermes-agent/README.md", "/tmp/x")])
+def test_workspace_mutations_allowed(code):
+    assert _execute_code_touches_sensitive_path(code) is None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # exec*/spawn* 签名感知提取（P1 修复，andrexibiza 2026-08-29 P1）
 # ─────────────────────────────────────────────────────────────────────

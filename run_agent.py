@@ -29,6 +29,23 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 
+def _plugin_delegate_dispatch_override() -> Optional[Callable]:
+    """Handler that should own ``delegate_task`` dispatch, or None for the built-in path.
+
+    ``delegate_task`` is dispatched inline (``agent/tool_executor.py`` →
+    ``AIAgent._dispatch_delegate_task``), not through the registry, so a plugin that overrode the
+    tool with the ``tools.override`` capability would never see the call. Ask the registry which
+    handler owns the name: only a plugin-owned handler wins, so with no plugin installed the
+    built-in path is byte-for-byte what it was. Mirrors ``registry.register``'s ownership rule.
+    """
+    try:
+        from tools.registry import registry
+        return registry.plugin_handler("delegate_task")
+    except Exception:
+        logger.debug("delegate_task plugin override lookup failed", exc_info=True)
+        return None
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
 
@@ -1298,6 +1315,12 @@ class AIAgent(
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
+        override = _plugin_delegate_dispatch_override()
+        if override is not None:
+            # A plugin claimed delegate_task (tools.override). This path is inline, so the registry
+            # would never reach its handler; the plugin owns the call, including background/async
+            # bookkeeping. Passing parent_agent keeps results re-entering THIS conversation.
+            return override(dict(function_args or {}), parent_agent=self)
         # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
         # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
         # owns no gateway session. The schema-level `background` param is intentionally ignored.

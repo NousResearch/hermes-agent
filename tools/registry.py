@@ -441,6 +441,19 @@ class ToolRegistry:
         with self._lock:
             return self._merged_tools(scope).get(name)
 
+    def plugin_handler(self, name: str, *, scope: Optional[str] = None) -> Optional[Callable]:
+        """Handler for *name* when a PLUGIN owns it, else None (built-in/MCP keep their own path).
+
+        Lets an out-of-registry dispatch site (``delegate_task`` runs inline, see
+        ``AIAgent._dispatch_delegate_task``) honour a plugin that overrode the tool through the
+        ``tools.override`` capability, using the same ownership rule as ``register``/``_plugin_owner_of``:
+        the handler's module namespace decides, so a built-in handler never reports as plugin-owned."""
+        with self._lock:
+            entry = self._merged_tools(scope).get(name)
+            if entry is None or self._plugin_owner_of(entry.handler) is None:
+                return None
+            return entry.handler
+
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Local slot state only — no global fallback."""

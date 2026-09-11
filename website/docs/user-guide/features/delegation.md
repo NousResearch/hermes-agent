@@ -640,3 +640,12 @@ Subagents compact at the same ratio trigger as their parent (`compression.thresh
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.
 :::
+
+## Delegating to other profiles
+
+Everything above describes a subagent that is a *clone of the caller* — same model, same toolset.
+When the work needs a specialist's context instead (a project repo, an ad account, a QA harness),
+the bundled `profile-pool delegation` plugin routes `delegate_task` into a pool of Hermes profiles:
+each task runs as its own profile session, with that profile's skills, tools, memory and project
+knowledge, and reports back the same way a background batch does. See
+[Profile-pool delegation](profile-pool-delegation.md).

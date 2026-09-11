@@ -1,0 +1,11 @@
+manifest_version: 1
+name: delegation-router
+version: 1.0.2
+description: Route delegate_task into a pool of specialist Hermes profiles (their skills, tools, memory and project knowledge) instead of in-process mini-clone subagents
+author: delegation-router contributors
+capabilities:
+  - tools.override
+provides_tools:
+  - delegate_task
+  - delegation_router_status
+provides_hooks: []

@@ -20,6 +20,13 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
+> **Fork addition — profile-pool delegation.** Upstream `delegate_task` spawns an in-process clone
+> of the calling agent: same model, same toolset, no identity, and whatever it learns dies with it.
+> This fork adds an opt-in `delegation-router` plugin so that one always-live orchestrator manages
+> **subagents that are real Hermes profiles** — each with its own skills, tools, memory and project
+> files, each accumulating knowledge across runs. Jump to
+> [Profile-pool delegation](#profile-pool-delegation-this-fork).
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
@@ -29,6 +36,151 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 <tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
+
+---
+
+## Profile-pool delegation (this fork)
+
+### The problem with clones
+
+Upstream, `delegate_task` spawns a **clone of the caller**: same model, same tools, a fresh
+conversation, and no identity. That is the right tool for splitting one big task into parallel
+pieces. But it has three limits that show up the moment work becomes routine:
+
+1. **Nothing accumulates.** Every clone starts from zero. It has no memory of last week's audit,
+   no project files, no skill that got better over time. You pay the same setup cost and get the
+   same mistakes back.
+2. **The wrong brain for the job.** A clone inherits the orchestrator's model. A code review, an
+   ad-creative QA pass, and a refund audit all get the same model, the same toolset, and the same
+   personality.
+3. **Context becomes the bottleneck.** The orchestrator's window fills with raw tool output from
+   work it should never have been holding in the first place. Long sessions degrade, then compact,
+   then lose detail.
+
+### The shape: one orchestrator, many specialist profiles
+
+This fork keeps **one always-live orchestrator** — your default profile — and makes its subagents
+**real Hermes profiles**. Each profile owns a kind of work. Each has its own model, skills, tools,
+plugins, memory and project files.
+
+```mermaid
+flowchart TD
+  O["Orchestrator (always live)<br/>intent · decisions · the thread"]
+  O -->|delegate_task routing=coding| D["dev profile<br/>repo, tests, release rules"]
+  O -->|delegate_task routing=ads| A["ads profile<br/>ad account, budget rules"]
+  O -->|delegate_task routing=qa| Q["qa profile<br/>harness, evidence rules"]
+  D -->|result| O
+  A -->|result| O
+  Q -->|result| O
+  D -.->|may route once| X["its own specialist"]
+```
+
+The orchestrator's job is to **stay in the conversation**: hold your intent, decide what matters,
+sequence the work, keep the record straight. It does not do the work. That is what keeps it live
+and current instead of drowning in detail.
+
+### What accumulates — and why that compounds
+
+Every profile is a standing asset, not a one-shot worker:
+
+| | what it means |
+|---|---|
+| **Skills** | Hermes learns new skills from experience and improves skills during use. A profile that does QA for weeks is a better QA agent than one spun up this morning — and you can read what it learned. |
+| **Memory** | Each profile keeps its own durable notes: account IDs, conventions, what broke last time, who to ask. |
+| **Project files** | The dev profile works inside the real repo with its staging rules; the ads profile holds the real account context. No re-briefing. |
+| **Tools and plugins** | The browser profile, MCP servers, terminal backends and credentials a role actually needs — scoped to that profile, not handed to every clone. |
+
+Route the same task next month and it lands in a more capable place than it did today. That is the
+compounding: the orchestrator stays sharp on decisions, the profiles get steadily better at their
+craft.
+
+### Minimal context loss, by construction
+
+Only the **summary** crosses the boundary. The orchestrator never holds the child's raw tool
+traffic, so its window stays small and its reasoning stays on the decisions. And nothing is
+lossy in the other direction either:
+
+- each routed run writes a **full transcript** to `$HERMES_HOME/delegation-router/runs/` and an
+  audit line to `runs.jsonl`, so the detail exists even though it is not in the orchestrator's
+  context;
+- every run is still a **real session**, resumable with `hermes -p <profile> --resume <session_id>`
+  if you need to go back into the work without replaying it in the main thread;
+- the orchestrator can keep going while children work, and their results re-enter the conversation
+  as ordinary messages — no polling, no stalled turns.
+
+### Realtime, and observable by default
+
+Routed work is not a black box you wait on:
+
+- `delegate_task` returns a **dispatch handle immediately**; the consolidated result arrives as a
+  new message when the batch finishes.
+- Routed children register as **visible subagents of the calling session**, so
+  `delegate_task(action="list")`, the TUI/desktop agent view, and `action="stop"` all work on them.
+- Live transcripts stream to disk while the run happens; `delegation_router_status` shows the pool,
+  the bucket → profile mapping and recent runs; `runs.jsonl` is the audit trail.
+- Children run in parallel, and a large job becomes several specialists working at once instead of
+  one agent queued behind itself.
+
+### It composes
+
+A routed profile is a full Hermes agent, so it can route *its own* sub-work one level down when the
+role calls for it (a dev profile handing a verification pass to the QA profile), bounded by
+`max_depth`. Beyond that boundary, delegation goes back to stock clones — so the pattern nests
+without ever running away with itself.
+
+### Clone vs profile subagent
+
+| | stock clone | routed profile subagent |
+|---|---|---|
+| model | the caller's `delegation.model` | the profile's own |
+| skills | caller's toolset only | the profile's, plus per-role preload |
+| memory, project files | caller's | the profile's own, persistent |
+| identity / role | none | an explicit charter (persona) when you want one |
+| what it learns | lost at the end of the run | kept — skills and memory accumulate |
+| durable session | no | yes (`--resume`) |
+| visible in `/agents` | yes | yes |
+| best for | splitting one task into parallel pieces | work that belongs to a standing specialist |
+
+Both stay available. A task that resolves to no bucket is handed to stock delegation untouched, so
+routing never silently swallows work.
+
+### Quickstart
+
+```bash
+hermes plugins enable delegation-router
+cp plugins/delegation_router/routing.yaml.example \
+   "$HERMES_HOME/plugins/delegation-router/routing.yaml"   # point buckets at YOUR profiles
+hermes profile create coder --no-alias                     # one profile per role you route to
+```
+
+```python
+delegate_task(routing="coding", project="acme", goal="…")   # → hermes -p acme-dev chat --oneshot …
+```
+
+Full guide: [`website/docs/user-guide/features/profile-pool-delegation.md`](website/docs/user-guide/features/profile-pool-delegation.md).
+Plugin operations and troubleshooting: [`plugins/delegation_router/README.md`](plugins/delegation_router/README.md).
+
+### The core change is small
+
+`delegate_task` is dispatched **inline**, not through the tool registry, so a plugin that took the
+tool over with the `tools.override` capability never saw the call. This fork adds one generic hook:
+`registry.plugin_handler(name)` reports the handler only when a *plugin* owns it, and the inline
+dispatch site consults it. With no plugin installed the built-in path is unchanged — the change is
+~15 lines, and it benefits any plugin, not just this one. The router prefers the hook and falls
+back to wrapping the dispatch method on a build without it, so the same plugin file works on stock
+Hermes.
+
+### Limits, stated plainly
+
+- A routed run is a **subprocess session**: it costs a real process, and its model spend is the
+  profile's, not the orchestrator's.
+- Children **end with the session that dispatched them** — interrupting that session or shutting it
+  down stops them, exactly as stock background subagents behave. Work that must outlive a
+  conversation belongs in `cronjob` or a Kanban worker.
+- Routing happens when the caller **asks** (`routing`/`project`) or when the goal's keywords match a
+  bucket. A model that ignores the argument gets stock delegation.
+- A skill name visible in two roots is refused by Hermes, so a charter member can be reported as
+  `skills_ambiguous_not_preloaded` rather than silently half-loaded.
 
 ---
 

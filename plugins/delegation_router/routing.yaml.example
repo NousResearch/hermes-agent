@@ -1,0 +1,97 @@
+# delegation-router — the profile pool `delegate_task` routes into.
+#
+# Copy this file to <HERMES_HOME>/plugins/delegation-router/routing.yaml and edit it.
+# The table is re-read on every call (no restart for this file). The tool DESCRIPTION
+# the model sees is baked at plugin load, so a new bucket only reaches the prompt after
+# a Hermes restart.
+#
+# Resolution order for one task:
+#   1. task.profile   — explicit profile name (must exist on disk)
+#   2. task.routing   — bucket name below
+#   3. task.project   — project key below, combined with the bucket's `role`
+#   4. keyword match on the goal text
+#   5. default_profile ("" = hand it to the stock in-process delegate_task)
+version: 1
+enabled: true
+
+# What happens when nothing resolves. "" keeps stock behaviour (a mini-clone subagent on
+# delegation.model) — the safe default, never a silent no-op.
+default_profile: ""
+
+# Hard limits for one routed run.
+max_runtime_seconds: 3600      # per task, becomes `hermes chat --run-budget`
+max_turns: 800
+# Routed generations allowed under the command centre: 1 = only the top-level agent may
+# route; 2 = a routed profile may route ONE level further (its children cannot).
+max_depth: 1
+# What to do when the target profile's gateway/TUI session holds a live turn lease:
+# warn (run anyway, report it) | skip (try the next candidate) | ignore.
+lease_policy: warn
+
+# project key -> role key -> profile. Only used when the model passes `project`, so a
+# bucket with `role:` can pick the project-scoped owner of that kind of work.
+# Example for a project called "acme":
+#   projects:
+#     acme:
+#       dev: acme-dev
+#       growth: acme-growth
+#       support: acme-support
+projects: {}
+
+# bucket -> who owns that kind of work. `candidates` is tried in order; the first profile
+# that exists on disk wins. An empty list = stock delegate_task for that bucket.
+# `persona:` is optional — it names a role charter under <HERMES_HOME>/personas/<name>/.
+buckets:
+  coding:
+    role: dev
+    candidates: [coder, dev]
+    keywords: [code, coding, bug, fix, refactor, implement, build, api, endpoint,
+               typescript, javascript, python, sql, migration, repo, commit, deploy,
+               test suite, unit test, stack trace, error, crash, performance]
+  qa:
+    candidates: [qa, tester]
+    keywords: [qa, quality, regression, reproduce, bug report, acceptance,
+               end-to-end, e2e, smoke test, verify the site, dogfood]
+  design:
+    candidates: [designer, creative]
+    keywords: [design, creative, mockup, mock-up, landing page, layout, logo,
+               icon, thumbnail, banner, image, illustration, ui, ux]
+  ads:
+    candidates: [ads, paid-media]
+    keywords: [ad, ads, campaign, adset, creative test, roas, cpa, cpm, ctr,
+               paid media, audiences, pixel, ad library]
+  analytics:
+    candidates: [analytics, tracking]
+    keywords: [analytics, tracking, tag manager, event, conversion tracking,
+               attribution, funnel, dashboard, report, sql, metrics]
+  growth:
+    role: growth
+    candidates: [growth]
+    keywords: [growth, pricing, offer, onboarding, churn, retention, lifecycle,
+               email sequence, launch, positioning, experiment]
+  brand:
+    role: brand
+    candidates: [brand]
+    keywords: [brand, tone of voice, messaging, copy, headline, naming, story,
+               value proposition]
+  support:
+    role: support
+    candidates: [support]
+    keywords: [support, ticket, customer, complaint, refund, cancel subscription,
+               help desk, inbox, escalation]
+  content:
+    candidates: [content, writer]
+    keywords: [content, newsletter, post, blog, thread, youtube, script, seo article]
+  video:
+    candidates: [video]
+    keywords: [video, editing, ffmpeg, motion, animation, voiceover, subtitles]
+  contracts:
+    candidates: [contracts, legal]
+    keywords: [contract, agreement, nda, terms, legal, invoice, quote]
+  research:
+    candidates: [research, researcher]
+    keywords: [research, competitor, market, survey, literature, investigation]
+  ops:
+    candidates: [ops]
+    keywords: [fleet, profile, board, config, cron job, gateway, plugin, skill
+               install, dispatch, routing, model routing]

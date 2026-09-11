@@ -133,3 +133,52 @@ class TestSecureDirChown:
         with patch.object(cfg.os, "chown") as mock_chown:
             cfg._secure_dir(d)
         mock_chown.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression test: symlinked HERMES_HOME
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkedHermesHome:
+    """Regression test for github.com/NousResearch/hermes-agent/issues/101900.
+
+    When ``~/.hermes`` is a symlink to a real directory (e.g. a Git-tracked
+    dotfiles directory), ``ensure_hermes_home`` must resolve the symlink and
+    create subdirectories in the target — not skip directory creation because
+    ``Path.is_dir()`` returns True for the link itself.
+    """
+
+    def test_ensure_hermes_home_creates_subdirs_via_symlink(self, tmp_path, monkeypatch):
+        """Subdirectories are created inside the symlink target, not skipped."""
+        # Real directory (the symlink target) and the symlink
+        real_home = tmp_path / "dotfiles" / "hermes_data"
+        real_home.mkdir(parents=True)
+        symlink_home = tmp_path / ".hermes"
+        symlink_home.symlink_to(real_home)
+
+        # Point get_hermes_home() at the symlink path
+        monkeypatch.setenv("HERMES_HOME", str(symlink_home))
+
+        # Clear the memoisation cache so ensure_hermes_home runs fresh
+        from hermes_cli import config as cfg
+        cfg._HERMES_HOME_ENSURED.clear()
+        # Also clear the hermes_constants memo
+        import hermes_constants
+        hermes_constants._default_hermes_root_memo = None
+
+        from hermes_cli.config import ensure_hermes_home
+
+        ensure_hermes_home()
+
+        # Subdirectories must exist inside the TARGET directory
+        for subdir in ("cron", "sessions", "logs", "memories"):
+            assert (real_home / subdir).is_dir(), f"{subdir} not created in real home"
+            # And NOT as dangling entries at the symlink path
+            assert not (symlink_home / subdir).is_symlink(), f"{subdir} created as symlink"
+
+        # Permissions should be 0700
+        import stat
+        for subdir in ("cron", "sessions", "logs", "memories"):
+            mode = stat.S_IMODE(os.stat(real_home / subdir).st_mode)
+            assert mode == 0o700, f"{subdir} should be 0700, got {oct(mode)}"

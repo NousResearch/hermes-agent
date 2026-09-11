@@ -436,6 +436,46 @@ class TestWaitBarrier:
             proc.terminate()
             proc.wait(timeout=10)
 
+    def test_barrier_on_a_process_that_never_exits_expires(self, hermes_home):
+        """A poller that outlives the work parked one run for 3h22m; a live barrier ages out."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        proc = self._spawn_sleeper()
+        try:
+            mgr = GoalManager(session_id="wb-expire")
+            mgr.set("g")
+            mgr.wait_on(proc.pid, reason="poller")
+            assert mgr.is_waiting() is True
+            mgr.state.waiting_since = time.time() - goals._MAX_BARRIER_WAIT_S - 1
+            mgr._save()
+            assert mgr.is_waiting() is False
+            assert mgr.state.waiting_on_pid is None
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+class TestGatherBackgroundProcessesOwnership:
+    def test_only_the_owning_sessions_processes_are_seen(self, monkeypatch):
+        """The registry task_id collapses to one container key for every agent in the process, so a
+        fan-out parent's judge must filter by owner; otherwise a grandchild's poller parks the goal."""
+        from hermes_cli import goals
+
+        class _Reg:
+            def list_sessions(self, task_id=None, session_key=None):
+                return [
+                    {"session_id": "proc_mine", "status": "running", "owner_task_id": "root-sid", "task_id": "default"},
+                    {"session_id": "proc_child", "status": "running", "owner_task_id": "sa-1-abc", "task_id": "default"},
+                    {"session_id": "proc_done", "status": "exited", "owner_task_id": "root-sid", "task_id": "default"},
+                ]
+
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "process_registry", _Reg())
+        assert [p["session_id"] for p in goals.gather_background_processes()] == ["proc_mine", "proc_child"]
+        assert [p["session_id"] for p in goals.gather_background_processes(owner_task_id="root-sid")] == ["proc_mine"]
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Judge-driven auto-wait — the judge parks the loop on its own
@@ -798,3 +838,38 @@ class TestContractAndBackgroundCompose:
         assert verdict == "wait"
         assert wait_directive and wait_directive.get("pid") == 4242
 
+
+class TestBlockedVerdict:
+    """#100954: a genuinely unachievable goal must be refused, not completed."""
+
+    def test_parse_judge_response_accepts_blocked(self):
+        from hermes_cli.goals import _parse_judge_response
+
+        verdict, reason, parse_failed, _wd = _parse_judge_response(
+            '{"verdict": "blocked", "reason": "the repo was deleted"}'
+        )
+        assert verdict == "blocked"
+        assert reason == "the repo was deleted"
+        assert parse_failed is False
+
+    def test_blocked_verdict_pauses_goal_instead_of_done(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="blocked-sid")
+        mgr.set("delete a repository that does not exist")
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("blocked", "the repo does not exist", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "The repo cannot be deleted: it does not exist."
+            )
+
+        assert decision["verdict"] == "blocked"
+        assert decision["status"] == "paused"
+        assert decision["should_continue"] is False
+        assert "unachievable" in decision["message"].lower()
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert "unachievable" in (mgr.state.paused_reason or "").lower()

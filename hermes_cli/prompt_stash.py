@@ -1,24 +1,8 @@
 """Ctrl+S prompt stash — pure state machine for the classic CLI composer.
 
-Park a half-written prompt, send something else, then bring the draft back.
-Mirrors Claude Code's ``ctrl + s to stash prompt`` affordance.
-
-The state machine lives here (no prompt_toolkit imports) so it can be unit
-tested directly; ``cli.py`` owns only the keybinding and the rendering.
-
-Gesture
--------
-- Buffer has content  → push it onto the stash, clear the composer.
-- Buffer empty, 1 item → pop it straight back into the composer.
-- Buffer empty, 2+ items → open the browse panel (↑↓ / Enter / D / Esc).
-
-Newest-first ordering: index 0 is always the most recently stashed draft, so
-the common "undo my last Ctrl+S" case is a single keystroke.
-
-Nothing is written to disk. Drafts frequently contain credentials, prompts
-under NDA, or pasted secrets, and a session-scoped stash keeps that material
-in memory only. Callers that later want cross-restart persistence must route
-through ``get_hermes_home()`` rather than hardcoding ``~/.hermes``.
+No prompt_toolkit imports so it can be unit tested directly; ``cli.py`` owns only the keybinding
+and the rendering. Newest-first: index 0 is always the most recently stashed draft, so "undo my
+last Ctrl+S" is a single keystroke.
 """
 
 from __future__ import annotations
@@ -35,11 +19,7 @@ MAX_STASH_ITEMS = 20
 
 
 def build_preview(text: str, width: int = PREVIEW_WIDTH) -> str:
-    """Collapse a possibly multi-line draft into one preview line.
-
-    Newlines and tabs become ``⏎``/space so a 40-line draft still renders as a
-    single panel row, and the result is ellipsized to ``width`` display chars.
-    """
+    """Collapse a possibly multi-line draft into one preview line."""
     if not text:
         return ""
     flat = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -60,21 +40,12 @@ class StashEntry:
     preview: str = ""
 
     def as_dict(self) -> dict:
-        """Render in the shape ``HermesCLI._render_stash_panel`` consumes."""
-        return {
-            "text": self.text,
-            "images": list(self.images),
-            "stashed_at": self.stashed_at,
-            "preview": self.preview,
-        }
+        """Shape ``HermesCLI._render_stash_panel`` consumes."""
+        return {"text": self.text, "images": list(self.images), "stashed_at": self.stashed_at, "preview": self.preview}
 
 
 class PromptStash:
-    """Session-scoped stack of parked composer drafts.
-
-    Pure state: no I/O, no prompt_toolkit, no global clock beyond
-    ``time.monotonic`` (injectable for tests via ``clock``).
-    """
+    """Session-scoped stack of parked composer drafts."""
 
     def __init__(self, *, max_items: int = MAX_STASH_ITEMS, clock=None):
         self._items: List[StashEntry] = []
@@ -83,14 +54,8 @@ class PromptStash:
         self.panel_open = False
         self.panel_cursor = 0
 
-    # ---------------------------------------------------------------- queries
-
     def __len__(self) -> int:
         return len(self._items)
-
-    def __bool__(self) -> bool:
-        # Explicit: an empty stash is falsey, but len() drives that anyway.
-        return bool(self._items)
 
     @property
     def items(self) -> List[StashEntry]:
@@ -98,61 +63,37 @@ class PromptStash:
         return list(self._items)
 
     def panel_rows(self) -> List[dict]:
-        """Entries as plain dicts for the panel renderer."""
         return [e.as_dict() for e in self._items]
 
     def indicator(self) -> str:
-        """Status-bar indicator, or ``""`` when the stash is empty.
-
-        ``📌 2`` when idle, ``📌 2 ▲`` while the browse panel is open, so the
-        user can always tell a parked draft exists without opening anything.
-        """
+        """Status-bar indicator: ``📌 2`` idle, ``📌 2 ▲`` while browsing, ``""`` when empty."""
         n = len(self._items)
-        if not n:
-            return ""
-        return f"📌 {n} ▲" if self.panel_open else f"📌 {n}"
+        return "" if not n else f"📌 {n} ▲" if self.panel_open else f"📌 {n}"
 
     def placeholder_hint(self) -> str:
         """Composer placeholder text advertising the stashed draft."""
         n = len(self._items)
-        if not n:
-            return ""
         if n == 1:
             return f"Ctrl+S to restore: {self._items[0].preview}"
-        return f"Ctrl+S to browse {n} stashed drafts"
-
-    # --------------------------------------------------------------- mutators
+        return f"Ctrl+S to browse {n} stashed drafts" if n else ""
 
     def stash(self, text: str, images: Optional[Sequence[Any]] = None) -> bool:
-        """Push a draft. Returns False (no-op) for a blank buffer.
-
-        A buffer that is empty or whitespace-only is not worth parking and
-        must stay a no-op, otherwise Ctrl+S on an empty composer would push a
-        junk entry instead of triggering the restore half of the gesture.
-        Text is stored verbatim — leading/trailing whitespace and newlines are
-        preserved so a restore round-trips byte-for-byte.
+        """Push a draft. A blank buffer with no images is a no-op (returns False) so Ctrl+S on an
+        empty composer triggers the restore half of the gesture instead of pushing junk.
         """
-        has_images = bool(images)
-        if not (text or "").strip() and not has_images:
+        if not (text or "").strip() and not images:
             return False
 
-        entry = StashEntry(
-            text=text or "",
-            images=list(images or []),
-            stashed_at=self._clock(),
-            preview=build_preview(text or "") or "(images only)",
-        )
+        entry = StashEntry(text=text or "", images=list(images or []), stashed_at=self._clock(),
+                           preview=build_preview(text or "") or "(images only)")
         self._items.insert(0, entry)
-        # Drop the oldest entries past the cap.
-        del self._items[self._max_items:]
-        # A push invalidates any open browse session.
-        self.panel_open = False
-        self.panel_cursor = 0
+        del self._items[self._max_items:]  # drop the oldest past the cap
+        self.close_panel()  # a push invalidates any open browse session
         return True
 
     def pop(self, index: int = 0) -> Optional[Tuple[str, List[Any]]]:
         """Remove and return ``(text, images)`` at ``index``, or None."""
-        if not self._items or not (0 <= index < len(self._items)):
+        if not 0 <= index < len(self._items):
             return None
         entry = self._items.pop(index)
         if not self._items:
@@ -161,22 +102,16 @@ class PromptStash:
         return entry.text, list(entry.images)
 
     def peek(self, index: int = 0) -> Optional[StashEntry]:
-        """Return the entry at ``index`` without removing it."""
-        if not self._items or not (0 <= index < len(self._items)):
-            return None
-        return self._items[index]
+        return self._items[index] if 0 <= index < len(self._items) else None
 
     def clear(self) -> None:
         self._items.clear()
-        self.panel_open = False
-        self.panel_cursor = 0
+        self.close_panel()
 
     # ------------------------------------------------------------ panel state
 
     def _clamp_cursor(self, value: int) -> int:
-        if not self._items:
-            return 0
-        return max(0, min(int(value), len(self._items) - 1))
+        return max(0, min(int(value), len(self._items) - 1)) if self._items else 0
 
     def open_panel(self) -> bool:
         """Open the browse panel. False when there is nothing to browse."""
@@ -202,8 +137,7 @@ class PromptStash:
         idx = self._clamp_cursor(self.panel_cursor)
         self._items.pop(idx)
         if not self._items:
-            self.panel_open = False
-            self.panel_cursor = 0
+            self.close_panel()
         else:
             self.panel_cursor = self._clamp_cursor(idx)
         return True
@@ -217,8 +151,6 @@ class PromptStash:
         return result
 
 
-# --------------------------------------------------------------------- gesture
-
 # Outcomes of a single Ctrl+S press.
 ACTION_NOOP = "noop"
 ACTION_STASHED = "stashed"
@@ -228,27 +160,19 @@ ACTION_CLOSE_PANEL = "close_panel"
 
 
 def resolve_ctrl_s(
-    stash: PromptStash,
-    buffer_text: str,
-    images: Optional[Sequence[Any]] = None,
+    stash: PromptStash, buffer_text: str, images: Optional[Sequence[Any]] = None
 ) -> Tuple[str, Optional[Tuple[str, List[Any]]]]:
-    """Decide what one Ctrl+S press does. Returns ``(action, payload)``.
-
-    ``payload`` carries ``(text, images)`` for :data:`ACTION_RESTORED`, else
-    None. This is the whole decision table in one pure function so the
-    keybinding handler in ``cli.py`` stays a thin adapter.
+    """Decide what one Ctrl+S press does. Returns ``(action, payload)`` where ``payload`` is
+    ``(text, images)`` for :data:`ACTION_RESTORED`, else None.
     """
     # Panel open → Ctrl+S is the "close it" escape hatch.
     if stash.panel_open:
         stash.close_panel()
         return ACTION_CLOSE_PANEL, None
 
-    # Something to park → park it. Never silently clobbers an existing stash:
-    # entries push onto a stack, so an earlier draft is still reachable.
+    # Something to park → park it (onto a stack, so an earlier draft is still reachable).
     if (buffer_text or "").strip() or images:
-        if stash.stash(buffer_text, images):
-            return ACTION_STASHED, None
-        return ACTION_NOOP, None
+        return (ACTION_STASHED if stash.stash(buffer_text, images) else ACTION_NOOP), None
 
     # Empty buffer → restore half of the gesture.
     count = len(stash)

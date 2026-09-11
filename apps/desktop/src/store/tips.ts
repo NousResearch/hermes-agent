@@ -11,10 +11,13 @@
  *   no bubbles, not "no bubbles unless the agent sends one" — so the switch is
  *   mirrored to the gateway, where it takes the `tip` tool out of the model's
  *   schema, and the bridge drops a stray tip on top of that.
- * - `$retiredTips` is the hard-close ledger for the rotation. A tip the user ✕'d
- *   never comes back on its own; Settings → Reset is the only way, and that is
- *   the whole contract behind the ✕ being a heavier gesture than letting the
- *   bubble time out.
+ * - `$tipShownAt` is the seen ledger: every tip that reached the screen, with
+ *   when. The rotation walks the catalog ONCE against it, so a tip that timed
+ *   out is as finished as one the user closed — a second sighting of "type @
+ *   to attach a file" is the app forgetting it already said that.
+ * - `$retiredTips` is the hard-close ledger. A ✕ says the same thing louder and
+ *   is the one record a Reset does not need to respect on its own; Settings →
+ *   Reset clears both and starts the lap over.
  * - `$activeTip` is what is on screen. Ephemeral by design: a tip is a nicety,
  *   and one that survives a reload has overstayed.
  *
@@ -23,10 +26,10 @@
  * tip one and re-arms a schedule measured in hours.
  */
 
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import type { TipSide } from '@/lib/tips/catalog'
+import { TIP_CATALOG, type TipSide } from '@/lib/tips/catalog'
 import { mirrorDisplayToggle } from '@/store/display-toggles'
 
 /** Hours, not minutes. The catalog is ten tips and it should take weeks. */
@@ -34,6 +37,11 @@ const COOLDOWN_MS = 6 * 60 * 60_000
 
 /** A tip as the bubble needs it: resolved copy, resolved anchor. */
 export interface ActiveTip {
+  /** A call to action: one button under the text. What separates a campaign
+   *  tip from the rotation's — the rotation teaches, this one offers to DO
+   *  the thing, and the button is the only path (an ambient bubble must
+   *  never make its whole face clickable). Clicking closes the tip. */
+  action?: { label: string; onSelect: () => void }
   /** Keybind action id whose live combo the bubble prints. */
   keybind?: string
   side: TipSide
@@ -65,6 +73,24 @@ export const $activeTip = atom<ActiveTip | null>(null)
 // model's schema entirely rather than staying on offer and being dropped.
 mirrorDisplayToggle('display.in_app_tips', ENABLED_KEY, $tipsEnabled)
 
+/** When each tip last showed, by id. The rotation reads it as the seen set
+ *  (a catalog tip shows once); campaign tips (ids outside the catalog) read
+ *  it as a clock and re-offer on their own long schedule. `$retiredTips`
+ *  still owns the hard ✕. */
+export const $tipShownAt = persistentAtom<Record<string, number>>(
+  'hermes.desktop.tips.shownAt.v1',
+  {},
+  Codecs.json(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+    )
+  })
+)
+
 export function setTipsEnabled(enabled: boolean): void {
   if (!enabled) {
     // Including whichever one is up: the switch is answering a bubble on
@@ -75,17 +101,34 @@ export function setTipsEnabled(enabled: boolean): void {
   $tipsEnabled.set(enabled)
 }
 
-/** Un-retire everything, and let the rotation start over from a full deck
- *  rather than from wherever a six-hour cooldown had left it. */
+/** Forget every sighting and un-retire everything, and let the rotation start
+ *  a fresh lap from a full deck rather than from wherever a six-hour cooldown
+ *  had left it. */
 export function resetTips(): void {
   $retiredTips.set([])
+  $tipShownAt.set({})
+  $lastTipId.set(null)
   $nextTipAt.set(null)
 }
+
+/** Catalog tips a Reset would bring back: shown once or ✕'d, counted once. */
+export const $spentTipCount = computed([$retiredTips, $tipShownAt], (retired, shownAt) => {
+  const ids = new Set([...retired, ...Object.keys(shownAt)])
+
+  return TIP_CATALOG.filter(def => ids.has(def.id)).length
+})
 
 /** Put a tip on screen, replacing whatever was there. */
 export function showTip(tip: ActiveTip): void {
   if (tip.tipId) {
-    $lastTipId.set(tip.tipId)
+    // The cursor belongs to the rotation's walk. A campaign tip (an id the
+    // catalog doesn't hold) records when it showed but must not move the
+    // cursor — nextTip treats an unknown id as "start over at the top".
+    if (TIP_CATALOG.some(def => def.id === tip.tipId)) {
+      $lastTipId.set(tip.tipId)
+    }
+
+    $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
   }
 
   // Any tip starts the cooldown, an agent's included: whoever just pointed at

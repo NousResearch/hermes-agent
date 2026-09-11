@@ -30,6 +30,8 @@ Claude Code witness lives in ``test_anthropic_oauth_stress.py``.
 
 from __future__ import annotations
 
+from typing import Dict
+
 import threading
 import time
 from dataclasses import replace as dc_replace
@@ -69,7 +71,7 @@ def _fake_pool_store(monkeypatch):
     """
     store: Dict[str, list] = {}
 
-    def _write(provider, entries, *, removed_ids=None):
+    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None):
         store[provider] = list(entries)
 
     def _read(provider=None):

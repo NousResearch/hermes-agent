@@ -305,6 +305,49 @@ For backward compatibility with older manifests, you can still type
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 
+### Manage Collective Wisdom from Slack
+
+`/wisdom` is a native Slack command and opens an interactive Block Kit control
+surface for shared skills. Common starting points are:
+
+```text
+/wisdom browse [query]
+/wisdom show <skill>
+/wisdom candidates
+/wisdom drafts
+/wisdom installed
+/wisdom notifications
+```
+
+Discovery commands can be used in a channel. Private candidate, draft,
+installation, update, and notification state moves to a direct message with
+the user who selected the control. The continuation is short-lived and bound
+to that user, channel, Hermes profile, and Collective organization; opening the
+DM never silently performs a mutation.
+
+Buttons recalculate the authoritative install/update plan before applying it.
+Anything with local modifications, sensitive requirements, partial
+compatibility, or a policy block remains unchanged and points to the full
+Collective review surface. Successful actions update the existing card while
+preserving the skill details and exact Nous Portal link.
+
+When a locally created skill qualifies after a Slack turn, Hermes sends its
+review card to the originating user's DM—even if the turn happened in a public
+channel. Nothing is uploaded until the user explicitly chooses **Draft in
+Collective** or **Approve & publish**.
+
+Wisdom feed notifications use the configured Slack home channel. A DM home may
+include install/update controls and device-local status. A public home channel
+receives only team publication notices and Portal links; device and owner state
+stays private and remains available through `/wisdom notifications` in DM.
+
+After upgrading Hermes, regenerate and apply the Slack manifest so Slack knows
+about the native `/wisdom` command:
+
+```bash
+hermes slack manifest --write
+```
+
 ### Using commands inside threads (the `!cmd` prefix)
 
 Slack itself blocks native slash commands inside thread replies — try
@@ -472,6 +515,7 @@ platforms:
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
+| `platforms.slack.extra.api_human_users` | `[]` | Slack user IDs whose **Web-API (user-token) posts count as human**. Such posts carry the posting `app_id` and no `client_msg_id`, so by default they are dropped as app traffic; allowlist your own front-end's users here instead of `allow_bots: all`. See [Treating your own app's user-token posts as human](#treating-your-own-apps-user-token-posts-as-human-api_human_users). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
@@ -700,6 +744,38 @@ How `mentions` mode gates:
 `mentions` is the recommended mode for bot-to-bot collaboration: each agent must explicitly summon the other per turn. Avoid `all` unless every peer bot's own reply policy is loop-safe — two bots that answer everything will answer each other forever. Detection covers labeled bot messages (`bot_id`, `subtype: bot_message`), app-originated events, and unlabeled bot *users* (probed via `users.info`), so peer Hermes agents are filtered consistently across workspaces.
 
 For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
+
+### Treating your own app's user-token posts as human (`api_human_users`)
+
+A message posted through the Web API with a **user token** (`xoxp-`) is
+authored by a real person, but it arrives with the posting `app_id` and no
+`client_msg_id` — the same signature Hermes uses to recognise app posts — so it
+is dropped as bot traffic. This blocks a common pattern: a custom front-end (an
+internal dashboard, a mobile shell, a kiosk) that sends messages to Hermes *as*
+the logged-in user.
+
+`allow_bots: all` would let those posts through, but it opens the door to every
+bot in the channel and weakens the loop protections. Instead, allowlist just
+the people who use your front-end:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
+```
+
+The equivalent environment variable is `SLACK_API_HUMAN_USERS` (comma-separated).
+
+Scope and safety:
+
+- The allowlist is **users only**. There is deliberately no app-ID variant: a
+  modern bot token (`xoxb-`) posts with the same `user` + `app_id` shape, so
+  trusting an app would also admit its own bot posts and defeat the loop guard.
+- Events carrying `bot_id` or `subtype: bot_message`, or no `user` at all, are
+  always treated as bot posts regardless of the allowlist.
+- The rest of the pipeline is unchanged: mention gating, `allowed_channels`,
+  and `SLACK_ALLOWED_USERS` still apply to the (now human) sender.
 
 ### Reaction Triggers (`reaction_triggers`)
 
@@ -991,7 +1067,7 @@ slack:
 
 Notes:
 - The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
-- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 
 ## Troubleshooting

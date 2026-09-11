@@ -19,9 +19,6 @@ import { paneChrome } from './track-model'
 export interface StripPane {
   /** A tool panel (terminal / logs) that collapses rather than closes. */
   collapsePane: boolean
-  /** Standing chrome (sessions / Bots) whose only handle is the strip:
-   *  show/hide replaces Close, and the Show/Hide rows live on the strip. */
-  hideOnly?: boolean
   /** Contribution placement — `'main'` marks a docked tile (session, page,
    *  preview) as opposed to standing side chrome. */
   placement?: string
@@ -41,26 +38,33 @@ export interface StripZone {
 
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
- * its handle: a closeable tile needs its ✕, a lone tool panel needs a chip to
- * grab, hide-only chrome (sessions / Bots) needs the chip that show/hide lives
- * on. The uncloseable workspace is not strandable — it cannot be closed or
- * lost, so a lone chat is free to be chromeless.
+ * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
+ * to grab. The uncloseable workspace is not strandable — it cannot be closed
+ * or lost, so a lone chat is free to be chromeless. Hide-only chrome (sessions
+ * / Bots) is the same: the panes stay, Show/Hide is a separate verb, and a
+ * hidden strip comes back via ⌘⌥T. Treating it as stranded at any count made
+ * Hide tabs a silent no-op on the sessions sidebar.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
  * answers no gesture at all is not a state any setting should be able to
  * produce. Hiding still works everywhere it cannot trap you.
+ *
+ * IT IS THE LAST HANDLE THAT IS PROTECTED, NOT THE PRESENCE OF TABS. A stack
+ * of two or more answers tab cycling and ⌘1…⌘9, so hiding its strip costs
+ * chrome and no handle. Scoping the tile and tool-panel rungs to a LONE pane is
+ * what keeps "Hide tabs" a working command in the zone that actually
+ * accumulates tabs: unscoped, one session tab in main pinned the strip on and
+ * both the menu row and ⌘⌥T became silent no-ops.
  */
 function stranded(shown: readonly StripPane[]): boolean {
-  if (shown.some(pane => !pane.uncloseable && pane.placement === 'main')) {
-    return true
+  if (shown.length !== 1) {
+    return false
   }
 
-  if (shown.some(pane => pane.hideOnly)) {
-    return true
-  }
+  const [only] = shown
 
-  return shown.length === 1 && shown[0].collapsePane
+  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {
@@ -112,7 +116,6 @@ export function tabStripVisibleForZone(zone: {
 
       return {
         collapsePane: zone.isCollapsePane(id),
-        hideOnly: chrome.hideOnly,
         placement: chrome.placement,
         uncloseable: chrome.uncloseable
       }

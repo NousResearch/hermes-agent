@@ -7,6 +7,7 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  chooseWisdomMute,
   deleteProfile,
   deleteSession,
   getAllSessionMessages,
@@ -21,11 +22,14 @@ import {
   getSession,
   getSessionMessages,
   getStatus,
+  getWisdomEntitlement,
+  getWisdomMute,
   LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
   pluginSocket,
+  prepareWisdomMute,
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -71,6 +75,49 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('pins Wisdom preference reads and native choices to the selected backend and profile', async () => {
+    const scope = { connectionId: 'source-a', profile: 'worker' }
+    const controlId = 'a'.repeat(32)
+    setApiRequestConnection('other-backend')
+    setApiRequestProfile('other-profile')
+
+    await getWisdomMute(scope)
+    await prepareWisdomMute(scope)
+    await chooseWisdomMute(controlId, null, scope)
+
+    expect(api).toHaveBeenCalledTimes(3)
+
+    for (const [request] of api.mock.calls) {
+      expect(request).toEqual(expect.objectContaining(scope))
+    }
+
+    expect(api).toHaveBeenNthCalledWith(1, expect.objectContaining({ path: '/api/wisdom/mute' }))
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/wisdom/mute/prepare',
+        method: 'POST',
+        body: {}
+      })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        path: '/api/wisdom/mute/choose',
+        method: 'POST',
+        body: { control_id: controlId, duration: null }
+      })
+    )
+  })
+
+  it('reads Wisdom entitlement from the dedicated scoped endpoint', async () => {
+    const scope = { connectionId: 'source-a', profile: 'worker' }
+
+    await getWisdomEntitlement(scope)
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ ...scope, path: '/api/wisdom/entitlement' }))
   })
 
   it('uses a longer timeout for the all-profile session list', async () => {
@@ -288,6 +335,41 @@ describe('Hermes REST helpers', () => {
     expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
+  })
+
+  it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {
+    resetSidebarBatchCapability()
+    const row = (id: string) => ({ id, title: id, profile: 'default' })
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({
+          ...emptySessionsResponse,
+          sessions: [],
+          errors: [{ profile: 'default', error: 'disk I/O error' }]
+        })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: [row('recent-1')] })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
+    expect(result.recents.errors).toBeUndefined()
+    expect(result.cron.errors).toEqual([{ profile: 'default', error: 'disk I/O error' }])
+    expect(result.errors).toBeUndefined()
   })
 
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {

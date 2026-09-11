@@ -160,6 +160,8 @@ gateway:
     picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
     choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"
     choice_normal:         "normal — المعالجة القياسية"
+    choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
+    choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
 
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
@@ -341,6 +343,7 @@ gateway:
     last_activity:         "**آخر نشاط:** {timestamp}"
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
+    free_tier:             "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"

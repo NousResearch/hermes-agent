@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.models import validate_requested_model
+from hermes_cli.models_validate import validate_requested_model
 
 
 @pytest.mark.parametrize(

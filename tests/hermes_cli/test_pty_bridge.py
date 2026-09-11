@@ -6,7 +6,10 @@ printf) to verify it behaves like a PTY you can read/write/resize/close.
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import os
+import select
 import shutil
 import signal
 import sys
@@ -54,20 +57,106 @@ class TestPtyBridgeSpawn:
         with pytest.raises((FileNotFoundError, OSError)):
             PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
 
+    def test_spawn_marks_child_as_dashboard_hosted(self):
+        # Ink reads this to skip its focus-in erase+repaint, which under
+        # xterm.js was a visible reload on every OS app-switch (#94337).
+        from hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
+
+        bridge = PtyBridge.spawn([shutil.which("sh") or "sh", "-c", f'printf "%s" "${PTY_HOST_ENV}"'])
+        try:
+            output = _read_until(bridge, PTY_HOST_DASHBOARD.encode())
+            assert PTY_HOST_DASHBOARD.encode() in output
+        finally:
+            bridge.close()
+
 
 @skip_on_windows
 class TestPtyBridgeIO:
 
-    def test_write_sends_to_child_stdin(self):
+    @pytest.mark.asyncio
+    async def test_write_sends_to_child_stdin(self):
         # `cat` with no args echoes stdin back to stdout.  We write a line,
         # read it back, then signal EOF to let cat exit cleanly.
         bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
         try:
-            bridge.write(b"hello-pty\n")
+            assert await bridge.write(b"hello-pty\n") is True
             output = _read_until(bridge, b"hello-pty")
             assert b"hello-pty" in output
         finally:
             bridge.close()
+
+    @pytest.mark.asyncio
+    async def test_write_yields_while_input_is_backpressured(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+        wait_started = asyncio.Event()
+        release_write = asyncio.Event()
+        write_calls = 0
+
+        def fake_write(fd, data):
+            nonlocal write_calls
+            assert fd == 123
+            write_calls += 1
+            if write_calls == 1:
+                raise BlockingIOError(errno.EAGAIN, "buffer full")
+            return len(data)
+
+        async def fake_wait_writable(timeout):
+            assert timeout > 0
+            wait_started.set()
+            await release_write.wait()
+            return True
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", fake_wait_writable)
+
+        write_task = asyncio.create_task(bridge.write(b"queued input"))
+        await wait_started.wait()
+
+        # The stalled PTY write yielded control instead of pinning asyncio.
+        heartbeat_ran = False
+
+        async def heartbeat():
+            nonlocal heartbeat_ran
+            heartbeat_ran = True
+
+        await heartbeat()
+        assert heartbeat_ran is True
+
+        release_write.set()
+        assert await write_task is True
+        assert write_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_write_reports_sustained_backpressure(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        def fake_write(_fd, _data):
+            raise BlockingIOError(errno.EAGAIN, "buffer full")
+
+        async def never_writable(_timeout):
+            return False
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", never_writable)
+
+        assert await bridge.write(b"queued input") is False
+
+    def test_read_treats_nonblocking_read_race_as_idle(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        monkeypatch.setattr(select, "select", lambda *_args: ([123], [], []))
+
+        def would_block(_fd, _size):
+            raise BlockingIOError(errno.EAGAIN, "try again")
+
+        monkeypatch.setattr(os, "read", would_block)
+        assert bridge.read(timeout=0.01) == b""
 
     def test_read_returns_none_after_child_exits(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf done"])

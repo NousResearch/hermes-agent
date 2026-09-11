@@ -184,16 +184,29 @@ def test_external_worker_refuses_to_run_without_durable_ownership(
     assert not ack.exists()
 
 
+@pytest.mark.parametrize(
+    ("profile_value", "is_process_profile", "expected_token"),
+    [
+        ("target-profile-token", False, "target-profile-token"),
+        (None, False, None),
+        (None, True, "default-profile-token"),
+    ],
+)
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, profile_value, is_process_profile, expected_token
 ):
     import cron.scheduler as scheduler
     from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    (tmp_path / ".env").write_text(
-        "SERVICE_TOKEN=target-profile-token\n", encoding="utf-8"
+    if profile_value is not None:
+        (tmp_path / ".env").write_text(
+            f"SERVICE_TOKEN={profile_value}\n", encoding="utf-8"
+        )
+    process_home = tmp_path if is_process_profile else tmp_path / "launch-profile"
+    monkeypatch.setattr(
+        "hermes_constants.get_process_hermes_home", lambda: process_home
     )
     register_env_passthrough(["SERVICE_TOKEN"])
     wrapped_commands = []
@@ -257,7 +270,10 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert spawned[0][0][0:2] == ["scope", "--"]
     assert spawned[0][1]["start_new_session"] is True
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
-    assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"
+    if expected_token is None:
+        assert "SERVICE_TOKEN" not in spawned[0][1]["env"]
+    else:
+        assert spawned[0][1]["env"]["SERVICE_TOKEN"] == expected_token
     handoff.assert_called_once_with("exec-1")
     assert get.call_count == 2
     assert payloads[0]["multiplex_active"] is True

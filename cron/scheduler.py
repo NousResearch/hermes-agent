@@ -3115,7 +3115,16 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     profile_home = _get_hermes_home().resolve()
     hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    profile_secrets = build_profile_secret_scope(profile_home)
+    from hermes_constants import get_process_hermes_home
+    from tools.env_passthrough import get_all_passthrough
+
+    if profile_home == get_process_hermes_home().resolve():
+        for name in get_all_passthrough():
+            value = os.environ.get(name)
+            if value is not None:
+                profile_secrets.setdefault(name, value)
+    secret_token = set_secret_scope(profile_secrets)
     try:
         worker_env = build_subprocess_env(
             scrub_secrets=multiplex_active,

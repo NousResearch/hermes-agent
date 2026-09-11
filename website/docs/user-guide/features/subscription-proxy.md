@@ -100,6 +100,7 @@ Portal:
 
 | Path | Purpose |
 |------|---------|
+| `/v1/responses` | Responses API (streaming + non-streaming) |
 | `/v1/chat/completions` | Chat completions (streaming + non-streaming) |
 | `/v1/completions` | Legacy text completions |
 | `/v1/embeddings` | Embeddings |

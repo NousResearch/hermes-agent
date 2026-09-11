@@ -1,31 +1,45 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /**
  * Live-reload watching for previewed files and the disk-plugin door, extracted
  * from main.ts so the lifecycle is unit-testable (Vitest project `electron`).
  *
- * A watch exists because a renderer asked the main process to report when
+ * A watch exists because a RENDERER asked the main process to report when
  * something changes on disk: the preview pane reloads its file, and the
- * desktop plugin loader reconciles its folder set. Both consumers only care
- * that "it changed", so events are debounced per watch — editors write in
- * bursts (in-place save, rename dance) and one tick per burst is enough.
+ * desktop plugin loader reconciles its folder set. Both consumers receive
+ * change events on `hermes:preview-file-changed` and each filters them by its
+ * own watch id — so a watch's events must go back to the WebContents that
+ * created it, not to whichever window happens to be the main one. The owner
+ * is captured at watch creation and delivery is routed to it; a window that
+ * died while its watch lived takes the watch down instead of delivering
+ * nowhere.
  *
- * File watches are registered on the file's PARENT directory: a watch on the
- * file itself does not survive atomic save-by-rename, which is how most
- * editors write. A change to a sibling in that directory is filtered out by
- * name.
+ * Events are debounced per watch — editors write in bursts (in-place save,
+ * rename dance) and one tick per burst is enough. File watches are registered
+ * on the file's PARENT directory: a watch on the file itself does not survive
+ * atomic save-by-rename, which is how most editors write. A change to a
+ * sibling in that directory is filtered out by name.
  *
  * main.ts keeps what does not belong here: resolving a preview URL to a
- * readable path (the IPC path-security check), the directory-exists check,
- * and shaping the renderer payload for `hermes:preview-file-changed`.
+ * readable path (the IPC path-security check) and the directory-exists check.
  */
 
-/** What a watch reports when its target changed; main.ts shapes the IPC. */
-export interface PreviewWatchPayload {
+export const PREVIEW_FILE_CHANGED_CHANNEL = 'hermes:preview-file-changed'
+
+/** The renderer that created a watch; an Electron WebContents satisfies this. */
+export interface PreviewWatchOwner {
+  isDestroyed: () => boolean
+  send: (channel: string, payload: PreviewFileChangedPayload) => void
+}
+
+/** What a watch reports when its target changed. */
+export interface PreviewFileChangedPayload {
   id: string
   path: string
+  url: string
 }
 
 /**
@@ -40,8 +54,6 @@ export type PreviewWatchImpl = (
 export interface PreviewWatchDeps {
   /** Whether the watched file still exists (the debounce may fire post-delete). */
   fileExists: (filePath: string) => boolean
-  /** Renderer-facing sink, called at most once per debounce window. */
-  sendChanged: (payload: PreviewWatchPayload) => void
   /** Coalescing window per watch, in milliseconds. */
   debounceMs: number
   /** Injectable for tests. */
@@ -59,19 +71,34 @@ export interface PreviewWatchRegistry {
   size: () => number
   /** Drop one watch. False when the id is unknown (already stopped). */
   stop: (id: string) => boolean
-  watch: (filePath: string) => PreviewWatchHandle
-  watchDirectory: (dirPath: string) => PreviewWatchHandle
+  watch: (filePath: string, owner: PreviewWatchOwner) => PreviewWatchHandle
+  watchDirectory: (dirPath: string, owner: PreviewWatchOwner) => PreviewWatchHandle
 }
 
 export function createPreviewWatchRegistry({
   fileExists,
-  sendChanged,
   debounceMs,
   watchImpl = fs.watch as PreviewWatchImpl
 }: PreviewWatchDeps): PreviewWatchRegistry {
   const watchers = new Map<string, { close: () => void }>()
 
-  function watch(filePath: string): PreviewWatchHandle {
+  /** Deliver to the owner that created the watch, and only to it. A window
+   *  that died while its watch lived takes the watch down with the event. */
+  const deliver = (id: string, owner: PreviewWatchOwner, targetPath: string) => {
+    if (owner.isDestroyed()) {
+      stop(id)
+
+      return
+    }
+
+    owner.send(PREVIEW_FILE_CHANGED_CHANNEL, {
+      id,
+      path: targetPath,
+      url: pathToFileURL(targetPath).toString()
+    })
+  }
+
+  function watch(filePath: string, owner: PreviewWatchOwner): PreviewWatchHandle {
     const watchDir = path.dirname(filePath)
     const targetName = path.basename(filePath)
     const id = crypto.randomBytes(12).toString('base64url')
@@ -95,7 +122,7 @@ export function createPreviewWatchRegistry({
           return
         }
 
-        sendChanged({ id, path: filePath })
+        deliver(id, owner, filePath)
       }, debounceMs)
     })
 
@@ -112,7 +139,7 @@ export function createPreviewWatchRegistry({
     return { id, path: filePath }
   }
 
-  function watchDirectory(dirPath: string): PreviewWatchHandle {
+  function watchDirectory(dirPath: string, owner: PreviewWatchOwner): PreviewWatchHandle {
     const id = crypto.randomBytes(12).toString('base64url')
     let timer: null | ReturnType<typeof setTimeout> = null
 
@@ -123,7 +150,7 @@ export function createPreviewWatchRegistry({
 
       timer = setTimeout(() => {
         timer = null
-        sendChanged({ id, path: dirPath })
+        deliver(id, owner, dirPath)
       }, debounceMs)
     })
 

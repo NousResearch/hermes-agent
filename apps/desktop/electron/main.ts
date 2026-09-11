@@ -6411,33 +6411,18 @@ async function filePathFromPreviewUrl(rawUrl) {
   return resolvedPath
 }
 
-function sendPreviewFileChanged(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:preview-file-changed', payload)
-}
-
 // Watcher lifecycle lives in ./preview-watch (unit-tested there); this module
-// keeps only URL resolution and the renderer payload shape.
+// keeps only URL resolution and hands the registry the window that asked for
+// the watch, so change events are delivered back to that window.
 const previewWatchRegistry = createPreviewWatchRegistry({
   fileExists,
-  debounceMs: PREVIEW_WATCH_DEBOUNCE_MS,
-  sendChanged: ({ id, path: changedPath }) =>
-    sendPreviewFileChanged({ id, path: changedPath, url: pathToFileURL(changedPath).toString() })
+  debounceMs: PREVIEW_WATCH_DEBOUNCE_MS
 })
 
-async function watchPreviewFile(rawUrl) {
+async function watchPreviewFile(rawUrl, owner) {
   const filePath = await filePathFromPreviewUrl(rawUrl)
 
-  return previewWatchRegistry.watch(filePath)
+  return previewWatchRegistry.watch(filePath, owner)
 }
 
 function stopPreviewFileWatch(id) {
@@ -6463,14 +6448,14 @@ function requestOptionsWithHeaders(options: any = {}, headers = {}) {
  *  readdir poll. Same registry + change channel as the preview file watchers
  *  (the renderer reconciles on any tick; per-file edits stay on their own
  *  watches), so stopPreviewFileWatch/closePreviewWatchers manage these too. */
-function watchDirectory(rawDir) {
+function watchDirectory(rawDir, owner) {
   const watchDir = path.resolve(String(rawDir || ''))
 
   if (!fs.existsSync(watchDir) || !fs.statSync(watchDir).isDirectory()) {
     throw new Error(`Not a directory: ${watchDir}`)
   }
 
-  return previewWatchRegistry.watchDirectory(watchDir)
+  return previewWatchRegistry.watchDirectory(watchDir, owner)
 }
 
 // Best-effort read of a gateway's advertised auth providers, cached per base
@@ -16962,9 +16947,9 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
   normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
 )
 
-ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
+ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(String(url || ''), event.sender))
 
-ipcMain.handle('hermes:watchDirectory', (_event, dir) => watchDirectory(String(dir || '')))
+ipcMain.handle('hermes:watchDirectory', (event, dir) => watchDirectory(String(dir || ''), event.sender))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 

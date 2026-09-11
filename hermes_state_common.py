@@ -756,22 +756,20 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
-# Predicate over a ``sessions`` row (unqualified column names) selecting
-# sessions whose rows belong in the trigram index. Shared by the view, the
-# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
-# never disagree about the index boundary.
-FTS_TRIGRAM_SESSION_SQL = (
-    "source NOT IN ("
-    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + f") AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL"
-)
-
-
-def fts_trigram_session_sql(alias: str) -> str:
-    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
-    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
-        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+def fts_trigram_session_sql(alias: str = "") -> str:
+    """Predicate over a ``sessions`` row selecting sessions whose rows belong in
+    the trigram index; ``alias`` qualifies every column for joins. Shared by the
+    view, the sync triggers, and the deferred-backfill INSERT ... SELECTs so they
+    can never disagree about the index boundary."""
+    q = f"{alias}." if alias else ""
+    return (
+        f"{q}source NOT IN ("
+        + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+        + f") AND {_sql_json_extract(q + 'model_config', '$._delegate_from')} IS NULL"
     )
+
+
+FTS_TRIGRAM_SESSION_SQL = fts_trigram_session_sql()
 
 
 FTS_TRIGRAM_SQL = f"""

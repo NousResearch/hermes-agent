@@ -14,6 +14,8 @@ from tools.environments.base_output import _BoundedOutputCollector
 class _TestableEnv(BaseEnvironment):
     """Concrete subclass for testing base class methods."""
 
+    _sudo_nopasswd_probe_supported = True
+
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
@@ -64,6 +66,16 @@ def test_nopasswd_probe_fails_closed_on_backend_error(monkeypatch):
     monkeypatch.setattr(env, "_run_bash", MagicMock(side_effect=RuntimeError("offline")))
 
     assert env._sudo_nopasswd_works() is False
+
+
+def test_nopasswd_probe_skips_backends_without_safe_process_cancel(monkeypatch):
+    env = _TestableEnv()
+    env._sudo_nopasswd_probe_supported = False
+    run = MagicMock(side_effect=AssertionError("probe must not start"))
+    monkeypatch.setattr(env, "_run_bash", run)
+
+    assert env._sudo_nopasswd_works() is False
+    run.assert_not_called()
 
 
 class TestBoundedOutputCollector:

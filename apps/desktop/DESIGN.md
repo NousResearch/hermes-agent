@@ -220,9 +220,9 @@ Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
 
-Sticky user messages mask scrolling content with the opaque chat surface,
-including the gap above them. Use `data-glass-opaque` so Glass cannot clear the
-mask; no gradient or backdrop blur.
+Sticky user messages mask scrolling content with the chat surface, including
+the gap above them. Keep that background and layout mask, but do not mark the
+row `data-glass-opaque`; the user bubble's Glass surface remains translucent.
 
 ## Feedback & empty/error/loading states
 

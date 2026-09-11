@@ -1609,7 +1609,7 @@ def run_conversation(
         moa_config=moa_config,
         turn_author=turn_author,
     )
-    return export_current_turn_boundary(agent, result, user_message)
+    return export_current_turn_boundary(agent, result)
 
 
 __all__ = ["run_conversation"]

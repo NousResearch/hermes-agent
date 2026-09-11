@@ -414,6 +414,8 @@ class MicroCompactionMixin:
             if _plain_user(msg) and _plain_user(prev):
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
+                if msg.get("_turn_id"):
+                    prev["_turn_id"] = msg["_turn_id"]  # the merged row now IS the current turn's row
             else:
                 merged.append(msg)
         return merged

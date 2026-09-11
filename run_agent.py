@@ -215,6 +215,13 @@ class AIAgent(
 ):
     """AI Agent with tool calling capabilities."""
 
+    # Turn-boundary contract exported on every run_conversation() result envelope
+    # (agent.turn_context.export_current_turn_boundary). Hosts read this from the
+    # callable BEFORE invoking it; 2 = {turn_boundary_contract, turn_id,
+    # current_turn_user_idx (nullable, proven by the row's _turn_id marker),
+    # messages_projection} on every envelope including durable-lease early returns.
+    TURN_BOUNDARY_CONTRACT = 2
+
     _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"

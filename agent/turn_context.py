@@ -206,8 +206,29 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)
 
 
-def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
+TURN_ROW_MARKER = "_turn_id"
+
+
+def find_current_turn_row_idx(messages: List[Any], turn_id: Any) -> int:
+    """Index of the user row carrying this turn's ``_turn_id`` marker (last one), else -1.
+
+    This is the only text-free identification of the current row: an identical
+    historical prompt never carries the live turn id.
+    """
+    if not turn_id:
+        return -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user" and msg.get(TURN_ROW_MARKER) == turn_id:
+            return i
+    return -1
+
+
+def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any, *, turn_id: Any = None) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
+
+    With ``turn_id`` the row is found by its ``_turn_id`` marker first (text-free);
+    the text rules below are the fallback for rows that lost the marker.
 
     Prefers the LAST user message whose content exactly matches this turn's text, else
     the last user-originated turn; compaction handoffs are never the fallback.
@@ -224,6 +245,9 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     """
     from agent.context_compressor import user_originated_turn_view
 
+    marked = find_current_turn_row_idx(messages, turn_id)
+    if marked >= 0:
+        return marked
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
@@ -245,41 +269,36 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     return fallback
 
 
-def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
-    """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
-    exact ``result["messages"]`` projection it travels with.
+def export_current_turn_boundary(agent: Any, result: Any, user_message: Any = None) -> Any:
+    """Stamp the turn-boundary contract (v2) on a result envelope.
 
-    Hosts that settle their own transcript by index (hermes-webui) must never guess which
-    row is the current user turn after this loop rewrote history (alternation repair,
-    compaction, post-turn micro-compaction): a guessed index or a text match can relabel an
-    identical historical prompt and claim its old answer as this turn's. So the producer
-    exports the coordinate, computed on the final list, only when the addressed row is this
-    turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
+    On every envelope that carries a ``messages`` list — success, partial/error,
+    interrupt, retry-exhausted, tool-limit, preflight timeout, codex runtime and the
+    durable-lease early return — export:
 
-    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
-    repeated prompt would resolve to its historical copy: nothing is exported there.
+    - ``turn_boundary_contract``: 2 (capability/version);
+    - ``turn_id``: this invocation's id (hosts bind the envelope to the live Agent);
+    - ``messages_projection``: ``"full"`` — the loop always returns the full transcript
+      projection of exactly this final ``messages`` list, never an output-only delta;
+    - ``current_turn_user_idx``: the row carrying this turn's ``_turn_id`` marker, or
+      ``None`` when no row does (rewritten away, preflight timeout, lease early return).
+
+    The row is identified by the marker stamped at append time, never by prompt text:
+    an identical historical prompt can never receive the live turn id. Hosts must treat
+    ``None`` as capable-but-unproven and fail closed. ``user_message`` is accepted for
+    call-site compatibility and unused.
     """
-    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
+    if not isinstance(result, dict):
         return result
     messages = result.get("messages")
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")
-    if not isinstance(messages, list) or not turn_id or user_message is None:
+    if not isinstance(messages, list) or not turn_id:
         return result
-    idx = reanchor_current_turn_user_idx(messages, user_message)
-    if idx < 0 or idx >= len(messages):
-        return result
-    row = messages[idx]
-    if not (isinstance(row, dict) and row.get("role") == "user"):
-        return result
-    from agent.context_compressor import user_originated_turn_view
-
-    live_view = user_originated_turn_view(row)
-    if row.get("content") != user_message and not (
-        isinstance(live_view, dict) and live_view.get("content") == user_message
-    ):
-        return result  # rewritten (merge-into-tail) row: not a proven boundary
+    result["turn_boundary_contract"] = 2
     result["turn_id"] = turn_id
-    result["current_turn_user_idx"] = idx
+    result["messages_projection"] = "full"
+    idx = find_current_turn_row_idx(messages, turn_id)
+    result["current_turn_user_idx"] = idx if idx >= 0 else None
     return result
 
 
@@ -928,6 +947,11 @@ def build_turn_context(
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    # Identity of THIS turn's user row, independent of its text: survives compaction's
+    # deep copies and is carried across user-row merges; never sent to providers
+    # (build_api_messages pops it) and never persisted (rows are column-based).
+    if isinstance(messages[current_turn_user_idx], dict):
+        messages[current_turn_user_idx][TURN_ROW_MARKER] = turn_id
 
     agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is user-initiated;
@@ -1058,7 +1082,7 @@ def build_api_messages(
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
         _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
+        for key in ("display_kind", "display_metadata", "_row_id", TURN_ROW_MARKER):
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)

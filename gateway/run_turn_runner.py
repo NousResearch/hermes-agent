@@ -34,16 +34,13 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-# Card-lane failures that describe the DESTINATION, not a transient outage. Native Slack
-# (`No Slack thread target`) and the relay connector (`slack task_card requires a thread anchor`)
-# both refuse cards for un-threaded chats; the refusal repeats on every event of the turn.
-_CARD_DESTINATION_UNSUPPORTED_MARKERS = ("thread anchor", "thread target")
-
-
-def _card_destination_unsupported(result: Any) -> bool:
-    """True when a failed task-card send means this chat cannot host a card at all."""
-    error = str(getattr(result, "error", "") or "").lower()
-    return any(marker in error for marker in _CARD_DESTINATION_UNSUPPORTED_MARKERS)
+# Exact refusals retained for older adapters/connectors without destination preflight.
+# Substring matching would also silence transient thread-resolution errors.
+_CARD_DESTINATION_REFUSALS = {
+    "No Slack thread target",
+    "slack task_card requires a thread anchor",
+    "slack task_card requires a thread anchor (Slack streams are thread replies)",
+}
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -394,6 +391,15 @@ class TurnRunner:
             # that cannot host a card); every later publication would re-deliver the
             # same task text there.
             return
+        # Resolve eligibility in the owning adapter BEFORE transport I/O: a first
+        # timeout/disconnect must not turn an un-cardable chat into text fallback.
+        # Optional for older adapters; only an explicit False refuses publication.
+        destination_supported = getattr(st.adapter, "native_task_card_destination_supported", None)
+        if callable(destination_supported) and destination_supported(
+            ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+        ) is False:
+            st.publication_suppressed = True
+            return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
@@ -422,7 +428,7 @@ class TurnRunner:
                 )
                 return
             st.native_failed = True
-            if _card_destination_unsupported(result):
+            if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
                 # The destination itself cannot host a card (flat DM: no thread anchor). This is
                 # a property of the chat, not a transient outage, and it repeats on every event.
                 # The text fallback exists to keep a WORKING card lane live through a transient

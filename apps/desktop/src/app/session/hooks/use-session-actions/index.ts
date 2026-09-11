@@ -111,6 +111,7 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
+  focusOpenSession,
   holdSessionOwnerUntilForeground,
   openSessionTile,
   patchSessionTile,
@@ -850,7 +851,7 @@ export function useSessionActions({
           setWorkspaceCwdOwner(stored)
         }
 
-        revealTreePane(`session-tile:${stored}`)
+        focusOpenSession(stored, workspaceScope)
 
         if (listed) {
           broadcastSessionsChanged()

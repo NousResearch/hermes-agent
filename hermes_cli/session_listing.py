@@ -22,7 +22,8 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     target_parts: list[str] = []
     for i, part in enumerate(parts):
         lower = part.strip().lower()
-        if lower in {"—all", "–all"}:
+        # Gateway MessageEvent maps an en dash to a single ASCII hyphen first.
+        if lower in {"—all", "–all", "-all"}:
             lower = "--all"
         if not target_parts:
             if lower in _LIST_WORDS:

@@ -111,7 +111,8 @@ def _strip_resume_name(parts: list[str]) -> str:
 
 def _normalize_resume_options(parts: list[str]) -> list[str]:
     """Accept mobile autocorrect's single Unicode dash for ``--all`` without rewriting titles."""
-    return ["--all" if part.lower() in {"—all", "–all"} else part for part in parts]
+    # MessageEvent has already mapped an en dash to a single ASCII hyphen.
+    return ["--all" if part.lower() in {"—all", "–all", "-all"} else part for part in parts]
 
 
 class GatewaySessionCommandsMixin:

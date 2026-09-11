@@ -144,12 +144,28 @@ def _choice_provider(model_id: str) -> str:
 
 
 def encode_model_choice(provider: str | None, model: str | None) -> str:
-    """``provider:model`` so ACP clients keep provider context."""
+    """``provider:model`` so ACP clients keep provider context.
+
+    Named custom endpoints must round-trip as ``custom:<name>:<model>``.
+    Inventory slugs are often the bare config key (``aihubmix``); encoding
+    that as ``aihubmix:qwen3.8-flash`` used to come back as an unsplit
+    model id on provider ``custom`` and get sent to the wrong endpoint.
+    """
     raw_model = str(model or "").strip()
     if not raw_model:
         return ""
-    raw_provider = str(provider or "").strip().lower()
-    return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
+    raw_provider = str(provider or "").strip()
+    try:
+        from hermes_cli.models import named_custom_provider_id, parse_model_input
+
+        parsed_provider, parsed_model = parse_model_input(raw_model, raw_provider or "openrouter")
+        durable = named_custom_provider_id(parsed_provider) or parsed_provider
+        if durable:
+            return f"{durable}:{parsed_model}"
+        return parsed_model
+    except Exception:
+        raw_provider_l = raw_provider.lower()
+        return f"{raw_provider_l}:{raw_model}" if raw_provider_l else raw_model
 
 
 @dataclass

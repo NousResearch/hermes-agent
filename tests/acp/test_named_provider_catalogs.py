@@ -275,3 +275,22 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
+
+    def test_encode_canonicalizes_named_custom_inventory_slug(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "providers": {
+                    "aihubmix": {
+                        "name": "AIHubMix",
+                        "base_url": "https://api.inferera.com/v1",
+                    }
+                }
+            },
+        )
+        from acp_adapter.model_catalog import encode_model_choice
+
+        assert encode_model_choice("aihubmix", "qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("custom", "aihubmix:qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("custom:aihubmix", "qwen3.8-flash") == "custom:aihubmix:qwen3.8-flash"
+        assert encode_model_choice("openai-codex", "gpt-5.4") == "openai-codex:gpt-5.4"

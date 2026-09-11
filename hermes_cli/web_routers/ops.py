@@ -121,7 +121,8 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 
 
 # --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
-# hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
+# hot-reloads it. Per-route secrets are redacted on read, surfaced once on create.
+# The secret supports HMAC signatures or plain-token auth such as the Authorization Bearer scheme.
 
 
 def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:

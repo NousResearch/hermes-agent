@@ -206,14 +206,15 @@ def drop_model_key(model_cfg: dict, key: str) -> None:
 
 
 def persist_custom_endpoint_secret(provider: str, base_url: str, api_key: str) -> str:
-    """Write a custom/local API key to ``.env``. Returns the ``key_env`` name.
+    """Write a bare/named custom or local API key to ``.env``; return its ``key_env``.
 
     Empty string means this assignment has no custom-endpoint secret to stash
-    (named providers, missing URL, or empty key). Raises if the ``.env`` write
+    (other providers, missing URL, or empty key). Raises if the ``.env`` write
     cannot be verified — callers must not persist a ``key_env`` pointer to a
     secret that is not actually on disk.
     """
-    if provider.strip().lower() not in {"custom", "local"}:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider not in {"custom", "local"} and not normalized_provider.startswith("custom:"):
         return ""
     if not base_url or not api_key.strip():
         return ""

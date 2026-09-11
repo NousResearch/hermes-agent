@@ -166,6 +166,38 @@ describe('SessionActionsMenu', () => {
     expect(document.activeElement).not.toBe(trigger)
   })
 
+  it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
+    const { renameSession } = await import('@/hermes')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
+
+    render(
+      <SessionActionsMenu profile="personal" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Prep Butler' } })
+
+    const save = within(dialog).getByRole('button', { name: /save/i })
+    fireEvent.click(save)
+
+    await waitFor(() => {
+      expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
+    })
+  })
+
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
     const onDelete = vi.fn()
     render(

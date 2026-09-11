@@ -11,8 +11,14 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  renameSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -149,6 +155,35 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
     const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { pinned: false } })
     expect(req.body).not.toHaveProperty('profile')
+  })
+})
+
+describe('renameSession profile scoping', () => {
+  it('carries the owning profile in the PATCH body and request', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+
+    await renameSession('sess-r', 'Prep Butler', 'personal')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+  })
+
+  it('falls back to profileScoped when profile argument is omitted', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+    vi.mocked(client.profileScoped).mockReturnValue({ profile: 'personal' })
+
+    await renameSession('sess-r2', 'Prep Butler')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r2',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
   })
 })
 

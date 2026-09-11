@@ -1409,6 +1409,71 @@ def _self_pid_set() -> frozenset:
 
 
 _SELF_KILL_DESCRIPTION = "kill own process (self-termination)"
+_SELF_KILL_SELECTOR_DESCRIPTION = "self-termination via process-name selector (kills hermes/gateway)"
+
+# ── kill 家族：进程名选择器 + 终止动作（#74078 Part 1 收尾）───────────────────
+# 已拦的形状是「动词紧跟目标」：pkill/killall 直写名字、kill $(pgrep …)/反引号
+# （见 DANGEROUS_PATTERNS）。漏的是「先把 PID 选出来、再交给 kill」的管道载体：
+# pgrep -f hermes | xargs kill（含 -9/-r/-n1/-I{} kill {}）、
+# ps aux | grep hermes | awk '{print $2}' | xargs kill、
+# pgrep -f hermes | while read p; do kill $p; done ——
+# 动词与选择器被管道/xargs 隔开，形状枚举永远追不完，因此改为按「目标」判定：
+# 同一命令组内存在进程枚举器，且原文里指向 Hermes 自身/网关名字，同时组内存在
+# 真实的终止动作（引号内的 kill 是数据，见 _mask_quoted_prose）。
+_SELF_PROCESS_NAME_RE = re.compile(
+    r"\b(hermes|hermes-agent|hermes_cli|hermes-gateway|gateway|cli\.py|ai\.hermes)\b",
+    re.IGNORECASE,
+)
+# 进程枚举器：pgrep/pidof 产 PID、pkill/killall 自带动词、ps 供管道下游提取 PID。
+_NAME_SELECTOR_RE = re.compile(r"\b(pgrep|pidof|pkill|killall)\b", re.IGNORECASE)
+_PS_SELECTOR_RE = re.compile(r"\bps\b", re.IGNORECASE)
+_KILL_VERB_RE = re.compile(r"\b(kill|killall|pkill)\b", re.IGNORECASE)
+# 命令组分隔（`|` 不算：管道两侧属于同一组，ps|grep|awk|xargs kill 必须整体看）。
+_CMD_GROUP_SPLIT_RE = re.compile(r"&&|\|\||[;&\n]")
+# shell carrier 的**调用形状**（`sh -c '…'` / eval / source）。不用 _contains_shell_carrier：
+# 那个只认命令位置的词，而 `xargs -I% sh -c 'kill %'` 里的 sh 是 xargs 的参数。
+_SHELL_CARRIER_CALL_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b|\b(?:eval|source)\b", re.IGNORECASE
+)
+
+
+def _kill_targets_self_via_name_selector(command: str) -> bool:
+    """进程名选择器定向到 Hermes 自身/网关进程，且命令里存在真实终止动作 → True。
+
+    只作 detect_dangerous_command 的前置补充检查（#74078 Part 1 的管道载体收尾）。
+    成对约束（保持放行，见 tests/tools/test_approval.py 的形状矩阵）：
+      - `pgrep -f node | xargs kill`（非自身进程名）
+      - `cat pids.txt | xargs kill`（无进程枚举器）
+      - `kill 12345`（交给 _kill_targets_own_process）
+      - `pgrep -f hermes | head` / `| xargs echo`（无终止动作）
+      - `grep -o "kill" ~/.hermes/x.log`（动词在引号里 = 数据）
+    """
+    # 预筛：命令里必须出现终止动词（原文，避免每个命令都展开 variants）。
+    if not _KILL_VERB_RE.search(command):
+        return False
+    for variant in _command_detection_variants(command):
+        if not variant:
+            continue
+        masked = _mask_quoted_prose(variant)
+        # 动词判定默认看屏蔽引号后的文本（`grep -o "kill"` 里的 kill 是数据）；但
+        # `sh -c 'kill %'` / `eval '…'` 这类 carrier 的引号参数是**代码**，对它们用原文。
+        carrier_here = _SHELL_CARRIER_CALL_RE.search(variant) is not None
+        if _KILL_VERB_RE.search(masked) is None and not (
+            carrier_here and _KILL_VERB_RE.search(variant)
+        ):
+            continue
+        for group in _CMD_GROUP_SPLIT_RE.split(variant):
+            if _SELF_PROCESS_NAME_RE.search(group) is None:
+                continue
+            ps_pipe = "|" in group
+            group_carrier = _SHELL_CARRIER_CALL_RE.search(group) is not None
+            for seg in group.split("|"):
+                seg_text = seg if group_carrier else _mask_quoted_prose(seg)
+                if _NAME_SELECTOR_RE.search(seg_text):
+                    return True
+                if ps_pipe and _PS_SELECTOR_RE.search(seg_text):
+                    return True
+    return False
 
 # kill <numeric-pid> 形状（排除 kill -l 信号列表查询）。裸数字 PID 的
 # kill 是否危险取决于目标：普通 PID（reap 自己 spawn 的子进程）放行，
@@ -1459,6 +1524,12 @@ def detect_dangerous_command(command: str) -> tuple:
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if pattern_re.search(command_lower):
                 return (True, description, description)
+    # kill 家族里「先选出 PID、再交给 kill」的管道载体（xargs kill / while read … kill /
+    # ps|grep|awk|xargs kill）不匹配上面任何结构性规则，按目标判定补上（#74078 Part 1 收尾）。
+    # 放在模式表之后：直写名字与替换形状（pkill hermes、kill $(pgrep …)）保留它们
+    # 更具体的既有描述，只有漏拦的管道载体落到这里。
+    if _kill_targets_self_via_name_selector(command):
+        return (True, _SELF_KILL_SELECTOR_DESCRIPTION, _SELF_KILL_SELECTOR_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

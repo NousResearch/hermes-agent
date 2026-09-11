@@ -2139,28 +2139,23 @@ def _extract_exec_spawn_argv(m, a, node, raw_aliases, imports):
 _PACKAGE_UNRESOLVABLE = "?unresolvable-command-exec?"
 
 
-def _execute_code_has_package_acquisition(code: str) -> str | None:
-    """返回脚本中静态可确认的包获取调用的包管理器名，否则 None。
+def _iter_command_exec_payloads(code: str):
+    """Yield ``(module, attr, words)`` for every command-exec call in *code*.
 
-    只检查命令执行家族的调用（subprocess.* / os.system / os.popen /
-    os.spawn* / os.exec* / os.posix_spawn* / pty.spawn /
-    asyncio.create_subprocess_*），按调用形状提取 argv 后走
-    ``_package_words_are_acquisition`` 词表判定。
+    命令执行家族：subprocess.* / os.system / os.popen / os.spawn* / os.exec* /
+    os.posix_spawn* / pty.spawn / asyncio.create_subprocess_*。``words`` 为静态
+    解析出的 argv；**不可解析时为 None**（调用方按 fail-closed 语义处理：包获取层
+    要求 owner 审批，自终止层跳过——argv 不可解析是 ``subprocess.run([sys.executable,
+    "-c", …])`` 这类正常用法，不是证据）。
 
-    与 #97657 的 terminal 侧同一不变量：包获取必须 owner 精确单操作
-    批准，容器/YOLO/approvals-off 均不可绕过（guard 在短路前调用本函数）。
-
-    返回语义（2026-08-31 P0-3 fail-closed）：
-      - 包管理器名     → 静态确认的包获取，调用方 owner-gate 拦截
-      - _PACKAGE_UNRESOLVABLE → command-exec 调用存在但 argv 静态不可
-        解析，无法排除包获取 → 调用方同样要求 owner 审批（不放行）
-      - None           → 无命令执行调用，或全部可解析且非包获取
+    包获取（#97657）与自终止（#74078）两层共用本生成器，避免调用形状/签名感知
+    逻辑各写一份后漂移。
     """
     imports, star_modules, raw_aliases = _collect_exec_code_bindings(code)
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return None
+        return
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -2213,6 +2208,27 @@ def _execute_code_has_package_acquisition(code: str) -> str | None:
                 m, a, node, raw_aliases, imports)
             if words and path_words:
                 words = [path_words[0]] + words
+        yield m, a, words
+
+
+def _execute_code_has_package_acquisition(code: str) -> str | None:
+    """返回脚本中静态可确认的包获取调用的包管理器名，否则 None。
+
+    只检查命令执行家族的调用（subprocess.* / os.system / os.popen /
+    os.spawn* / os.exec* / os.posix_spawn* / pty.spawn /
+    asyncio.create_subprocess_*），按调用形状提取 argv 后走
+    ``_package_words_are_acquisition`` 词表判定。
+
+    与 #97657 的 terminal 侧同一不变量：包获取必须 owner 精确单操作
+    批准，容器/YOLO/approvals-off 均不可绕过（guard 在短路前调用本函数）。
+
+    返回语义（2026-08-31 P0-3 fail-closed）：
+      - 包管理器名     → 静态确认的包获取，调用方 owner-gate 拦截
+      - _PACKAGE_UNRESOLVABLE → command-exec 调用存在但 argv 静态不可
+        解析，无法排除包获取 → 调用方同样要求 owner 审批（不放行）
+      - None           → 无命令执行调用，或全部可解析且非包获取
+    """
+    for _m, _a, words in _iter_command_exec_payloads(code):
         if words is None:
             # fail-closed（P0-3，对齐 #98138 bounded 设计）：command-exec
             # 调用存在但 argv 静态不可解析 → 无法判定是否包获取。不放行、
@@ -2224,4 +2240,28 @@ def _execute_code_has_package_acquisition(code: str) -> str | None:
         pkg = _package_words_are_acquisition(words)
         if pkg is not None:
             return pkg
+    return None
+
+
+def _execute_code_has_self_termination_command(code: str) -> str | None:
+    """返回脚本里静态可见的「进程名选择器 + 终止动作」命令行，否则 None。
+
+    与 terminal 侧 ``detect_dangerous_command`` 的自终止判定同源——调用同一个
+    ``_kill_targets_self_via_name_selector``，只是载荷来源不同：terminal 拿到的是
+    命令行字符串，execute_code 拿到的是脚本里 command-exec 调用的 argv。覆盖
+    ``subprocess.run('pgrep -f hermes | xargs kill', shell=True)``、
+    ``subprocess.run(['sh','-c','…'])``、``os.system('pkill hermes')`` 等**字面量**
+    载荷（运行时拼接的字符串仍属静态不可见，见 PR 已声明的豁免面）。
+
+    argv 不可解析时**不**判定（与包获取层的 fail-closed 不同）：不可解析是
+    ``subprocess.run([sys.executable, "-c", …])`` 这类正常用法，不是自我终止证据。
+    """
+    from tools.approval_detection import _kill_targets_self_via_name_selector
+
+    for _m, _a, words in _iter_command_exec_payloads(code):
+        if not words:
+            continue
+        text = " ".join(words)
+        if _kill_targets_self_via_name_selector(text):
+            return text
     return None

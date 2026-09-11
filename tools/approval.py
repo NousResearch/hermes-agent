@@ -44,6 +44,7 @@ from tools.exec_code_policy import (
     _execute_code_has_dangerous_ops,
     _execute_code_has_package_acquisition,
     _execute_code_has_self_destructive_ops,
+    _execute_code_has_self_termination_command,
     _execute_code_has_sensitive_write,
     _execute_code_touches_sensitive_path,
     _log_blocked_exec_code,
@@ -1117,6 +1118,36 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
             "description": (
                 "execute_code self-destructive operation (hard blocked — "
                 "no approval path exists for statically matched calls)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 3a: Self-termination command payload (#74078) ───────────
+    # terminal 侧同源判定（detect_dangerous_command 的进程名选择器规则）：
+    # 脚本里静态可见的「选择器 + 终止动作」载荷 —— pgrep -f hermes | xargs kill、
+    # ps aux | grep hermes | awk … | xargs kill、subprocess.run(['sh','-c',
+    # 'pkill hermes']) 等。这些字符串不经过 terminal 的 per-call 审批
+    # （脚本内 subprocess/os.system 直接起进程），所以形状绕过必须在这里堵。
+    # 与 self-destructive 同级：静态匹配即无审批路径。
+    _self_termination_cmd = _execute_code_has_self_termination_command(code)
+    if _self_termination_cmd is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code builds a self-termination command "
+                f"({_self_termination_cmd!r}) — a process-name selector "
+                "(pgrep/pidof/ps|grep) aimed at Hermes itself, paired with kill. "
+                "The terminal-side guard refuses this shape; running it inside a "
+                "script would bypass that per-call check. There is no approval "
+                "path, bypass, or override for a statically matched "
+                "self-termination payload. Kill an explicit PID you own, or use "
+                "normal tool calls instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code self-termination command (hard blocked — "
+                "process-name selector + kill, #74078)"
             ),
             "outcome": "hard_blocked",
             "user_consent": False,

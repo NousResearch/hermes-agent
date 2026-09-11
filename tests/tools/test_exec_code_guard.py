@@ -26,6 +26,7 @@ from tools.approval import (
 from tools.exec_code_policy import (
     _execute_code_has_dangerous_ops,
     _execute_code_has_self_destructive_ops,
+    _execute_code_has_self_termination_command,
     _execute_code_has_sensitive_write,
     _execute_code_has_package_acquisition,
     _execute_code_touches_sensitive_path,
@@ -1338,3 +1339,56 @@ def test_wrapper_variant_owner_gated_in_all_modes(monkeypatch, mode_gate, code):
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
     assert result["outcome"] == "package_acquisition"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# #74078 Part 1 收尾: self-termination payloads inside scripts
+# terminal 侧拒绝的「进程名选择器 + kill」形状，经 subprocess/os.system
+# 载荷进脚本时必须同样被拒（脚本内调用不经过 per-call terminal 审批）。
+# 同一个判定函数（_kill_targets_self_via_name_selector），两层消费。
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("code", [
+    'import subprocess\nsubprocess.run("pgrep -f hermes | xargs kill", shell=True)',
+    'import subprocess\nsubprocess.run(["sh", "-c", "pgrep -f hermes | xargs kill"])',
+    'import os\nos.system("pkill hermes")',
+    'import os\nos.popen("pkill -f hermes")',
+    'import subprocess\nsubprocess.run("pgrep -f gateway | xargs kill -9", shell=True)',
+    'import subprocess\nsubprocess.call(["bash", "-c", "ps aux | grep hermes | awk \'{print $2}\' | xargs kill"])',
+    'import asyncio\nasyncio.create_subprocess_shell("pgrep -f hermes | xargs kill")',
+])
+def test_self_termination_command_blocked(code):
+    assert _execute_code_has_self_termination_command(code) is not None
+
+
+@pytest.mark.parametrize("code", [
+    # 只列不杀
+    'import subprocess\nsubprocess.run(["pgrep", "-f", "hermes"], capture_output=True)',
+    # 普通 PID：与 terminal 侧口径一致（不 gate 任意数字 PID）
+    'import subprocess\nsubprocess.run(["kill", "123"])',
+    'import subprocess\nsubprocess.run(["sh", "-c", "kill 123"])',
+    # 无进程名选择器 / 选择器指向别的进程
+    'import subprocess\nsubprocess.run("cat pids.txt | xargs kill", shell=True)',
+    'import os\nos.system("pgrep -f node | xargs kill")',
+    # argv 静态不可解析 = 正常用法，不是证据
+    'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "print(1)"])',
+    # 良性
+    'print("hello")',
+])
+def test_self_termination_benign_passes(code):
+    assert _execute_code_has_self_termination_command(code) is None
+
+
+@pytest.mark.parametrize("mode_gate", ["normal", "yolo", "off"])
+def test_self_termination_hard_blocks_in_all_modes(monkeypatch, mode_gate):
+    """静态匹配的自终止载荷没有审批路径：--yolo / approvals.mode=off 同样阻断。"""
+    import tools.approval as approval_module
+    if mode_gate == "yolo":
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    elif mode_gate == "off":
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
+    sample = 'import subprocess\nsubprocess.run("pgrep -f hermes | xargs kill", shell=True)'
+    result = check_execute_code_guard(sample, env_type="local")
+    assert result["approved"] is False
+    assert result["outcome"] == "hard_blocked"
+    assert "self-termination" in result["description"]

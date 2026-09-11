@@ -2068,3 +2068,68 @@ class TestLifecycleGuardLaunchctlParity:
             "launchctl print system/com.apple.WindowServer",
         ):
             assert contains_gateway_lifecycle_command(cmd) is False, cmd
+
+
+class TestSelfTerminationViaProcessNameSelector:
+    """#74078 Part 1 收尾：kill 家族里「先选出 PID、再交给 kill」的管道载体。
+
+    成对覆盖（与 ~/.hermes/scripts/probe-self-kill-matrix.py 同一矩阵）：漏拦是
+    安全问题，误拦会把正常工作（kill 自己 spawn 的子进程、按名字查自己的进程）
+    在无审批路径上掐死，两者都要 pin 住。
+    """
+
+    CARRIERS = [
+        "pgrep -f hermes | xargs kill",
+        "pgrep -f hermes | xargs kill -9",
+        "pgrep -f hermes | xargs -r kill",
+        "pgrep -f hermes | xargs -n1 kill",
+        "pgrep -f hermes | xargs -I{} kill {}",
+        "pgrep -f hermes | xargs -I% sh -c 'kill %'",
+        "pgrep -f hermes | xargs kill -TERM",
+        "pgrep -f gateway | xargs kill",
+        "ps aux | grep hermes | awk '{print $2}' | xargs kill",
+        "ps aux | grep -i hermes-agent | awk '{print $2}' | xargs -r kill",
+        "pgrep -f hermes | while read p; do kill $p; done",
+    ]
+
+    BENIGN = [
+        # 无进程名选择器：普通 PID 管理，交给 _kill_targets_own_process 判定
+        "cat pids.txt | xargs kill",
+        "kill 12345",
+        "kill -l",
+        # 选择器指向别的进程
+        "pgrep -f node | xargs kill",
+        "ps aux | grep nginx | awk '{print $2}' | xargs kill",
+        "pkill -f node",
+        # 只列不杀（无终止动作）
+        "pgrep -f hermes | head",
+        "pgrep -f hermes | wc -l",
+        "pgrep -f hermes | xargs echo",
+        # kill 只是引号里的数据
+        'grep -o "kill" /root/.hermes/logs/agent.log | head',
+        'echo "pgrep hermes | xargs kill"',
+    ]
+
+    @pytest.mark.parametrize("command", CARRIERS)
+    def test_name_selector_carriers_are_flagged(self, command):
+        dangerous, key, description = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert "self-termination" in (description or ""), command
+        assert "self-termination" in str(key)
+
+    @pytest.mark.parametrize("command", BENIGN)
+    def test_benign_lookalikes_stay_allowed(self, command):
+        dangerous, key, description = detect_dangerous_command(command)
+        assert dangerous is False, f"{command} -> {key} / {description}"
+
+    def test_direct_name_and_substitution_shapes_keep_their_own_reason(self):
+        """回归：既有形状（直写名字、$(pgrep) 替换）保留原描述，不被新判定改写。"""
+        cases = {
+            "pkill -f hermes": "kill hermes/gateway process (self-termination)",
+            "kill $(pgrep -f hermes)": "kill process via pgrep/pidof expansion (self-termination)",
+            "kill `pgrep -f hermes`": "kill process via backtick pgrep/pidof expansion (self-termination)",
+        }
+        for command, expected in cases.items():
+            dangerous, _, description = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert description == expected, f"{command} -> {description}"

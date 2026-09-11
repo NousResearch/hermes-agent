@@ -1,0 +1,5 @@
+name: gemini-provider
+kind: model-provider
+version: 1.0.0
+description: Google Gemini (API key + Cloud Code OAuth)
+author: Nous Research

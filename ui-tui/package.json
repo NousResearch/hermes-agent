@@ -1,0 +1,45 @@
+{
+  "name": "hermes-tui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build:ink && tsx --watch src/entry.tsx",
+    "start": "tsx src/entry.tsx",
+    "build": "node scripts/build.mjs",
+    "build:ink": "npm run build --prefix packages/hermes-ink",
+    "visual": "node scripts/visual/run.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ packages/",
+    "lint:fix": "eslint src/ packages/ --fix",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
+    "fix": "npm run lint:fix && npm run fmt",
+    "check": "npm run build:ink && npm run typecheck && npm run test && npm run lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hermes/ink": "file:./packages/hermes-ink",
+    "@hermes/shared": "file:../apps/shared",
+    "@nanostores/react": "1.1.0",
+    "ink-text-input": "6.0.0",
+    "nanostores": "1.4.2",
+    "react": "19.2.7",
+    "undici": "6.28.0",
+    "unicode-animations": "1.0.3"
+  },
+  "overrides": {
+    "ink-text-input": {
+      "ink": "npm:@hermes/ink@0.0.1"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.17",
+    "esbuild": "0.28.1",
+    "prettier": "3.9.5",
+    "tsx": "4.23.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

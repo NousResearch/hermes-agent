@@ -1,0 +1,112 @@
+name: "🔧 Setup / Installation Help"
+description: Having trouble installing or configuring Hermes? Ask here.
+title: "[Setup]: "
+labels: ["setup"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sorry you're having trouble! Please fill out the details below so we can help.
+
+        **Quick checks first:**
+        - Run `hermes debug share` and paste the links in the Debug Report section below
+        - If you're in a chat session, you can use `/debug` instead — it does the same thing
+        - Try `hermes update` to get the latest version
+        - Check the [README troubleshooting section](https://github.com/NousResearch/hermes-agent#troubleshooting)
+        - For general questions, consider the [Nous Research Discord](https://discord.gg/NousResearch) for faster help
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What's Going Wrong?
+      description: Describe what you're trying to do and where it fails.
+      placeholder: |
+        I ran `hermes setup` and selected Nous Portal, but when I try to
+        start the gateway I get...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps Taken
+      description: What did you do? Include the exact commands you ran.
+      placeholder: |
+        1. Ran the install script: `curl -fsSL ... | bash`
+        2. Ran `hermes setup` and chose "Quick setup"
+        3. Selected OpenRouter, entered API key
+        4. Ran `hermes chat` and got error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation Method
+      options:
+        - Install script (curl | bash)
+        - Manual clone + pip/uv install
+        - PowerShell installer (Windows)
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: Ubuntu 24.04 / macOS 15.2 / Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Output of `python --version` (or `python3 --version`)
+      placeholder: "3.11.9"
+
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Version
+      description: Output of `hermes version` (if install got that far)
+      placeholder: "2.1.0"
+
+  - type: textarea
+    id: debug-report
+    attributes:
+      label: Debug Report
+      description: |
+        Run `hermes debug share` from your terminal and paste the links it prints here.
+        This uploads your system info, config, and recent logs to a paste service automatically.
+
+        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
+
+        If the upload fails or install didn't get that far, run `hermes debug share --local` and paste the output directly.
+        If even that doesn't work, run `hermes doctor` and paste that output instead.
+      placeholder: |
+        Report   https://paste.rs/abc123
+        agent.log   https://paste.rs/def456
+        gateway.log   https://paste.rs/ghi789
+      render: shell
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Full Error Output
+      description: Paste the complete error message or traceback. This will be auto-formatted.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I've Already Tried
+      description: List any fixes or workarounds you've already attempted.
+      placeholder: |
+        - Ran `hermes update`
+        - Tried reinstalling with `pip install -e ".[all]"`
+        - Checked that OPENROUTER_API_KEY is set in ~/.hermes/.env

@@ -1,0 +1,7 @@
+name: web-parallel
+version: 1.0.0
+description: "Parallel.ai web search + content extraction. Search returns objective-tuned results; extract uses the async SDK for parallel page fetches. Requires PARALLEL_API_KEY — sign up at https://parallel.ai."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - parallel

@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""
+Tests for read_file_tool safety guards: device-path blocking,
+character-count limits, file deduplication, and dedup reset on
+context compression.
+
+Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
+"""
+
+import json
+import os
+import tempfile
+import time
+import unittest
+from unittest.mock import patch, MagicMock
+
+from tools.file_tools import (
+    read_file_tool,
+    write_file_tool,
+    _is_blocked_device,
+    _DEFAULT_MAX_READ_CHARS,
+)
+from tools.file_tools_write_guards import _READ_DEDUP_STATUS_MESSAGE
+from tools.file_tools_read_tracking import _read_tracker
+from tools.file_tools_read_tracking import (
+    _invalidate_dedup_for_path,
+    notify_other_tool_call,
+    reset_file_dedup,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _FakeReadResult:
+    """Minimal stand-in for FileOperations.read_file return value."""
+    def __init__(self, content="line1\nline2\n", total_lines=2, file_size=100):
+        self.content = content
+        self._total_lines = total_lines
+        self._file_size = file_size
+
+    def to_dict(self):
+        return {
+            "content": self.content,
+            "total_lines": self._total_lines,
+            "file_size": self._file_size,
+        }
+
+
+def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
+    fake = MagicMock()
+    fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        content=content, total_lines=total_lines, file_size=file_size,
+    )
+    return fake
+
+
+def _make_safe_tempdir(prefix: str) -> str:
+    """Create a temp dir outside macOS system-sensitive /private/var paths."""
+    return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+
+
+# ---------------------------------------------------------------------------
+# Device path blocking
+# ---------------------------------------------------------------------------
+
+class TestDevicePathBlocking(unittest.TestCase):
+    """Paths like /dev/zero should be rejected before any I/O."""
+
+    def test_blocked_device_detection(self):
+        for dev in ("/dev/zero", "/dev/random", "/dev/urandom", "/dev/stdin",
+                     "/dev/tty", "/dev/console", "/dev/stdout", "/dev/stderr",
+                     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2"):
+            self.assertTrue(_is_blocked_device(dev), f"{dev} should be blocked")
+
+    def test_safe_device_not_blocked(self):
+        self.assertFalse(_is_blocked_device("/dev/null"))
+        self.assertFalse(_is_blocked_device("/dev/sda1"))
+
+    def test_proc_fd_blocked(self):
+        self.assertTrue(_is_blocked_device("/proc/self/fd/0"))
+        self.assertTrue(_is_blocked_device("/proc/12345/fd/2"))
+
+    def test_proc_fd_other_not_blocked(self):
+        # The path-pattern check only blocklists /fd/0, /fd/1, /fd/2 as stdio
+        # aliases.  Higher-numbered fds are not pattern-blocked; whether they
+        # ultimately get blocked depends on realpath resolution (a separate
+        # concern, handled in test_symlink_to_blocked_device_is_blocked).
+        # Using the lower-level _is_blocked_device_path here keeps the
+        # assertion stable across environments where pytest workers happen to
+        # have fd 3 dup'd to a blocked device.
+        from tools.file_tools import _is_blocked_device_path
+
+        self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
+
+    def test_proc_sensitive_pseudo_files_blocked(self):
+        """environ/cmdline/maps (and maps variants) under /proc/<pid> must be blocked (issue #4427)."""
+        for path in (
+            "/proc/self/environ",
+            "/proc/12345/environ",
+            "/proc/self/cmdline",
+            "/proc/99/cmdline",
+            "/proc/self/maps",
+            "/proc/1/maps",
+            "/proc/self/smaps",
+            "/proc/12345/smaps",
+            "/proc/self/smaps_rollup",
+            "/proc/99/smaps_rollup",
+            "/proc/self/numa_maps",
+            "/proc/1/numa_maps",
+            "/proc/self/mem",
+            "/proc/12345/mem",
+            "/proc/self/auxv",
+            "/proc/1/auxv",
+            "/proc/self/pagemap",
+            "/proc/99/pagemap",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_task_thread_sensitive_files_blocked(self):
+        """Per-thread /proc/<pid>/task/<tid>/<file> aliases leak the same data."""
+        for path in (
+            "/proc/self/task/1234/maps",
+            "/proc/self/task/1234/smaps",
+            "/proc/self/task/1234/auxv",
+            "/proc/self/task/1234/pagemap",
+            "/proc/self/task/1234/environ",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_legitimate_files_not_blocked(self):
+        """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
+        for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
+            self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
+
+    def test_normpath_alias_to_blocked_device_is_blocked(self):
+        self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
+        self.assertTrue(_is_blocked_device("/dev/./urandom"))
+
+    def test_normal_files_not_blocked(self):
+        self.assertFalse(_is_blocked_device("/tmp/test.py"))
+        self.assertFalse(_is_blocked_device("/home/user/.bashrc"))
+
+    def test_symlink_to_blocked_device_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
+
+    def test_symlink_to_regular_file_not_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = os.path.join(tmpdir, "regular.txt")
+            link_path = os.path.join(tmpdir, "regular-link")
+            with open(target_path, "w", encoding="utf-8") as handle:
+                handle.write("safe\n")
+            try:
+                os.symlink(target_path, link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertFalse(_is_blocked_device(link_path))
+
+
+    def test_read_file_tool_rejects_device(self):
+        """read_file_tool returns an error without any file I/O."""
+        result = json.loads(read_file_tool("/dev/zero", task_id="dev_test"))
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_device_symlink_before_io(self, mock_ops):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            result = json.loads(read_file_tool(link_path, task_id="dev_link_test"))
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_task_cwd_relative_device_alias_symlink(self, mock_ops):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = os.path.join(tmpdir, "workspace")
+            process_cwd = os.path.join(tmpdir, "process")
+            os.mkdir(workspace)
+            os.mkdir(process_cwd)
+            link_path = os.path.join(workspace, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(process_cwd)
+                with patch.dict(os.environ, {"TERMINAL_CWD": workspace}, clear=False):
+                    result = json.loads(read_file_tool("stdin-link", task_id="dev_rel_link_test"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Non-regular files (FIFOs, sockets, directories)
+# ---------------------------------------------------------------------------
+
+class TestNonRegularFileReads(unittest.TestCase):
+    """Blocking paths the device blocklist structurally cannot cover.
+
+    The blocklist matches literal ``/dev/*`` names. A FIFO is a file *type*
+    and can sit at any path, so no name list catches it. Reading one with no
+    writer blocks in the size probe, and the read helpers pass no timeout, so
+    the turn wedges until the process is killed.
+
+    Each read runs on a worker thread with a wall clock: a thread still alive
+    at the deadline means the call blocked, which fails as an assertion
+    instead of hanging the suite.
+    """
+
+    DEADLINE_SECONDS = 20.0
+
+    def _read_within_deadline(self, path, task_id):
+        import threading
+
+        box = {}
+
+        def call():
+            try:
+                box["raw"] = read_file_tool(path, task_id=task_id)
+            except BaseException as exc:  # noqa: BLE001
+                box["exc"] = exc
+
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        worker.join(self.DEADLINE_SECONDS)
+        self.assertFalse(
+            worker.is_alive(),
+            f"read_file_tool({path!r}) still running after "
+            f"{self.DEADLINE_SECONDS:.0f}s — the read blocked",
+        )
+        if "exc" in box:
+            raise box["exc"]
+        return json.loads(box["raw"])
+
+    def test_read_file_tool_on_fifo_errors_instead_of_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no os.mkfifo")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo_path = os.path.join(tmpdir, "pipe")
+            try:
+                os.mkfifo(fifo_path)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"mkfifo unavailable: {exc}")
+
+            result = self._read_within_deadline(fifo_path, "fifo_read_test")
+
+        # The tool layer intercepts first with a success=False NOTE (a fact
+        # about the file, not an error — merged stat-guard design); the
+        # shell-layer sentinel behind it errors. Accept either surface.
+        surface = result.get("error") or result.get("note") or ""
+        self.assertTrue(surface, f"expected error or note, got: {result}")
+        self.assertIn("not a regular file", surface)
+
+    def test_read_file_tool_on_directory_errors_instead_of_blocking(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._read_within_deadline(tmpdir, "dir_read_test")
+
+        self.assertIn("error", result)
+        self.assertIn("not a regular file", result["error"])
+
+    def test_regular_file_still_reads(self):
+        """The guard must not cost ordinary reads their content."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "notes.txt")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("first line\nsecond line\n")
+
+            result = self._read_within_deadline(target, "regular_read_test")
+
+        self.assertNotIn("error", result)
+        self.assertIn("second line", result["content"])
+
+    def test_missing_file_still_reports_not_found(self):
+        """An absent path keeps the not-found wording, not the type error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = os.path.join(tmpdir, "no-such-file.txt")
+            result = self._read_within_deadline(missing, "missing_read_test")
+
+        self.assertIn("error", result)
+        self.assertNotIn("not a regular file", result["error"])
+
+
+# ---------------------------------------------------------------------------
+# Character-count limits
+# ---------------------------------------------------------------------------
+
+class TestCharacterCountGuard(unittest.TestCase):
+    """Oversized reads are truncated on a line boundary (nearai/ironclaw#5029),
+    not rejected — the model gets the head of the file plus a next_offset."""
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_oversized_multiline_read_truncated_with_continuation(self, _mock_limit, mock_ops):
+        """A read whose many lines exceed the char budget is trimmed to the
+        last complete line and offers a next_offset, instead of returning an
+        error with no content."""
+        # 50 lines of 100 chars each = ~5050 chars, well over the 1000 budget.
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content,
+            total_lines=50,
+            file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/huge.txt", task_id="big"))
+        # No hard rejection — content is present.
+        self.assertNotIn("error", result)
+        self.assertIn("content", result)
+        self.assertTrue(result["content"])
+        # Truncation metadata for the model to paginate.
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("next_offset", result)
+        self.assertGreater(result["next_offset"], 1)
+        # Body fits the budget (allowing for redaction not growing it).
+        self.assertLessEqual(len(result["content"]), 1000)
+        self.assertIn("offset", result["hint"])
+
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
+    def test_content_under_limit_passes(self, _mock_limit, mock_ops):
+        """Content just under the limit should pass through fine."""
+        mock_ops.return_value = _make_fake_ops(
+            content="y" * (_DEFAULT_MAX_READ_CHARS - 1),
+            file_size=_DEFAULT_MAX_READ_CHARS - 1,
+        )
+        result = json.loads(read_file_tool("/tmp/justunder.txt", task_id="under"))
+        self.assertNotIn("error", result)
+        self.assertIn("content", result)
+
+
+class TestTruncateToCharBudget(unittest.TestCase):
+    """Unit tests for the line-boundary char-budget trimmer."""
+
+    def _fn(self):
+        from tools.file_tools import _truncate_to_char_budget
+        return _truncate_to_char_budget
+
+    def test_fits_unchanged(self):
+        fn = self._fn()
+        text = "1|a\n2|b\n3|c"
+        out, lines, trunc = fn(text, 1000)
+        self.assertEqual(out, text)
+        self.assertEqual(lines, 3)
+        self.assertFalse(trunc)
+
+
+    def test_empty_content(self):
+        fn = self._fn()
+        out, lines, trunc = fn("", 100)
+        self.assertEqual(out, "")
+        self.assertEqual(lines, 0)
+        self.assertFalse(trunc)
+
+
+# ---------------------------------------------------------------------------
+# File deduplication
+# ---------------------------------------------------------------------------
+
+class TestFileDedup(unittest.TestCase):
+    """Re-reading an unchanged file should return a lightweight stub."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-dedup-")
+        self._tmpfile = os.path.join(self._tmpdir, "dedup_test.txt")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("line one\nline two\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_second_read_returns_dedup_stub(self, mock_ops):
+        """Second read of same file+range returns non-content dedup status."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        # First read — full content
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
+        self.assertNotIn("dedup", r1)
+
+        # Second read — should get dedup stub
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
+        self.assertTrue(r2.get("dedup"), "Second read should return dedup stub")
+        self.assertEqual(r2.get("status"), "unchanged")
+        self.assertIn("unchanged", r2.get("message", ""))
+        self.assertFalse(r2.get("content_returned"))
+        self.assertNotIn("content", r2)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_internal_read_status_text(self, mock_ops):
+        """write_file must not persist internal read_file status text."""
+        fake = MagicMock()
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            _READ_DEDUP_STATUS_MESSAGE,
+            task_id="guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file display text", result["error"])
+        fake.write_file.assert_not_called()
+
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_different_task_not_deduped(self, mock_ops):
+        """Different task_ids have separate dedup caches."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="task_a")
+
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="task_b"))
+        self.assertNotEqual(r2.get("dedup"), True)
+
+
+# ---------------------------------------------------------------------------
+# Dedup stub-loop guard (issue #15759)
+# ---------------------------------------------------------------------------
+
+class TestDedupStubLoopGuard(unittest.TestCase):
+    """Repeated dedup stubs must escalate to a hard BLOCKED error so weak
+    tool-following models don't burn iteration budget in an infinite loop
+    of ``read_file → stub → read_file → stub → ...``"""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = tempfile.mkdtemp()
+        self._tmpfile = os.path.join(self._tmpdir, "loop_test.txt")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("line one\nline two\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_third_read_is_blocked(self, mock_ops):
+        """read → stub → BLOCKED.  Second stub escalates to hard error."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        # 1. Real read — full content
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertNotIn("dedup", r1)
+        self.assertNotIn("error", r1)
+
+        # 2. Dedup stub (first hit)
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r2.get("dedup"))
+        self.assertNotIn("error", r2)
+
+        # 3. Dedup stub (second hit) — escalates to BLOCKED
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertIn("error", r3, "Second dedup stub should be BLOCKED")
+        self.assertIn("BLOCKED", r3["error"])
+        self.assertIn("STOP", r3["error"])
+        self.assertEqual(r3.get("already_read"), 3)
+        # The loop-breaker must NOT be a dedup stub, or the model sees the
+        # same passive message it has been ignoring.
+        self.assertNotIn("dedup", r3)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_subsequent_reads_stay_blocked(self, mock_ops):
+        """Once blocked, continued hammering keeps returning BLOCKED."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="loop")  # read
+        read_file_tool(self._tmpfile, task_id="loop")  # stub
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertIn("error", r3)
+        # 4th, 5th, ... calls must stay blocked, never revert to stub
+        for _ in range(5):
+            rN = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+            self.assertIn("error", rN)
+            self.assertIn("BLOCKED", rN["error"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_file_modification_clears_block(self, mock_ops):
+        """Real file change should break out of the block — new content
+        is legitimately different and the agent should see it."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="loop")
+        read_file_tool(self._tmpfile, task_id="loop")
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertIn("error", r3)
+
+        # File changes — mtime updates
+        time.sleep(0.05)
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("brand new content\n")
+
+        r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertNotIn("error", r4)
+        self.assertNotIn("dedup", r4)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_other_tool_call_clears_hits(self, mock_ops):
+        """An intervening non-read tool call resets stub-hit counters,
+        just like it resets the consecutive-read counter."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="loop")
+        read_file_tool(self._tmpfile, task_id="loop")  # 1st stub
+
+        # Agent did something else — e.g. terminal, write_file — so the
+        # stub-loop is broken.  Counter should reset.
+        notify_other_tool_call("loop")
+
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        # Should be a stub again, NOT blocked
+        self.assertTrue(r3.get("dedup"))
+        self.assertNotIn("error", r3)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_different_ranges_tracked_independently(self, mock_ops):
+        """Stub-hit counter is keyed by (path, offset, limit), so hammering
+        one range shouldn't block reads of a different range."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        # Burn down one range
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="loop")
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="loop")
+        r3 = json.loads(read_file_tool(
+            self._tmpfile, offset=1, limit=100, task_id="loop",
+        ))
+        self.assertIn("error", r3)
+
+        # Different range — fresh read, should go through
+        r_other = json.loads(read_file_tool(
+            self._tmpfile, offset=1, limit=200, task_id="loop",
+        ))
+        self.assertNotIn("error", r_other)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_reset_file_dedup_clears_hits(self, mock_ops):
+        """Post-compression reset must clear stub-hit counters too,
+        otherwise the agent stays blocked after compression."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="loop")
+        read_file_tool(self._tmpfile, task_id="loop")
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertIn("error", r3)
+
+        reset_file_dedup("loop")
+
+        # Post-compression: block counters cleared and exact content is served
+        # once because the earlier payload may no longer be in context.
+        r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertNotIn("error", r4)
+        self.assertNotIn("dedup", r4)
+        self.assertIn("content", r4)
+
+        # The next unchanged read in this generation is lightweight again.
+        r5 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r5.get("dedup"))
+
+
+# ---------------------------------------------------------------------------
+# Dedup reset on compression
+# ---------------------------------------------------------------------------
+
+class TestDedupResetOnCompression(unittest.TestCase):
+    """Compaction starts a new full-content recovery generation."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = tempfile.mkdtemp()
+        self._tmpfile = os.path.join(self._tmpdir, "compress_test.txt")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("original content\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_first_post_compaction_read_recovers_exact_content(self, mock_ops):
+        """First post-compaction read is full; later reads deduplicate."""
+        mock_ops.return_value = _make_fake_ops(
+            content="SECRET_EXACT_LINE=42\n", file_size=21,
+        )
+        # First read — populates dedup cache
+        read_file_tool(self._tmpfile, task_id="comp")
+
+        # Verify dedup works before reset
+        r_dedup = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
+        self.assertTrue(r_dedup.get("dedup"), "Should dedup before reset")
+
+        # Simulate compression
+        reset_file_dedup("comp")
+
+        # Exact prior bytes may have been omitted from the summary, so the
+        # first read in the new generation must restore them.
+        r_post = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
+        self.assertNotIn("dedup", r_post)
+        self.assertIn("SECRET_EXACT_LINE=42", r_post.get("content", ""))
+
+        # The persisted mtime map still saves tokens after that recovery read.
+        r_again = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
+        self.assertTrue(r_again.get("dedup"))
+
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_reset_preserves_loop_detection(self, mock_ops):
+        """reset_file_dedup does NOT affect the consecutive-read counter."""
+        mock_ops.return_value = _make_fake_ops(
+            content="original content\n", file_size=18,
+        )
+        # Build up consecutive count (read 1 and 2)
+        read_file_tool(self._tmpfile, task_id="loop")
+        # 2nd read is deduped — doesn't increment consecutive counter
+        read_file_tool(self._tmpfile, task_id="loop")
+
+        reset_file_dedup("loop")
+
+        # First read in the new generation returns full content, not a stale
+        # block or a stub that points to compacted-away bytes.
+        r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertNotIn("error", r3)
+        self.assertNotIn("dedup", r3)
+        self.assertIn("content", r3)
+
+
+# ---------------------------------------------------------------------------
+# Large-file hint
+# ---------------------------------------------------------------------------
+
+class TestLargeFileHint(unittest.TestCase):
+    """Large truncated files should include a hint about targeted reads."""
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_truncated_file_gets_hint(self, mock_ops):
+        content = "line\n" * 400  # 2000 chars, small enough to pass char guard
+        fake = _make_fake_ops(content=content, total_lines=10000, file_size=600_000)
+        # Make to_dict return truncated=True
+        orig_read = fake.read_file
+        def patched_read(path, offset=1, limit=500):
+            r = orig_read(path, offset, limit)
+            orig_to_dict = r.to_dict
+            def new_to_dict():
+                d = orig_to_dict()
+                d["truncated"] = True
+                return d
+            r.to_dict = new_to_dict
+            return r
+        fake.read_file = patched_read
+        mock_ops.return_value = fake
+
+        result = json.loads(read_file_tool("/tmp/bigfile.log", task_id="hint"))
+        self.assertIn("_hint", result)
+        self.assertIn("section you need", result["_hint"])
+
+
+# ---------------------------------------------------------------------------
+# Config override
+# ---------------------------------------------------------------------------
+
+class TestConfigOverride(unittest.TestCase):
+    """file_read_max_chars in config.yaml should control the char guard."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        # Reset the cached value so each test gets a fresh lookup
+        import tools.file_tools as _ft
+        _ft._max_read_chars_cached = None
+
+    def tearDown(self):
+        _read_tracker.clear()
+        import tools.file_tools as _ft
+        _ft._max_read_chars_cached = None
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})
+    def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
+        """A config value of 50 should trigger truncation for reads over 50 chars,
+        with the configured limit reflected in the continuation hint."""
+        mock_ops.return_value = _make_fake_ops(content="x" * 60, file_size=60)
+        result = json.loads(read_file_tool("/tmp/cfgtest.txt", task_id="cfg1"))
+        self.assertNotIn("error", result)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("50", result["hint"])  # should show the configured limit
+        self.assertLessEqual(len(result["content"]), 50)
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})
+    def test_custom_config_raises_limit(self, _mock_cfg, mock_ops):
+        """A config value of 500K should allow reads up to 500K chars."""
+        # 200K chars would be rejected at the default 100K but passes at 500K
+        mock_ops.return_value = _make_fake_ops(
+            content="y" * 200_000, file_size=200_000,
+        )
+        result = json.loads(read_file_tool("/tmp/cfgtest2.txt", task_id="cfg2"))
+        self.assertNotIn("error", result)
+        self.assertIn("content", result)
+
+
+# ---------------------------------------------------------------------------
+# Write invalidates dedup cache (fixes #13144)
+# ---------------------------------------------------------------------------
+
+class TestWriteInvalidatesDedup(unittest.TestCase):
+    """write_file_tool and patch_tool must invalidate the read_file dedup
+    cache for the written path.  Without this, a read→write→read sequence
+    within the same mtime second returns a stale 'File unchanged' stub.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/13144
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-write-dedup-")
+        self._tmpfile = os.path.join(self._tmpdir, "write_dedup.txt")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("original content\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_invalidates_dedup_same_second(self, mock_ops):
+        """read→write→read within the same mtime second returns fresh content.
+
+        This is the core #13144 scenario: on filesystems with ≥1ms mtime
+        granularity, a write that lands in the same timestamp as the prior
+        read would previously cause the second read to return a stale dedup
+        stub because the mtime comparison saw no change.
+        """
+        fake = MagicMock()
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="original content\n", total_lines=1, file_size=18,
+        )
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # 1. Read — populates dedup cache.
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="wr"))
+        self.assertNotEqual(r1.get("dedup"), True)
+
+        # 2. Write — must invalidate dedup for this path.
+        #    (No sleep — we intentionally stay in the same mtime second.)
+        write_file_tool(self._tmpfile, "new content\n", task_id="wr")
+
+        # 3. Read again — should get full content, NOT dedup stub.
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="new content\n", total_lines=1, file_size=13,
+        )
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="wr"))
+        self.assertNotEqual(r2.get("dedup"), True,
+                            "read after write must not return dedup stub")
+        self.assertIn("content", r2)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_invalidates_all_offsets(self, mock_ops):
+        """A write invalidates dedup entries for ALL offset/limit combos."""
+        fake = MagicMock()
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="line1\nline2\nline3\n", total_lines=3, file_size=20,
+        )
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # Read with different offsets to populate multiple dedup entries.
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
+        read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+
+        # Write — should invalidate BOTH dedup entries.
+        write_file_tool(self._tmpfile, "replaced\n", task_id="off")
+
+        # Both reads should return fresh content.
+        r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))
+        r2 = json.loads(read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off"))
+        self.assertNotEqual(r1.get("dedup"), True,
+                            "offset=1 should not dedup after write")
+        self.assertNotEqual(r2.get("dedup"), True,
+                            "offset=50 should not dedup after write")
+
+
+        # Task B still sees dedup (its cache is separate — the file
+        # *may* have changed on disk, but mtime comparison handles that;
+        # here we test that invalidation is scoped to the writing task).
+        # Note: on real FS, task B's dedup might or might not hit depending
+        # on mtime.  The point is that _invalidate_dedup_for_path is
+        # correctly scoped to task_id.
+
+
+    def test_invalidate_dedup_for_path_noop_on_empty_dedup(self):
+        """_invalidate_dedup_for_path is safe when dedup dict is empty."""
+        _read_tracker.clear()
+        _read_tracker["t"] = {
+            "last_key": None, "consecutive": 0,
+            "read_history": set(), "dedup": {},
+        }
+        _invalidate_dedup_for_path("/some/path", "t")
+        self.assertEqual(_read_tracker["t"]["dedup"], {})
+
+
+if __name__ == "__main__":
+    unittest.main()

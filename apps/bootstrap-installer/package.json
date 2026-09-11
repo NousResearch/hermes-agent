@@ -1,0 +1,51 @@
+{
+  "name": "@hermes/bootstrap-installer",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5175",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug",
+    "typecheck": "tsc -p . --noEmit",
+    "check": "npm run typecheck && npm run lint",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix"
+  },
+  "dependencies": {
+    "@nous-research/ui": "0.18.2",
+    "@tailwindcss/typography": "0.5.20",
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.1",
+    "@tauri-apps/plugin-opener": "2.5.4",
+    "@tauri-apps/plugin-process": "2.3.1",
+    "@tauri-apps/plugin-shell": "2.3.5",
+    "@vscode/codicons": "0.0.45",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "katex": "0.16.47",
+    "lucide-react": "0.577.0",
+    "nanostores": "1.4.2",
+    "radix-ui": "1.6.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "3.6.0",
+    "tailwindcss": "4.3.3",
+    "tw-shimmer": "0.4.12"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "6.0.3",
+    "vite": "8.2.0"
+  }
+}

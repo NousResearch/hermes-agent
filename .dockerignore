@@ -1,0 +1,115 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Dependencies
+node_modules
+**/node_modules
+.venv
+**/.venv
+.notebooklm-cli-venv/
+.notebooklm-playwright/
+.pip-cache/
+.uv-cache/
+
+# Built artifacts that are regenerated inside the image.  Excluded so local
+# rebuilds on the developer's machine don't invalidate the npm-install layer
+# that now depends on the full ui-tui/packages/hermes-ink/ tree being present.
+ui-tui/dist/
+ui-tui/packages/hermes-ink/dist/
+
+# CI/CD
+.github
+
+# Environment files
+.env
+.env.*
+# ...but keep the template: docker/stage2-hook.sh seeds $HERMES_HOME/.env from
+# /opt/hermes/.env.example on first boot (OOF-285 — excluding it silently broke
+# first-boot .env seeding and the API_SERVER_KEY generation that depends on it).
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+*.md
+
+# Runtime data (bind-mounted at /opt/data; must not leak into build context)
+data/
+.hermes-docker/
+.notebooklm-home/
+
+# Compose/profile runtime state (bind-mounted; avoid ownership/secret issues)
+hermes-config/
+runtime/
+
+# ---------- Not needed inside the Docker image ----------
+
+# Desktop app source (Tauri/Electron); never installed in the container.
+# apps/shared is the dashboard↔desktop websocket helper and is linked from
+# web/package.json as a file: workspace dep — keep it in the build context.
+apps/
+!apps/shared/
+!apps/shared/**
+
+# Test suite — not shipped in production images
+tests/
+
+# Documentation site (Docusaurus) and supplementary docs
+website/
+docs/
+
+# Assets only used by the GitHub README
+assets/
+infographic/
+
+# Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)
+plugins/hermes-achievements/docs/
+
+# Nix / Homebrew / AUR packaging metadata — irrelevant to Docker
+nix/
+flake.nix
+flake.lock
+packaging/
+
+# Design and planning documents
+plans/
+.plans/
+
+# Repo-level dotfiles that are git-only or dev-tooling config
+.envrc
+.gitattributes
+.hadolint.yaml
+.mailmap
+
+# Debug/export artifacts — must never reach image layers (COPY . .)
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+*.tar.gz
+*.tgz

@@ -1,0 +1,5 @@
+name: novita-provider
+kind: model-provider
+version: 1.0.0
+description: NovitaAI AI-native cloud for builders and agents
+author: Nous Research

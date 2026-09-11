@@ -2,23 +2,26 @@
 
 ## Current objective
 
-Complete accepted T001 only: establish the local source baseline with preserved project and upstream ancestry, without changing Hermes runtime behavior.
+T001 is complete: the local repository preserves accepted project-planning history and complete ancestry of exact upstream Hermes commit `110736c0bc9fd249f1ce7f7ca5d353040f640be6` without changing Hermes runtime behavior.
 
-## Resume sequence
+## Completed T001 record
 
-1. Commit the accepted planning/project-control snapshot with neutral existing repository identity.
-2. Fetch complete ancestry of exact upstream commit `110736c0bc9fd249f1ce7f7ca5d353040f640be6` without retaining a remote.
-3. Verify non-shallow state, complete objects and exact fetched identity.
-4. Merge unrelated histories without auto-commit.
-5. Require exactly three add/add conflicts: `.gitignore`, `AGENTS.md`, `README.md`.
-6. Keep upstream README, combine both AGENTS rule sets, and union ignore rules.
-7. Verify no upstream runtime/source/test/package delta outside the accepted planning/conflict allowlist.
-8. Create the topology merge commit and perform exact clean/ancestry/fsck/no-remote readback.
+1. Accepted planning/project-control snapshot commit: `a6731b60ff2408379c31fed356557c9ab0b35533`.
+2. Original scaffold ancestor: `90efb60b5c10329db2843bf461027c138d6dcca7`.
+3. Exact upstream merge parent: `110736c0bc9fd249f1ce7f7ca5d353040f640be6`.
+4. Repository is non-shallow and preserves complete reachable ancestry.
+5. Exactly three documentary conflicts were resolved: `.gitignore`, `AGENTS.md`, `README.md`.
+6. Upstream README is retained byte-for-byte; both applicable AGENTS rule sets are retained; ignore rules are unioned.
+7. No upstream source/runtime/test/package semantics were changed by T001.
 
-## Stop conditions
+## Resume from
 
-Stop for reconciliation on incomplete ancestry, any additional conflict, any source-semantic delta, ambiguous path, secret, retained remote/tag/submodule/nested repository or failed verification.
+The next task is T002 — public contract, host resolver, registration, consent and common lifecycle projection. Do not enter T002 until the owner gives separate exact authorization. T002 does not include commit authority.
+
+## Verification boundary
+
+T001 completion requires post-commit readback of exact two-parent topology, both required ancestor checks, allowlisted diff, `git fsck --full`, clean tree and absence of remotes, tags, submodules and nested repositories.
 
 ## Not authorized
 
-T002 or later work, API source implementation, push, publication, installation, profile/gateway/runtime changes, consumer work, pilot and LIVE.
+T002 or later work, additional commits, API source implementation, push, publication, installation, profile/gateway/runtime changes, consumer work, pilot and LIVE.

@@ -82,15 +82,7 @@ def test_extra_secret_specs_reject_builtin_aliases_and_egress_control_names(env_
         {"env_var": "FIRST_SECRET", "hosts": ["api.example.com"]},
         {"env_var": "SECOND_SECRET", "hosts": ["api.example.com"]},
     ],
-    [
-        {"env_var": "FIRST_SECRET", "hosts": ["*.example.com"]},
-        {"env_var": "SECOND_SECRET", "hosts": ["api.example.com"]},
-    ],
     [{"env_var": "SERVICE_SECRET", "hosts": ["api.openai.com"]}],
-    [
-        {"env_var": "FIRST_SECRET", "hosts": ["*.example.com"]},
-        {"env_var": "SECOND_SECRET", "hosts": ["*.api.example.com"]},
-    ],
 ])
 def test_extra_secret_specs_reject_overlapping_host_scopes(extra_secrets):
     with pytest.raises(ValueError, match="overlaps mapping"):

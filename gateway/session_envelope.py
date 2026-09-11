@@ -89,17 +89,11 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
     if event.source.platform.value == 'webhook':
-        from gateway.platforms.webhook_delivery import route_digest, validate_destination
+        from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
         if provenance is None:
             raise RuntimeStoreError('permission_denied')
-        delivery = validate_destination(adapter._delivery_info.get(event.source.chat_id))
-        if delivery['deliver'] not in {'log', 'github_comment'} and not delivery['deliver_extra'].get('chat_id'):
-            from gateway.config import Platform
-            home = runner.config.get_home_channel(Platform(delivery['deliver']))
-            if home is None:
-                raise RuntimeStoreError('not_found')
-            delivery['deliver_extra']['chat_id'] = home.chat_id
+        delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
         envelope['webhook_delivery'] = delivery
         envelope['webhook_route'] = route_digest(adapter, event.source.chat_id)
     if event.source.role_authorized:

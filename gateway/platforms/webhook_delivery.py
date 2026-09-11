@@ -17,7 +17,10 @@ def route_digest(adapter, chat_id):
 
 def validate_destination(delivery):
     from gateway.platforms.webhook import _is_known_platform, _REPO_RE
-    if not isinstance(delivery, dict) or set(delivery) != {'deliver', 'deliver_extra'}:
+    if (not isinstance(delivery, dict)
+            or not {'deliver', 'deliver_extra'} <= set(delivery)
+            or set(delivery) - {'deliver', 'deliver_extra', 'profile'}
+            or (delivery.get('profile') is not None and not isinstance(delivery['profile'], str))):
         raise RuntimeStoreError('invalid_params')
     target, extra = delivery['deliver'], delivery['deliver_extra']
     if not isinstance(target, str) or not isinstance(extra, dict):
@@ -32,7 +35,25 @@ def validate_destination(delivery):
     # Persist only fields the selected sender actually consumes.
     fields = {'log': (), 'github_comment': ('repo', 'pr_number')}.get(
         target, ('chat_id', 'message_thread_id', 'thread_id'))
-    return {'deliver': target, 'deliver_extra': deepcopy({key: extra[key] for key in fields if key in extra})}
+    result = {'deliver': target, 'deliver_extra': deepcopy({key: extra[key] for key in fields if key in extra})}
+    # Omit the unbound default to preserve pre-profile receipt fingerprints.
+    if delivery.get('profile'):
+        result['profile'] = delivery['profile']
+    return result
+
+
+def snapshot_destination(adapter, delivery):
+    from gateway.config import Platform
+
+    result = validate_destination(delivery)
+    if result['deliver'] not in {'log', 'github_comment'} and not result['deliver_extra'].get('chat_id'):
+        profile = result.get('profile')
+        with adapter._profile_scope(profile):
+            home = adapter._delivery_config(profile).get_home_channel(Platform(result['deliver']))
+        if home is None:
+            raise RuntimeStoreError('not_found')
+        result['deliver_extra']['chat_id'] = home.chat_id
+    return result
 
 
 def retained_destination(adapter, chat_id):

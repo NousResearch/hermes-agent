@@ -678,7 +678,11 @@ class CLIInfoMixin:
                 print(fallback)
 
         if not self.agent:
-            _credits_or("(._.) No active agent -- send a message first.")
+            shown = self._show_persisted_session_usage()
+            if self._print_nous_credits_block():
+                self._print_usage_cta()
+            elif not shown:
+                print("(._.) No active agent -- send a message first.")
             return
         agent = self.agent
         calls = agent.session_api_calls
@@ -750,6 +754,74 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+
+    def _show_persisted_session_usage(self) -> bool:
+        """Render persisted session usage when /usage has no live agent.
+
+        Desktop slash commands may run in a worker process that resumes the
+        session without constructing or sharing the active ``AIAgent``. The
+        live-agent path remains authoritative for context-window details; this
+        fallback shows only provider-agnostic persisted usage data.
+        """
+        from cli import logger
+
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        if not session_id or session_db is None:
+            return False
+
+        try:
+            row = session_db.get_session(session_id)
+        except Exception:
+            logger.debug(
+                "Failed to load persisted usage for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+        if not row:
+            return False
+
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        reasoning_tokens = int(row.get("reasoning_tokens") or 0)
+        calls = int(row.get("api_call_count") or 0)
+        total = input_tokens + output_tokens
+        if calls <= 0 and total <= 0:
+            return False
+
+        model = row.get("model") or getattr(self, "model", None) or "unknown"
+        message_count = row.get("message_count")
+        msg_count = int(
+            message_count
+            if message_count is not None
+            else len(getattr(self, "conversation_history", []) or [])
+        )
+
+        row_format = "  {label:<27}{value}"
+        print("  📊 Persisted Session Token Usage")
+        print(f"  {'─' * 40}")
+        print(row_format.format(label="Model:", value=model))
+        print(row_format.format(label="Input tokens:", value=f"{input_tokens:>10,}"))
+        print(row_format.format(label="Output tokens:", value=f"{output_tokens:>10,}"))
+        if reasoning_tokens:
+            print(
+                row_format.format(
+                    label="↳ Reasoning (subset):",
+                    value=f"{reasoning_tokens:>10,}",
+                )
+            )
+        print(row_format.format(label="Total tokens:", value=f"{total:>10,}"))
+        print(row_format.format(label="API calls:", value=f"{calls:>10,}"))
+        print(f"  {'─' * 40}")
+        print(row_format.format(label="Messages:", value=f"{msg_count:>10,}"))
+        print(
+            row_format.format(
+                label="Note:",
+                value="persisted DB snapshot; live context details unavailable",
+            )
+        )
+        return True
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history (`--days N` / `N`, `--source`)."""

@@ -4164,15 +4164,41 @@ class SlackAdapter(BasePlatformAdapter):
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
         _ts = str((event or {}).get("ts") or "")
+        _marker_event = event or {}
+        if _marker_event.get("subtype") == "message_changed" and isinstance(
+            _marker_event.get("message"), dict
+        ):
+            _marker_event = _marker_event["message"]
+            _ts = str(_marker_event.get("ts") or _ts)
+        _team_id = self._event_team_id(_marker_event, payload) or self._event_team_id(
+            event or {}, payload
+        )
+        _user_id = str(_marker_event.get("user") or "")
+        _marker = (
+            self._processed_message_marker(_team_id, _user_id, _ts)
+            if _team_id and _ts
+            else None
+        )
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
+        _markers = getattr(self, "_processed_message_markers", None)
         _was_claimed = bool(_ts) and _claims is not None and _ts in _claims
+        _was_marker_claimed = bool(
+            _marker is not None and _markers is not None and _marker in _markers
+        )
         try:
             return await self._handle_slack_message_impl(event, payload)
         except BaseException:
             _claims = getattr(self, "_processed_message_ts", None)
             if _ts and not _was_claimed and _claims is not None and _ts in _claims:
                 _claims.pop(_ts, None)
+                _markers = getattr(self, "_processed_message_markers", None)
+                if (
+                    _marker is not None
+                    and not _was_marker_claimed
+                    and _markers is not None
+                ):
+                    _markers.discard(_marker)
                 logger.warning(
                     "[%s] handler failed after claiming ts=%s; claim released "
                     "so a retry or edit can re-drive the turn", self.name, _ts)
@@ -5542,7 +5568,13 @@ class SlackAdapter(BasePlatformAdapter):
         for _page in range(10):
             try:
                 result = await self._conversations_replies_with_backoff(
-                    channel_id, thread_ts, 100, team_id, cursor=cursor
+                    channel_id,
+                    thread_ts,
+                    100,
+                    team_id,
+                    cursor=cursor,
+                    latest=current_ts,
+                    inclusive=False,
                 )
             except Exception as exc:
                 logger.warning("[Slack] Failed to fetch complete thread context: %s", exc)

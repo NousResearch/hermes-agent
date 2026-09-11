@@ -3507,6 +3507,70 @@ class TestThreadReplyHandling:
         assert not adapter_with_session_store._thread_rehydration_checked
 
     @pytest.mark.asyncio
+    async def test_complete_restart_refresh_is_bounded_before_triggering_reply(
+        self, adapter_with_session_store
+    ):
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={"messages": [], "response_metadata": {"next_cursor": ""}}
+        )
+
+        _, complete = await adapter_with_session_store._fetch_complete_thread_context(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.500",
+            team_id="T_TEAM",
+        )
+
+        assert complete is True
+        call = adapter_with_session_store._app.client.conversations_replies.await_args.kwargs
+        assert call["latest"] == "123.500"
+        assert call["inclusive"] is False
+
+    @pytest.mark.asyncio
+    async def test_failed_handler_releases_session_scoped_processed_marker(
+        self, adapter_with_session_store
+    ):
+        adapter_with_session_store.handle_message = AsyncMock(
+            side_effect=RuntimeError("agent delivery failed")
+        )
+        failed_event = {
+            "text": "please verify",
+            "user": "U_USER",
+            "client_msg_id": "human-message",
+            "_hermes_force_process": True,
+            "channel": "C123",
+            "ts": "123.200",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        with pytest.raises(RuntimeError, match="agent delivery failed"):
+            await adapter_with_session_store._handle_slack_message(failed_event)
+
+        marker = adapter_with_session_store._processed_message_marker(
+            "T_TEAM", "U_USER", "123.200"
+        )
+        assert marker not in adapter_with_session_store._processed_message_markers
+
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.200", "user": "U_USER", "text": "please verify"},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        )
+        context, _ = await adapter_with_session_store._fetch_thread_delta(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.500",
+            team_id="T_TEAM",
+            user_id="U_USER",
+            after_ts="123.100",
+        )
+        assert "please verify" in context
+
+    @pytest.mark.asyncio
     async def test_out_of_order_pending_bot_event_forces_full_recovery(
         self, adapter_with_session_store, mock_session_store
     ):

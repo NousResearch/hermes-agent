@@ -2619,7 +2619,10 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / "go" / "bin"),  # Go tools
         str(home / ".npm-global" / "bin"),  # npm global packages
     ]
-    return [p for p in candidates if p not in path_entries and Path(p).exists()]
+    # os.path.exists, not Path.exists: pathlib only swallows ENOENT/ENOTDIR-class
+    # errors and propagates EACCES, which fires when an ancestor dir denies +X
+    # (e.g. stat'ing /root/.local/bin as non-root on a 0700 /root).
+    return [p for p in candidates if p not in path_entries and os.path.exists(p)]
 
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:

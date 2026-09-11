@@ -1363,6 +1363,27 @@ class TestSystemUnitHermesHome:
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
 
+    def test_system_unit_tolerates_unreadable_home_bin_dirs(self, monkeypatch, tmp_path):
+        """A home whose bin-dir ancestors deny +X (e.g. /root as non-root) must not crash
+        unit generation: unreadable candidates are treated as absent, not PermissionError."""
+        locked_home = tmp_path / "lockedhome"
+        (locked_home / ".local" / "bin").mkdir(parents=True)
+        locked_home.chmod(0o000)
+        try:
+            monkeypatch.setattr(Path, "home", staticmethod(lambda: locked_home))
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+            monkeypatch.setattr(
+                gateway_cli, "_system_service_identity",
+                lambda run_as_user=None: ("alice", "alice", str(tmp_path), 1001),
+            )
+            monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+
+            user_unit = gateway_cli.generate_systemd_unit(system=False)
+        finally:
+            locked_home.chmod(0o700)
+
+        assert str(locked_home / ".local" / "bin") not in user_unit
+
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))

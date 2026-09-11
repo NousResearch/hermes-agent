@@ -518,6 +518,65 @@ async def test_auto_reset_repoints_topic_binding_instead_of_switching_back(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_repoints_when_reset_flag_already_consumed(tmp_path):
+    """Typed /model as the first post-reset message consumes the auto-reset flag (#48031);
+    the topic heal must still recognize the replacement from prev_session_id metadata and
+    rebind, not switch back to the retired predecessor."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-topic-session",
+    )
+    session_db.create_session(
+        session_id="new-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    successor = SessionEntry(
+        session_key=topic_key,
+        session_id="new-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+        was_auto_reset=False,  # consumed by the typed /model path (#48031)
+        prev_session_id="old-topic-session",
+    )
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source, **_kwargs: successor
+    )
+
+    resolved = await runner._hmwa_resolve_session(
+        _make_event("hello", thread_id="17585"), topic_source
+    )
+
+    assert resolved is not None
+    _, entry, _ = resolved
+    assert entry.session_id == "new-topic-session"
+    runner.session_store.switch_session.assert_not_called()
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "new-topic-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
     """Stale topic bindings auto-heal to the compression child on next inbound.
 

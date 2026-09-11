@@ -212,11 +212,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True, desktop="terminal"),
     CommandDef("skills", "Search, install, inspect, or manage skills",
-               "Tools & Skills", cli_only=True,
+               "Tools & Skills",
                gateway_config_gate="skills.write_approval",
                subcommands=("search", "browse", "inspect", "install", "audit",
-                            "pending", "approve", "reject", "diff", "approval"),
-               desktop="settings"),
+                            "pending", "approve", "reject", "diff", "approval")),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
@@ -358,9 +357,13 @@ for _cmd in COMMAND_REGISTRY:
 
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
 for _cmd in COMMAND_REGISTRY:
-    _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
-    if _m and f"/{_cmd.name}" not in SUBCOMMANDS:
-        SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
+    if f"/{_cmd.name}" not in SUBCOMMANDS:
+        if _cmd.subcommands:
+            SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+        else:
+            _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
+            if _m:
+                SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
 
 
 # /help sub-groups for the large "Session" category (category itself is load-bearing for gateway

@@ -1,0 +1,12 @@
+name: fleet-models
+version: 1.0.0
+kind: backend
+author: WeRoll fleet (Cowork, on Richie's instruction 2026-09-11)
+description: >-
+  The fleet's single source of truth for model settings: ~/.hermes/fleet/models.yaml (registry, every
+  agent's waterfalls, host pins, reasoning pins, pricing inputs, policy). core.py compiles it into the nine
+  config.yaml files Hermes reads — validated, verified, with a pre-image kept for one-click revert — so a
+  model change is one write instead of a dozen hand edits. At runtime this plugin closes two gaps Hermes
+  leaves: auxiliary calls (vision, compression, titles, decomposer) get the destination model's host pins,
+  reasoning pin and data_collection deny even when they fall back, and cron honours cron.fallback_providers.
+  The dashboard's Models tab (dashboard/) is the control surface. Bundled + kind:backend: loads everywhere.

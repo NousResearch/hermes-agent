@@ -38,11 +38,26 @@ function ownedRealms(data, session) {
 }
 
 const modeLabel = mode => ({ realm: 'Realm mode · waiting for apps', host: 'Host mode · your desktop', ask: 'Ask mode · choose a desktop' })[mode];
-function realmLabel(realm) {
+// A VM realm is a different machine, not a different window group, so the user
+// must be able to tell which one a session is on at a glance.
+const KIND_NAMES = { realm: 'Realm', 'omarchy-vm': 'Omarchy VM' };
+const kindName = kind => KIND_NAMES[kind] || 'Realm';
+const gib = bytes => Number.isFinite(bytes) && bytes > 0 ? `${(bytes / 1073741824).toFixed(1)} GB` : null;
+export function realmLabel(realm) {
+  const name = kindName(realm.kind);
+  const state = ['starting', 'live', 'stopping', 'stopped', 'error'].includes(realm.state) ? realm.state : 'unknown';
+  const control = realm.controlled ? ' · user control' : '';
+  if (realm.kind === 'omarchy-vm') {
+    // Cost is what the user actually wants on hover: a guest holds its whole
+    // -m figure in host RAM for as long as it runs.
+    const detail = [gib(realm.stats?.memory_bytes) && `${gib(realm.stats.memory_bytes)} RAM`,
+      gib(realm.stats?.disk_bytes) && `${gib(realm.stats.disk_bytes)} disk`,
+      realm.network === false && 'no network'].filter(Boolean).join(' · ');
+    return `${name} · ${state}${detail ? ` · ${detail}` : ''}${control}`;
+  }
   const count = Number.isSafeInteger(realm.window_count) && realm.window_count >= 0 ? realm.window_count : null;
   const windows = count === null ? 'windows unknown' : `${count} ${count === 1 ? 'window' : 'windows'}`;
-  const state = ['starting', 'live', 'stopping', 'stopped', 'error'].includes(realm.state) ? realm.state : 'unknown';
-  return `Realm · ${windows} · ${state}${realm.controlled ? ' · user control' : ''}`;
+  return `${name} · ${windows} · ${state}${control}`;
 }
 
 export async function viewerId(session, realmId) {
@@ -62,7 +77,7 @@ export async function openRealmViewer(ctx, session, realm, target, isCurrent = (
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || /[\s\\]/.test(reply.url)) throw new Error('Invalid viewer URL');
   const id = await viewerId(session, realm.id);
   if (!isCurrent()) throw new Error('Realm owner changed before viewer opened');
-  const label = `Realm · ${session.profile}`;
+  const label = `${kindName(realm.kind)} · ${session.profile}`;
   const opened = target === 'watch'
     ? await host.openPreview?.({ url: reply.url, label, session })
     : await ctx.os?.openViewer?.({ id, url: reply.url, title: label.slice(0, 120), session });
@@ -104,10 +119,13 @@ export default {
         jsx(Button, { size: 'micro', variant: 'ghost', disabled: result.isFetching, onClick: () => void result.refetch(), children: 'Retry' })
       ] });
       const mode = result.data?.mode;
-      if (mode === 'realm' && result.data?.setup?.ready === false) return jsx('div', {
+      // The two kinds have independent prerequisites: a profile with a working
+      // labwc realm and no VM base image is ready, just not for the VM kind.
+      const setup = result.data?.kind === 'omarchy-vm' ? result.data?.vm_setup : result.data?.setup;
+      if (mode === 'realm' && setup?.ready === false) return jsx('div', {
         role: 'alert', style: { fontSize: 12 }, children: jsxs('details', { children: [
-          jsx('summary', { children: 'Realms setup required' }),
-          jsx('div', { children: result.data.setup.message })
+          jsx('summary', { children: `${kindName(result.data?.kind)} setup required` }),
+          jsx('div', { children: setup.message })
         ] })
       });
       if (!realms.length) return modeLabel(mode) ? jsx('div', { style: { color: 'var(--ui-text-secondary)', fontSize: 12 }, children: modeLabel(mode) }) : null;
@@ -131,8 +149,12 @@ export default {
       const realms = ownedRealms(result.data, session);
       if (!realms.length) return null;
       const label = `${result.isError ? 'Realm status unavailable · Last known: ' : ''}${realms.map(realmLabel).join('; ')}`;
-      const knownCount = realms.every(realm => Number.isSafeInteger(realm.window_count) && realm.window_count >= 0);
-      const compact = knownCount ? `Realm · ${realms.reduce((sum, realm) => sum + realm.window_count, 0)}` : 'Realm';
+      // The compact badge names the kind, because 'which machine am I on' is
+      // the one thing a glance has to answer.
+      const vm = realms.some(realm => realm.kind === 'omarchy-vm');
+      const knownCount = !vm && realms.every(realm => Number.isSafeInteger(realm.window_count) && realm.window_count >= 0);
+      const compact = vm ? 'Omarchy VM'
+        : knownCount ? `Realm · ${realms.reduce((sum, realm) => sum + realm.window_count, 0)}` : 'Realm';
       return jsx(Badge, { size: 'xs', title: label, 'aria-label': label, children: compact });
     }
     ctx.register({ id: 'realm-status', area: SESSION_AREAS.statusStack, data: { render: StatusRow } });

@@ -121,3 +121,71 @@ it('preserves a known realm badge through refetch errors, then reconciles author
   })
   expect(view.container.textContent).toBe('')
 })
+
+it('names the Omarchy VM kind in the badge and its cost on hover', () => {
+  // "Which machine am I on" is the one thing a glance must answer: a VM realm
+  // is a different machine from the labwc realm, and it costs its whole -m
+  // figure in host RAM while it runs, so the hover carries that cost.
+  const renders = new Map<string, ComponentType<SessionContributionProps>>()
+  const ctx = {
+    rest: vi.fn(),
+    register: ({ area, data }: { area: string; data: SessionContribution }) => renders.set(area, data.render)
+  }
+
+  realmsPlugin.register(ctx)
+  const client = new QueryClient()
+  clients.push(client)
+  const options = realmQueryOptions(ctx, session)
+  client.setQueryData(options.queryKey, {
+    kind: 'omarchy-vm',
+    realms: [{
+      id: 'vm', stored_session_id: 'history', kind: 'omarchy-vm', state: 'live',
+      memory_mb: 3072, network: true,
+      stats: { memory_bytes: 3313926144, disk_bytes: 18546688 }
+    }]
+  })
+  const ListBadge = renders.get(SESSION_AREAS.listBadge)!
+
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ListBadge session={session} />
+    </QueryClientProvider>
+  )
+
+  expect(view.container.textContent).toBe('Omarchy VM')
+  const title = view.container.querySelector('[title]')!.getAttribute('title')!
+  expect(title).toContain('Omarchy VM')
+  expect(title).toContain('live')
+  expect(title).toContain('3.1 GB RAM')
+})
+
+it('reports a network-disabled VM realm on hover', () => {
+  // restrict=on is a safety posture the user chose; the badge must not imply
+  // the guest can reach the internet when it cannot.
+  const renders = new Map<string, ComponentType<SessionContributionProps>>()
+  const ctx = {
+    rest: vi.fn(),
+    register: ({ area, data }: { area: string; data: SessionContribution }) => renders.set(area, data.render)
+  }
+
+  realmsPlugin.register(ctx)
+  const client = new QueryClient()
+  clients.push(client)
+  const options = realmQueryOptions(ctx, session)
+  client.setQueryData(options.queryKey, {
+    kind: 'omarchy-vm',
+    realms: [{
+      id: 'vm', stored_session_id: 'history', kind: 'omarchy-vm', state: 'live',
+      memory_mb: 3072, network: false, stats: { memory_bytes: 3313926144 }
+    }]
+  })
+  const ListBadge = renders.get(SESSION_AREAS.listBadge)!
+
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ListBadge session={session} />
+    </QueryClientProvider>
+  )
+
+  expect(view.container.querySelector('[title]')!.getAttribute('title')!).toContain('no network')
+})

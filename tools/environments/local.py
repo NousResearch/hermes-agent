@@ -754,7 +754,17 @@ class LocalEnvironment(BaseEnvironment):
         fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``), /tmp,
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
-        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
+        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid).
+
+        A session execution context that routes commands into ANOTHER filesystem
+        declares where state lives on that side; every host candidate below names a
+        directory the routed shell cannot see, so the snapshot would be written
+        where nothing can read it and env vars would stop persisting between
+        commands (silently: the bootstrap's ``mktemp`` failure only warns)."""
+        routed = getattr(getattr(self.execution_context, "context", None),
+                         "backend_temp_dir", None)
+        if routed:
+            return routed.rstrip("/") or "/"
         if _IS_WINDOWS:
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")

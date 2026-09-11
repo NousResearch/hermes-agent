@@ -14,20 +14,50 @@ requirements_available = _integration.requirements_available
 
 SCHEMA = {
     "name": "realm",
-    "description": "Manage this conversation’s private desktop. Use on for private realm, off ONLY for explicit user-requested host access, status, size, stop or watch. Use shot only when realm Cua app=screen capture fails; never fall back to host capture. Load skill hermes-realms:realms for natural-language desktop intent. Existing approvals always apply.",
+    "description": "Manage this conversation’s private desktop. Use on for a private realm (kind=omarchy-vm for a disposable Omarchy VM when the task needs a real Omarchy: shell plugins, Hyprland, system changes), off ONLY for explicit user-requested host access, status, size, stop, watch, or push/pull to copy files in and out of a VM realm. Use shot only when realm Cua app=screen capture fails; never fall back to host capture. Announce which kind is in use. Load skill hermes-realms:realms for natural-language desktop intent. Existing approvals always apply.",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["on", "off", "status", "size", "stop", "watch", "shot"],
+                "enum": ["on", "off", "status", "size", "stop", "watch", "shot",
+                         "push", "pull"],
             },
             "size": {"type": "string", "description": "WIDTHxHEIGHT for action=size"},
+            "kind": {
+                "type": "string",
+                "enum": ["realm", "omarchy-vm"],
+                "description": "Desktop kind for action=on. realm (default) is a fast private labwc desktop; omarchy-vm is a disposable Omarchy guest in QEMU with its own kernel and disk.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Host path for action=push, guest path for action=pull",
+            },
+            "destination": {
+                "type": "string",
+                "description": "Guest path for action=push, host path for action=pull",
+            },
         },
         "required": ["action"],
         "additionalProperties": False,
     },
 }
+
+
+def _raw_command(args):
+    """Render tool arguments as the equivalent slash-command text.
+
+    One parser for both surfaces: whatever ``/realm ...`` accepts is exactly
+    what the tool accepts, and neither can drift into having its own rules.
+    """
+    action = args.get("action", "status")
+    arguments = {
+        "size": [args.get("size", "")],
+        "on": [{"omarchy-vm": "omarchy"}.get(args.get("kind", ""), args.get("kind", ""))],
+        "push": [args.get("path", ""), args.get("destination", "")],
+        "pull": [args.get("path", ""), args.get("destination", "")],
+    }.get(action, [])
+    return " ".join([action, *(value for value in arguments if value)])
 
 
 def register(ctx):
@@ -53,21 +83,19 @@ def register(ctx):
             )
 
     def tool(args, **identity):
-        action = args.get("action", "status")
-        raw = action + (" " + args.get("size", "") if action == "size" else "")
-        return command(raw, **identity)
+        return command(_raw_command(args), **identity)
 
     ctx.register_tool("realm", "realms", SCHEMA, tool, check_fn=requirements_available)
     ctx.register_command(
         "realm",
         command,
-        description="Private desktop: on, off, status, size, stop, watch, shot",
+        description="Private desktop: on [omarchy], off, status, size, stop, watch, shot, push, pull",
     )
     ctx.register_hook("pre_tool_call", service.pre_tool)
     ctx.register_hook("on_session_identity", service.bind)
     ctx.register_hook("on_session_start", service.bind)
     ctx.register_hook("on_session_finalize", service.finalize)
-    ctx.register_hook("on_session_reset", service.finalize)
+    ctx.register_hook("on_session_reset", service.reset)
     ctx.on_unload(service.unload)
     ctx.register_skill(
         "realms",

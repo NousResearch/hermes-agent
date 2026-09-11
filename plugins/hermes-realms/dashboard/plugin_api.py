@@ -55,6 +55,28 @@ def list_realms(
     return result
 
 
+@router.get("/realms/vm/settings")
+def vm_settings(check_updates: bool = False):
+    """The Desktop → Plugins → Realms "Omarchy VM" block.
+
+    ``check_updates`` is opt-in: the panel must render with no network, and an
+    unreachable GitHub reports "unknown" rather than a fabricated verdict.
+    """
+    service = get_integration()
+    return {
+        **service.vm.settings(check_updates=check_updates),
+        "setup": _integration.vm_setup_status(service.home),
+    }
+
+
+@router.post("/realms/vm/clean")
+def vm_clean():
+    """Drop stale ISOs and orphaned session disks; never touches a live realm."""
+    service = get_integration()
+    _cli = _load_runtime("cli")
+    return {**_cli.clean(service.vm), "storage": service.vm.storage()}
+
+
 @router.post("/realms/{realm_id}/watch")
 def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
     service = get_integration()

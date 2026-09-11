@@ -37,6 +37,15 @@ def get_profile_viewer(home):
             def resolve(realm_id):
                 from .lifecycle import RealmError, validate_live
 
+                if realm_id.startswith("v-"):
+                    # A VM realm's viewer endpoint is QEMU's VNC unix socket.
+                    # Same RFB protocol, same ownership rules, different manager.
+                    from .vm_manager import VmManager, VmError
+
+                    try:
+                        return VmManager(key).validate(realm_id)
+                    except (RealmError, VmError, OSError, ValueError):
+                        return None
                 try:
                     with manager.registry.lock():
                         record = manager.registry.get(realm_id)
@@ -59,6 +68,28 @@ def close_profile_viewer(home):
         server = _profile_servers.pop(key, None)
     if server:
         server.stop()
+
+
+def _peer_in_realm_scope(pid, realm):
+    """Whether *pid* runs inside this VM realm's own systemd scope.
+
+    A labwc realm proves socket ownership by matching the listener against the
+    worker/VNC processes it started. A VM realm has neither: QEMU is the
+    listener and systemd owns it. The equivalent proof is cgroup membership —
+    the realm's record pins the scope at launch, so a PID inside it is that
+    realm's QEMU and nothing else. Reading ``/proc`` also closes the PID-reuse
+    window that comparing bare PIDs would leave open.
+    """
+    scope = realm.get("cgroup")
+    if not scope:
+        return False
+    try:
+        with open(f"/proc/{int(pid)}/cgroup", encoding="utf-8") as handle:
+            current = handle.read()
+    except (OSError, ValueError):
+        return False
+    return any(line.split(":", 2)[-1].strip() == scope
+               for line in current.splitlines() if line.strip())
 
 
 class ViewerServer:
@@ -265,11 +296,18 @@ class ViewerServer:
                 # SO_PEERCRED identifies the listener creator. The worker
                 # prebinds the product socket and passes it to WayVNC; a
                 # directly bound WayVNC listener identifies the VNC process.
+                # A VM realm has no such processes: the listener is QEMU, and
+                # its proof of belonging is the realm's own systemd scope.
                 owners = realm.get("processes", {})
+                known = (
+                    _peer_in_realm_scope(pid, realm) if realm.get("kind") == "omarchy-vm"
+                    else process is not None
+                    and process in (owners.get("worker"), owners.get("vnc"))
+                )
                 if (
                     uid != os.getuid()  # windows-footgun: ok — runtime package rejects non-Linux hosts
                     or process is None
-                    or process not in (owners.get("worker"), owners.get("vnc"))
+                    or not known
                     or self._endpoint(realm) != endpoint
                 ):
                     raise ValueError("Realm VNC peer ownership changed")

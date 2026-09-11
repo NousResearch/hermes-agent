@@ -1,0 +1,886 @@
+#!/bin/bash
+
+# omarchy:summary=Create and control a disposable Omarchy VM
+# omarchy:args=<install|launch|stop|status|remove|ssh|run|push|pull|shot|screendump|sendkey|resolution|snapshot|plugin|agent|provision> [options]
+# omarchy:examples=omarchy vm install | omarchy vm launch | omarchy vm ssh 'uname -a' | omarchy vm plugin ~/my-widget
+
+# A throwaway Omarchy running under QEMU/KVM, for trying plugins, themes and
+# system changes without touching the machine you work on. Everything in it may
+# break: a snapshot restores it, and a new one is a single command.
+#
+# The guest installs itself and comes up ready to use with nothing to type. That
+# needs three things the stock installer does not do on its own, all handled by
+# `provision` below and each documented at its own step: no disk encryption (a
+# passphrase prompt cannot be answered by a script), SDDM autologin (which the
+# installer only configures for encrypted installs), and sudo that really is
+# passwordless (NOPASSWD alone leaves `sudo -v` asking).
+#
+# The disk is therefore readable by anyone who reaches it. Nothing secret may
+# live in the guest; `agent` forwards an SSH agent for the moments a command in
+# there needs a real key, so the key itself never lands on that disk.
+
+set -euo pipefail
+
+# Omarchy keeps its own per-user data under ~/.local/state/omarchy, and
+# ~/.local/share/omarchy is a symlink to the packaged, root-owned install tree,
+# so the disks belong here rather than there.
+VM_HOME="${OMARCHY_VM_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/vm}"
+DISK="$VM_HOME/disk.qcow2"
+OVMF_VARS="$VM_HOME/OVMF_VARS.4m.fd"
+SNAPSHOT_DIR="$VM_HOME/snapshots"
+# hermes-realms: the ISO is shared by every session clone, so it lives outside
+# the per-session VM_HOME rather than being re-downloaded for each one.
+ISO_DIR="${OMARCHY_VM_ISO_DIR:-$VM_HOME/iso}"
+CREDENTIALS="$VM_HOME/credentials"
+CIDATA="$VM_HOME/cidata.img"
+# hermes-realms: one guest per conversation, so the unit name and its sockets
+# are per-session instead of the script's single fixed set.
+UNIT="${OMARCHY_VM_UNIT:-omarchy-vm}"
+# QMP lets us photograph the screen and press keys with no cooperation from the
+# guest, which is the only way to see an install that has not booted far enough
+# to answer SSH.
+QMP_SOCKET="${OMARCHY_VM_QMP_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-vm-qmp.sock}"
+VNC_SOCKET="${OMARCHY_VM_VNC_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-vm-vnc.sock}"
+
+SSH_PORT="${OMARCHY_VM_SSH_PORT:-2222}"
+GUEST_USER="${OMARCHY_VM_USER:-$USER}"
+GUEST_HOSTNAME="${OMARCHY_VM_HOSTNAME:-omarchy-vm}"
+DISK_SIZE="${OMARCHY_VM_DISK_SIZE:-40G}"
+MEMORY="${OMARCHY_VM_MEMORY:-8192}"
+
+OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+OVMF_VARS_TEMPLATE=/usr/share/edk2/x64/OVMF_VARS.4m.fd
+SIGNING_KEY=40DFB630FF42BCFFB047046CF0134EE680CAC571
+
+SSH_OPTIONS=(-p "$SSH_PORT" -o ConnectTimeout=3 -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR)
+# Tools inside the guest that need its Wayland session rather than a bare shell.
+GUEST_SESSION_ENV="export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 HYPRLAND_INSTANCE_SIGNATURE=\$(ls /run/user/1000/hypr | head -1);"
+
+abort() {
+  echo "$1" >&2
+  exit 1
+}
+
+vm_running() {
+  systemctl --user is-active --quiet "$UNIT.service"
+}
+
+require_running() {
+  if ! vm_running; then
+    abort "No VM is running. Start it with: omarchy vm launch"
+  fi
+}
+
+guest_ssh() {
+  ssh "${SSH_OPTIONS[@]}" "root@localhost" "$@"
+}
+
+wait_for_ssh() {
+  local timeout="$1" waited=0
+
+  echo -n "Waiting for the guest"
+  until guest_ssh true 2>/dev/null; do
+    sleep 3
+    waited=$((waited + 3))
+    echo -n "."
+    if ((waited >= timeout)); then
+      echo
+      abort "No SSH after ${timeout}s. Look at the screen with: omarchy vm screendump"
+    fi
+  done
+  echo " up after ~${waited}s"
+}
+
+# QEMU is started under a systemd user unit rather than as a child of this
+# shell: as a child it dies with the terminal it was launched from, and the
+# window disappears mid-install.
+start_qemu() {
+  local extra=("$@")
+
+  rm -f "$QMP_SOCKET"
+  systemd-run --user --unit="$UNIT" --collect \
+    qemu-system-x86_64 \
+    -cpu host -enable-kvm -machine q35,accel=kvm \
+    -smp "$(($(nproc) < 8 ? $(nproc) : 8))" \
+    -m "$MEMORY" \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$OVMF_VARS" \
+    -drive file="$DISK",format=qcow2,if=none,id=disk0 \
+    -device virtio-blk-pci,drive=disk0,bootindex=1 \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22${OMARCHY_VM_NETDEV_EXTRA:-}" \
+    -device virtio-net-pci,netdev=net0 \
+    -usb -device usb-tablet \
+    -qmp "unix:$QMP_SOCKET,server=on,wait=off" \
+    "${extra[@]}" >/dev/null
+}
+
+# GPU acceleration is what you want for a desktop guest, but it leaves QEMU
+# without a software framebuffer, so nothing can photograph the screen. The
+# install runs without it, where seeing the screen matters more than speed.
+# Takes the choice as an argument rather than reading the environment: a
+# command substitution is expanded by the calling shell before any VAR=x prefix
+# on that command applies, so `OMARCHY_VM_GL=0 start_qemu $(graphics_args)`
+# would silently still pick acceleration.
+graphics_args() {
+  # hermes-realms: always headless. An SDL window would open on the user's own
+  # desktop, which is exactly what a realm exists to avoid, and the software
+  # framebuffer is what lets QMP screendump and the noVNC viewer see the guest.
+  # The viewer speaks RFB over a mode-0600 unix socket, never a TCP port.
+  echo "-device virtio-vga -display none -vnc unix:$VNC_SOCKET"
+}
+
+qmp() {
+  [[ -S $QMP_SOCKET ]] || abort "No QMP socket. This VM was not started by omarchy vm."
+
+  {
+    printf '%s\n' '{"execute":"qmp_capabilities"}'
+    printf '%s\n' "$@"
+    sleep 1
+  } | socat - "UNIX-CONNECT:$QMP_SOCKET" 2>/dev/null
+}
+
+latest_iso_version() {
+  # Each Omarchy release gets an ISO named after its version. The omarchy-iso
+  # repository publishes no releases of its own, and the download host serves
+  # them by exact version with no "latest" alias.
+  curl -fsSL https://api.github.com/repos/omacom/omarchy/releases/latest 2>/dev/null |
+    jq -r '.tag_name // empty' | sed 's/^v//'
+}
+
+# Verify the release signature against the Omarchy signing key before a 6 GB
+# download is written to a disk that then installs itself unattended. Every
+# release publishes a signature next to the ISO, so a missing one means
+# something went wrong rather than that verification is optional. pacman-key
+# --verify would accept any key in the pacman keyring, which is every Arch
+# packager, so this reads gpg's status output and pins Omarchy's fingerprint.
+verify_iso() {
+  local iso="$1"
+  local signature="$iso.sig"
+
+  [[ -f $signature ]] ||
+    abort "No signature next to $(basename "$iso"); refusing to install an unverified ISO."
+
+  if ! gpg --homedir /etc/pacman.d/gnupg --status-fd 1 --verify "$signature" "$iso" 2>/dev/null |
+    grep -q "^\\[GNUPG:\\] VALIDSIG .*$SIGNING_KEY"; then
+    rm -f "$iso" "$signature"
+    abort "ISO signature does not verify against $SIGNING_KEY. Removed the download."
+  fi
+  echo "Signature verified."
+}
+
+fetch_iso() {
+  local version iso
+
+  version=$(latest_iso_version)
+  [[ -n $version ]] || abort "Could not determine the latest ISO version. Pass one with --iso PATH."
+
+  iso="$ISO_DIR/omarchy-$version.iso"
+  # Downloaded under a .part name and moved into place only once curl has the
+  # whole file: an interrupted transfer would otherwise leave a partial ISO that
+  # the next install takes for a complete one. Verification runs on a cached ISO
+  # too, so one that was replaced after its download is still caught.
+  if [[ ! -f $iso ]]; then
+    mkdir -p "$ISO_DIR"
+    echo "Downloading omarchy-$version.iso" >&2
+    curl -fL --progress-bar -C - -o "$iso.part" "https://iso.omarchy.org/omarchy-$version.iso" >&2 ||
+      abort "Download failed."
+    curl -fsSL -o "$iso.sig" "https://iso.omarchy.org/omarchy-$version.iso.sig" ||
+      abort "Signature download failed."
+    mv "$iso.part" "$iso"
+  fi
+  verify_iso "$iso" >&2
+
+  echo "$iso"
+}
+
+# The installer takes its answers from a drive labelled CIDATA, the cloud-init
+# NoCloud convention, and skips its wizard entirely when it finds one. Omitting
+# the disk_encryption block is what leaves the guest bootable without a
+# passphrase, which is the whole point of a VM a script can start.
+build_cidata() {
+  local directory password_hash
+  directory=$(mktemp -d)
+
+  password_hash=$(openssl passwd -6 "$(cat "$CREDENTIALS")")
+
+  cat >"$directory/user_credentials.json" <<EOF
+{
+  "root_enc_password": $(jq -Rn --arg v "$password_hash" '$v'),
+  "users": [
+    {
+      "enc_password": $(jq -Rn --arg v "$password_hash" '$v'),
+      "groups": [],
+      "sudo": true,
+      "username": "$GUEST_USER"
+    }
+  ]
+}
+EOF
+
+  local gib=$((1024 * 1024 * 1024)) mib=$((1024 * 1024))
+  local disk_bytes=$((${DISK_SIZE%G} * gib))
+  local boot_size=$((2 * gib)) boot_start=$mib
+  local main_start=$((boot_size + boot_start))
+  local main_size=$((disk_bytes - main_start - mib))
+
+  cat >"$directory/user_configuration.json" <<EOF
+{
+  "app_config": null,
+  "archinstall-language": "English",
+  "auth_config": {},
+  "audio_config": { "audio": "pipewire" },
+  "bootloader_config": { "bootloader": "Limine", "uki": false, "removable": false },
+  "custom_commands": [],
+  "omarchy_install": {
+    "mode": "full_disk",
+    "defer_provisioning": false,
+    "target_mount": "/mnt",
+    "boot": {
+      "esp_mount": "/boot",
+      "esp_path": "/EFI/limine",
+      "efi_binary": "limine_x64.efi",
+      "enable_fallback": true
+    },
+    "storage": { "kernel": "linux" }
+  },
+  "disk_config": {
+    "config_type": "default_layout",
+    "device_modifications": [
+      {
+        "device": "/dev/vda",
+        "partitions": [
+          {
+            "btrfs": [],
+            "dev_path": null,
+            "flags": [ "boot", "esp" ],
+            "fs_type": "fat32",
+            "mount_options": [],
+            "mountpoint": "/boot",
+            "obj_id": "ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d",
+            "size": { "sector_size": { "unit": "B", "value": 512 }, "unit": "B", "value": $boot_size },
+            "start": { "sector_size": { "unit": "B", "value": 512 }, "unit": "B", "value": $boot_start },
+            "status": "create",
+            "type": "primary"
+          },
+          {
+            "btrfs": [
+              { "mountpoint": "/", "name": "@" },
+              { "mountpoint": "/home", "name": "@home" },
+              { "mountpoint": "/var/log", "name": "@log" },
+              { "mountpoint": "/var/cache/pacman/pkg", "name": "@pkg" }
+            ],
+            "dev_path": null,
+            "flags": [],
+            "fs_type": "btrfs",
+            "mount_options": [ "compress=zstd" ],
+            "mountpoint": null,
+            "obj_id": "8c2c2b92-1070-455d-b76a-56263bab24aa",
+            "size": { "sector_size": { "unit": "B", "value": 512 }, "unit": "B", "value": $main_size },
+            "start": { "sector_size": { "unit": "B", "value": 512 }, "unit": "B", "value": $main_start },
+            "status": "create",
+            "type": "primary"
+          }
+        ],
+        "wipe": true
+      }
+    ]
+  },
+  "hostname": "$GUEST_HOSTNAME",
+  "kernels": [ "linux" ],
+  "network_config": { "type": "iso" },
+  "ntp": true,
+  "parallel_downloads": 8,
+  "script": null,
+  "services": [],
+  "swap": true,
+  "timezone": "$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)",
+  "locale_config": { "kb_layout": "us", "sys_enc": "UTF-8", "sys_lang": "en_US.UTF-8" },
+  "mirror_config": {
+    "custom_repositories": [],
+    "custom_servers": [
+      {"url": "https://mirror.omarchy.org/\$repo/os/\$arch"},
+      {"url": "https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"}
+    ],
+    "mirror_regions": {},
+    "optional_repositories": []
+  },
+  "packages": [ "base-devel", "git", "omarchy-keyring", "omarchy-settings", "omarchy" ],
+  "profile_config": { "gfx_driver": null, "greeter": null, "profile": {} },
+  "version": "3.0.9"
+}
+EOF
+
+  echo "$(git config --global user.name 2>/dev/null || echo "$GUEST_USER")" >"$directory/user_full_name.txt"
+  echo "$(git config --global user.email 2>/dev/null || echo "$GUEST_USER@localhost")" >"$directory/user_email_address.txt"
+  echo "false" >"$directory/user_encrypt_installation.txt"
+  # Installing a key here is also what enables sshd and opens the firewall for
+  # it; without it the finished guest is unreachable.
+  cat "$HOME/.ssh/id_ed25519.pub" >"$directory/authorized_keys"
+
+  rm -f "$CIDATA"
+  truncate -s 4M "$CIDATA"
+  mkfs.vfat -n CIDATA "$CIDATA" >/dev/null
+  mcopy -i "$CIDATA" "$directory"/* ::/
+  rm -rf "$directory"
+}
+
+cmd_install() {
+  local iso="" iso_option
+
+  while (($# > 0)); do
+    case "$1" in
+      --iso)
+        iso="${2:-}"
+        shift 2
+        ;;
+      *)
+        abort "Unknown option: $1"
+        ;;
+    esac
+  done
+
+  if vm_running; then
+    abort "A VM is already running. Stop it first with: omarchy vm stop"
+  fi
+
+  if [[ -f $DISK ]]; then
+    abort "A VM already exists. Remove it first with: omarchy vm remove"
+  fi
+
+  # hermes-realms: the plugin never installs system packages; its doctor
+  # reports what is missing and the user installs it.
+  pacman -Q qemu-full edk2-ovmf mtools >/dev/null
+
+  if [[ ! -f $HOME/.ssh/id_ed25519.pub ]]; then
+    abort "No SSH key at ~/.ssh/id_ed25519.pub; the guest would be unreachable."
+  fi
+
+  mkdir -p "$VM_HOME"
+  if [[ ! -f $CREDENTIALS ]]; then
+    # The guest disk is unencrypted, so this password protects nothing on it.
+    # It is random anyway, so it is never a password reused from somewhere else.
+    (
+      umask 077
+      openssl rand -base64 18 >"$CREDENTIALS"
+    )
+  fi
+
+  if [[ -z $iso ]]; then
+    iso=$(fetch_iso)
+  fi
+  [[ -f $iso ]] || abort "ISO not found: $iso"
+  # QEMU runs from a systemd user unit, which starts in the home directory
+  # rather than where the command was typed, so a relative --iso would be
+  # looked for somewhere else. Commas separate QEMU's own -drive options, so
+  # one in the path has to be doubled to survive.
+  iso=$(realpath "$iso")
+  iso_option=${iso//,/,,}
+
+  echo "Building the answer drive"
+  build_cidata
+
+  qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null
+  cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+
+  echo "Installing $(basename "$iso"). This takes 15 to 30 minutes."
+  # The blank disk is bootindex=1 and falls through to the ISO, so the installed
+  # system boots from the same disk afterwards with no boot order to change.
+  # shellcheck disable=SC2046
+  start_qemu $(graphics_args 0) \
+    -drive "file=$iso_option,media=cdrom,if=none,format=raw,id=cdrom0" \
+    -device ide-cd,drive=cdrom0,bootindex=2 \
+    -drive "file=$CIDATA,format=raw,if=none,id=cidata" \
+    -device usb-storage,drive=cidata
+
+  wait_for_ssh_as_guest_user 3600
+  cmd_provision
+  echo
+  echo "Done. The VM is running; take a baseline with: omarchy vm snapshot save fresh"
+}
+
+# The install puts our key on the guest user, not on root, so first contact is
+# as that user. provision then opens the root path everything else here uses.
+wait_for_ssh_as_guest_user() {
+  local timeout="$1" waited=0
+
+  echo -n "Waiting for the installed system"
+  until ssh "${SSH_OPTIONS[@]}" "$GUEST_USER@localhost" true 2>/dev/null; do
+    sleep 10
+    waited=$((waited + 10))
+    echo -n "."
+    if ((waited >= timeout)); then
+      echo
+      abort "No SSH after ${timeout}s. Look at the screen with: omarchy vm screendump"
+    fi
+  done
+  echo " up after ~${waited}s"
+}
+
+cmd_provision() {
+  require_running
+
+  local key
+  key=$(cat "$HOME/.ssh/id_ed25519.pub")
+
+  # One sudo for the whole lot. Piping the password in as the first line and the
+  # script after it means sudo takes the line it wants and bash reads the rest,
+  # so this needs neither a tty nor a second authentication.
+  #
+  # NOPASSWD on its own is not enough: the installer also writes a plain ALL
+  # rule, and against that `sudo -v` keeps asking. omarchy-update calls exactly
+  # that, so updates would stall on a prompt in a guest meant to need no typing.
+  echo "Opening root SSH and making sudo passwordless"
+  {
+    cat "$CREDENTIALS"
+    cat <<PROVISION
+set -e
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+printf '%s\n' '$key' > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+printf '%s\n' 'Defaults:$GUEST_USER !authenticate' '$GUEST_USER ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/99-omarchy-vm
+chmod 440 /etc/sudoers.d/99-omarchy-vm
+visudo -c > /dev/null
+PROVISION
+  } | ssh "${SSH_OPTIONS[@]}" "$GUEST_USER@localhost" "sudo -S -p '' bash -s"
+
+  # Without disk encryption the installer configures no SDDM autologin, on the
+  # reasoning that an encrypted install already proved who you are at the
+  # passphrase prompt. Left alone, the guest stops at a login screen.
+  echo "Enabling autologin"
+  guest_ssh "cat > /etc/sddm.conf.d/99-omarchy-vm-autologin.conf <<EOF
+[Autologin]
+User=$GUEST_USER
+Session=hyprland-uwsm.desktop
+Relogin=true
+EOF"
+
+  # A blanked screen makes grim wait for a frame that never comes, so `shot`
+  # hangs rather than fails. Both toggles take an explicit value, so running
+  # provision again cannot flip them back.
+  echo "Disabling the screensaver and keeping the screen awake"
+  guest_ssh "runuser -u $GUEST_USER -- bash -lc '
+    omarchy-toggle screensaver-off on
+    omarchy-toggle-idle stay-awake >/dev/null'" || true
+
+  guest_ssh "systemctl restart sddm"
+}
+
+cmd_launch() {
+  if vm_running; then
+    abort "A VM is already running."
+  fi
+  [[ -f $DISK ]] || abort "No VM yet. Create one with: omarchy vm install"
+
+  # shellcheck disable=SC2046
+  start_qemu $(graphics_args)
+  echo "Booting"
+  wait_for_ssh 180
+}
+
+cmd_stop() {
+  if ! vm_running; then
+    echo "No VM is running."
+    return 0
+  fi
+
+  guest_ssh poweroff 2>/dev/null || true
+
+  local waited=0
+  while vm_running && ((waited < 30)); do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if vm_running; then
+    systemctl --user stop "$UNIT.service"
+  fi
+  echo "Stopped."
+}
+
+cmd_status() {
+  if vm_running; then
+    echo "state:    running"
+  else
+    echo "state:    stopped"
+  fi
+
+  if guest_ssh true 2>/dev/null; then
+    echo "ssh:      root@localhost -p $SSH_PORT"
+    if guest_ssh "ls /run/user/1000/hypr" >/dev/null 2>&1; then
+      echo "desktop:  running"
+    else
+      echo "desktop:  no session"
+    fi
+  else
+    echo "ssh:      unreachable"
+  fi
+
+  if [[ -f $DISK ]]; then
+    echo "disk:     $DISK ($(du -h "$DISK" | cut -f1))"
+  else
+    echo "disk:     none, run: omarchy vm install"
+  fi
+
+  if [[ -f $CREDENTIALS ]]; then
+    echo "user:     $GUEST_USER, password in $CREDENTIALS"
+  fi
+
+  if [[ -d $SNAPSHOT_DIR ]]; then
+    local snapshots
+    snapshots=$(ls -1 "$SNAPSHOT_DIR" 2>/dev/null | tr '\n' ' ')
+    [[ -n $snapshots ]] && echo "snapshots: $snapshots"
+  fi
+}
+
+cmd_remove() {
+  local force=0
+
+  for argument in "$@"; do
+    if [[ $argument == "--force" || $argument == "-f" ]]; then
+      force=1
+    fi
+  done
+
+  if [[ ! -d $VM_HOME ]]; then
+    echo "Nothing to remove."
+    return 0
+  fi
+
+  # gum needs a terminal. Asking without one would fail and read as a decline,
+  # so a script would be told the VM was removed while it still exists.
+  if ((!force)); then
+    if [[ ! -t 0 ]]; then
+      abort "Refusing to remove $VM_HOME without a terminal to confirm in. Pass --force."
+    fi
+    gum confirm "Remove the VM, its snapshots and the downloaded ISO?" || return 0
+  fi
+
+  vm_running && cmd_stop
+  rm -rf "$VM_HOME"
+  echo "Removed $VM_HOME."
+}
+
+cmd_ssh() {
+  require_running
+
+  if (($# == 0)); then
+    exec ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@localhost
+  fi
+  guest_ssh "$@"
+}
+
+# Run something as the guest user with its Wayland session, rather than as root.
+cmd_run() {
+  require_running
+  (($# > 0)) || abort "Usage: omarchy vm run <command>"
+
+  guest_ssh "$GUEST_SESSION_ENV runuser -u $GUEST_USER \
+    -w XDG_RUNTIME_DIR,WAYLAND_DISPLAY,HYPRLAND_INSTANCE_SIGNATURE -- bash -lc $(printf '%q' "$*")"
+}
+
+cmd_push() {
+  require_running
+  local source="${1:-}" destination="${2:-/tmp/}"
+  [[ -n $source ]] || abort "Usage: omarchy vm push <local-path> [guest-path]"
+
+  scp -r -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR "$source" "root@localhost:$destination"
+}
+
+cmd_pull() {
+  require_running
+  local source="${1:-}" destination="${2:-.}"
+  [[ -n $source ]] || abort "Usage: omarchy vm pull <guest-path> [local-path]"
+
+  scp -r -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR "root@localhost:$source" "$destination"
+}
+
+# grim inside the guest, so the shot is sharp and correctly scaled. It needs a
+# running session; use screendump when there is none.
+cmd_shot() {
+  require_running
+  local output="${1:-vm-shot.png}"
+
+  guest_ssh "$GUEST_SESSION_ENV grim /tmp/omarchy-vm-shot.png"
+  guest_ssh "cat /tmp/omarchy-vm-shot.png" >"$output"
+  guest_ssh "rm -f /tmp/omarchy-vm-shot.png"
+  echo "$output"
+}
+
+# Photograph the screen through QEMU, which works with no SSH and no session in
+# the guest, and does not care which workspace the window sits on.
+cmd_screendump() {
+  require_running
+  local output="${1:-vm-screen.png}" ppm
+  ppm=$(mktemp --suffix=.ppm)
+
+  qmp "$(jq -cn --arg f "$ppm" '{execute:"screendump",arguments:{filename:$f}}')" >/dev/null
+  if [[ ! -s $ppm ]]; then
+    rm -f "$ppm"
+    abort "QEMU has no framebuffer to photograph. Relaunch with: OMARCHY_VM_GL=0 omarchy vm launch"
+  fi
+
+  magick "$ppm" "$output"
+  rm -f "$ppm"
+  echo "$output"
+}
+
+# Keys go in at the QEMU level, so they reach a tty or a boot prompt and never
+# touch the host desktop.
+cmd_sendkey() {
+  require_running
+  (($# > 0)) || abort "Usage: omarchy vm sendkey <key> (e.g. ret, ctrl-alt-f2)"
+
+  local key
+  for key in "$@"; do
+    qmp "$(jq -cn --arg k "$key" \
+      '{execute:"send-key",arguments:{keys:[$k|split("-")[]|{type:"qcode",data:.}]}}')" >/dev/null
+    sleep 0.2
+  done
+}
+
+# The guest reads its resolution off the window size once and never revisits it,
+# so a window that was briefly narrow leaves it rendering a portrait desktop
+# squeezed into a landscape frame. Set both ends together.
+cmd_resolution() {
+  require_running
+  local spec="${1:-}" scale="${2:-1}"
+
+  [[ $spec =~ ^([0-9]+)x([0-9]+)$ ]] || abort "Usage: omarchy vm resolution <width>x<height> [scale]"
+  local width="${BASH_REMATCH[1]}" height="${BASH_REMATCH[2]}"
+
+  local output
+  output=$(guest_ssh "$GUEST_SESSION_ENV hyprctl -j monitors" 2>/dev/null | jq -r '.[0].name // empty')
+  [[ -n $output ]] || abort "No Hyprland session in the guest yet."
+
+  guest_ssh "$GUEST_SESSION_ENV hyprctl eval 'hl.monitor({ output = \"$output\", mode = \"${width}x${height}@60\", position = \"0x0\", scale = $scale })'" >/dev/null
+
+  local window host_scale
+  window=$(hyprctl -j clients 2>/dev/null |
+    jq -r '.[] | select(.class == "qemu-system-x86_64") | .address' | head -1)
+  if [[ -z $window ]]; then
+    echo "Guest resized; no QEMU window found on this host to match."
+    return 0
+  fi
+
+  # Hyprland sizes windows in logical pixels, so divide the host scale out to
+  # land on the physical size the guest was just given.
+  host_scale=$(hyprctl -j monitors 2>/dev/null | jq -r '.[0].scale // 1')
+  local logical_width logical_height
+  logical_width=$(awk -v w="$width" -v s="$host_scale" 'BEGIN { printf "%d", w / s }')
+  logical_height=$(awk -v h="$height" -v s="$host_scale" 'BEGIN { printf "%d", h / s }')
+
+  if [[ $(hyprctl -j clients | jq -r --arg a "$window" '.[] | select(.address == $a) | .floating') != "true" ]]; then
+    hyprctl dispatch "hl.dsp.window.float({ window = \"address:$window\" })" >/dev/null
+    sleep 1
+  fi
+  hyprctl dispatch "hl.dsp.window.resize({ x = $logical_width, y = $logical_height, relative = false, window = \"address:$window\" })" >/dev/null
+  sleep 1
+  hyprctl dispatch "hl.dsp.window.center({ window = \"address:$window\" })" >/dev/null
+  echo "Guest and window set to ${width}x${height}."
+}
+
+# A snapshot name becomes a path under SNAPSHOT_DIR that save writes to and
+# remove hands to rm -rf, so a name containing a slash or .. would reach outside
+# the VM directory entirely. Constraining the name is simpler than resolving the
+# path afterwards, and covers save, restore and remove in one place.
+check_snapshot_name() {
+  [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    abort "Snapshot names may contain only letters, digits, dot, dash and underscore."
+}
+
+cmd_snapshot() {
+  local action="${1:-list}"
+  (( $# > 0 )) && shift
+
+  case "$action" in
+    save)
+      local name="${1:-}" force=0
+      for argument in "$@"; do
+        if [[ $argument == "--force" || $argument == "-f" ]]; then
+          force=1
+        fi
+      done
+      [[ -n $name && $name != -* ]] || abort "Usage: omarchy vm snapshot save <name> [--force]"
+      check_snapshot_name "$name"
+
+      if vm_running; then
+        abort "Stop the VM first; copying a live disk gives an inconsistent image."
+      fi
+      [[ -f $DISK ]] || abort "No VM to snapshot."
+
+      local target="$SNAPSHOT_DIR/$name"
+      if [[ -d $target ]] && ((!force)); then
+        abort "Snapshot '$name' exists. Overwrite it with --force."
+      fi
+
+      mkdir -p "$target"
+      cp "$DISK" "$target/disk.qcow2"
+      cp "$OVMF_VARS" "$target/OVMF_VARS.4m.fd"
+      echo "Saved '$name' ($(du -h "$target/disk.qcow2" | cut -f1))."
+      ;;
+    restore)
+      local name="${1:-}"
+      [[ -n $name ]] || abort "Usage: omarchy vm snapshot restore <name>"
+      check_snapshot_name "$name"
+      [[ -d $SNAPSHOT_DIR/$name ]] || abort "No snapshot '$name'."
+
+      if vm_running; then
+        abort "Stop the VM first with: omarchy vm stop"
+      fi
+
+      cp "$SNAPSHOT_DIR/$name/disk.qcow2" "$DISK"
+      cp "$SNAPSHOT_DIR/$name/OVMF_VARS.4m.fd" "$OVMF_VARS"
+      echo "Restored '$name'. Start it with: omarchy vm launch"
+      ;;
+    remove)
+      local name="${1:-}"
+      [[ -n $name ]] || abort "Usage: omarchy vm snapshot remove <name>"
+      check_snapshot_name "$name"
+      [[ -d $SNAPSHOT_DIR/$name ]] || abort "No snapshot '$name'."
+
+      rm -rf "${SNAPSHOT_DIR:?}/$name"
+      echo "Removed '$name'."
+      ;;
+    list)
+      if [[ -d $SNAPSHOT_DIR ]] && [[ -n $(ls -A "$SNAPSHOT_DIR" 2>/dev/null) ]]; then
+        local snapshot
+        for snapshot in "$SNAPSHOT_DIR"/*; do
+          printf '%-20s %s\n' "$(basename "$snapshot")" "$(du -h "$snapshot/disk.qcow2" 2>/dev/null | cut -f1)"
+        done
+      else
+        echo "No snapshots."
+      fi
+      ;;
+    *)
+      abort "Usage: omarchy vm snapshot <save|restore|remove|list>"
+      ;;
+  esac
+}
+
+# Install a plugin directory into the guest and register its bar widget, so a
+# widget can be tried on a clean desktop without installing it on this one.
+cmd_plugin() {
+  require_running
+  local directory="${1:-}"
+
+  [[ -n $directory && -f $directory/manifest.json ]] ||
+    abort "Usage: omarchy vm plugin <directory> (must contain manifest.json)"
+
+  local id name section
+  id=$(jq -r '.id' "$directory/manifest.json")
+  name=$(basename "$directory")
+  section=$(jq -r '.barWidget.defaultSection // "right"' "$directory/manifest.json")
+
+  echo "Installing $name ($id)"
+  tar -C "$(dirname "$directory")" -czf - --exclude=.git "$name" |
+    guest_ssh "mkdir -p ~$GUEST_USER/.config/omarchy/plugins &&
+      tar -C ~$GUEST_USER/.config/omarchy/plugins -xzf - &&
+      chown -R $GUEST_USER:$GUEST_USER ~$GUEST_USER/.config/omarchy/plugins"
+
+  guest_ssh "cd ~$GUEST_USER/.config/omarchy &&
+    if jq -e '.bar.layout.$section[] | select(.id == \"$id\")' shell.json >/dev/null 2>&1; then
+      echo 'Widget already registered'
+    else
+      jq '.bar.layout.$section = [{\"id\": \"$id\"}] + .bar.layout.$section' shell.json > shell.json.new &&
+      mv shell.json.new shell.json && chown $GUEST_USER:$GUEST_USER shell.json &&
+      echo 'Widget registered'
+    fi"
+
+  guest_ssh "$GUEST_SESSION_ENV runuser -u $GUEST_USER --preserve-environment -- omarchy restart shell"
+  echo "Check it with: omarchy vm shot"
+}
+
+# Forward an SSH agent so a command in the guest can use a key that stays on
+# this machine. The guest can ask the agent to sign, never to hand a key over,
+# and that access is gone when the command returns. This is what keeps a guest
+# whose disk has no encryption from ever holding a private key.
+cmd_agent() {
+  require_running
+  local socket="${SSH_AUTH_SOCK:-}"
+
+  [[ -n $socket && -S $socket ]] || abort "No SSH agent to forward (SSH_AUTH_SOCK is not set)."
+  if ! ssh-add -l >/dev/null 2>&1; then
+    abort "The agent holds no keys; unlock it and try again."
+  fi
+
+  local options=(-p "$SSH_PORT" -A -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+
+  if (($# == 0)); then
+    exec ssh "${options[@]}" "$GUEST_USER@localhost"
+  fi
+  ssh "${options[@]}" "$GUEST_USER@localhost" "$@"
+}
+
+usage() {
+  cat <<'USAGE'
+omarchy vm - a disposable Omarchy in QEMU/KVM
+
+  install [--iso PATH]      Install a guest, unattended. Downloads and verifies
+                            the latest ISO unless one is given.
+  launch                    Start the VM.
+  stop                      Power it off.
+  status                    Show state, SSH, disk and snapshots.
+  remove [--force]          Delete the VM, its snapshots and the ISO.
+  provision                 Re-apply autologin, passwordless sudo and idle
+                            settings to a running guest.
+
+  ssh [command]             Shell or command as root in the guest.
+  run <command>             Command as the guest user, with its session.
+  push <local> [remote]     Copy in.
+  pull <remote> [local]     Copy out.
+  agent [command]           Shell or command with your SSH agent forwarded, so
+                            a key can be used without entering the guest.
+
+  shot [file]               Screenshot through the guest (needs a session).
+  screendump [file]         Screenshot through QEMU (needs no session; run with
+                            OMARCHY_VM_GL=0 for a framebuffer).
+  sendkey <key>             Press keys in the guest, e.g. ret, ctrl-alt-f2.
+  resolution <WxH> [scale]  Match the guest resolution and the window.
+
+  snapshot save <name> [--force]
+  snapshot restore <name>
+  snapshot remove <name>
+  snapshot list
+
+  plugin <directory>        Install a local plugin and register its widget.
+
+The guest has no disk encryption and passwordless sudo, so treat its disk as
+readable by anyone who reaches it. Never put a secret in it; use `agent` when
+something in there needs a key.
+USAGE
+}
+
+command="${1:-}"
+(( $# > 0 )) && shift
+
+case "$command" in
+  install) cmd_install "$@" ;;
+  launch) cmd_launch "$@" ;;
+  stop) cmd_stop "$@" ;;
+  status) cmd_status "$@" ;;
+  remove) cmd_remove "$@" ;;
+  provision) cmd_provision "$@" ;;
+  ssh) cmd_ssh "$@" ;;
+  run) cmd_run "$@" ;;
+  push) cmd_push "$@" ;;
+  pull) cmd_pull "$@" ;;
+  agent) cmd_agent "$@" ;;
+  shot) cmd_shot "$@" ;;
+  screendump) cmd_screendump "$@" ;;
+  sendkey) cmd_sendkey "$@" ;;
+  resolution) cmd_resolution "$@" ;;
+  snapshot) cmd_snapshot "$@" ;;
+  plugin) cmd_plugin "$@" ;;
+  -h | --help | help | "") usage ;;
+  *)
+    echo "Unknown command: $command" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

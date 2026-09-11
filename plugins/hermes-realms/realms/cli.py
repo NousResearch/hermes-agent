@@ -27,6 +27,85 @@ def configure_parser(parser):
     execute.add_argument("realm_command", metavar="command", nargs=argparse.REMAINDER)
     from .install_driver import configure_parser as configure_install
     configure_install(commands.add_parser("install-driver", help="Explicitly download and verify the Linux x86-64 driver"))
+    configure_vm_parser(commands.add_parser(
+        "vm", help="Manage the Omarchy VM realm kind's shared base image"))
+
+
+def configure_vm_parser(parser):
+    operations = parser.add_subparsers(dest="vm_operation", required=True)
+    install = operations.add_parser(
+        "install",
+        help="Download the signed Omarchy ISO and build this profile's base image")
+    install.add_argument(
+        "--iso", help="Use an already-downloaded ISO instead of fetching one")
+    operations.add_parser("status", help="Base image, storage and prerequisites")
+    settings = operations.add_parser(
+        "settings", help="Base image, storage, memory and network as one block")
+    settings.add_argument(
+        "--check-updates", action="store_true",
+        help="Also ask GitHub for the newest Omarchy release (needs network)")
+    operations.add_parser("doctor", help="Check Omarchy VM prerequisites")
+    operations.add_parser("list", help="Running VM realms in this profile")
+    operations.add_parser(
+        "remove-base", help="Delete this profile's base image (not the ISO)")
+    operations.add_parser("clean", help="Remove stale ISOs and orphaned session disks")
+    operations.add_parser("stop").add_argument("id")
+
+
+def run_vm(args):
+    from .vm_manager import VmManager
+
+    manager = VmManager(args.home)
+    if args.vm_operation == "install":
+        # Long, loud and explicit: a 5 GB download plus an unattended install
+        # is not something to run behind a spinner.
+        result = manager.install_base(iso=getattr(args, "iso", None), stdout=sys.stderr)
+    elif args.vm_operation == "status":
+        result = {
+            "base": manager.base_status(),
+            "storage": manager.storage(),
+            "realms": manager.list(),
+        }
+    elif args.vm_operation == "settings":
+        result = manager.settings(check_updates=getattr(args, "check_updates", False))
+    elif args.vm_operation == "doctor":
+        report = manager.doctor()
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["ok"] else 1
+    elif args.vm_operation == "list":
+        result = manager.list()
+    elif args.vm_operation == "remove-base":
+        result = {"removed": manager.remove_base()}
+    elif args.vm_operation == "clean":
+        result = clean(manager)
+    else:
+        result = {"stopped": manager.stop(args.id), "id": args.id}
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+def clean(manager):
+    """Drop what no live realm references: stale ISOs and orphaned session disks."""
+    import shutil
+    from pathlib import Path
+
+    live = {Path(record["session_dir"]).name for record in manager.list()}
+    removed = []
+    sessions = manager.registry.root / "vm"
+    if sessions.is_dir():
+        for directory in sessions.iterdir():
+            if directory.name not in live:
+                shutil.rmtree(directory, ignore_errors=True)
+                removed.append(str(directory))
+    keep = (manager.base_status().get("iso") or "")
+    iso_dir = manager.data / "iso"
+    if iso_dir.is_dir():
+        for iso in iso_dir.glob("omarchy-*.iso"):
+            if iso.name != keep:
+                iso.unlink(missing_ok=True)
+                iso.with_suffix(".iso.sig").unlink(missing_ok=True)
+                removed.append(str(iso))
+    return {"removed": removed, "storage": manager.storage()}
 
 
 def run(args):
@@ -35,6 +114,8 @@ def run(args):
             from .install_driver import run as install
             install(args)
             return 0
+        if args.operation == "vm":
+            return run_vm(args)
         manager = Manager(args.home)
         if args.operation == "start":
             result = manager.start(args.session_id)

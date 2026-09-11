@@ -115,10 +115,28 @@ class SessionExecutionContext:
     computer_use: ComputerUseLaunchContext | None = None
     validate: Callable[[], bool] | None = field(default=None, repr=False)
     command_prefix: tuple[str, ...] = ()
+    # Where the ROUTED side keeps per-session shell state. A command_prefix may
+    # route into another filesystem (a VM, a remote guest), where the host's temp
+    # directory does not exist: the session snapshot would be written to a path
+    # the shell cannot see and every env var silently stops persisting between
+    # commands. Contexts that route within this filesystem leave it None.
+    backend_temp_dir: str | None = None
+    # Where a routed session starts before it has established a directory of its
+    # own. The configured host cwd names a directory that does not exist on the
+    # routed side, so the wrapper's ``cd`` fails and takes the command with it.
+    backend_cwd: str | None = None
     _desktop: tuple | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         object.__setattr__(self, "command_prefix", _command_prefix(self.command_prefix))
+        for name in ("backend_temp_dir", "backend_cwd"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not os.path.isabs(value) or "\0" in value:
+                raise ValueError(f"{name} must be an absolute NUL-free path")
+            if not self.command_prefix:
+                raise ValueError(f"{name} requires a routing command_prefix")
         values, removed = dict(self.env_set), frozenset(self.env_unset)
         for key in set(values) | removed:
             if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):

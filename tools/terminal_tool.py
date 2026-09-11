@@ -952,6 +952,14 @@ def _plan_execution(
 
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
     host_cwd = None if _host_local else _resolve_task_host_cwd(config, task_id)
+    # A routed execution context whose commands land in another filesystem
+    # declares where a session starts there. Only the fallback to the configured
+    # HOST cwd is replaced: an explicit workdir/override is the caller's choice,
+    # and a recorded session cwd was read from that filesystem's own ``pwd``.
+    if (execution is not None and not overrides.get("cwd")
+            and not get_session_cwd(task_id)
+            and (routed_cwd := getattr(execution.context, "backend_cwd", None))):
+        cwd = routed_cwd
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the

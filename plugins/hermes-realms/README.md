@@ -2,6 +2,8 @@
 
 Each conversation can use its own Linux GUI desktop while you keep working on yours. Private labwc/Xwayland compositors keep parallel agents from fighting over the host's windows, pointer, clipboard and focus. This is especially useful on tiling desktops such as Hyprland. **It is GUI separation, not a VM or a security sandbox:** ordinary realm terminals retain project filesystem and network access.
 
+For work that needs a *real* Omarchy — shell plugins, Hyprland, system-level changes — there is a second kind, **Omarchy VM**, which is a disposable Omarchy guest in QEMU/KVM with its own kernel, disk and desktop. See [Omarchy VM realms](#omarchy-vm-realms) below. The labwc realm remains the default.
+
 ## Proposal dependency
 
 This follow-up requires [NousResearch/hermes-agent#103690](https://github.com/NousResearch/hermes-agent/pull/103690) to merge first, including its generic consented native-plugin setup lifecycle. Do not advertise compatibility with Hermes versions lacking that lifecycle or its generic session ownership, execution-context and desktop viewer APIs.
@@ -23,6 +25,64 @@ The two settings are separate layers, not alternative global/profile switches:
 Enabling the agent plugin first reviews the pinned Cua release, checksums and destination. **Set up and enable** explicitly authorizes the profile-local install and readiness checks. Cancel leaves enablement unchanged. A download, checksum, permissions, missing-system-package or user-manager failure keeps the previous setting and displays a setup error; it never authorizes host fallback. Retry after correcting the reported prerequisite.
 
 Session badges appear only after a successful lookup confirms an owned realm. A missing or disabled backend does not label ordinary sessions as unavailable. During a temporary read failure, an existing badge keeps its last-known count and marks the status as unavailable on hover.
+
+## Omarchy VM realms
+
+A labwc realm structurally cannot host `omarchy-shell`: that needs Hyprland and one shell per session. The `omarchy-vm` kind runs a throwaway Omarchy guest instead, so an agent can build and prove a shell plugin, change a theme or break a Hyprland config without any of it reaching your machine.
+
+The guest is installed by **Omarchy's own GPG-verified release ISO**, through a pinned vendored copy of [`omarchy vm`](https://github.com/omacom/omarchy/pull/10977) (see `realms/vendor/VENDOR.md`). We do not build, host or modify an image.
+
+### What isolation means here, honestly
+
+- **Yes, isolated.** Separate kernel, disk and desktop. A guest crash, a bad plugin, an `rm -rf`, a broken Hyprland config — all of it stays in the qcow2 and is gone when the conversation ends.
+- **Files are copied, never mounted.** `/realm push SOURCE [GUEST_PATH]` copies work in; `/realm pull GUEST_PATH LOCAL_PATH` takes results out. Nothing leaves the guest unless you ask for it. There is no shared folder.
+- **Network is on by default**, because plugins need `git` and `pacman`. QEMU user-mode networking also lets the guest reach host loopback services via `10.0.2.2`; set `plugins.realms.vm.network: false` for `restrict=on` when that matters. As with the labwc realm, this is **not** a hostile-code sandbox against a determined attacker.
+- **SSH agent forwarding is off**, and so is X11 forwarding — pinned per connection, so a `Host *` block in your `~/.ssh/config` cannot re-enable either. The guest has passwordless sudo and no disk encryption, so forwarding your agent into it would let anything running there authenticate as you. Keep secrets out of the guest; it is disposable.
+- **The guest disk has no encryption and passwordless sudo.** That is fine because it is disposable — but never put a credential, token or key in it.
+- **The host's environment does not cross the boundary.** Only terminal presentation variables are forwarded; this profile's API keys are not.
+
+### Setup (once per profile)
+
+Needs `qemu-full`, `edk2-ovmf`, `mtools`, access to `/dev/kvm` and an `~/.ssh/id_ed25519.pub`. Install system packages with your distribution's package manager — the plugin never installs them.
+
+```sh
+hermes realms vm doctor     # what is missing
+hermes realms vm install    # signed ISO (~5 GB) + unattended install, ~3 min
+hermes realms vm status     # base image, storage, running realms
+hermes realms vm settings   # the Desktop panel's block, as JSON
+hermes realms vm settings --check-updates   # also ask GitHub for the newest release
+```
+
+`hermes realms vm clean` removes superseded ISOs and orphaned session disks; `hermes realms vm remove-base` deletes the base image.
+
+The Desktop panel (Settings → Plugins → Realms) reads the same data over
+`GET /realms/vm/settings` and drops the same files over `POST /realms/vm/clean`.
+The update check is opt-in (`?check_updates=true`) because it costs a network
+round trip: when GitHub cannot be reached, `update.available` is `null` —
+"not checked", never a fabricated "up to date".
+
+### Using it
+
+`/realm on omarchy` (or `realm` with `kind: omarchy-vm`) selects the kind for that conversation; the guest starts lazily at the next terminal action. Every chat gets a **copy-on-write clone of the base image** — 196 KiB and hundredths of a second, booting in about fifteen seconds — so breakage never carries over between conversations. The session badge reads **Omarchy VM** and hover shows what it costs.
+
+A guest holds its whole `plugins.realms.vm.memory` figure in host RAM while it runs (no balloon device; the guest touches all of it), so an idle realm is reaped on the same `idle_ttl` as a labwc one, and a finished conversation takes its guest with it.
+
+Computer use inside the guest is not wired up yet, so `app: screen` capture and clicking are unavailable there; `/realm shot` captures the guest's own desktop with `grim` over SSH, and `/realm watch` views it over the same noVNC bridge the labwc realm uses.
+
+### Settings (`plugins.realms` in `config.yaml`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `default_kind` | `realm` | Which kind a conversation uses when it does not ask |
+| `vm.memory` | `3072` | Guest RAM in MiB; applies at the next guest boot |
+| `vm.network` | `true` | `false` adds `restrict=on` and refuses the guest's outbound routes |
+| `vm.disk_size` | `40G` | Virtual disk size for the base image |
+| `vm.boot_timeout` | `180` | Seconds to wait for a guest to answer SSH |
+| `vm.omarchy_vm_path` | *(vendored)* | Absolute path to your own already-headless `omarchy vm` |
+
+### Never escaping to the host
+
+Realms strip the host's display, bus and input handles from every command's environment. Putting them back — `env WAYLAND_DISPLAY=… hyprctl`, `export DISPLAY=:0`, re-pointing `XDG_RUNTIME_DIR` — drives your real desktop from inside a realm, which has genuinely happened. Terminal commands that do this are now refused with a message telling the agent to ask you or use `/realm off`. This is an agent-judgment guardrail, not a containment boundary; the VM kind is what makes the boundary real.
 
 ## Enable and prepare (Linux only)
 

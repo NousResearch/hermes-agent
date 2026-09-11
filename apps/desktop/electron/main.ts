@@ -239,6 +239,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { awaitPriorDesktopInstance, lifecycleAllowsCreateWindow } from './instance-lifecycle-lock'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -18102,6 +18103,10 @@ function registerDeepLinkProtocol() {
 // whole new app instead of routing into the running one.
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 const isPrimaryInstance = _gotSingleInstanceLock
+// False until awaitPriorDesktopInstance returns 'proceed'. second-instance
+// can fire while whenReady is still parked on a live foreign holder PID;
+// ensureMainWindow must not createWindow in that window (#107671).
+let instanceLifecycleReady = false
 
 if (!isPrimaryInstance) {
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
@@ -18121,7 +18126,7 @@ if (!isPrimaryInstance) {
     }
 
     ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+      isReady: lifecycleAllowsCreateWindow(app.isReady(), instanceLifecycleReady),
       createWindow,
       focusWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
@@ -18137,7 +18142,30 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // #107671: Chromium drops the Electron single-instance lock when quit
+  // starts, while before-quit teardown can keep the old PID alive for
+  // seconds. A relaunch that won the lock must wait for that holder to
+  // exit before createWindow / startHermes (GNOME tracks the windowed
+  // app). Timeout while the holder is still alive → same as a lock-losing
+  // secondary. Lock-losers never wait and never write the pidfile.
+  if (isPrimaryInstance) {
+    const lifecycle = await awaitPriorDesktopInstance({
+      log: rememberLog,
+      selfPid: process.pid,
+      userDataDir: app.getPath('userData')
+    })
+
+    if (lifecycle === 'exit-as-secondary') {
+      rememberLog('[boot] prior desktop instance still tearing down; exiting as secondary')
+      app.exit(0)
+
+      return
+    }
+
+    instanceLifecycleReady = true
+  }
+
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()

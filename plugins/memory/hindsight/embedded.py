@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 
 from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting
 
@@ -110,8 +110,42 @@ def _embedded_profile_env_path(config: dict[str, Any]) -> Path:
     return Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
 
 
+def _resolve_embedded_llm_api_key(config: dict[str, Any]) -> tuple[str, bool]:
+    """Return ``(key, authoritative)`` for the embedded-daemon LLM key.
+
+    ``authoritative`` answers a different question from "did we get a value":
+    it says whether *this* context is entitled to decide what the persisted
+    credential should be. Config-supplied keys and successful scoped secret
+    reads are authoritative. A missing profile secret scope is not — it means
+    the credential is *unknown here*, not *empty*.
+
+    Callers on a background thread (the daemon starter, the retain writer) have
+    no profile secret scope installed, so ``get_secret`` fails closed under
+    gateway multiplexing. A missing key must never abort daemon startup, so we
+    still return "" for availability — but flagged non-authoritative, so no
+    caller mistakes it for an instruction to overwrite a real stored secret.
+    """
+    if configured := (config.get("llmApiKey") or config.get("llm_api_key")):
+        return configured, True
+    try:
+        return (get_secret("HINDSIGHT_LLM_API_KEY", "") or ""), True
+    except UnscopedSecretError:
+        logger.debug(
+            "Hindsight embedded LLM key requested with no profile secret scope "
+            "active; treating credential authority as unknown (the persisted "
+            "profile .env value must be preserved, not replaced)."
+        )
+        return "", False
+
+
 def _embedded_llm_api_key(config: dict[str, Any]) -> str:
-    return config.get("llmApiKey") or config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", "")
+    """Best-effort key for non-persisting callers (e.g. constructing a client).
+
+    Degrades to "" off-scope. Never use this to decide the contents of the
+    persisted profile ``.env`` — use :func:`_resolve_embedded_llm_api_key` and
+    honour the ``authoritative`` flag.
+    """
+    return _resolve_embedded_llm_api_key(config)[0]
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
@@ -162,7 +196,13 @@ def _validate_profile_env_permissions(profile_env: Path) -> None:
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> Path:
     """Write the profile env file; never leave a plaintext key in a file whose
-    permissions could not be verified."""
+    permissions could not be verified.
+
+    This is a secret-bearing mutation: call it only where credential authority
+    is established — an on-scope context, or with an explicit *llm_api_key*
+    snapshot captured on scope. Off-scope startup reconciliation must go through
+    :func:`_reconcile_embedded_profile_env`, which preserves the persisted key.
+    """
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
@@ -175,3 +215,37 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
             profile_env.unlink()
         raise
     return profile_env
+
+
+def _reconcile_embedded_profile_env(config: dict[str, Any]) -> bool:
+    """Bring the persisted profile env in line with *config*. Returns whether it
+    was rewritten (i.e. whether a running daemon needs restarting).
+
+    The authority boundary lives here. Two separate questions get separate
+    answers:
+
+    * **Non-credential settings** (provider, model, base url, idle timeout) are
+      derived wholly from *config*, so any context may reconcile them.
+    * **The credential** may only be written by a context that actually knows
+      it. Off scope — no profile secret scope, e.g. the background daemon
+      starter under gateway multiplexing — the resolved key is "" because it is
+      *unknown*, not because it is empty. Writing that "" would truncate a valid
+      persisted secret while claiming to "fall back" to it, so instead the
+      persisted value is carried forward and an unknown credential is never
+      counted as drift.
+    """
+    profile_env = _embedded_profile_env_path(config)
+    saved = _load_simple_env(profile_env)
+    resolved_key, authoritative = _resolve_embedded_llm_api_key(config)
+
+    if authoritative:
+        effective_key = resolved_key
+    else:
+        # Credential authority unknown: preserve whatever is already persisted.
+        effective_key = saved.get("HINDSIGHT_API_LLM_API_KEY", "")
+
+    expected = _build_embedded_profile_env(config, llm_api_key=effective_key)
+    if saved == expected:
+        return False
+    _materialize_embedded_profile_env(config, llm_api_key=effective_key)
+    return True

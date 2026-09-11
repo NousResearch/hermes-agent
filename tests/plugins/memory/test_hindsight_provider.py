@@ -1695,11 +1695,51 @@ class TestMultiplexBackgroundScope:
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
         p._config = {"profile": "hermes", "llm_provider": "openai", "llm_model": "m"}
-        p._ensure_writer()
-        p._retain_queue.put(p._get_client)   # real body: get_secret(HINDSIGHT_LLM_API_KEY)
+        # Go through _enqueue_retain: it snapshots the caller's context per job,
+        # which is what carries the profile scope onto the shared writer thread.
+        # (Putting on the queue directly would rely on a thread-level context
+        # snapshot, which cannot be correct for a writer shared by all profiles.)
+        p._enqueue_retain(p._get_client)   # real body: get_secret(HINDSIGHT_LLM_API_KEY)
         p._retain_queue.put(_WRITER_SENTINEL)
         p._writer_thread.join(timeout=5)
         assert created == ["p1-secret"]
+
+    def test_writer_thread_does_not_leak_scope_across_profiles(self, scoped_embedded, tmp_path):
+        """A second profile's retain must not reuse the first profile's secret.
+
+        The writer is one long-lived thread shared by every profile, so the
+        per-job context snapshot in _enqueue_retain is what keeps profiles
+        isolated. Regression guard for a thread-level snapshot.
+        """
+        created, home = scoped_embedded
+        from agent.secret_scope import (
+            build_profile_secret_scope, reset_secret_scope, set_secret_scope,
+        )
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes", "llm_provider": "openai", "llm_model": "m"}
+
+        # Profile p1's retain starts the writer under the fixture's p1 scope.
+        p._enqueue_retain(p._get_client)
+        p._retain_queue.join()
+
+        # Now a different profile's turn enqueues onto the SAME live writer.
+        home2 = tmp_path / "profiles" / "p2"
+        (home2 / "hindsight").mkdir(parents=True)
+        (home2 / ".env").write_text("HINDSIGHT_LLM_API_KEY=p2-secret\n")
+        scope_tok = set_secret_scope(build_profile_secret_scope(home2))
+        try:
+            p._client = None          # force a fresh client + secret read
+            p._enqueue_retain(p._get_client)
+            p._retain_queue.join()
+        finally:
+            reset_secret_scope(scope_tok)
+
+        p._retain_queue.put(_WRITER_SENTINEL)
+        p._writer_thread.join(timeout=5)
+        assert created == ["p1-secret", "p2-secret"], (
+            f"each profile must see its own key, got {created}"
+        )
 
     def test_daemon_start_thread_resolves_profile_secret(self, scoped_embedded):
         created, home = scoped_embedded

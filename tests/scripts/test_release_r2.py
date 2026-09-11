@@ -195,6 +195,35 @@ def test_channel_for_tag_maps_stable_vs_canary():
     assert channel_for_tag("v0.28.0-canary.20260818") == "canary"
 
 
+def test_relative_artifact_path_rejects_windows_reserved_names_without_ntpath(monkeypatch):
+    """Windows-reserved names must be rejected even when ntpath.isreserved
+    does not exist (release CI legs run on system Pythons older than 3.13;
+    commit-builds-summary crashed on the bare AttributeError)."""
+    import ntpath
+
+    # Simulate a pre-3.13 ntpath: isreserved absent, as on the ubuntu-24.04
+    # system Python the release workflows run on. Red on the old code, which
+    # called ntpath.isreserved unconditionally.
+    monkeypatch.delattr(ntpath, "isreserved", raising=False)
+
+    def check(bad):
+        with pytest.raises(ValueError, match="Invalid release artifact path"):
+            r2.relative_artifact_path(bad)
+
+    # DOS device stems in every dotted form, in every component.
+    for bad in ("nul", "NUL.txt", "con.tar.gz", "desktop/aux.js", "com1",
+                "lpt9.zip", "a/prn.gz", "COM¹.txt", "x/CONOUT$/y"):
+        check(bad)
+    # Trailing dots and spaces are reserved on Windows (internal ones are not).
+    for bad in ("foo.", "foo ", "dir/foo.", "dir/foo..", "dir/foo .tar.gz."):
+        check(bad)
+    # Real artifact names, including the nested Termux receipt shape, pass.
+    for good in ("app.msix", "deb/pool/hermes_0.28.0_aarch64.deb",
+                 "HermesBundled-0.28.0-win-x64.msix", "key.asc", "com10.txt",
+                 "xcom1.tar.gz", "hermes-agent-setup.exe"):
+        assert r2.relative_artifact_path(good) == good
+
+
 def test_staging_key_and_feed_dir_layout_keys():
     assert staging_key_for("v0.28.0", "HermesBundled-0.28.0-win-x64.msix") == (
         "releases/tag/v0.28.0/HermesBundled-0.28.0-win-x64.msix"

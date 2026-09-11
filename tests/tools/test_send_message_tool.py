@@ -35,6 +35,7 @@ from tools.send_message_tool import (
     send_message_tool,
 )
 from tools.send_message_targets import _parse_target_ref
+from tools.send_message_senders import _send_bluebubbles
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
@@ -66,6 +67,33 @@ async def _send_discord(
         thread_id=thread_id,
         media_files=media_files,
     )
+
+
+def test_bluebubbles_standalone_sender_uses_send_only_adapter(monkeypatch):
+    from gateway.platforms import bluebubbles
+    from gateway.platforms.base import SendResult
+
+    captured = {}
+
+    class FakeAdapter:
+        def __init__(self, config, *, receive_webhooks=True):
+            captured["receive_webhooks"] = receive_webhooks
+
+        async def connect(self):
+            return True
+
+        async def send(self, chat_id, message):
+            return SendResult(success=True, message_id="m1")
+
+        async def disconnect(self):
+            captured["disconnected"] = True
+
+    monkeypatch.setattr(bluebubbles, "BlueBubblesAdapter", FakeAdapter)
+
+    result = asyncio.run(_send_bluebubbles({}, "chat", "hello"))
+
+    assert result["success"] is True
+    assert captured == {"receive_webhooks": False, "disconnected": True}
 
 
 class _StreamingAiohttpContent:

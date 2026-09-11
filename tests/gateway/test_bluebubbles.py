@@ -74,6 +74,27 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch, server_url="http://localhost:1234/")
         assert adapter.server_url == "http://localhost:1234"
 
+    @pytest.mark.asyncio
+    async def test_send_only_connection_skips_webhook_lifecycle(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        adapter = BlueBubblesAdapter(
+            PlatformConfig(extra={"server_url": "http://localhost:1234", "password": "secret"}),
+            receive_webhooks=False,
+        )
+        monkeypatch.setattr(adapter, "_api_get", AsyncMock(side_effect=[{}, {"data": {}}]))
+        unregister = AsyncMock()
+        monkeypatch.setattr(adapter, "_unregister_webhook", unregister)
+
+        assert await adapter.connect() is True
+        assert adapter.is_connected is True
+        assert adapter._runner is None
+
+        await adapter.disconnect()
+        unregister.assert_not_awaited()
+
 
 class _FakeBlueBubblesRequest:
     def __init__(self, payload, password="secret"):

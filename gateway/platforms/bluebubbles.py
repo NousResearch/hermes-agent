@@ -113,9 +113,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    def __init__(self, config: PlatformConfig):
+    def __init__(self, config: PlatformConfig, *, receive_webhooks: bool = True):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
+        self.receive_webhooks = receive_webhooks
         self.server_url = _normalize_server_url(_setting(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
         self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
         self.webhook_host = _setting(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
@@ -216,6 +217,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
             return False
+        if not self.receive_webhooks:
+            self._mark_connected()
+            return True
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -244,7 +248,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
+        if self.receive_webhooks:
+            await self._unregister_webhook()
         await self._close_client()
         if self._runner:
             await self._runner.cleanup()

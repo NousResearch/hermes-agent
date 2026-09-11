@@ -40,6 +40,16 @@ function setPhase(phase: OnboardingPhase): void {
   $onboardingGate.set({ phase, guideQueued: false })
 }
 
+/** The guided first launch is on screen or mid-handoff. Ambient chrome that
+ *  would send the user elsewhere (the provider picker, the free-tier chip)
+ *  yields to it: the free tier IS the provider for those phases, and the
+ *  guide's ready screen is where sign-in is offered. */
+export function guidedOnboardingActive(): boolean {
+  const { phase } = $onboardingGate.get()
+
+  return isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided' || phase === 'handoff')
+}
+
 export function beginOnboardingFlow(): void {
   if (isOnboardingEnabled() && $onboardingGate.get().phase === 'idle' && !hasSeenIntroReveal()) {
     setPhase('cinematic')

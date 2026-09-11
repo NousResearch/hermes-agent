@@ -655,13 +655,18 @@ class PluginContext:
     @_serialized_replacement
     def register_cli_command(
         self, name: str, help: str, setup_fn: Callable, handler_fn: Callable | None = None,
-        description: str = "",
+        description: str = "", *,
+        availability: Callable[[PluginInvocationContext], bool] | None = None,
     ) -> PluginRegistration:
         """Register a CLI subcommand (``hermes <name> ...``). *setup_fn* receives the argparse
-        subparser; *handler_fn* becomes ``set_defaults(func=...)``."""
+        subparser; *handler_fn* becomes ``set_defaults(func=...)``. ``availability`` is the same
+        fail-closed trusted-context predicate used by in-session plugin commands."""
+        if availability is not None and not callable(availability):
+            raise TypeError("CLI command availability must be callable")
         entry = {
             "name": name, "help": help, "description": description, "setup_fn": setup_fn,
             "handler_fn": handler_fn, "plugin": self.manifest.name, "plugin_key": self.plugin_id,
+            "availability": availability,
         }
         return self._register_entry("cli_command", name, self._manager._cli_commands, entry,
                                     "Plugin %s registered CLI command: %s", name)
@@ -2040,6 +2045,26 @@ def get_plugin_command_handler(
     """Return an available plugin slash-command handler, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry and _plugin_command_available(entry, invocation) else None
+
+
+def get_plugin_cli_commands(
+    invocation: PluginInvocationContext | None = None,
+) -> Dict[str, dict]:
+    """Return plugin top-level CLI commands available to the trusted invocation."""
+    commands = _ensure_plugins_discovered()._cli_commands
+    return {
+        name: entry
+        for name, entry in commands.items()
+        if _plugin_command_available(entry, invocation)
+    }
+
+
+def get_plugin_cli_command_handler(
+    name: str, invocation: PluginInvocationContext | None = None,
+) -> Optional[Callable]:
+    """Return an available plugin top-level CLI handler, or ``None``."""
+    entry = _ensure_plugins_discovered()._cli_commands.get(name)
+    return entry.get("handler_fn") if entry and _plugin_command_available(entry, invocation) else None
 
 
 def is_plugin_command_registered(name: str) -> bool:

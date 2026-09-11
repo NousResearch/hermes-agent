@@ -3145,7 +3145,7 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("HERMES_AGENT", "true")
 
 
-def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
+def _attach_plugin_cli_command(subparsers, cmd_info, *, trusted_context: bool = False) -> None:
     """Register one plugin-provided top-level command from its descriptor."""
     plugin_parser = subparsers.add_parser(
         cmd_info["name"],
@@ -3156,6 +3156,31 @@ def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
     cmd_info["setup_fn"](plugin_parser)
     if cmd_info.get("handler_fn") is not None:
         plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+    if trusted_context:
+        plugin_parser.set_defaults(_plugin_cli_command=cmd_info["name"])
+
+
+def _run_cli_handler(args, parser):
+    """Run the parsed handler, applying the trusted plugin CLI dispatch gate."""
+    command_name = getattr(args, "_plugin_cli_command", None)
+    if not command_name:
+        return args.func(args)
+
+    from hermes_cli.plugin_invocation import (
+        _bind_plugin_invocation,
+        _new_local_plugin_invocation,
+        _revoke_plugin_invocation,
+    )
+    from hermes_cli.plugins import get_plugin_cli_commands
+
+    invocation = _new_local_plugin_invocation(platform="cli")
+    try:
+        if command_name not in get_plugin_cli_commands(invocation):
+            parser.error(f"command {command_name!r} is unavailable")
+        with _bind_plugin_invocation(invocation):
+            return args.func(args)
+    finally:
+        _revoke_plugin_invocation(invocation)
 
 
 def _register_plugin_cli_commands(subparsers) -> None:
@@ -3168,7 +3193,11 @@ def _register_plugin_cli_commands(subparsers) -> None:
         return
     try:
         from plugins.memory import discover_plugin_cli_commands
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugin_invocation import (
+            _new_local_plugin_invocation,
+            _revoke_plugin_invocation,
+        )
+        from hermes_cli.plugins import discover_plugins, get_plugin_cli_commands
 
         seen_plugin_commands = set()
         for cmd_info in discover_plugin_cli_commands():
@@ -3180,9 +3209,15 @@ def _register_plugin_cli_commands(subparsers) -> None:
         # register_cli_command side effect runs before we read _cli_commands.
         # See #54678.
         _resolve_deferred_platform_cli_command(_first_positional_argv())
-        for cmd_info in get_plugin_manager()._cli_commands.values():
-            if cmd_info["name"] not in seen_plugin_commands:
-                _attach_plugin_cli_command(subparsers, cmd_info)
+        invocation = _new_local_plugin_invocation(platform="cli")
+        try:
+            for cmd_info in get_plugin_cli_commands(invocation).values():
+                if cmd_info["name"] not in seen_plugin_commands:
+                    _attach_plugin_cli_command(
+                        subparsers, cmd_info, trusted_context=True
+                    )
+        finally:
+            _revoke_plugin_invocation(invocation)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
@@ -3441,7 +3476,7 @@ def main():
 
     # A handler's int return code becomes the exit code (None = success).
     if hasattr(args, "func"):
-        rc = args.func(args)
+        rc = _run_cli_handler(args, parser)
         if isinstance(rc, int) and rc != 0:
             sys.exit(rc)
     else:

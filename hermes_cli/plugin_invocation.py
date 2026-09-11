@@ -111,6 +111,64 @@ def _new_plugin_invocation(
     )
 
 
+def _local_authenticated_actor() -> str | None:
+    """Return a local actor hint from a usable Nous JWT, not remote auth authority."""
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        from hermes_cli.auth_nous import _decode_jwt_claims, _state_invoke_jwt_status
+        from hermes_cli.anon_auth import is_guest_state
+
+        state = get_provider_auth_state("nous") or {}
+        if is_guest_state(state):
+            return None
+        token = state.get("access_token")
+        if _state_invoke_jwt_status(state, token) is not None:
+            return None
+        actor = (_decode_jwt_claims(token) or {}).get("sub")
+        actor = actor.strip() if isinstance(actor, str) else ""
+        stored_actor = state.get("user_id")
+        stored_actor = stored_actor.strip() if isinstance(stored_actor, str) else ""
+        if stored_actor and stored_actor != actor:
+            return None
+        return actor or None
+    except Exception:
+        return None
+
+
+def _new_local_plugin_invocation(
+    *,
+    platform: str,
+    session_id: str | None = None,
+    profile: str | None = None,
+) -> PluginInvocationContext:
+    """Build trusted context for a local CLI/TUI invocation from public host state."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        active_profile = str(get_active_profile_name() or "").strip() or None
+    except Exception:
+        active_profile = None
+    requested_profile = str(profile or "").strip() or None
+    profile = requested_profile or active_profile
+    actor = (
+        _local_authenticated_actor()
+        if requested_profile is None or requested_profile == active_profile
+        else None
+    )
+    clean_session_id = str(session_id or "").strip() or None
+    return _new_plugin_invocation(
+        profile=profile,
+        session_id=clean_session_id,
+        platform=platform,
+        authenticated_actor=actor,
+        target=clean_session_id,
+        chat_id=None,
+        thread_id=None,
+        origin=None,
+        execution_kind="root",
+    )
+
+
 def _revoke_plugin_invocation(invocation: PluginInvocationContext) -> None:
     invocation._lease[0] = False
 

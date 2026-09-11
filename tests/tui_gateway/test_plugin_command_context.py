@@ -32,6 +32,8 @@ def server(tmp_path, monkeypatch):
 
 
 def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
+    import hermes_cli.plugin_invocation as invocation_mod
+
     manager = PluginManager(scope_key="/tmp/hermes-tui-plugin-context-test")
     context = PluginContext(PluginManifest(name="neutral-consumer", source="user"), manager)
     seen = []
@@ -69,6 +71,9 @@ def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
     monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        invocation_mod, "_local_authenticated_actor", lambda: "nas-user-7"
+    )
     server._sessions["rpc-session"] = {
         "session_key": "tui-session",
         "profile_home": None,
@@ -88,7 +93,7 @@ def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
     assert raw_args == "MiXeD"
     assert snapshot == {
         "profile": "default",
-        "actor": None,
+        "actor": "nas-user-7",
         "target": "tui-session",
         "origin": None,
     }

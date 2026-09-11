@@ -384,17 +384,12 @@ def _plugin_invocation(session: dict | None):
     invocation_mod = _tools_mod("hermes_cli.plugin_invocation")
     session_id = str(session.get("session_key") or "").strip() or None
     profile = profile_name_for_home(session.get("profile_home")) or _current_profile_name()
-    return invocation_mod._new_plugin_invocation(
-        profile=profile,
-        session_id=session_id,
-        platform="tui",
-        authenticated_actor=None,
-        target=session_id,
-        chat_id=None,
-        thread_id=None,
-        origin=None,
-        execution_kind="root",
-    )
+    with _session_profile_runtime_scope(session):
+        return invocation_mod._new_local_plugin_invocation(
+            profile=profile,
+            session_id=session_id,
+            platform="tui",
+        )
 
 
 def _catalog_plugin_commands(cat: _Catalog, invocation=None) -> None:

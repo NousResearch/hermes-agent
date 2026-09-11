@@ -10,6 +10,7 @@ from hermes_cli.plugin_invocation import (
     PluginInvocationContext,
     PluginInvocationContextUnavailable,
     _bind_plugin_invocation,
+    _new_local_plugin_invocation,
     _revoke_plugin_invocation,
 )
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
@@ -71,6 +72,123 @@ def test_context_is_immutable_and_unavailable_outside_dispatch(neutral_consumer)
         _ = context.invocation
     with pytest.raises((AttributeError, TypeError)):
         _invocation().platform = "gateway"
+
+
+def test_local_context_uses_refresh_free_host_actor_and_active_profile(monkeypatch):
+    import hermes_cli.auth as auth
+    import hermes_cli.auth_nous as auth_nous
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda provider: {"access_token": "local-jwt", "scope": "inference:invoke"}
+        if provider == "nous"
+        else None,
+    )
+    monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda _state, _token: None)
+    monkeypatch.setattr(
+        auth_nous, "_decode_jwt_claims", lambda _token: {"sub": "  nas-user-7  "}
+    )
+    monkeypatch.setattr("hermes_cli.anon_auth.is_guest_state", lambda _state: False)
+    monkeypatch.setattr(
+        auth,
+        "resolve_nous_runtime_credentials",
+        lambda *_args, **_kwargs: pytest.fail("discovery must not refresh credentials"),
+    )
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "work")
+
+    invocation = _new_local_plugin_invocation(
+        platform="cli", session_id="local-session"
+    )
+
+    assert invocation.profile == "work"
+    assert invocation.authenticated_actor == "nas-user-7"
+    assert invocation.session_id == "local-session"
+    assert invocation.target == "local-session"
+
+
+def test_local_context_rejects_expired_access_even_with_refresh(monkeypatch):
+    import hermes_cli.auth as auth
+    import hermes_cli.auth_nous as auth_nous
+
+    state = {"access_token": "expired-jwt", "refresh_token": "still-present"}
+    monkeypatch.setattr(auth, "get_provider_auth_state", lambda _provider: state)
+    monkeypatch.setattr(
+        auth_nous, "_state_invoke_jwt_status", lambda _state, _token: "invoke_jwt_expiring"
+    )
+    monkeypatch.setattr("hermes_cli.anon_auth.is_guest_state", lambda _state: False)
+
+    invocation = _new_local_plugin_invocation(platform="tui")
+
+    assert invocation.authenticated_actor is None
+
+
+def test_local_context_rejects_wrong_scope_or_missing_jwt_subject(monkeypatch):
+    import hermes_cli.auth as auth
+    import hermes_cli.auth_nous as auth_nous
+
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda _provider: {"access_token": "local-jwt", "scope": "wrong:scope"},
+    )
+    monkeypatch.setattr(
+        auth_nous,
+        "_state_invoke_jwt_status",
+        lambda _state, _token: "missing_inference_invoke_scope",
+    )
+    monkeypatch.setattr(auth_nous, "_decode_jwt_claims", lambda _token: {"sub": "nas-user-7"})
+    monkeypatch.setattr("hermes_cli.anon_auth.is_guest_state", lambda _state: False)
+
+    wrong_scope = _new_local_plugin_invocation(platform="cli")
+    assert wrong_scope.authenticated_actor is None
+
+    monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda _state, _token: None)
+    monkeypatch.setattr(auth_nous, "_decode_jwt_claims", lambda _token: {})
+    missing_subject = _new_local_plugin_invocation(platform="cli")
+    assert missing_subject.authenticated_actor is None
+
+
+def test_local_context_rejects_guest_or_mismatched_subject(monkeypatch):
+    import hermes_cli.auth as auth
+    import hermes_cli.auth_nous as auth_nous
+
+    state = {"access_token": "local-jwt", "user_id": "different-user"}
+    monkeypatch.setattr(auth, "get_provider_auth_state", lambda _provider: state)
+    monkeypatch.setattr(auth_nous, "_state_invoke_jwt_status", lambda _state, _token: None)
+    monkeypatch.setattr(
+        auth_nous, "_decode_jwt_claims", lambda _token: {"sub": "nas-user-7"}
+    )
+    monkeypatch.setattr("hermes_cli.anon_auth.is_guest_state", lambda _state: True)
+    assert _new_local_plugin_invocation(platform="cli").authenticated_actor is None
+
+    monkeypatch.setattr("hermes_cli.anon_auth.is_guest_state", lambda _state: False)
+    assert _new_local_plugin_invocation(platform="cli").authenticated_actor is None
+
+
+def test_local_context_fails_closed_on_state_reader_error(monkeypatch):
+    import hermes_cli.auth as auth
+
+    def fail(_provider):
+        raise OSError("unreadable auth store")
+
+    monkeypatch.setattr(auth, "get_provider_auth_state", fail)
+
+    assert _new_local_plugin_invocation(platform="cli").authenticated_actor is None
+
+
+def test_local_context_does_not_cross_profile_scope(monkeypatch):
+    import hermes_cli.profiles as profiles
+    import hermes_cli.plugin_invocation as invocation_mod
+
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "work")
+    monkeypatch.setattr(invocation_mod, "_local_authenticated_actor", lambda: "nas-user-7")
+
+    invocation = _new_local_plugin_invocation(platform="tui", profile="personal")
+
+    assert invocation.profile == "personal"
+    assert invocation.authenticated_actor is None
 
 
 def test_availability_filters_discovery_and_dispatch(neutral_consumer):

@@ -2377,21 +2377,12 @@ build_bundle_invocation_message = _lazy_shim("agent.skill_bundles", "build_bundl
 
 def _cli_plugin_invocation(cli) -> "PluginInvocationContext":
     """Build trusted plugin context from the active interactive CLI session."""
-    from hermes_cli.plugin_invocation import _new_plugin_invocation
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_cli.plugin_invocation import _new_local_plugin_invocation
 
     session_id = str(getattr(cli, "session_id", "") or "").strip() or None
-    profile = str(get_active_profile_name() or "").strip() or None
-    return _new_plugin_invocation(
-        profile=profile,
+    return _new_local_plugin_invocation(
         session_id=session_id,
         platform="cli",
-        authenticated_actor=None,
-        target=session_id,
-        chat_id=None,
-        thread_id=None,
-        origin=None,
-        execution_kind="root",
     )
 
 

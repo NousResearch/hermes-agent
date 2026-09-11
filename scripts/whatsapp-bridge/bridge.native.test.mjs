@@ -185,6 +185,49 @@ import {
 }
 
 {
+  let writerArgs = null;
+  const audioDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-audio-'));
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'audio-wrapped-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        ephemeralMessage: {
+          message: {
+            viewOnceMessageV2: {
+              message: {
+                audioMessage: {
+                  mimetype: 'audio/wav',
+                  ptt: false,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    downloadMedia: async () => Buffer.from('wav'),
+    writeMediaFile: async (args) => {
+      writerArgs = args;
+      return path.join(args.dir, `nested-audio${args.ext}`);
+    },
+    cacheDirs: { audio: audioDir },
+  });
+
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaType, 'audio');
+  assert.equal(event.mime, 'audio/wav');
+  assert.equal(event.nativeType, 'audioMessage');
+  assert.deepEqual(event.nativeMetadata.audio, { ptt: false });
+  assert.equal(writerArgs.ext, '.wav');
+  assert.deepEqual(event.mediaUrls, [path.join(audioDir, 'nested-audio.wav')]);
+  console.log('  ✓ nested ephemeral/view-once WAV audio preserves its extension and metadata');
+}
+
+{
   const event = await extractBridgeEvent({
     msg: {
       key: { id: 'loc-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },

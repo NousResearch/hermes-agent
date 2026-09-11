@@ -643,22 +643,26 @@ class GatewayTopicThreadsMixin:
         # roll the binding and the route back and fail loudly: a committed restore over the
         # old entry is exactly the inconsistent state the heal would then undo.
         session_key = self._session_key_for_source(source)
-        prior_session_id = ""
+        prior_entry = None
         try:
             prior_entry = await self.async_session_store.lookup_by_session_key(session_key)
-            prior_session_id = str(getattr(prior_entry, "session_id", "") or "")
         except Exception:
             logger.debug("Failed to read prior topic route before restore switch", exc_info=True)
         try:
             await self.async_session_store.switch_session(session_key, session_id)
         except Exception:
             logger.warning("Failed to switch topic store to restored session", exc_info=True)
-            if prior_session_id:
-                # switch_session() can raise after _replace_route_locked already swapped the
-                # in-process entry; put the prior route back so the live store matches the
-                # rollback we report. Best effort — logged, never masks the failure response.
+            if prior_entry is not None:
+                # switch_session() can raise from _save() after _replace_route_locked already
+                # swapped the in-process entry (its database bookkeeping runs later, so it has
+                # not advanced here). Reinstall the captured snapshot verbatim — switching back
+                # by ID would build a fresh shell entry, losing counters, model overrides and
+                # the pending auto-reset metadata. Best effort — logged, never masks the
+                # failure response.
                 try:
-                    await self.async_session_store.switch_session(session_key, prior_session_id)
+                    await asyncio.to_thread(
+                        self.session_store.restore_route_entry, session_key, prior_entry
+                    )
                 except Exception:
                     logger.warning(
                         "Failed to restore prior topic route after restore failure", exc_info=True

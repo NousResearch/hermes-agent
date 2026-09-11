@@ -6,7 +6,7 @@ Telegram topics act as independent Hermes session lanes.
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -709,6 +709,7 @@ async def test_restore_failure_is_visible_and_rolls_back_binding(tmp_path):
     assert "Session restored" not in response
     assert "restore failed" in response.lower()
     assert runner.session_store.switch_session.call_count == 1  # no prior route to restore
+    runner.session_store.restore_route_entry.assert_not_called()
     binding = session_db.get_telegram_topic_binding(
         chat_id="208214988", thread_id="17585",
     )
@@ -756,10 +757,12 @@ async def test_restore_failure_restores_previous_binding(tmp_path):
     response = await runner._restore_telegram_topic_session(event, "old-topic-session")
 
     assert "restore failed" in response.lower()
-    assert runner.session_store.switch_session.call_args_list == [
-        call(topic_key, "old-topic-session"),
-        call(topic_key, "prev-session"),  # failed switch rolled the route back too
-    ]
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "old-topic-session"
+    )
+    # The snapshot — not another ID switch — goes back into the store.
+    prior = runner.session_store.lookup_by_session_key.return_value
+    runner.session_store.restore_route_entry.assert_called_once_with(topic_key, prior)
     binding = session_db.get_telegram_topic_binding(
         chat_id="208214988", thread_id="17585",
     )

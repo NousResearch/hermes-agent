@@ -1175,6 +1175,20 @@ class SessionStore(
             )
         return new_entry
 
+    def restore_route_entry(self, session_key: str, entry: SessionEntry) -> None:
+        """Reinstall a captured entry snapshot (undo of a partially applied ``switch_session``).
+
+        ``switch_session`` can raise from ``_save()`` *after* ``_replace_route_locked`` already
+        swapped ``_entries`` — and its database bookkeeping only runs after that point. Callers
+        that captured the prior entry before switching put it back verbatim, so the live route
+        keeps its counters, model overrides and auto-reset metadata instead of a fresh shell
+        entry. Persists via the same save path; a save failure propagates to the caller.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            self._entries[session_key] = entry
+            self._save()
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:

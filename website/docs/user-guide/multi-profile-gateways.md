@@ -115,19 +115,29 @@ moment the flag is off.
 
 #### 1. Secondary profiles must not start their own gateway
 
-With a multiplexer running, a named-profile `hermes gateway start` / `run` is a
-**hard error**, pointing you back at the multiplexer:
+With a multiplexer running, a named-profile `hermes gateway run`, `start`,
+`install` or `restart` is a **hard error** (exit code 78), pointing you back at
+the multiplexer:
 
 ```
 The default gateway is running as a profile multiplexer and already serves
 profile 'coder'. ...
 ```
 
+The refusal happens in the CLI before any service manager is touched, so a served
+profile never ends up with a permanently failed systemd unit or a launchd respawn
+loop. The Desktop app's per-profile "Start gateway" action is refused the same way.
+"Served" is read from the running gateway's own record (`served_profiles` in the
+default home's `gateway_state.json`), so it stays correct when the multiplexer was
+enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
+environment, or when the allowlist was edited after the gateway started.
+
 The multiplexer is the single inbound process; a second profile gateway would
-double-bind that profile's platforms. Pass `--force` only if you deliberately
-want a separate process for that profile (not recommended while the multiplexer
-is running). The cross-profile lifecycle wrapper script earlier on this page is
-therefore **not** used in multiplex mode — you only manage the default gateway.
+double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
+`install` and `restart`) only if you deliberately want a separate process for that
+profile (not recommended while the multiplexer is running). The cross-profile
+lifecycle wrapper script earlier on this page is therefore **not** used in
+multiplex mode — you only manage the default gateway.
 
 #### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
 
@@ -164,7 +174,11 @@ Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
 
 - `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
-  `~/.hermes/profiles/coder/.env`; the default listener key is rejected.
+  `~/.hermes/profiles/coder/.env`; the default listener key is rejected. Under
+  the multiplexer that key only authenticates the prefix — it does not turn on a
+  second `api_server` listener in the secondary profile (which would otherwise be
+  the port-binding conflict described below), so you do not need to pin
+  `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
 - A webhook route that targets `coder` must declare `profile: coder` beside
   its existing route-specific `secret` in the default profile's
   `config.yaml`. That secret is then accepted only at
@@ -213,10 +227,13 @@ migration, no orphaned history.
 #### 5. One PID/lock and one status surface
 
 There is a single process-level PID and lock (the multiplexer, under the default
-home). `hermes status` reports the multiplexer and the profiles it serves;
-`hermes status -p <name>` slices to one profile. Each profile still writes its
-own `runtime_status.json` under its own home, so existing per-profile readers
-keep working.
+home). `hermes status` on the default profile reports the multiplexer and lists
+the profiles it serves (`Serves: coder, research`); `hermes -p coder status`,
+`hermes -p coder gateway status` and `hermes -p coder cron status` all report
+"running via the default-profile multiplexer" instead of "stopped". The single
+`gateway_state.json` lives under the default home: secondary adapters appear
+there as `<profile>:<platform>` entries beside `served_profiles`; nothing is
+written under a secondary profile's home.
 
 #### What does **not** change
 

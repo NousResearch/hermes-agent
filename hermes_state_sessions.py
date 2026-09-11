@@ -1398,6 +1398,56 @@ class SessionSessionsMixin:
         """At least N sessions exist (archived included); LIMIT short-circuits session_count()'s scan."""
         return len(self._read_all("SELECT 1 FROM sessions LIMIT ?", (n,))) >= n
 
+    def sessions_with_open_todos(self, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """Stored sessions whose LATEST todo-tool result still has a pending/in_progress item.
+
+        Backfill source for the desktop Task Overview sidebar (`session-todos-overview.ts`):
+        that store only ever captures a snapshot when its OWN window observes a live
+        `todo.updated` event or resumes/activates the session — a session created in a
+        different window (or before the app was last opened) never enters it. This lets the
+        desktop ask, once at startup, "which sessions have an unfinished todo list I've never
+        seen?" without a per-session transcript re-fetch: one SQL scan of the newest
+        `todo_list`/`todo` tool-result row per session, filtered to those still open.
+        Archived/hidden sessions are excluded (deny-listed sources match `_LISTING_DENY_SOURCES`
+        in `tui_gateway/methods_session.py`, kept in sync there since this lives in the DB layer).
+        """
+        rows = self._read_all(
+            """
+            SELECT m.session_id, m.content, s.title, s.hidden, s.archived, s.source
+            FROM messages m
+            JOIN (
+                SELECT session_id, MAX(id) AS max_id
+                FROM messages
+                WHERE role = 'tool' AND tool_name IN ('todo_list', 'todo')
+                GROUP BY session_id
+            ) latest ON m.session_id = latest.session_id AND m.id = latest.max_id
+            JOIN sessions s ON s.id = m.session_id
+            WHERE s.hidden = 0 AND s.archived = 0
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+            """,
+            (max(limit, 1) * 4,),  # over-fetch: many rows get dropped below once parsed/filtered
+        )
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            if (row["source"] or "").strip().lower() in ("kanban", "tool"):
+                continue
+            try:
+                parsed = json.loads(row["content"] or "")
+            except (TypeError, ValueError):
+                continue
+            todos = parsed.get("todos") if isinstance(parsed, dict) else None
+            if not isinstance(todos, list) or not todos:
+                continue
+            if not any(isinstance(t, dict) and t.get("status") in ("pending", "in_progress") for t in todos):
+                continue
+            out.append({
+                "session_id": row["session_id"], "title": row["title"] or "", "todos": todos,
+            })
+            if len(out) >= limit:
+                break
+        return out
+
     def session_count_by_source(
         self, *, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False,

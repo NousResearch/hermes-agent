@@ -1063,6 +1063,13 @@ def _contains_unsafe_gateway_action(
             return any(recurse(payload, cwd) for payload in payloads)
         # Unparseable/polyglot source keeps the old conservative shell walk.
 
+    from cron.lifecycle_heredoc import split_python_heredocs
+
+    command, python_bodies = split_python_heredocs(command)
+    for body in python_bodies:
+        if recurse(body, cwd, "python"):
+            return True
+
     for payload in _iter_shell_command_payloads(command):
         if recurse(payload, cwd):
             return True

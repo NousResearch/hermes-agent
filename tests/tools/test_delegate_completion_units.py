@@ -34,6 +34,7 @@ def _batch(tasks, monkeypatch=None):
         origin_ui_session_id="ui",
         origin_owner_transport=None,
         origin_owner_session_record=None,
+        origin_session_history_delivery=False,
         overall_start=0.0,
     )
 
@@ -271,6 +272,7 @@ def test_detached_unit_records_finished_child_and_surfaces_failure_now(tmp_path,
             origin_ui_session_id="",
             origin_owner_transport=None,
             origin_owner_session_record=None,
+            origin_session_history_delivery=False,
             overall_start=0.0,
             group=None,
             unit_id="unit-9",

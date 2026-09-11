@@ -253,17 +253,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     return null
   }
 
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
-
   const leftClusterClass = cn(
     titlebarToolClusterClass,
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+  const centerClusterClass = cn(
+    titlebarToolClusterClass,
+    'left-1/2 top-(--titlebar-controls-top) -translate-x-1/2'
+  )
+  const rightClusterClass = cn(
+    titlebarToolClusterClass,
+    'right-(--titlebar-tools-right) top-(--titlebar-controls-top)'
   )
 
   // A contributed full page (`extension`) yields the fixed clusters only while
@@ -276,12 +276,20 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+        </div>
+        <div className={centerClusterClass} data-titlebar-cluster="center">
+          <Slot area="titleBar.center" />
+        </div>
+        <div className={rightClusterClass} data-titlebar-cluster="right">
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 
@@ -293,14 +301,19 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {titlebarSlots}
+        <Slot area="titleBar.left" />
+      </div>
+
+      <div className={centerClusterClass} data-titlebar-cluster="center">
+        <Slot area="titleBar.center" />
       </div>
 
       <div
         aria-label={t.shell.appControls}
-        className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+        className={rightClusterClass}
         data-titlebar-cluster="right"
       >
+        <Slot area="titleBar.right" />
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>

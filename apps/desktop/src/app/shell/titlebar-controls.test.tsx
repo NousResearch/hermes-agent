@@ -87,6 +87,24 @@ describe('TitlebarControls fixed clusters', () => {
     expect(pluginTool()).not.toBeNull()
   })
 
+  it('places mounted titlebar slots in their physical titlebar regions', () => {
+    const disposeSlots = registry.registerMany([
+      { area: 'titleBar.left', id: 'test-left-slot', render: () => <span>left-slot</span> },
+      { area: 'titleBar.center', id: 'test-center-slot', render: () => <span>center-slot</span> },
+      { area: 'titleBar.right', id: 'test-right-slot', render: () => <span>right-slot</span> }
+    ])
+
+    renderControls('/')
+
+    expect(screen.getByText('left-slot').closest('[data-titlebar-cluster]')).toBe(windowControls())
+    expect(screen.getByText('center-slot').closest('[data-titlebar-cluster]')?.getAttribute('data-titlebar-cluster')).toBe(
+      'center'
+    )
+    expect(screen.getByText('right-slot').closest('[data-titlebar-cluster]')).toBe(appControls())
+
+    act(() => disposeSlots())
+  })
+
   describe('when the page projects titlebar chrome', () => {
     let disposeChrome: () => void
 

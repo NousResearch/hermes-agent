@@ -1191,3 +1191,72 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestBackgroundOriginCreateFailClosed:
+    """Background-origin skill creation must fail closed: stage, scan, and
+    only publish on success. No active SKILL.md may remain on reject,
+    scanner absence, or scanner exception
+    (SECURITY-CLASS-6024d99228f118e5)."""
+
+    def test_background_create_fails_closed_when_scanner_unavailable(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "scanner is not available" in result["error"]
+        assert not (tmp_path / "bg-skill" / "SKILL.md").exists()
+
+    def test_background_create_fails_closed_on_scanner_exception(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", True), \
+             patch("tools.skill_manager_tool.scan_skill", side_effect=RuntimeError("boom")), \
+             patch("tools.skill_manager_tool.should_allow_install", return_value=(True, "")):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "exception" in result["error"]
+        assert not (tmp_path / "bg-skill" / "SKILL.md").exists()
+
+    def test_background_create_fails_closed_on_dangerous_content(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", True), \
+             patch("tools.skill_manager_tool.scan_skill", return_value={"findings": []}), \
+             patch("tools.skill_manager_tool.should_allow_install", return_value=(False, "dangerous")), \
+             patch("tools.skill_manager_tool.format_scan_report", return_value="report"):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "blocked" in result["error"]
+        assert not (tmp_path / "bg-skill" / "SKILL.md").exists()
+
+    def test_background_create_succeeds_with_clean_content(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", True), \
+             patch("tools.skill_manager_tool.scan_skill", return_value={"findings": []}), \
+             patch("tools.skill_manager_tool.should_allow_install", return_value=(True, "")):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+        assert (tmp_path / "bg-skill" / "SKILL.md").exists()
+
+    def test_create_fails_closed_when_provenance_probe_raises(self, tmp_path):
+        """If origin cannot be determined, do not take the lenient foreground path."""
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", side_effect=RuntimeError("boom")), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "scanner is not available" in result["error"]
+        assert not (tmp_path / "bg-skill" / "SKILL.md").exists()
+
+    def test_foreground_create_succeeds_without_scanner(self, tmp_path):
+        """Foreground create keeps existing behavior: no scan when guard is
+        disabled (default), skill is published directly."""
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", return_value=False), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False):
+            result = _create_skill("fg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+        assert (tmp_path / "fg-skill" / "SKILL.md").exists()

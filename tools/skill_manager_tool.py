@@ -34,6 +34,8 @@ from tools.skill_manager_guards import (
 from tools.skill_manager_batch import _skill_manage_batch
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
+_GUARD_AVAILABLE = True
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +64,39 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
+def _security_scan_skill_strict(skill_dir: Path) -> Optional[str]:
+    """Fail-closed security scan for background-origin skill writes.
+
+    Unlike ``_security_scan_skill``, this always scans (ignores
+    ``guard_agent_created``) and fails closed on scanner exception — neither
+    of which the default foreground path does.
+
+    Returns an error string when the skill must not be published, else None.
+    """
+    if not _GUARD_AVAILABLE:
+        return "Security scanner is not available; background-origin skill creation is denied."
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        if allowed is False:
+            report = format_scan_report(result)
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+        if allowed is None:
+            report = format_scan_report(result)
+            logger.warning(
+                "Background-origin skill blocked (dangerous findings): %s",
+                reason,
+            )
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning(
+            "Security scan failed for %s: %s", skill_dir, e, exc_info=True,
+        )
+        return (
+            f"Security scan raised an exception and the skill cannot be "
+            f"published from background origin without verification: {e}"
+        )
+    return None
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
@@ -395,13 +430,36 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+    # Background-origin skill creation must fail closed: stage the bytes, scan
+    # with strict semantics, and only publish to the active root on success. No
+    # active SKILL.md may remain on reject or scanner exception
+    # (SECURITY-CLASS-6024d99228f118e5). Foreground keeps the existing
+    # write-then-optional-scan-with-rollback behavior. A provenance probe
+    # failure is treated as background-origin so it cannot skip the strict scan.
+    try:
+        from tools.skill_provenance import is_background_review
+        is_bg_review = is_background_review()
+    except Exception:
+        is_bg_review = True
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return _err(scan_error)
+    if is_bg_review:
+        import tempfile
+        staging = Path(tempfile.mkdtemp(prefix="skill-stage-"))
+        try:
+            atomic_write_text(staging / "SKILL.md", content)
+            if scan_error := _security_scan_skill_strict(staging):
+                return _err(scan_error)
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    else:
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+        if scan_error := _security_scan_skill(skill_dir):
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {

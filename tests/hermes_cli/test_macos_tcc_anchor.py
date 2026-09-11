@@ -142,10 +142,9 @@ class TestEnsureTccAnchorNonMacos:
 class TestEnsureTccAnchor:
     def test_install_signs_the_anchor_copy(self, tmp_path, monkeypatch):
         signed = []
-        import hermes_cli.runtime_repair as runtime_repair
 
         monkeypatch.setattr(
-            runtime_repair, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
+            tcc, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
         )
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
@@ -350,12 +349,6 @@ class TestEnsureTccAnchor:
         assert marker.read_text(encoding="utf-8") == tcc._marker_value(source)
         assert not list(venv_bin.glob(".tcc-anchor-source.*"))
 
-    def test_store_root_marker_tracks_runtime_repair_constant(self):
-        # The repair-generation store marker must stay derived from
-        # runtime_repair's directory constant, not drift as a hardcoded string.
-        from hermes_cli.runtime_repair import _RUNTIME_DIR_NAME
-
-        assert f"/{_RUNTIME_DIR_NAME}/python/" in tcc._STORE_ROOT_MARKERS
 
 
 class TestBootGate:

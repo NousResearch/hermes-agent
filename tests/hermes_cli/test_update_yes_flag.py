@@ -17,7 +17,7 @@ import pytest
 from hermes_cli.main import cmd_update
 
 pytestmark = pytest.mark.usefixtures(
-    "isolated_update_uv", "isolated_update_processes", "isolated_update_checkout",
+    "isolated_update_processes", "isolated_update_checkout",
 )
 
 

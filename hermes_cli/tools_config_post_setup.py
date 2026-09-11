@@ -15,7 +15,7 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import (
-    _cua_driver_install_ready, _pip_install, _post_setup_no_window_flags, _run_text, install_cua_driver,
+    _cua_driver_install_ready, _post_setup_no_window_flags, _run_text, install_cua_driver,
 )
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -32,8 +32,8 @@ def _info_lines(*lines: str) -> None:
 def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     """Install the Browser Use CLI if it isn't already runnable.
     Primary driver engine for EVERY browser backend except Camofox (Firefox-based, no CDP surface).
-    MANAGED-FIRST: a browser-use on the user's PATH does NOT satisfy this check — only the
-    Hermes-managed ``$HERMES_HOME/bin`` copy does."""
+    A browser-use on the user's PATH does not satisfy this check; PM owns the
+    selected isolated tool environment."""
     _print_info("    Ensuring browser-use CLI (managed install)...")
     try:
         from tools.browser_use_cli import install_cli
@@ -45,8 +45,7 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     else:
         for line in str(message).splitlines():
             _print_warning(f"    {line[:200]}")
-        _print_info("    Falling back to zero-install runs via `uvx browser-use`" if shutil.which("uvx")
-                    else "    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+        _print_info("    Retry with: hermes tools post-setup browser_use_cli")
     if verbose_hints:
         _info_lines("Local Chrome needs remote debugging: chrome://inspect/#remote-debugging",
                     "Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
@@ -189,35 +188,28 @@ def _post_setup_camofox() -> None:
         _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
 
-_KITTENTTS_WHEEL_URL = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
-
-# pip-only post-setup hooks: module (import probe), label, installing (progress line), args, manual
-# (fallback command), on_install (fresh-install notes), always. Also feeds _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.
-def _pip_hook(module, label, installing, args, manual, on_install=(), always=()) -> dict:
-    return {"module": module, "label": label, "installing": installing, "args": args, "manual": manual,
+# The hook key is the UI provider identifier; extra names belong to pyproject.toml.
+def _python_hook(module, extra, label, installing, on_install=(), always=()) -> dict:
+    return {"module": module, "extra": extra, "label": label, "installing": installing,
             "on_install": on_install, "always": always}
 
 
-_PIP_POST_SETUP_HOOKS: dict = {
-    "faster_whisper": _pip_hook(
-        "faster_whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        ["-U", "faster-whisper", "--quiet"], "uv pip install -U faster-whisper",
+_PYTHON_POST_SETUP_HOOKS: dict = {
+    "faster_whisper": _python_hook(
+        "faster_whisper", "stt-whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
         on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
-                    "Change via stt.local.model in ~/.hermes/config.yaml")),
-    "kittentts": _pip_hook(
-        "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
-        ["-U", _KITTENTTS_WHEEL_URL, "soundfile", "--quiet"], f"uv pip install -U '{_KITTENTTS_WHEEL_URL}' soundfile",
+                    "Change via stt.local.model in config.yaml")),
+    "kittentts": _python_hook(
+        "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
         on_install=("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo",
                     "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
-    "piper": _pip_hook(
-        "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
-        ["-U", "piper-tts", "--quiet"], "uv pip install -U piper-tts",
+    "piper": _python_hook(
+        "piper", "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
         always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
                 "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
-                "Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")),
-    "ddgs": _pip_hook(
-        "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...", ["-U", "ddgs", "--quiet"],
-        "uv pip install -U ddgs",
+                "Switch voices by setting tts.piper.voice in config.yaml")),
+    "ddgs": _python_hook(
+        "ddgs", "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...",
         always=("No API key required. DuckDuckGo enforces server-side rate limits.",
                 "Pair with an extract provider if you also need web_extract."))}
 
@@ -230,8 +222,10 @@ def _importable(module: str) -> bool:
         return False
 
 
-def _post_setup_pip(spec: dict) -> None:
-    """Run one ``_PIP_POST_SETUP_HOOKS`` entry."""
+def _post_setup_python(spec: dict) -> None:
+    """Enable one Python provider through the application dependency transaction."""
+    import pm
+
     label = spec["label"]
     lines = list(spec["always"])
     if _importable(spec["module"]):
@@ -239,16 +233,12 @@ def _post_setup_pip(spec: dict) -> None:
     else:
         _print_info(f"    {spec['installing']}")
         try:
-            result = _pip_install(spec["args"], timeout=300)
-        except subprocess.TimeoutExpired:
-            _print_warning(f"    {label} install timed out (>5min)")
-            _info_lines(f"Run manually: {spec['manual']}")
+            pm.sync_venv([spec["extra"]], explicit=True)
+        except (pm.InstallError, OSError, ValueError) as exc:
+            _print_warning(f"    {label} install failed: {exc}")
+            _info_lines("Retry with: hermes tools")
             return
-        if result.returncode != 0:
-            _print_warning(f"    {label} install failed:")
-            _info_lines(f"  {(result.stderr or '').strip()[:300]}", f"Run manually: {spec['manual']}")
-            return
-        _print_success(f"    {label} installed")
+        _print_success(f"    {label} installed. Restart Hermes to use it.")
         lines = list(spec["on_install"]) + lines
     _info_lines(*lines)
 
@@ -282,11 +272,14 @@ def _post_setup_langfuse() -> None:
         _print_success("    langfuse SDK already installed")
     else:
         _print_info("    Installing langfuse SDK...")
-        result = _pip_install(["langfuse", "--quiet"], timeout=120)
-        if result.returncode == 0:
-            _print_success("    langfuse SDK installed")
-        else:
-            _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+        import pm
+        try:
+            pm.sync_venv(["langfuse"], explicit=True)
+        except (pm.InstallError, OSError, ValueError) as exc:
+            _print_warning(f"    langfuse SDK install failed: {exc}")
+            _info_lines("Retry with: hermes tools")
+            return
+        _print_success("    langfuse SDK installed. Restart Hermes to use it.")
     # The bundled observability/langfuse plugin is opt-in (standalone plugins don't load until enabled).
     try:
         from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
@@ -361,7 +354,7 @@ _POST_SETUP_HOOKS: dict = {
     "spotify": _post_setup_spotify,
     "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
-    **{key: (lambda spec=spec: _post_setup_pip(spec)) for key, spec in _PIP_POST_SETUP_HOOKS.items()},
+    **{key: (lambda spec=spec: _post_setup_python(spec)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
 }
 
 
@@ -437,27 +430,6 @@ def _module_installed(module_name: str) -> bool:
         return False
 
 
-# Python deps installed via ``hermes tools`` aren't in the managed runtime's locked ``all`` sync, so a
-# runtime replacement snapshots this static allowlist before the old site-packages disappears and
-# restores it afterward. Derived from the pip hooks (minus ``--quiet``) so install args can't drift.
-_RESTORABLE_PYTHON_TOOL_DEPENDENCIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    **{key: (spec["module"], tuple(a for a in spec["args"] if a != "--quiet"))
-       for key, spec in _PIP_POST_SETUP_HOOKS.items()},
-    "langfuse": ("langfuse", ("langfuse",))}
-
-
-def active_restorable_python_tool_dependencies() -> list[str]:
-    """Return ``hermes tools`` Python dependencies present in this runtime."""
-    return [
-        name for name, (module_name, _install_args) in _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()
-        if _module_installed(module_name)]
-
-
-def restorable_python_tool_dependency(name: str) -> tuple[str, tuple[str, ...]] | None:
-    """Return the import probe and pip arguments for an allowlisted tool."""
-    return _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.get(name)
-
-
 def _agent_browser_installed() -> bool:
     """True when everything ``_run_post_setup("agent_browser")`` installs is present: the agent-browser CLI
     *and* the Chromium build it drives (or the Lightpanda engine, which needs no Chromium), so "Run
@@ -497,7 +469,8 @@ def _cloud_agent_browser_installed() -> bool:
 # installed-checks the hooks perform. ``xai_grok`` is absent — a credential bootstrap handled as an
 # auth check. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {
-    **{key: (lambda m=module: _module_installed(m)) for key, (module, _args) in _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()},
+    **{key: (lambda m=spec["module"]: _module_installed(m)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
+    "langfuse": lambda: _module_installed("langfuse"),
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),

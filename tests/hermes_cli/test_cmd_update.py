@@ -54,16 +54,8 @@ def mock_args():
     return SimpleNamespace()
 
 
-# ---------------------------------------------------------------------------
-# Managed-uv compatibility for tests that patch shutil.which
-# ---------------------------------------------------------------------------
-# The production code resolves uv through ``pm.uv()`` instead of
-# ``shutil.which("uv")``.  Many tests in this file patch ``shutil.which``
-# to control whether uv is "available" — this autouse fixture makes
-# pm.uv delegate to the patched ``shutil.which`` so the existing test
-# setup keeps working without per-test changes.
 pytestmark = pytest.mark.usefixtures(
-    "isolated_update_uv", "isolated_update_processes", "isolated_update_checkout",
+    "isolated_update_processes", "isolated_update_checkout",
 )
 
 class TestCmdUpdateNpmLockfileCache:
@@ -144,56 +136,6 @@ class TestCmdUpdateNpmLockfileCache:
             update_cmd._update_node_dependencies()
 
         assert cache_roots == [shared_root, shared_root]
-
-
-class TestUpdateManagedPythonEnvIsolation:
-    """Regression for the uv-env isolation fix (third-party UV_PYTHON_INSTALL_DIR
-    must not hijack the update's pip install).
-
-    The update path builds uv_env via pm.packages.uv_env(): every UV_* user
-    override and active-venv leak (VIRTUAL_ENV, PYTHONPATH, ...) is STRIPPED
-    rather than re-pinned — pm passes --python explicitly, so no ambient
-    variable may steer which interpreter or install dir uv picks
-    (interpreter-hijack class, #83914). UV_NO_CONFIG=1 is the one pin.
-    """
-
-    def test_managed_env_drops_third_party_uv_overrides(self):
-        from pm.packages import uv_env
-
-        poisoned = {
-            "UV_PYTHON_INSTALL_DIR": r"C:\WorkBuddy\python",
-            "UV_PYTHON": r"C:\WorkBuddy\python\python.exe",
-            "UV_SYSTEM_PYTHON": "1",
-            "UV_NO_MANAGED_PYTHON": "1",
-            "VIRTUAL_ENV": r"C:\Some\Other\venv",
-            "PYTHONPATH": r"C:\Some\site-packages",
-            "PATH": r"C:\Windows",
-        }
-        env = uv_env(poisoned)
-
-        # Every hijack vector is gone, not overridden.
-        assert "WorkBuddy" not in env.get("UV_PYTHON_INSTALL_DIR", "")
-        assert env.get("UV_PYTHON") is None
-        assert env.get("UV_SYSTEM_PYTHON") is None
-        assert env.get("UV_NO_MANAGED_PYTHON") is None
-        assert env.get("VIRTUAL_ENV") is None
-        assert env.get("PYTHONPATH") is None
-        # The one pin: user/system uv config must not apply.
-        assert env.get("UV_NO_CONFIG") == "1"
-        # Non-UV env passes through untouched.
-        assert env.get("PATH") == r"C:\Windows"
-
-    def test_update_uv_env_points_venv_after_repoint(self):
-        """The update path re-points VIRTUAL_ENV at this install's venv and
-        re-enables uv config discovery for the project sync."""
-        from pm.packages import uv_env
-
-        env = uv_env()
-        env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
-        env.pop("UV_NO_CONFIG", None)
-
-        assert env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
-        assert env.get("UV_NO_CONFIG") is None
 
 
 class TestCmdUpdateBranchFallback:
@@ -1164,7 +1106,6 @@ class TestNodeRuntimeNpmResolution:
             ),
             patch("subprocess.run", side_effect=fail_git_fetch),
             patch("urllib.request.urlretrieve", side_effect=write_source_zip),
-            patch("pm.uv", return_value=("uv", dict(os.environ))),
             patch(
                 "tools.skills_sync.sync_skills",
                 return_value={

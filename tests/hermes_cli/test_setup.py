@@ -4,8 +4,11 @@ import os
 import json
 import types
 
+import pytest
+
 
 from hermes_cli.config import load_config, save_config
+import hermes_cli.main  # bootstrap before per-test filesystem guards
 from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
 
@@ -250,3 +253,48 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
     assert defaults["    Vercel project ID"] == "linked-project"
     assert defaults["    Vercel team ID"] == "linked-team"
+
+
+@pytest.mark.parametrize("extra", ["neutts", "kittentts", "modal", "daytona", "vercel"])
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_python_setup_uses_declared_extras_and_reports_restart(extra, succeeds, monkeypatch, capsys):
+    import pm
+    from hermes_cli import setup_terminal, setup_tts
+
+    calls = []
+    def sync(extras, *, explicit):
+        calls.append((extras, explicit))
+        if not succeeds:
+            raise pm.InstallError("venv", "resolution refused")
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    monkeypatch.setattr("pm.extras.extra_supported", lambda name: True)
+    monkeypatch.setitem(sys.modules, extra, None)
+    monkeypatch.setattr(setup_tts.shutil, "which", lambda name: "/usr/bin/espeak-ng")
+    if extra in {"neutts", "kittentts"}:
+        assert getattr(setup_tts, f"_install_{extra}_deps")() is succeeds
+    else:
+        setup_terminal._ensure_sdk(extra)
+    assert calls == [([extra], True)]
+    output = capsys.readouterr().out
+    if succeeds:
+        assert "Restart Hermes" in output
+        assert sys.modules[extra] is None  # installing never activates in this process
+    else:
+        assert "resolution refused" in output
+        assert "Retry with: hermes setup" in output
+        assert "installed." not in output
+
+
+@pytest.mark.parametrize("extra", ["neutts", "kittentts"])
+def test_unsupported_tts_selection_is_retained_without_installing(extra, monkeypatch, capsys):
+    from hermes_cli import setup_tts
+
+    monkeypatch.setattr("pm.extras.extra_supported", lambda name: False)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unsupported engine must not install system or Python packages")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", forbidden)
+    monkeypatch.setattr("pm.sync_venv", forbidden)
+    assert setup_tts._tts_local_install_step(extra) == extra
+    output = capsys.readouterr().out
+    assert "not supported" in output and "selection is saved" in output

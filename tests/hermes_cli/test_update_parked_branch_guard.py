@@ -271,7 +271,6 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
-    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
 
 
 def test_update_skips_and_warns_on_dirty_parked_branch(
@@ -576,11 +575,9 @@ def test_update_up_to_date_path_does_not_repark_merged_branch(
     class _StopFlow(Exception):
         pass
 
-    import pm
-
     monkeypatch.setattr(
-        pm,
-        "ensure",
+        update_cmd,
+        "_repair_current_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)

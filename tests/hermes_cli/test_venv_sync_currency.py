@@ -1,4 +1,4 @@
-"""Own-tree freshness follows the selected PM generation, not a second stamp."""
+"""Checkout freshness follows the selected PM generation, not a second stamp."""
 import importlib
 import json
 import os
@@ -15,6 +15,7 @@ from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
 
 
 def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, monkeypatch, capsys):
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     root, home = admission_env
     core = root / 'core'
     ensure = importlib.import_module('pm.ensure')
@@ -23,8 +24,11 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})
     pins.save()
     monkeypatch.setattr(paths, 'lockfile_path', lambda: pin_path)
-    venv_sync.write_stamp(core, venv_sync._lock_digest(core))
-    cached = venv_sync._stamp_path(core).read_bytes()
+    # A historical foreign-root stamp must not certify a PM environment.
+    old_stamp = core / ".hermes-runtime" / "cache" / "venv-sync.json"
+    old_stamp.parent.mkdir(parents=True)
+    old_stamp.write_text('{"lockDigest": "old-bootstrap-stamp"}')
+    cached = old_stamp.read_bytes()
 
     def check(expected, code=0):
         capsys.readouterr()
@@ -32,7 +36,7 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
         output = json.loads(capsys.readouterr().out)
         assert result == code, output
         assert output['state'] == expected, output
-        assert venv_sync._stamp_path(core).read_bytes() == cached
+        assert old_stamp.read_bytes() == cached
         return output
 
     check('would-sync')
@@ -99,15 +103,15 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
 
 
 def test_own_tree_sync_reuses_pm_without_writing_an_extra_stamp(admission_env, monkeypatch):
-    # venv_sync imports the public alias; use the same real engine as admission.
-    monkeypatch.setattr("pm.sync_venv", importlib.import_module("pm.ensure").sync_venv)
+    # Keep the public client seam; run its in-process path against admission's real engine.
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     root, home = admission_env
     core = root / 'core'
-    assert not venv_sync._stamp_path(core).exists()
+    assert not (core / ".hermes-runtime" / "cache" / "venv-sync.json").exists()
     assert venv_sync.sync(core) == {'state': 'synced', 'ok': True}
     environment = selected_venv(core)
     saved = paths.runtime_facts_path().read_bytes()
-    assert not venv_sync._stamp_path(core).exists()
+    assert not (core / ".hermes-runtime" / "cache" / "venv-sync.json").exists()
     assert venv_sync.sync(core) == {'state': 'current', 'ok': True}
     assert paths.runtime_facts_path().read_bytes() == saved
     python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
@@ -120,4 +124,4 @@ def test_own_tree_sync_reuses_pm_without_writing_an_extra_stamp(admission_env, m
     assert replacement != environment
     assert (replacement / 'pyvenv.cfg').is_file()
     assert venv_sync.sync(core) == {'state': 'current', 'ok': True}
-    assert not venv_sync._stamp_path(core).exists()
+    assert not (core / ".hermes-runtime" / "cache" / "venv-sync.json").exists()

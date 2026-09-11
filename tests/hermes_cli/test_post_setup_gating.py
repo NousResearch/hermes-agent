@@ -57,3 +57,39 @@ class TestPostSetupGate:
         monkeypatch.setitem(tools_config._POST_SETUP_INSTALLED, "cua_driver", _boom)
         assert tools_config._post_setup_already_installed("cua_driver") is True
 
+
+import pytest
+
+
+@pytest.mark.parametrize("key,extra", [
+    ("faster_whisper", "stt-whisper"), ("kittentts", "kittentts"),
+    ("piper", "piper"), ("ddgs", "ddgs"), ("langfuse", "langfuse"),
+])
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_python_provider_setup_records_extra_and_preserves_failure(key, extra, succeeds, monkeypatch, capsys):
+    import pm
+    from hermes_cli import tools_config_post_setup as post, plugins_cmd
+
+    calls = []
+    enabled = []
+    monkeypatch.setattr(post, "_importable", lambda module: False)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda names: enabled.extend(names))
+
+    def sync(extras, *, explicit):
+        calls.append((extras, explicit))
+        if not succeeds:
+            raise pm.InstallError("venv", "resolution refused")
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    post._run_post_setup(key)
+    assert calls == [([extra], True)]
+    output = capsys.readouterr().out
+    if succeeds:
+        assert "Restart Hermes" in output
+        if key == "langfuse":
+            assert enabled == ["observability/langfuse"]
+    else:
+        assert "resolution refused" in output
+        assert "Retry with: hermes tools" in output
+        assert not enabled

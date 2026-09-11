@@ -2601,9 +2601,10 @@ def get_python_path() -> str:
             from hermes_constants import venv_python_path
         except ImportError:
             # Update-boundary: a gateway restarted mid-update can hold a stale hermes_constants
-            # without this symbol; reload through the runtime repair owner.
-            from hermes_cli.runtime_repair import _reload_hermes_constants
-            venv_python_path = _reload_hermes_constants().venv_python_path
+            # without this symbol; reload its definitions from the updated checkout.
+            import importlib
+            import hermes_constants
+            venv_python_path = importlib.reload(hermes_constants).venv_python_path
 
         venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():

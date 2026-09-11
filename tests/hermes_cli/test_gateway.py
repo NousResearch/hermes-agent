@@ -1331,3 +1331,16 @@ def test_service_commands_refuse_on_sealed_apt_termux(
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "Termux" in out
+
+
+def test_python_path_reloads_constants_when_update_added_the_helper(tmp_path, monkeypatch):
+    import hermes_constants
+    from hermes_cli import gateway
+
+    venv = tmp_path / "environment"
+    python = hermes_constants.venv_python_path(venv)
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(gateway, "_detect_venv_dir", lambda: venv)
+    monkeypatch.delattr(hermes_constants, "venv_python_path")
+    assert gateway.get_python_path() == str(python)

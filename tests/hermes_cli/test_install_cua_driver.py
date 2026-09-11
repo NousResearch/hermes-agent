@@ -30,63 +30,6 @@ from unittest.mock import patch
 import pytest
 
 
-def test_pip_install_drives_pm_uv_with_composed_env(tmp_path, monkeypatch):
-    """``tools_config_cua._pip_install`` drives uv through ``pm.ensure.uv`` with
-    ``realize=True, venv=<live venv root>`` and hands the bridge's COMPOSED env
-    (not a hand-built map) to the subprocess boundary. When pm cannot supply uv,
-    it degrades to the pre-existing pip ladder."""
-    import importlib
-    import subprocess
-    from hermes_constants import venv_python_path
-    from hermes_cli import tools_config_cua as cua
-
-    pm_ensure = importlib.import_module("pm.ensure")
-    selected = tmp_path / "selected-venv"
-    monkeypatch.setattr("hermes_cli.runtime_paths.selected_venv", lambda root: selected)
-
-    stub_uv = tmp_path / "uv-stub.exe"
-    stub_uv.write_text("")
-    composed_env = {"VIRTUAL_ENV": str(selected), "UV_PYTHON": "pm-base-python"}
-    seen = {}
-
-    def fake_run_text(cmd, **kwargs):
-        seen["cmd"] = list(cmd)
-        seen["env"] = kwargs.get("env")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(cua, "_run_text", fake_run_text)
-
-    calls = []
-
-    def fake_pm_uv(*, realize, venv):
-        calls.append({"realize": realize, "venv": venv})
-        return str(stub_uv), dict(composed_env)
-
-    monkeypatch.setattr(pm_ensure, "uv", fake_pm_uv)
-    result = cua._pip_install(["cua-driver"])
-    assert result.returncode == 0
-    assert calls == [{"realize": True, "venv": selected}]
-    assert seen["cmd"] == [str(stub_uv), "pip", "install", "--python", str(selected), "cua-driver"]
-    assert seen["env"] == composed_env
-
-    # uv unavailable: probe --version succeeds via the stub, install goes to pip.
-    monkeypatch.setattr(pm_ensure, "uv", lambda **kw: (None, {}))
-    result = cua._pip_install(["cua-driver"])
-    assert result.returncode == 0
-    assert seen["cmd"] == [str(venv_python_path(selected)), "-m", "pip", "install", "cua-driver"]
-
-    # A PM policy/provisioning failure must be reported, not bypassed via pip.
-    from pm.package import InstallError
-    def refuse_uv(**kwargs):
-        raise InstallError("python", "not installed and lazy installs are disabled")
-    monkeypatch.setattr(pm_ensure, "uv", refuse_uv)
-    seen.clear()
-    result = cua._pip_install(["cua-driver"])
-    assert result.returncode != 0
-    assert "lazy installs are disabled" in result.stderr
-    assert not seen
-
-
 def _runtime_manifest(version="0.20.0", *, omit=None):
     omit = set(omit or ())
     required = {

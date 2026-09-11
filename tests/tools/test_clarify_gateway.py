@@ -42,6 +42,39 @@ class TestClarifyPrimitive:
         result = cm.wait_for_response("id1", timeout=10.0)
         assert result == "B"
 
+    def test_wait_for_response_unblocks_on_interrupt(self):
+        """#83889: a /stop or interrupt-mode message must unblock the wait well
+        before the timeout.
+
+        ``wait_for_response`` runs ON the agent thread, so signalling the
+        per-thread interrupt flag — exactly what the gateway's interrupt path
+        does — must make it return immediately. Otherwise the agent thread stays
+        inside the tool, the run's ``finally`` cleanup cannot execute, and
+        /stop does nothing until the full clarify timeout.
+        """
+        from tools import clarify_gateway as cm
+        from tools.interrupt import clear_current_thread_interrupt, set_interrupt
+
+        tid = threading.current_thread().ident
+        cm.register("id-int", "sk-int", "Pick one", ["A", "B"])
+
+        def signal_interrupt():
+            time.sleep(0.05)
+            set_interrupt(True, tid)
+
+        threading.Thread(target=signal_interrupt).start()
+        start = time.monotonic()
+        try:
+            result = cm.wait_for_response("id-int", timeout=30.0)
+            elapsed = time.monotonic() - start
+        finally:
+            clear_current_thread_interrupt()
+
+        assert result is None
+        assert elapsed < 5.0, f"wait blocked {elapsed:.1f}s despite interrupt"
+        # Interrupt exits through the same cleanup path as a timeout.
+        assert cm.get_pending_for_session("sk-int") is None
+
     def test_first_resolution_wins(self):
         """A late cancellation must not overwrite an already-selected choice."""
         from tools import clarify_gateway as cm

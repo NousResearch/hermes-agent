@@ -805,6 +805,16 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         return abort
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+    # ``wait_for_response`` also unblocks on the per-thread interrupt flag (#83889): /stop and
+    # interrupt-mode messages set it on the agent thread. Surface that as an explicit interrupt
+    # sentinel rather than a misleading "user did not respond" timeout — the turn is already
+    # winding down and any reply the user typed in the meantime was dropped with it.
+    try:
+        from tools.interrupt import is_interrupted
+    except Exception:  # pragma: no cover - optional
+        is_interrupted = None
+    if is_interrupted is not None and is_interrupted():
+        return "[interrupted by user]"
     if response is None or response == "":
         return f"[user did not respond within {int(timeout / 60)}m]"
     return response

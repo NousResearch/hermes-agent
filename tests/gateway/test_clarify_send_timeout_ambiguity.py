@@ -173,3 +173,45 @@ def test_failed_send_result_error_detail_is_logged(caplog):
     with caplog.at_level("WARNING", logger="gateway.run"):
         _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
     assert "relay prompt op unavailable" in caplog.text
+
+
+# --- Interrupt attribution (#83889) ---------------------------------------
+
+
+def test_interrupt_during_wait_returns_interrupt_sentinel(monkeypatch):
+    """A /stop that unblocked the wait must be reported as an interrupt.
+
+    `wait_for_response` now also returns on the per-thread interrupt flag, so a
+    cancelled turn would otherwise fall through to the "user did not respond"
+    wording — misattributing a deliberate stop to user silence.
+    """
+    import tools.interrupt as interrupt_mod
+
+    monkeypatch.setattr(interrupt_mod, "is_interrupted", lambda: True)
+    fut = MagicMock()
+    fut.result.return_value = _Result(True)
+    clarify_mod = MagicMock()
+    clarify_mod.get_clarify_timeout.return_value = 600
+    clarify_mod.wait_for_response.return_value = None
+
+    assert (
+        _clarify_send_then_wait(fut, clarify_id="cid", session_key="sk", clarify_mod=clarify_mod)
+        == "[interrupted by user]"
+    )
+
+
+def test_timeout_without_interrupt_keeps_timeout_wording(monkeypatch):
+    """The interrupt check must not steal the ordinary timeout sentinel."""
+    import tools.interrupt as interrupt_mod
+
+    monkeypatch.setattr(interrupt_mod, "is_interrupted", lambda: False)
+    fut = MagicMock()
+    fut.result.return_value = _Result(True)
+    clarify_mod = MagicMock()
+    clarify_mod.get_clarify_timeout.return_value = 600
+    clarify_mod.wait_for_response.return_value = None
+
+    assert (
+        _clarify_send_then_wait(fut, clarify_id="cid", session_key="sk", clarify_mod=clarify_mod)
+        == "[user did not respond within 10m]"
+    )

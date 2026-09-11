@@ -322,6 +322,14 @@ export const ENABLE_KITTY_KEYBOARD = csi('>1u')
 export const DISABLE_KITTY_KEYBOARD = csi('<u')
 
 /**
+ * Reset Kitty keyboard protocol to disabled (flags=0).
+ * CSI = 0 u - sets the mode to 0 without relying on the stack.
+ * More robust than popping: works even when the stack has
+ * multiple entries from terminal resets or race conditions.
+ */
+export const RESET_KITTY_KEYBOARD = csi('=0u')
+
+/**
  * Enable xterm modifyOtherKeys level 2.
  * tmux accepts this (not the kitty stack) to enable extended keys — when
  * extended-keys-format is csi-u, tmux then emits keys in kitty format.

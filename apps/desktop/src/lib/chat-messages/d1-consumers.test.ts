@@ -1,9 +1,10 @@
 import { fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/internal'
 import { describe, expect, it } from 'vitest'
-import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
+
 import { deriveChangedFiles } from '@/components/assistant-ui/thread/changed-files'
-import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { sealOpenToolParts, upsertToolPart } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { todosFromMessageContent } from '@/lib/todos'
 
 const normalize = (parts: ReturnType<typeof upsertToolPart>) => fromThreadMessageLike(toRuntimeMessage({ id: 'd1', role: 'assistant', parts }), 'd1', getAutoStatus(false, false, false, false, undefined)).content

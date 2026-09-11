@@ -9,8 +9,7 @@ import {
   isFileEditTool,
   parseMaybeObject
 } from '@/components/assistant-ui/tool/fallback-model'
-
-import { toolResultRecord, type ToolResultMetadata } from '@/lib/tool-result-metadata'
+import { type ToolResultMetadata, toolResultRecord } from '@/lib/tool-result-metadata'
 
 export interface ChangedFile {
   added: number

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { upsertToolPart } from '@/lib/chat-messages'
+
 import { summarizeToolRun } from '@/components/assistant-ui/tool/run-summary'
+import { upsertToolPart } from '@/lib/chat-messages'
 
 describe('D1 competing implementation contracts', () => {
   it('retains JSON object text as the canonical received value', () => {

@@ -205,6 +205,13 @@ _COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _provider_confirms_completed_compaction(
+    *, completed_compaction_pending: bool, prompt_tokens: int, threshold_tokens: int
+) -> bool:
+    """Only the next positive provider reading can confirm a committed compaction."""
+    return bool(completed_compaction_pending and 0 < prompt_tokens < threshold_tokens)
+
+
 def _should_rearm_compression_budget(
     compression_attempts: int, *, completed_compaction_pending: bool, prompt_tokens: int, threshold_tokens: int
 ) -> bool:
@@ -212,7 +219,10 @@ def _should_rearm_compression_budget(
     rearm the anti-thrash budget, only the completed-compaction latch plus a positive
     normalized prompt count below the threshold."""
     return bool(
-        compression_attempts and completed_compaction_pending and 0 < prompt_tokens < threshold_tokens
+        compression_attempts and _provider_confirms_completed_compaction(
+            completed_compaction_pending=completed_compaction_pending,
+            prompt_tokens=prompt_tokens, threshold_tokens=threshold_tokens,
+        )
     )
 
 
@@ -1450,6 +1460,9 @@ def _run_conversation_turn(
     # in-place boundary would make a later uncompressed result look compacted.
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
+    # Reset before build_turn_context: prologue compression belongs to this turn.
+    if hasattr(agent.context_compressor, "_pending_history_compaction_verdict"):
+        agent.context_compressor._pending_history_compaction_verdict = False
     begin_fast_mode_turn(agent, conversation_history)
 
     # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a

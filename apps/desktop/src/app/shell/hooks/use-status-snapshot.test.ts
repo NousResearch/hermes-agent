@@ -1,8 +1,11 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
+import { clearNotifications } from '@/store/notifications'
 
 import { deferred } from '../../../test/deferred'
 
@@ -27,6 +30,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({} as never)
   $setupReadyTick.set(0)
+  clearNotifications()
 })
 
 afterEach(() => {
@@ -36,6 +40,45 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
+  it('shows a dismissible shared-profile warning on the existing status refresh', async () => {
+    const warning = 'Another installation is using this profile.'
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    render(createElement(NotificationStack))
+
+    const { rerender } = renderHook(({ scope }) => useStatusSnapshot('open', requestGateway, scope), {
+      initialProps: { scope: 'local-default' }
+    })
+
+    await flushAsync()
+    expect(screen.queryByText(warning)).toBeNull()
+    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: warning } as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(screen.getByText(warning)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText(warning)).toBeNull()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(screen.queryByText(warning)).toBeNull()
+
+    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: '' } as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: warning } as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(screen.getByText(warning)).toBeTruthy()
+    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: '' } as never)
+    rerender({ scope: 'local-work' })
+    await flushAsync()
+    expect(screen.queryByText(warning)).toBeNull()
+  })
+
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)
     const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester

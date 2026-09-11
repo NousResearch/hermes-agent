@@ -4,6 +4,7 @@ import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { dismissNotification, notify } from '@/store/notifications'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -24,6 +25,8 @@ export function useStatusSnapshot(
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    let sharedProfileWarning = ''
+    let sharedProfileNoticeId: string | undefined
 
     // Status and inference readiness belong to one backend. A source switch
     // can keep gatewayState="open" throughout, so clear the previous source's
@@ -107,6 +110,17 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           setStatusSnapshot(statusResult.value)
+          const warning = statusResult.value.shared_profile_warning || ''
+
+          // Keep dismissal until the conflict clears. A new overlap can warn again.
+          if (warning !== sharedProfileWarning) {
+            if (sharedProfileNoticeId) {
+              dismissNotification(sharedProfileNoticeId)
+            }
+
+            sharedProfileWarning = warning
+            sharedProfileNoticeId = warning ? notify({ kind: 'warning', message: warning }) : undefined
+          }
         }
       } finally {
         scheduleRefresh()
@@ -138,6 +152,10 @@ export function useStatusSnapshot(
       unsubscribeSetupReady()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
+
+      if (sharedProfileNoticeId) {
+        dismissNotification(sharedProfileNoticeId)
+      }
 
       if (timer !== undefined) {
         window.clearTimeout(timer)

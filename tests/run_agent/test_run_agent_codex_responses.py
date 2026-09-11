@@ -2222,6 +2222,38 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
+def test_chat_messages_to_responses_input_reasoning_with_tool_calls_skips_empty_stub():
+    """A reasoning turn that ALSO carries tool calls must not emit an empty assistant message.
+    The function_call items already satisfy the "following item" rule, and translating gateways
+    turn the empty message into an empty text block that Anthropic/Bedrock reject with HTTP 400
+    "text content blocks must be non-empty"."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [
+        {"role": "user", "content": "run a command"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc_abc", "summary": []},
+            ],
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+    ]
+    items = _chat_messages_to_responses_input(messages)
+    kinds = [it.get("type") or f"message:{it.get('role')}" for it in items]
+    assert kinds == ["message:user", "reasoning", "function_call", "function_call_output"], kinds
+
+    # Malformed tool_calls (no function name) produce no function_call item, so the stub is still required.
+    messages[1]["tool_calls"] = [{"id": "call_1", "type": "function", "function": {"arguments": "{}"}}]
+    items = _chat_messages_to_responses_input(messages[:2])
+    kinds = [it.get("type") or f"message:{it.get('role')}" for it in items]
+    assert kinds == ["message:user", "reasoning", "message:assistant"], kinds
+
+
 
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):

@@ -911,3 +911,196 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
 
+
+# ---- documented approval lifecycle hooks on the codex transport ----
+
+
+def _record_approval_hooks(monkeypatch) -> list[tuple[str, dict]]:
+    """Capture the approval lifecycle events a plugin would receive.
+
+    ``tools.approval_context._fire_approval_hook`` resolves ``invoke_hook`` at call time, so
+    patching the lifecycle module observes exactly what a registered plugin gets.
+    """
+    events: list[tuple[str, dict]] = []
+
+    def fake_invoke_hook(name: str, **kwargs):
+        events.append((name, kwargs))
+        return None
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", fake_invoke_hook)
+    return events
+
+
+class TestApprovalLifecycleHooks:
+    """hooks.md documents ``pre_approval_request`` / ``post_approval_response`` as the observer pair
+    for an approval a human is asked about. Codex approvals never reach ``tools/approval*.py`` — the
+    transport asks its callback directly — so the pair has to be dispatched at the transport's
+    single approval seam, with the same payload shape and redaction as the other surfaces.
+    """
+
+    def _session_with_exec_request(self, client, callback, **session_kwargs):
+        client.queue_server_request(
+            "item/commandExecution/requestApproval", request_id="r1",
+            command="rm -rf /tmp/build", cwd="/tmp", reason="needs to clean the build dir",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        return make_session(client, approval_callback=callback, **session_kwargs)
+
+    def test_exec_approval_dispatches_pre_hook_once(self, monkeypatch):
+        events = _record_approval_hooks(monkeypatch)
+        seen = {}
+
+        def cb(command, description, *, allow_permanent=True):
+            seen["command"] = command
+            return "once"
+
+        session = self._session_with_exec_request(FakeClient(), cb)
+        session.run_turn("hi", turn_timeout=1.0)
+
+        pre = [kw for name, kw in events if name == "pre_approval_request"]
+        assert len(pre) == 1, f"expected exactly one pre_approval_request, recorded: {events}"
+        assert pre[0]["command"] == "rm -rf /tmp/build"
+        assert pre[0]["pattern_key"] == "codex_runtime"
+        assert pre[0]["pattern_keys"] == ["codex_runtime"]
+        assert pre[0]["surface"] == "cli"
+        assert pre[0]["session_key"]  # observers scope their marks off this
+        assert seen["command"] == "rm -rf /tmp/build"
+
+    def test_exec_approval_dispatches_post_with_the_user_choice(self, monkeypatch):
+        events = _record_approval_hooks(monkeypatch)
+        session = self._session_with_exec_request(
+            FakeClient(), lambda command, description, **kw: "once")
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert [name for name, _ in events] == ["pre_approval_request", "post_approval_response"]
+        assert events[1][1]["choice"] == "once"
+        assert events[1][1]["command"] == "rm -rf /tmp/build"
+
+    def test_apply_patch_approval_dispatches_the_same_pair(self, monkeypatch):
+        events = _record_approval_hooks(monkeypatch)
+        client = FakeClient()
+        client.queue_notification(
+            "item/started",
+            item={"type": "fileChange", "id": "fc-1",
+                  "changes": [{"kind": {"type": "update"}, "path": "/tmp/a.py"}]},
+            threadId="t", turnId="tu1",
+        )
+        client.queue_server_request(
+            "item/fileChange/requestApproval", request_id="r2", itemId="fc-1",
+            threadId="t", turnId="tu1", startedAtMs=1234567890, reason="update a.py",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        session = make_session(client, approval_callback=lambda command, description, **kw: "session")
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert [name for name, _ in events] == ["pre_approval_request", "post_approval_response"]
+        assert "apply_patch" in events[0][1]["command"]
+        assert events[1][1]["choice"] == "session"
+
+    @pytest.mark.parametrize("choice", ["once", "session", "always", "deny", "timeout"])
+    def test_one_request_is_exactly_one_pair_whatever_the_choice(self, monkeypatch, choice):
+        """A scope decision or a timeout is the same request's outcome, not a second event."""
+        events = _record_approval_hooks(monkeypatch)
+        session = self._session_with_exec_request(
+            FakeClient(), lambda command, description, **kw: choice)
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert [name for name, _ in events] == ["pre_approval_request", "post_approval_response"]
+        assert events[1][1]["choice"] == choice
+
+    def test_hook_return_value_cannot_veto_the_decision(self, monkeypatch):
+        """Observers are documented return-ignored (plugins.py); a plugin answering "deny" must not
+        change what the user's own approval produced."""
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kwargs: "deny")
+        client = FakeClient()
+        session = self._session_with_exec_request(
+            client, lambda command, description, **kw: "once")
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert client.responses == [("r1", {"decision": "accept"})]
+
+    def test_hook_exception_cannot_break_the_approval(self, monkeypatch):
+        def exploding_invoke_hook(name, **kwargs):
+            raise RuntimeError("observer blew up")
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", exploding_invoke_hook)
+        client = FakeClient()
+        session = self._session_with_exec_request(
+            client, lambda command, description, **kw: "once")
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert client.responses == [("r1", {"decision": "accept"})]
+
+    def test_hook_payload_is_redacted_while_the_approval_sees_the_real_command(self, monkeypatch):
+        """hooks.md: an approval command may carry secrets. The observer payload must never carry
+        the raw text; the approval decision itself still sees what will run."""
+        secret = "sk-live-51H8xQ2eZvKYlo2Cabcdefgh"
+        events = _record_approval_hooks(monkeypatch)
+        seen = {}
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval", request_id="r1",
+            command=f"curl -H 'Authorization: Bearer {secret}' https://api.example.com",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        def cb(command, description, **kwargs):
+            seen["command"] = command
+            return "once"
+
+        session = make_session(client, approval_callback=cb)
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert secret in seen["command"]
+        pre = [kw for name, kw in events if name == "pre_approval_request"][0]
+        assert secret not in pre["command"], "the observer payload leaked the raw secret"
+        assert "***" in pre["command"]
+
+    def test_callback_exception_reports_no_decision_not_a_denial(self, monkeypatch):
+        """A raising callback obtained no approval response: the post event must carry the documented
+        no-decision failure, never ``deny`` — an exception is not a human denial."""
+        events = _record_approval_hooks(monkeypatch)
+
+        def exploding_callback(command, description, **kwargs):
+            raise RuntimeError("prompt UI blew up")
+
+        client = FakeClient()
+        session = self._session_with_exec_request(client, exploding_callback)
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert client.responses == [("r1", {"decision": "decline"})]
+        assert [name for name, _ in events] == ["pre_approval_request", "post_approval_response"]
+        post = events[1][1]
+        assert post["choice"] == "notify_failed"
+        assert post["choice"] not in {"once", "session", "always", "deny", "timeout"}
+
+    def test_no_hooks_when_no_human_is_asked(self, monkeypatch):
+        """Parity with the native gates: a bypassed approval and the fail-closed no-callback path
+        prompt nobody, so they must not emit lifecycle events."""
+        events = _record_approval_hooks(monkeypatch)
+
+        bypassed = FakeClient()
+        bypass_session = self._session_with_exec_request(
+            bypassed, None,
+            request_routing=_ServerRequestRouting(auto_approve_exec=True,
+                                                  auto_approve_apply_patch=True))
+        bypass_session.run_turn("hi", turn_timeout=1.0)
+        assert bypassed.responses == [("r1", {"decision": "accept"})]
+        assert events == []
+
+        headless = FakeClient()
+        headless_session = self._session_with_exec_request(headless, None)
+        headless_session.run_turn("hi", turn_timeout=1.0)
+        assert headless.responses == [("r1", {"decision": "decline"})]
+        assert events == []
+

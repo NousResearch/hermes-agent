@@ -562,7 +562,7 @@ hermes kanban comment <id> "<text>" [--author NAME]
 # 批量动词 —— 接受多个 id：
 hermes kanban complete <id>... [--result "..."]
 hermes kanban block <id> "<reason>" [--ids <id>...]
-hermes kanban unblock <id>...
+hermes kanban unblock <id>... [--reason "..."]
 hermes kanban archive <id>...
 
 hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE]

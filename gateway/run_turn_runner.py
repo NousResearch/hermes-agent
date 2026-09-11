@@ -876,7 +876,7 @@ class TurnRunner:
         delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
-            def stream_delta_cb(text: str) -> None:
+            def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
                     for sink in delta_sinks:
                         sink.on_delta(text)
@@ -884,6 +884,12 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if stts is not None:
+                # Flush accepted deltas; completed commentary is a separate speech segment.
+                stts.on_delta(None)
+                if not already_streamed:
+                    stts.on_delta(text)
+                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1509,6 +1515,10 @@ class TurnRunner:
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
+            if _accepts_keyword(agent.run_conversation, "turn_author"):
+                # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
+                kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
+                                         "is_bot": bool(getattr(ctx.source, "is_bot", False))}
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:

@@ -141,6 +141,7 @@ def _run_and_exit_oneshot(
     skills: object = None,
     usage_file: object = None,
     resume: object = None,
+    reasoning: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -153,6 +154,7 @@ def _run_and_exit_oneshot(
             skills=skills,
             usage_file=usage_file,
             resume=resume,
+            reasoning=reasoning,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -358,6 +360,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
@@ -955,7 +958,9 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable.
+    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
+    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
+    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1040,6 +1045,12 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
+    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
+    try:
+        from hermes_cli.anon_auth import guest_enabled, has_guest
+        return guest_enabled() and has_guest()
+    except Exception as exc:
+        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1443,6 +1454,15 @@ def _apply_in_dir(args) -> None:
     except OSError as e:
         print(f"Error: cannot enter --in directory {in_dir}: {e}")
         sys.exit(1)
+    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
+    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
+    # cwd, so a value inherited from a parent surface, the shell or .env outlives
+    # this chdir and re-homes the session in the old directory (#106220). Refresh
+    # it. An unset variable stays unset: the backends then derive from the new
+    # process cwd (local exports it at cli import, docker mounts it, ssh and
+    # container backends keep their own remote/sandbox default).
+    if os.environ.get("TERMINAL_CWD", "").strip():
+        os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
 
 
@@ -1675,7 +1695,11 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: check if any provider is configured before launching
+    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
+    # that may create the identity), then the inventory decides whether setup is needed.
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    run_bootstrap(announce=False)
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return
@@ -2619,6 +2643,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -2904,6 +2929,7 @@ def _run_oneshot_from_args(args) -> None:
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
         resume=getattr(args, "resume", None),
+        reasoning=getattr(args, "reasoning", None),
     )
 
 
@@ -3261,6 +3287,7 @@ def _build_cli_parser():
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+    build_vault_parser(subparsers)
     build_update_parser(subparsers, cmd_update=cmd_update)
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)

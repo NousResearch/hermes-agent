@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
+        'user-guide/free-tier',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
         {
@@ -88,6 +89,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skins',
             'user-guide/features/plugins',
             'user-guide/features/built-in-plugins',
+            'user-guide/features/plugin-catalog',
           ],
         },
         {
@@ -118,6 +120,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/web-search',
             'user-guide/features/x-search',
             'user-guide/features/browser',
+            'user-guide/features/credential-vault',
             'user-guide/features/computer-use',
             'user-guide/features/vision',
             'user-guide/features/image-generation',
@@ -351,6 +354,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ascii-art',
+                    'user-guide/skills/optional/creative/creative-archify',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',

@@ -95,14 +95,18 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
-    try:
-        from hermes_cli.env_loader import get_secret_source
-    except Exception:  # pragma: no cover — early bootstrap/import fallback
-        get_secret_source = None
+    from agent.secret_scope import get_secret
+    from hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
-        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
-        or key.startswith("XDG_") or (get_secret_source is not None and get_secret_source(key))}
+        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
+    # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
+    # holds only the LAUNCH profile's values, so the value must come from the active profile's
+    # secret scope; a profile that lacks the name gets nothing, never another profile's token.
+    for key in secret_source_names():
+        value = get_secret(key)
+        if value is not None:
+            env[key] = value
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]

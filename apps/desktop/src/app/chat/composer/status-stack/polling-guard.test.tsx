@@ -85,10 +85,9 @@ describe('ComposerStatusStack hidden-pane poll', () => {
   const SID_BG = 'sess-bg-poll'
 
   const runningList = vi.fn(async (method: string) =>
-    method === 'process.list'
-      ? { processes: [{ command: 'dev server', session_id: 'bg1', status: 'running' }] }
-      : {}
+    method === 'process.list' ? { processes: [{ command: 'dev server', session_id: 'bg1', status: 'running' }] } : {}
   )
+
   const processListCalls = () => runningList.mock.calls.filter(([method]) => method === 'process.list').length
 
   function renderStackBg(visible: boolean) {

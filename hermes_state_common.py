@@ -763,7 +763,7 @@ FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 FTS_TRIGRAM_SESSION_SQL = (
     "source NOT IN ("
     + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
+    + f") AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL"
 )
 
 

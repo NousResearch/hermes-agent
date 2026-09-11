@@ -24,7 +24,7 @@ from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
-    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, fts_rebuild_admission,
+    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
 from hermes_state_holders import _read_proc_argv
 
@@ -939,14 +939,14 @@ class SessionSchemaMixin:
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
                     f"WHERE parent_session_id IS NOT NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
                     f"AND {_ephemeral_child_sql('sessions')}"
                 )
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', '__orphaned__') WHERE parent_session_id IS NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._branched_from')} IS NULL "
                     "AND title IS NULL AND message_count <= 25 AND EXISTS (SELECT 1 FROM messages m "
                     "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
                     "AND NOT EXISTS (SELECT 1 FROM sessions ch "

@@ -2949,12 +2949,18 @@ class SlackAdapter(BasePlatformAdapter):
         return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Acknowledge immediately, then add the in-progress reaction."""
+        channel_id = getattr(event.source, "chat_id", None)
+        if channel_id:
+            metadata: Dict[str, Any] = {"_interim_send": True}
+            thread_id = getattr(event.source, "thread_id", None)
+            if thread_id:
+                metadata["thread_id"] = str(thread_id)
+            await self.send(channel_id, "Getting started…", metadata=metadata)
         target = self._reacting_target(event)
         if target is None:
             return
         ts, team_id, _marker = target
-        channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
             await self._react(channel_id, ts, "eyes", team_id, remove=False)
 

@@ -2881,6 +2881,29 @@ class TestReactions:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_processing_start_sends_immediate_thread_ack(self, adapter):
+        adapter.send = AsyncMock()
+        adapter._reacting_message_ids.add("1234567890.000001")
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.config import Platform
+
+        source = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="group",
+            user_id="U_USER", thread_id="111.222",
+        )
+        event = MessageEvent(
+            text="do work", message_type=MessageType.TEXT, source=source,
+            message_id="1234567890.000001",
+        )
+        await adapter.on_processing_start(event)
+
+        adapter.send.assert_awaited_once_with(
+            "C123", "Getting started…",
+            metadata={"thread_id": "111.222", "_interim_send": True},
+        )
+
+    @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
         """Reactions should be bracketed around actual processing via hooks."""
         adapter._app.client.reactions_add = AsyncMock()

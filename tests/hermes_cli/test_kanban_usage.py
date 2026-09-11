@@ -317,3 +317,85 @@ def test_goal_gate_usage_is_captured_after_final_judge_call(worker_task, monkeyp
     assert run.api_call_count == 2
     assert run.estimated_cost_usd == pytest.approx(1.25)
     assert run.auxiliary_estimated_cost_usd == pytest.approx(0.25)
+
+
+def test_request_review_preserves_implementation_usage(worker_task):
+    from model_tools import handle_function_call
+
+    out = json.loads(handle_function_call(
+        "kanban_request_review",
+        {"summary": "Implementation verified; ready for review."},
+        session_usage=_usage("session-builder", scale=1),
+    ))
+    assert out["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, worker_task)
+        run = kb.latest_run(conn, worker_task)
+        usage = task_usage(conn, worker_task)
+
+    assert task is not None and run is not None
+    assert task.status == "review"
+    assert run.outcome == "review_requested"
+    assert run.ended_at is not None
+    assert run.session_id == "session-builder"
+    assert usage["input_tokens"] == 100
+    assert usage["estimated_cost_usd"] == pytest.approx(0.1)
+
+
+def test_request_changes_preserves_reviewer_usage(worker_task, monkeypatch):
+    from model_tools import handle_function_call
+
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, worker_task)
+        assert task is not None
+        assert kb.request_review(
+            conn,
+            worker_task,
+            reviewer="reviewer",
+            summary="Ready for review.",
+            expected_run_id=task.current_run_id,
+        )
+        claimed = kb.claim_review_task(conn, worker_task)
+    assert claimed is not None
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+
+    out = json.loads(handle_function_call(
+        "kanban_request_changes",
+        {"reason": "Add coverage for the retry path."},
+        session_usage=_usage("session-reviewer", scale=2, actual_cost_usd=0.15),
+    ))
+    assert out["ok"] is True
+
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, worker_task)
+        run = kb.latest_run(conn, worker_task)
+        usage = task_usage(conn, worker_task)
+
+    assert task is not None and run is not None
+    assert task.status == "ready"
+    assert task.assignee == "builder"
+    assert run.outcome == "changes_requested"
+    assert run.ended_at is not None
+    assert run.session_id == "session-reviewer"
+    assert usage["input_tokens"] == 200
+    assert usage["estimated_cost_usd"] == pytest.approx(0.2)
+    assert usage["cost_usd"] == pytest.approx(0.15)
+    assert [(row["profile"], row["input_tokens"]) for row in usage["profiles"]] == [
+        ("builder", 0),
+        ("reviewer", 200),
+    ]
+
+
+@pytest.mark.parametrize("tool_name", ["kanban_request_review", "kanban_request_changes"])
+def test_review_terminals_collect_worker_usage(worker_task, monkeypatch, tool_name):
+    from agent.tool_executor import _kanban_session_usage
+
+    agent = SimpleNamespace(session_id="session-builder", session_input_tokens=100)
+    usage = _kanban_session_usage(agent, tool_name)
+    assert usage is not None
+    assert usage["session_id"] == "session-builder"
+    assert usage["input_tokens"] == 100
+    assert _kanban_session_usage(agent, "kanban_heartbeat") is None
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert _kanban_session_usage(agent, tool_name) is None

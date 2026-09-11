@@ -3065,6 +3065,7 @@ def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    usage: Optional[dict] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3138,6 +3139,7 @@ def request_review(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="review_requested", status="review",
             summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+            usage=usage,
         )
         _append_event(
             conn,
@@ -3175,6 +3177,7 @@ def _nonblank_str(value: Any) -> Optional[str]:
 
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    usage: Optional[dict] = None,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
@@ -3227,6 +3230,7 @@ def request_changes(
             return False, "task changed during review handoff"
         run_id = _end_run(
             conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
+            usage=usage,
         )
         _append_event(
             conn,

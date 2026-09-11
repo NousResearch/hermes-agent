@@ -197,7 +197,12 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         return False
 
 
-_KANBAN_USAGE_TERMINALS = frozenset({"kanban_complete", "kanban_block"})
+_KANBAN_USAGE_TERMINALS = frozenset({
+    "kanban_complete",
+    "kanban_block",
+    "kanban_request_review",
+    "kanban_request_changes",
+})
 
 
 def _kanban_session_usage(agent, tool_name: str, function_args: Optional[dict] = None) -> dict | None:

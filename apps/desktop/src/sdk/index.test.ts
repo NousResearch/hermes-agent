@@ -11,12 +11,14 @@ import { clearAllSessionStates, publishSessionState } from '@/store/session-stat
 // tests observe the guard's decision through the ONLY side effect that matters
 // — whether openGatewayForProfile was dialed.
 const warmMocks = vi.hoisted(() => ({
+  openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
   openGatewayForProfile: vi.fn(async (_profile: string) => undefined),
   openSecondaryCount: vi.fn(() => 0)
 }))
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
+  openGatewayForAgent: warmMocks.openGatewayForAgent,
   openGatewayForProfile: warmMocks.openGatewayForProfile,
   openSecondaryCount: warmMocks.openSecondaryCount
 }))
@@ -47,6 +49,21 @@ describe('host.warmProfile pool-saturation contract', () => {
     host.warmProfile('warm-saturated')
 
     expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('warmAgent (multi-source rows) honours the same saturation guard', () => {
+    warmMocks.openGatewayForAgent.mockClear()
+    warmMocks.openSecondaryCount.mockReturnValue(3)
+
+    host.warmAgent('conn-vps', 'warm-agent-saturated')
+
+    expect(warmMocks.openGatewayForAgent).not.toHaveBeenCalled()
+
+    warmMocks.openSecondaryCount.mockReturnValue(2)
+
+    host.warmAgent('conn-vps', 'warm-agent-free')
+
+    expect(warmMocks.openGatewayForAgent).toHaveBeenCalledWith('conn-vps', 'warm-agent-free')
   })
 })
 

@@ -2329,8 +2329,20 @@ def probe_api_models(
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
+        models = [str(m.get("id") or "").strip() for m in data.get("data", [])]
+        # Coerce ids to strings at extraction: a misbehaving proxy
+        # may return non-string ids (e.g. {"id": 12345}), which
+        # would crash str.lower below and take down the whole
+        # probe. Filter empty ids and sort + dedupe
+        # case-insensitively so the /model picker renders a stable,
+        # alphabetical order. Built-in providers
+        # (anthropic/xai/github) already sort their catalogs; this
+        # custom OpenAI-compatible path did not, so the ordering
+        # changed with every /v1/models response and cache refresh.
+        models = [m for m in models if m]
+        models = sorted(set(models), key=str.lower)
         return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
+            models, url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and not reachable:

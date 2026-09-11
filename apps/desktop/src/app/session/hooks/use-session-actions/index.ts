@@ -577,9 +577,9 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute)),
-          ...sessionCreateOverrideParams(createOverrides, seedMessages)
+          ...sessionCreateOverrideParams(createOverrides, seedMessages),
+          request_id: createIntent
         }
-        params.request_id = createIntent
 
         // Lease the owner socket for the whole create → owner-publication
         // sequence (#93602 primitive). The per-request lease inside

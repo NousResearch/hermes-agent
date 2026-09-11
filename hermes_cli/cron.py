@@ -544,6 +544,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
+                   ("monitor_commit_policy", "monitor_commit_policy"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
 
 
@@ -556,6 +557,7 @@ _JOB_DETAIL_LINES = (
     ("script", "  Script: {}"),
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
+    ("monitor_commit_policy", "  Monitor commit: {}"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"))

@@ -380,6 +380,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         job,
         *,
         defer_agent_teardown=None,
+        defer_monitor_commit=None,
         extra_prompt=None,
         cancel_event=None,
         execution_id=None,

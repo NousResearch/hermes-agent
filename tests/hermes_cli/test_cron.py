@@ -104,6 +104,40 @@ class TestCronCommandLifecycle:
         out = capsys.readouterr().out
         assert "Updated job" in out
 
+    def test_create_and_edit_monitor_commit_policy(self, tmp_cron_dir, capsys):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        create_args = parser.parse_args(
+            [
+                "cron",
+                "create",
+                "every 5m",
+                "React",
+                "--monitor-url",
+                "https://example.com/status",
+                "--monitor-commit-policy",
+                "after_delivery",
+            ]
+        )
+        assert cron_command(create_args) == 0
+        job = list_jobs()[0]
+        assert job["monitor_commit_policy"] == "after_delivery"
+
+        edit_args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                job["id"],
+                "--monitor-commit-policy",
+                "detection_time",
+            ]
+        )
+        assert cron_command(edit_args) == 0
+        assert get_job(job["id"])["monitor_commit_policy"] == "detection_time"
+        assert "Updated job" in capsys.readouterr().out
+
     def test_create_with_multiple_skills(self, tmp_cron_dir, capsys):
         cron_command(
             Namespace(

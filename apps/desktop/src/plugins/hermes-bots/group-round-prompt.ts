@@ -1,11 +1,17 @@
 import { botHandle } from './data'
 import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
-import type { GroupMember, GroupMessage } from './types'
+import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
+
+/** Viewer identity for a room-log line. A bare string is the local, unsourced
+ *  profile name (legacy call sites and single-connection jobs). */
+export type GroupChatLineViewer =
+  | string
+  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
+export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -23,12 +29,42 @@ export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
     return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
   }
 
-  const suffix = entry.from.name === viewerName ? ' (you)' : ''
+  const suffix = isGroupChatSelf(entry.from, viewer) ? ' (you)' : ''
   // Cross-connection speakers carry their device so same-named agents on
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
   return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+}
+
+function viewerNameOf(viewer: GroupChatLineViewer): string {
+  return typeof viewer === 'string' ? viewer : viewer?.name || ''
+}
+
+/** Remote members stamp `from.source` as `connectionLabel || connectionId`.
+ *  Only a remoteSource viewer exposes those tokens; a string or local member
+ *  is unsourced so same-name remote lines fail open (no `(you)`). */
+function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
+  if (typeof viewer === 'string' || !viewer?.remoteSource) {
+    return []
+  }
+
+  return [viewer.connectionLabel, viewer.connectionId].filter((token): token is string => Boolean(token))
+}
+
+function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
+  if (!from.name || from.name !== viewerNameOf(viewer)) {
+    return false
+  }
+
+  const speakerSource = from.source || ''
+  const viewerSources = viewerConnectionSources(viewer)
+
+  if (!speakerSource && viewerSources.length === 0) {
+    return true
+  }
+
+  return Boolean(speakerSource) && viewerSources.includes(speakerSource)
 }
 
 interface GroupChatTurnPromptInput {

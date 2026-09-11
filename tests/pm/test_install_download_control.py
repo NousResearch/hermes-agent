@@ -13,6 +13,7 @@ import pytest
 import pm
 from pm import paths, registry
 from pm.downloader import DownloadPaused
+from pm.ensure import ensure
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
@@ -60,7 +61,7 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
             pause.set()
 
     with pytest.raises(DownloadPaused):
-        pm.ensure(ComponentPackage.name, explicit=True, progress=progress, pause_event=pause)
+        ensure(ComponentPackage.name, explicit=True, progress=progress, pause_event=pause)
     assert Facts(paths.facts_path()).get(ComponentPackage.name) is None
     assert list(paths.partials_root().glob("*.ranges"))
     first_requests = [request for request in RangeHandler.ranges_seen if request[0] == "/component-0.zip"]
@@ -68,7 +69,7 @@ def test_install_pause_preserves_archives_and_resumes_the_same_pin(tmp_path, mon
     assert (root / f"fetch-{pins[0]['sha256']}").is_dir()
 
     pause.clear()
-    pm.ensure(ComponentPackage.name, explicit=True, pause_event=pause)
+    ensure(ComponentPackage.name, explicit=True, pause_event=pause)
     fact = Facts(paths.facts_path()).get(ComponentPackage.name)
     assert fact["artifacts"] == [pin["sha256"] for pin in pins]
     for name, body in contents.items():
@@ -99,7 +100,7 @@ def test_install_progress_covers_all_archives_including_cache(tmp_path, monkeypa
         store.fetch(pins[0]["url"], pins[0]["sha256"], scratch)
     ticks = []
     stages = []
-    pm.ensure(ComponentPackage.name, explicit=True,
+    ensure(ComponentPackage.name, explicit=True,
               progress=lambda *args: stages.append(args),
               download_progress=lambda done, total, ranges: ticks.append((done, total, ranges)))
     expected = sum(map(len, payloads))

@@ -61,6 +61,18 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
                 wheel.unlink()
 
 
+def stage_pm_runtime(root: Path, uv: Path, python: Path, repo: Path, *, offline: bool = False) -> None:
+    """Publish the same PM dependency graph as source installs, ready offline."""
+    from pm.runtime_stage import stage_runtime
+    from scripts.bundles.payload import seal_pm_runtime
+
+    destination = root / "pm-runtime"
+    if destination.exists():
+        shutil.rmtree(destination)
+    stage_runtime(uv, python, destination, project=repo / "pm", offline=offline)
+    seal_pm_runtime(root, python)
+
+
 def stage_native(args) -> int:
     previous = os.environ.get("HERMES_RUNTIME_DIR")
     try:
@@ -133,6 +145,9 @@ def _stage_native(args) -> int:
     python_bin = get_package("python").binary(
         _store().entry(python_fact["entry"]), current_target()
     )
+
+    stage_pm_runtime(out, Path(uv_bin), python_bin, repo_dir)
+    print("✓ pm-runtime (independent locked dependencies)", flush=True)
 
     # Build + sync INSIDE the staged repo: the editable project install
     # must point at the payload's own tree, not this checkout.

@@ -173,6 +173,17 @@ def dependencies(args) -> None:
     import subprocess
     import tomllib
 
+    from pm.runtime import is_runtime, runtime_command, runtime_environment
+
+    if not is_runtime():
+        subprocess.run(
+            runtime_command(Path(__file__).resolve(),
+                            ["dependencies", "--home", str(args.home.resolve()),
+                             "--toolchain", args.toolchain, "--extras", json.dumps(args.extras)]),
+            env=runtime_environment(), check=True,
+        )
+        return
+
     from hermes_cli.runtime_paths import selected_venv
     from pm.ensure import sync_venv, uv
     from pm.paths import repo_root

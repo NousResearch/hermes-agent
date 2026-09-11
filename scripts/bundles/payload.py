@@ -84,10 +84,48 @@ def plant_surfaces(repo: Path, source: Path, *, dashboard: bool = True) -> None:
         shutil.copytree(web, repo / "hermes_cli/web_dist")
 
 
+def seal_pm_runtime(root: Path, python: Path) -> dict:
+    """Record a resident PM runtime without Windows' CWD-bound redirector.
+
+    Sealed workers execute the base interpreter with -I -S and add only the
+    recorded site directory. Its paths remain valid after the payload moves.
+    """
+    root, python = root.resolve(), python.resolve()
+    if not python.is_relative_to(root) or not python.is_file():
+        raise ValueError(f"PM interpreter must belong to the payload: {python}")
+    runtime = root / "pm-runtime"
+    sites = list(runtime.glob("lib/python*/site-packages")) + list(runtime.glob("Lib/site-packages"))
+    if len(sites) != 1:
+        raise ValueError(f"PM dependency directory missing or ambiguous: {runtime}")
+    marker = {
+        "python": Path(os.path.relpath(python, runtime)).as_posix(),
+        "sitePackages": sites[0].relative_to(runtime).as_posix(),
+    }
+    cfg = runtime / "pyvenv.cfg"
+    lines = cfg.read_text(encoding="utf-8").splitlines()
+    lines = [line for line in lines if line.partition("=")[0].strip() not in
+             {"home", "executable", "base-executable", "base-prefix", "base-exec-prefix", "command"}]
+    lines.insert(0, f"home = {os.path.relpath(python.parent, runtime)}")
+    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # A sealed runtime is not activated, and copied Windows redirectors cannot
+    # follow its relative home from arbitrary working directories.
+    bindir = runtime / ("Scripts" if os.name == "nt" else "bin")
+    for entry in bindir.iterdir():
+        if os.name == "nt" or not entry.is_symlink():
+            if entry.is_file():
+                entry.unlink()
+    _relativize_bin_links(root, runtime / "bin")
+    (runtime / "pm-runtime.json").write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+    return marker
+
+
 def relativize_links(root: Path) -> int:
     """Only dependency-venv links move; framework links belong to codesign."""
     root = root.resolve()
-    directory = root / "venv/bin"
+    return sum(_relativize_bin_links(root, root / name / "bin") for name in ("venv", "pm-runtime"))
+
+
+def _relativize_bin_links(root: Path, directory: Path) -> int:
     count = 0
     if not directory.is_dir():
         return count

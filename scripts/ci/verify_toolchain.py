@@ -54,9 +54,9 @@ def main() -> None:
         if Path(sys.prefix).resolve() != Path(selected["environment"]).resolve():
             raise RuntimeError("PATH Python did not select the PM dependency environment")
         import pytest
-        import yaml
+        import ruamel.yaml
 
-        rows["dependencies"] = {"pytest": pytest.__version__, "pyyaml": yaml.__version__}
+        rows["dependencies"] = {"pytest": pytest.__version__, "ruamel.yaml": ruamel.yaml.__version__}
         code = "import sys,pytest; print(sys.prefix); print(pytest.__version__)"
         probe = subprocess.check_output([shutil.which("python3"), "-c", code], text=True, encoding="utf-8", timeout=60)
         if pytest.__version__ not in probe:

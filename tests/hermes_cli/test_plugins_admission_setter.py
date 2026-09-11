@@ -50,13 +50,8 @@ def _write_sets(home, enabled=(), disabled=()):
 
 @pytest.fixture
 def sync_calls(monkeypatch):
-    """pm.ensure is shadowed by a pm.ensure() function — patch the MODULE."""
-    import importlib
-    import sys
-
-    if "pm.ensure" not in sys.modules:
-        importlib.import_module("pm.ensure")
-    ensure = sys.modules["pm.ensure"]
+    """Stub the admission caller seam; real engine transactions are tested below."""
+    from pm import client
     calls = []
 
     def _sync(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None):
@@ -65,7 +60,7 @@ def sync_calls(monkeypatch):
         if before_publish is not None:
             before_publish()  # same contract: config commits under the sync
 
-    monkeypatch.setattr(ensure, "sync_venv", _sync)
+    monkeypatch.setattr(client, "sync_venv", _sync)
     return calls
 
 
@@ -88,17 +83,12 @@ def _discovery(monkeypatch, *entries):
 
 
 def _refusing_sync(monkeypatch, message="uv lock exited 1: unsatisfiable"):
-    import importlib
-    import sys
-
-    if "pm.ensure" not in sys.modules:
-        importlib.import_module("pm.ensure")
-    ensure = sys.modules["pm.ensure"]
+    from pm import client
 
     def _boom(*a, **k):
         raise RuntimeError(message)
 
-    monkeypatch.setattr(ensure, "sync_venv", _boom)
+    monkeypatch.setattr(client, "sync_venv", _boom)
 
 
 # ── cmd_enable (CLI path) ────────────────────────────────────────────────────

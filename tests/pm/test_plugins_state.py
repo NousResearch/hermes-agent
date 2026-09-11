@@ -33,7 +33,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def _write_config(home: Path, enabled: list) -> None:
-    import yaml
+    import hermes_yaml as yaml
 
     config = {"plugins": {"enabled": enabled}} if enabled else {"plugins": {}}
     with (home / "config.yaml").open("w", encoding="utf-8") as f:
@@ -151,7 +151,7 @@ def test_active_memory_provider_joins_union(homes, tmp_path):
     provider_dir = default_home / "plugins" / "mnemosyne-like"
     provider_dir.mkdir(parents=True)
     (provider_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    import yaml
+    import hermes_yaml as yaml
 
     with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(
@@ -167,7 +167,7 @@ def test_active_memory_provider_joins_union(homes, tmp_path):
 def test_memory_provider_without_dir_is_skipped(homes):
     """memory.provider set but no plugin dir on disk — not a member."""
     default_home, _ = homes
-    import yaml
+    import hermes_yaml as yaml
 
     with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump({"memory": {"provider": "ghost-provider"}}, f)
@@ -178,7 +178,7 @@ def test_memory_provider_without_dir_is_skipped(homes):
 def test_memory_provider_already_enabled_not_duplicated(homes):
     default_home, _ = homes
     (default_home / "plugins" / "dual").mkdir(parents=True)
-    import yaml
+    import hermes_yaml as yaml
 
     with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(

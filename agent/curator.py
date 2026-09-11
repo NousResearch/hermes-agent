@@ -532,7 +532,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass

@@ -147,7 +147,7 @@ def _checkout(tmp_path: Path, name: str = "co") -> Path:
 def _wire_uv(monkeypatch, tmp_path: Path, exit_code: int = 0) -> Path:
     """Point venv_sync's managed-uv resolution at a fake binary.
 
-    The resolution itself is pm's (pm.ensure.uv) and pm's ledger wiring
+    The resolution itself is pm's (pm.client.uv) and pm's ledger wiring
     has its own tests; here the decision layer is under test, so the
     seam is venv_sync._managed_uv.
     """
@@ -229,9 +229,13 @@ class TestCheckoutSync:
         self, tmp_path, monkeypatch
     ):
         root = _checkout(tmp_path)
-        # pm has nothing installed here and may not lazy-install.
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
-        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        # Runtime provisioning failures are reported through the client seam.
+        from pm.package import InstallError
+
+        def unavailable(**kwargs):
+            raise InstallError("pm-runtime", "pinned uv and Python are unavailable")
+
+        monkeypatch.setattr("pm.client.uv", unavailable)
 
         out = venv_sync.sync(root)
 

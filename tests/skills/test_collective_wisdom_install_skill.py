@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 
 SKILL = Path("skills/productivity/collective-wisdom-install/SKILL.md")

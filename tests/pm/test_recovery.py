@@ -16,6 +16,43 @@ from pm.packages import uv_env
 from tests.pm.test_workspace_build_inputs import _wheel
 
 
+@pytest.mark.parametrize("failure", [None, "missing_distribution", "broken_module"])
+def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
+    from importlib.metadata import distribution
+    import venv
+
+    import ruamel.yaml
+
+    from hermes_cli.runtime_paths import site_packages
+    from pm.package import InstallError
+    from pm.recovery import validate_environment
+
+    candidate = tmp_path / "candidate"
+    venv.EnvBuilder(with_pip=False).create(candidate)
+    python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    target = site_packages(candidate)
+    package = target / "ruamel" / "yaml"
+    # Copy the real parser and distribution metadata into an isolated candidate.
+    # A fake YAML class would not detect a broken install or missing dependency.
+    ignored = ["__pycache__"] + (["main.py"] if failure == "broken_module" else [])
+    shutil.copytree(Path(ruamel.yaml.__file__).parent, package, ignore=shutil.ignore_patterns(*ignored))
+    installed = distribution("ruamel.yaml")
+    assert installed.files
+    metadata = next(Path(installed.locate_file(path)).parent for path in installed.files if path.name == "METADATA")
+    if failure != "missing_distribution":
+        shutil.copytree(metadata, target / metadata.name)
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="yaml-recovery"\ndependencies=["ruamel.yaml"]\n', encoding="utf-8",
+    )
+
+    if failure:
+        with pytest.raises(InstallError, match="ruamel"):
+            validate_environment(python, env=dict(os.environ), cwd=tmp_path)
+    else:
+        validate_environment(python, env=dict(os.environ), cwd=tmp_path)
+
+
 @pytest.mark.parametrize("failure", [None, "missing_lock", "corrupt_facts", "empty_environment", "missing_extras", "validation", "publication"])
 def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, monkeypatch, failure):
     import pm.paths as paths
@@ -122,6 +159,8 @@ def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_pa
     from hermes_cli.runtime_paths import install_state_dir, selected_venv, site_packages
 
     engine = importlib.import_module("pm.ensure")
+    # Use the same engine for admission and repair with the offline uv fixture.
+    monkeypatch.setattr("pm.client.sync_venv", engine.sync_venv)
     uv = shutil.which("uv")
     assert uv
     core = tmp_path / "core"

@@ -95,7 +95,7 @@ class TestModelResolution:
 
 
     def test_config_openai_model(self, tmp_path):
-        import yaml
+        import hermes_yaml as yaml
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"image_gen": {"openai": {"model": "gpt-image-2-low"}}})
         )
@@ -183,7 +183,7 @@ class TestGenerate:
     def test_selection_reaches_image_request(
         self, provider, monkeypatch, tmp_path, api_model, quality, editing
     ):
-        import yaml
+        import hermes_yaml as yaml
 
         tier = api_model if quality == "auto" else f"{api_model}-{quality}"
         monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)

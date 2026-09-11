@@ -342,12 +342,12 @@ class TestDoctorMemoryProviderSection:
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        import yaml
+        import hermes_yaml as yaml
         config = dict(memory_config or {})
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
         return home
 
     def _run_doctor_and_capture(
@@ -448,10 +448,10 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
 
-    import yaml
+    import hermes_yaml as yaml
 
     (home / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "model": {
                     "provider": "volcengine-plan",

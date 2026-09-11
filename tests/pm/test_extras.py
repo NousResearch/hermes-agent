@@ -1,20 +1,17 @@
 """pm.extras: anchor availability, ensure_import, ensure_and_bind, and the
-spec→extra install shim. Network-free — sync_venv is always stubbed (via the
-pm.ensure module object; the pm package re-exports the ensure() FUNCTION,
-which shadows the submodule attribute for string-path monkeypatching)."""
+spec→extra install shim. Network-free — sync_venv is stubbed at the client
+seam used by extras; the engine and worker have separate transaction tests."""
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 import pm
+import pm.client as client
 import pm.extras as extras
-
-ensure_mod = importlib.import_module("pm.ensure")
 
 
 # ---- per-extra platform gates ([tool.hermes.extras-platforms]) ----
@@ -64,7 +61,7 @@ def test_ensure_import_raises_on_gated_off_extra(monkeypatch, synced):
 @pytest.fixture
 def synced(monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(ensure_mod, "sync_venv", lambda x=None: calls.append(list(x or [])))
+    monkeypatch.setattr(client, "sync_venv", lambda x=None: calls.append(list(x or [])))
     return calls
 
 
@@ -106,7 +103,7 @@ def test_ensure_import_propagates_install_error(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "lazy installs are disabled")
 
-    monkeypatch.setattr(ensure_mod, "sync_venv", boom)
+    monkeypatch.setattr(client, "sync_venv", boom)
     monkeypatch.setattr(extras, "available", lambda e: False)
     with pytest.raises(pm.InstallError):
         extras.ensure_import("fal")
@@ -123,7 +120,7 @@ def test_ensure_and_bind_false_on_install_failure(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "nope")
 
-    monkeypatch.setattr(ensure_mod, "sync_venv", boom)
+    monkeypatch.setattr(client, "sync_venv", boom)
     monkeypatch.setattr(extras, "available", lambda e: False)
     target: dict = {}
     assert extras.ensure_and_bind("fal", lambda: {"X": 1}, target) is False

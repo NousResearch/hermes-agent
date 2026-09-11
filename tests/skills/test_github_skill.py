@@ -9,7 +9,7 @@ disciplines now check the reference body.
 import re
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]

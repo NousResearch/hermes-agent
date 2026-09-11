@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import pm.plugins_state as pstate
 import pm.workspace as ws
@@ -168,7 +168,9 @@ def admission_env(tmp_path, monkeypatch):
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
-    # Keep the real dependency transaction. Substitute only tool provisioning.
+    # Exercise the real dependency transaction in-process so the local uv
+    # fixture owns provisioning; worker transport is covered separately.
+    monkeypatch.setattr("pm.client.sync_venv", ensure.sync_venv)
     from pm.packages import uv_env
     monkeypatch.setattr(ensure, "uv", lambda **kwargs: (
         shutil.which("uv"), {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable},

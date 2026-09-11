@@ -16,14 +16,12 @@ from pm.ensure import (
     adopt,
     check,
     enabled_extras,
-    ensure,
     env_for,
     is_installed,
     installed_package,
     lazy_installs_allowed,
-    sync_venv,
-    uv,
 )
+from pm.client import ensure, sync_venv, uv
 from pm.extras import available, ensure_import
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, compose_env

@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 

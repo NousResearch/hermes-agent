@@ -176,7 +176,7 @@ def _refresh_active_lazy_features(features: list[str] | None = None) -> bool:
     the locked versions of everything enabled. Never raises.
     """
     try:
-        from pm.ensure import sync_venv
+        from pm.client import sync_venv
 
         sync_venv(features, explicit=True)
         return True

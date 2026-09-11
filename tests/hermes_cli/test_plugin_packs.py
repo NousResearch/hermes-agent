@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_packs import (
     PackError,

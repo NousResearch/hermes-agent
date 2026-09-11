@@ -428,7 +428,7 @@ def _check_certificates(should_fix: bool, f: Finding) -> None:
 # (import name, display name, optional)
 _PACKAGES = (
     ("openai", "OpenAI SDK", False), ("rich", "Rich (terminal UI)", False), ("dotenv", "python-dotenv", False),
-    ("yaml", "PyYAML", False), ("httpx", "HTTPX", False),
+    ("ruamel.yaml", "ruamel.yaml", False), ("httpx", "HTTPX", False),
     ("croniter", "Croniter (cron expressions)", True), ("telegram", "python-telegram-bot", True), ("discord", "discord.py", True),
 )
 

@@ -9,9 +9,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
-import pm
 from hermes_cli import memory_setup
 from hermes_cli.runtime_paths import selected_venv
 from pm import paths
@@ -67,7 +66,9 @@ def test_setup_requires_dependencies_and_keeps_the_existing_union(tmp_path, monk
         uv, {**uv_env(kwargs.get('base_env')), 'UV_PYTHON': sys.executable,
              'UV_OFFLINE': '1', 'UV_CACHE_DIR': str(tmp_path / 'cache')},
     ))
-    pm.sync_venv(explicit=True)
+    # Keep admission on the real engine with the offline tool fixture.
+    monkeypatch.setattr("pm.client.sync_venv", ensure.sync_venv)
+    ensure.sync_venv(explicit=True)
     original_environment = selected_venv(core)
     before = {file: file.read_bytes() for file in (config, other_config, paths.runtime_facts_path())}
     post_calls = []

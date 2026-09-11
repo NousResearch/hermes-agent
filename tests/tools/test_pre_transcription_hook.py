@@ -582,7 +582,7 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
     import os
     from pathlib import Path
 
-    import yaml
+    import hermes_yaml as yaml
 
     hermes_home = Path(os.environ["HERMES_HOME"])
     plugin_dir = hermes_home / "plugins" / "stt_vocab"

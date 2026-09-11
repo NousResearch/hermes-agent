@@ -502,7 +502,15 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_update)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    from pm.runtime import is_runtime, run_cli
+
+    try:
+        if not is_runtime():
+            return run_cli(list(sys.argv[1:] if argv is None else argv))
+        return args.func(args)
+    except InstallError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -84,7 +84,7 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
         raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
-        import yaml
+        import hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
         return data if isinstance(data, dict) else None

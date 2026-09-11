@@ -2789,7 +2789,7 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     if not used_canonical:
         try:
             if config_path.exists():
-                import yaml
+                import hermes_yaml as yaml
                 with open(config_path, 'r', encoding='utf-8-sig') as f:
                     raw = yaml.safe_load(f) or {}
         except Exception:
@@ -5416,7 +5416,7 @@ def main():
 
     config = None
     if args.config:
-        import yaml
+        import hermes_yaml as yaml
         with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
 

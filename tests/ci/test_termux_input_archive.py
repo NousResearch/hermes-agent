@@ -2,14 +2,14 @@
 from pathlib import Path
 import shlex
 
-import yaml
+from ruamel.yaml import YAML
 
 ROOT = Path(__file__).resolve().parents[2]
 R2_ENV = {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_BUCKET"}
 
 
 def load(name):
-    return yaml.load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
 
 
 def test_termux_and_desktop_stagers_consume_archive_seeds():
@@ -54,7 +54,7 @@ def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
     for name in ("build-win32", "build-darwin", "termux-deb"):
         assert "archive-inputs" in release[name]["needs"]
 
-    action = yaml.load((ROOT / ".github/actions/setup-pm/action.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    action = YAML(typ="base").load((ROOT / ".github/actions/setup-pm/action.yml").read_text(encoding="utf-8"))
     assert action["inputs"]["archive-inputs"]["default"] == "false"
     steps = action["runs"]["steps"]
     archive_index, archive = next((i, s) for i, s in enumerate(steps) if "setup_toolchain.py\" archive-inputs" in s.get("run", ""))

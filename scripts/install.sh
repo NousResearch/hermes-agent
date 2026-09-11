@@ -324,7 +324,8 @@ stage_venv() {
     (cd "$INSTALL_DIR" && "$UV_CMD" venv --allow-existing venv) || fail "uv venv failed"
 }
 
-# Resolve the bootstrap interpreter without assuming a checkout-local venv.
+# Tool-only bootstrap: acquire uv and Python before PM's own dependencies exist.
+# The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
     local _py
@@ -337,7 +338,8 @@ bootstrap_python() {
     boot_py="${boot_py%$'\r'}"
 }
 
-# uv exits before PM can replace its tool entry.
+# uv exits before PM can replace its tool entry. pm.cli then prepares and
+# enters its independently locked runtime before mutating application deps.
 bootstrap_pm() {
     local boot_py
     bootstrap_python

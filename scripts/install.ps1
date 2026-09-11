@@ -530,6 +530,8 @@ function Stage-Venv {
 # tool store — all hash-verified against pm/lock.json + uv.lock. install.ps1
 # no longer runs `uv sync` directly; pm is the single install authority
 # (the run_locked_uv_sync contract moved into pm/packages.py::uv_env).
+# This tool-only bootstrap runs before PM's own dependencies exist. pm.cli
+# prepares and enters its independently locked runtime before installing apps.
 function Get-BootstrapPython {
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json

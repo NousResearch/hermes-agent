@@ -29,10 +29,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install PyYAML
+      - name: Install ruamel.yaml
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2
+          command: pip install ruamel.yaml==0.18.17
 
       - name: Validate catalog files (structural)
         run: |
@@ -93,7 +93,7 @@ jobs:
           import shlex
           import sys
 
-          import yaml
+          import hermes_yaml as yaml
 
           with open(sys.argv[1], encoding="utf-8") as fh:
               data = yaml.safe_load(fh) or {}

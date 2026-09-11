@@ -124,6 +124,6 @@ def test_lazy_import_reports_restart_instead_of_importing_mixed_versions(tmp_pat
     (candidate / "pyvenv.cfg").write_text("home = test")
     def prepare(requested):
         Facts(runtime_facts_path(root)).record_state("venv", "new", requested, environment=candidate)
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", prepare)
+    monkeypatch.setattr("pm.client.sync_venv", prepare)
     with pytest.raises(InstallError, match="restart"):
         extras.ensure_import("new-extra")

@@ -411,10 +411,10 @@ def ensure_management_token(*, force: bool = False) -> str:
 
 
 def _yaml():
-    """PyYAML module or None (it is a Hermes dep, but never a hard requirement here)."""
+    """Shared YAML helpers or None (not a hard requirement for proxy discovery)."""
 
     try:
-        import yaml
+        import hermes_yaml as yaml
         return yaml
     except ImportError:
         return None
@@ -434,7 +434,7 @@ def _parse_listen(listen) -> Optional[Tuple[str, int]]:
 
 
 def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None) -> Optional[Tuple[str, int]]:
-    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/PyYAML is missing)."""
+    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/ruamel.yaml is missing)."""
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
@@ -607,7 +607,7 @@ def _write_state_file_atomic(state: Path, name: str, dump) -> Path:
 def write_proxy_config(config: Dict) -> Path:
     """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags)."""
     if (yaml := _yaml()) is None:
-        raise RuntimeError("PyYAML is required to write the iron-proxy config but is not installed.")
+        raise RuntimeError("ruamel.yaml is required to write the iron-proxy config but is not installed.")
     return _write_state_file_atomic(_proxy_state_dir(), "proxy.yaml", lambda f: yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False))
 
 

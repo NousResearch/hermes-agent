@@ -63,7 +63,7 @@ def test_noninteractive_skips_install(tmp_path, monkeypatch, resolve_env):
     monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: False, raising=False)
     called = []
     monkeypatch.setattr(
-        "pm.workspace.lock_and_sync", lambda *a, **k: called.append(a)
+        "pm.client.sync_venv", lambda *a, **k: called.append(a)
     )
     ok, reason = pc._install_plugin_python_deps(
         {"name": "dep-plug", "python_dependencies": ["somepkg>=1,<2"]},
@@ -83,7 +83,7 @@ def test_decline_skips_install(tmp_path, monkeypatch, resolve_env):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     called = []
     monkeypatch.setattr(
-        "pm.workspace.lock_and_sync", lambda *a, **k: called.append(a)
+        "pm.client.sync_venv", lambda *a, **k: called.append(a)
     )
     ok, reason = pc._install_plugin_python_deps(
         {"name": "dep-plug", "python_dependencies": ["somepkg>=1,<2"]},
@@ -114,12 +114,7 @@ def test_conflict_surfaces_at_admission_not_consent(tmp_path, monkeypatch, resol
     assert ok is True and reason is None
 
     # The conflict surfaces when the enable COMMITS, with config untouched:
-    import importlib
-    import sys
-
-    if "pm.ensure" not in sys.modules:
-        importlib.import_module("pm.ensure")
-    ensure = sys.modules["pm.ensure"]
+    from pm import client
 
     def boom(*a, **k):
         raise RuntimeError(
@@ -127,7 +122,7 @@ def test_conflict_surfaces_at_admission_not_consent(tmp_path, monkeypatch, resol
             "and hermes-agent depends on somepkg==1.0.0, unsatisfiable"
         )
 
-    monkeypatch.setattr(ensure, "sync_venv", boom)
+    monkeypatch.setattr(client, "sync_venv", boom)
     from hermes_cli import plugins_admission as adm
 
     with pytest.raises(adm.AdmissionRefused) as excinfo:
@@ -147,14 +142,7 @@ def test_success_consents_without_plugin_dir_writes(tmp_path, monkeypatch, resol
     monkeypatch.setattr(pc.sys.stdout, "isatty", lambda: True, raising=False)
     monkeypatch.setattr("builtins.input", lambda *a: "y")
     synced = []
-    import importlib
-    import sys
-
-    if "pm.ensure" not in sys.modules:
-        importlib.import_module("pm.ensure")
-    monkeypatch.setattr(
-        sys.modules["pm.ensure"], "sync_venv", lambda *a, **k: synced.append(a)
-    )
+    monkeypatch.setattr("pm.client.sync_venv", lambda *a, **k: synced.append(a))
     ok, reason = pc._install_plugin_python_deps(
         {"name": "dep-plug", "python_dependencies": ["somepkg>=1,<2"]},
         plug,

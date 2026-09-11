@@ -27,7 +27,7 @@ _SIGNING_ENV = "release-signing"
 
 
 def _workflow() -> dict:
-    yaml = pytest.importorskip("yaml")
+    yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 

@@ -5,9 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 
-import yaml
+import hermes_yaml as yaml
 
-import pm
 from hermes_cli import venv_sync
 from hermes_cli.runtime_paths import install_state_dir, selected_venv
 from pm import paths
@@ -37,7 +36,7 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
         return output
 
     check('would-sync')
-    pm.sync_venv(explicit=True)
+    ensure.sync_venv(explicit=True)
     facts_path = paths.runtime_facts_path()
     pristine = facts_path.read_bytes()
     selected = selected_venv(core)
@@ -99,7 +98,9 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     assert not facts_path.exists()
 
 
-def test_own_tree_sync_reuses_pm_without_writing_an_extra_stamp(admission_env):
+def test_own_tree_sync_reuses_pm_without_writing_an_extra_stamp(admission_env, monkeypatch):
+    # venv_sync imports the public alias; use the same real engine as admission.
+    monkeypatch.setattr("pm.sync_venv", importlib.import_module("pm.ensure").sync_venv)
     root, home = admission_env
     core = root / 'core'
     assert not venv_sync._stamp_path(core).exists()

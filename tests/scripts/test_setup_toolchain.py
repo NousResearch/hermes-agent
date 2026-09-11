@@ -46,6 +46,9 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     import importlib
     engine = importlib.import_module("pm.ensure")
     monkeypatch.setattr(engine, "uv", lambda **kwargs: (uv, dict(environment)))
+    # This test exercises the worker-side CI environment split with offline uv.
+    # Dispatch into that worker is covered by test_runtime_entrypoints.
+    monkeypatch.setattr("pm.runtime.is_runtime", lambda: True)
     files = {name: tmp_path / name for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
     for name, file in files.items():
         monkeypatch.setenv(name, str(file))

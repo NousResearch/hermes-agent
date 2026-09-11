@@ -34,7 +34,7 @@ def _use(name: str) -> None:
 
 
 def _skin_set(key: str, value: str, skin: str | None) -> int:
-    import yaml
+    import hermes_yaml as yaml
     if not _HEX_RE.match(value):
         print(f"✗ {value!r} is not a #rrggbb hex color", file=sys.stderr)
         return 1

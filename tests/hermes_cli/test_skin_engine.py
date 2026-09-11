@@ -103,8 +103,8 @@ class TestUserSkins:
             "branding": {"agent_name": "Custom Agent"},
             "tool_prefix": "▸",
         }
-        import yaml
-        skin_file.write_text(yaml.dump(skin_data))
+        import hermes_yaml as yaml
+        skin_file.write_text(yaml.safe_dump(skin_data))
 
         # Patch skins dir
         monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
@@ -122,10 +122,10 @@ class TestUserSkins:
 
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
+        import hermes_yaml as yaml
 
         (skins_dir / "broken.yaml").write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 {
                     "name": "broken",
                     "colors": ["not", "a", "mapping"],
@@ -152,8 +152,8 @@ class TestUserSkins:
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
-        (skins_dir / "pirate.yaml").write_text(yaml.dump({
+        import hermes_yaml as yaml
+        (skins_dir / "pirate.yaml").write_text(yaml.safe_dump({
             "name": "pirate",
             "description": "Arr matey",
         }))

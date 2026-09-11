@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv pip install --python "$HERMES_PYTHON" httpx==0.28.1 pyyaml==6.0.2
+          command: uv pip install --python "$HERMES_PYTHON" httpx==0.28.1 ruamel.yaml==0.18.17
 
       - name: Build skills index
         env:

@@ -1018,7 +1018,7 @@ def repair_vulnerable_runtime(
     if not (root / "pyproject.toml").is_file() or not live_python.is_file():
         return RuntimeRepairResult("not-applicable")
 
-    from pm.ensure import uv as pm_uv
+    from pm.client import uv as pm_uv
 
     uv_bin, _uv_env = pm_uv()
     if not uv_bin:

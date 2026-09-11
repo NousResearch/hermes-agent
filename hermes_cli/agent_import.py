@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from utils import atomic_write_text, atomic_yaml_write
 

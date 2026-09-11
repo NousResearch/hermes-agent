@@ -39,7 +39,7 @@ class TestSessionPlatformGate:
 
     def test_teams_meeting_pipeline_carries_the_gate(self):
         from pathlib import Path
-        import re, yaml
+        import re, hermes_yaml as yaml
 
         p = Path(__file__).resolve().parents[2] / "skills" / "productivity" / "teams-meeting-pipeline" / "SKILL.md"
         content = p.read_text(encoding="utf-8")

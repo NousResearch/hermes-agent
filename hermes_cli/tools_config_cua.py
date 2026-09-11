@@ -155,7 +155,7 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     install_flags = _post_setup_no_window_flags(streams_to_console=not capture_output)
 
     # Resolve uv and its target environment through PM, not ambient PATH.
-    from pm.ensure import uv as pm_uv
+    from pm.client import uv as pm_uv
     from pm.package import InstallError
 
     try:

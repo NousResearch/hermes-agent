@@ -29,7 +29,8 @@ TARGET="linux-arm64-bionic"
 # Stage (idempotent: an already-published verifying entry is a no-op) and
 # print the entry path -- pm's own resolvers, no layout guessing here.
 # Resolve a real interpreter: some hosts alias python3 to a Store stub
-# (Windows App Execution Aliases). pm runs on any stdlib python >= 3.11.
+# (Windows App Execution Aliases). The stdlib client bootstraps PM's separate
+# locked runtime; staging never imports PM's dependencies into this process.
 PM_PY="$(command -v python3 || true)"
 if [ -n "$PM_PY" ] && "$PM_PY" -c "import sys; assert sys.version_info >= (3, 11)" 2>/dev/null; then
   :
@@ -40,7 +41,7 @@ fi
 ENTRY_DIR="$("$PM_PY" - "$PKG" "$TARGET" <<'PYEOF'
 import sys
 sys.path.insert(0, ".")
-from pm.ensure import stage_only
+from pm.client import stage_only
 # stage_only already returns the published entry path -- no re-derivation.
 print(stage_only(sys.argv[1], sys.argv[2]))
 PYEOF

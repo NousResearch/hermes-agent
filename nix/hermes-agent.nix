@@ -8,6 +8,7 @@
   lib,
   stdenv,
   makeWrapper,
+  writeText,
   callPackage,
   electron,
   ripgrep,
@@ -72,7 +73,7 @@ let
       version;
 
   # CLI and Electron consume the same provenance and update owner.
-  installStampFile = builtins.toFile "hermes-install-stamp.json" (builtins.toJSON {
+  installStampFile = writeText "hermes-install-stamp.json" (builtins.toJSON {
     schemaVersion = 2;
     commit = rev;
     commitDate = lastModified;
@@ -83,6 +84,7 @@ let
     distance = stampDistance;
     source = "nix";
     distribution = "nix";
+    pmRuntime = toString pmRuntime;
     updateMechanism = "external";
     payload = "bootstrap";
     tag = null;
@@ -97,6 +99,10 @@ let
     };
 
   hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
+
+  pmRuntime = callPackage ./pm-runtime.nix {
+    inherit uv2nix pyproject-nix pyproject-build-systems;
+  };
 
   generatedIcons = callPackage ./icons.nix {
     inherit (mkHermesVenv [ ]) iconBuildVenv;
@@ -293,6 +299,8 @@ stdenv.mkDerivation (finalAttrs: {
         hermesWeb
         hermesNpmLib
         hermesVenv
+        installStampFile
+        pmRuntime
         python
         ;
 

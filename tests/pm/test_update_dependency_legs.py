@@ -1,4 +1,5 @@
 """Optional dependency refreshes run in PM's repository with its installed tools."""
+from argparse import Namespace
 import importlib
 import json
 import os
@@ -75,11 +76,13 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     syncs = []
     ensure = importlib.import_module('pm.ensure')
     monkeypatch.setattr(ensure, 'sync_venv', lambda **kw: syncs.append(kw))
-    assert cli.main(['update', 'manual-fixture', '--uv', '--check']) == 0
+    args = Namespace(names=['manual-fixture'], target=None, check=True, uv=True, npm=False)
+    assert cli.cmd_update(args) == 0
     assert not (repo / 'uv.lock').exists()
     assert not syncs
     check_output = capsys.readouterr().out
-    assert cli.main(['update', 'manual-fixture', '--uv']) == 0
+    args.check = False
+    assert cli.cmd_update(args) == 0
     assert 'uv lock --upgrade' in check_output
     assert (repo / 'uv.lock').is_file()
     assert not (caller / 'uv.lock').exists()
@@ -90,12 +93,12 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     original = (repo / 'uv.lock').read_bytes()
     syncs.clear()
     (repo / 'pyproject.toml').write_text('invalid project [', encoding='utf-8')
-    assert cli.main(['update', 'manual-fixture', '--uv']) == 1
+    assert cli.cmd_update(args) == 1
     assert (repo / 'uv.lock').read_bytes() == original and not syncs
     assert 'uv lock --upgrade failed' in capsys.readouterr().out
 
     managed.unlink()
-    assert cli.main(['update', 'manual-fixture', '--uv']) == 1
+    assert cli.cmd_update(args) == 1
     assert (repo / 'uv.lock').read_bytes() == original and not syncs
     assert 'not installed' in capsys.readouterr().out
 
@@ -151,9 +154,11 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         monkeypatch.setenv('npm_config_cache', str(root / 'ambient-cache'))
         before = dict(os.environ)
         before_lock = lock.path.read_bytes()
-        assert cli.main(['update', 'manual-fixture', '--npm', '--check']) == 0
+        args = Namespace(names=['manual-fixture'], target=None, check=True, uv=False, npm=True)
+        assert cli.cmd_update(args) == 0
         assert not (repo / 'package-lock.json').exists()
-        assert cli.main(['update', 'manual-fixture', '--npm']) == 0, capsys.readouterr().out
+        args.check = False
+        assert cli.cmd_update(args) == 0, capsys.readouterr().out
         assert json.loads((repo / 'package-lock.json').read_text(encoding='utf-8'))['name'] == 'pm-leg-proof'
         assert not (caller / 'package-lock.json').exists()
         assert dict(os.environ) == before
@@ -161,17 +166,17 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         assert not (root / 'ambient-cache').exists()
         lock_bytes = (repo / 'package-lock.json').read_bytes()
         (repo / 'package.json').write_text('not json', encoding='utf-8')
-        assert cli.main(['update', 'manual-fixture', '--npm']) == 1
+        assert cli.cmd_update(args) == 1
         assert (repo / 'package-lock.json').read_bytes() == lock_bytes
         assert 'npm update failed' in capsys.readouterr().out
 
         node_binary.rename(node_binary.with_suffix('.held'))
-        assert cli.main(['update', 'manual-fixture', '--npm']) == 1
+        assert cli.cmd_update(args) == 1
         assert (repo / 'package-lock.json').read_bytes() == lock_bytes
         assert 'not installed' in capsys.readouterr().out
         node_binary.with_suffix('.held').rename(node_binary)
         npm.binary(npm_entry, target).unlink()
-        assert cli.main(['update', 'manual-fixture', '--npm']) == 1
+        assert cli.cmd_update(args) == 1
         assert (repo / 'package-lock.json').read_bytes() == lock_bytes
         assert 'not installed' in capsys.readouterr().out
         assert dict(os.environ) == before and lock.path.read_bytes() == before_lock

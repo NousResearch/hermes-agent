@@ -35,11 +35,11 @@ class TestMCPConfigWatch:
 
     def test_new_mcp_server_triggers_reload(self, tmp_path):
         """Adding a new MCP server to config triggers auto-reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
         # Simulate user adding a new MCP server to config.yaml
-        cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
+        cfg_file.write_text(yaml.safe_dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
         obj._config_mtime = 0.0  # force stale mtime
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
@@ -49,11 +49,11 @@ class TestMCPConfigWatch:
 
     def test_removed_mcp_server_triggers_reload(self, tmp_path):
         """Removing an MCP server from config triggers auto-reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={"github": {"url": "https://mcp.github.com"}})
 
         # Simulate user removing the server
-        cfg_file.write_text(yaml.dump({"mcp_servers": {}}))
+        cfg_file.write_text(yaml.safe_dump({"mcp_servers": {}}))
         obj._config_mtime = 0.0
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
@@ -76,14 +76,14 @@ class TestMCPConfigWatch:
         flipping the toggle and editing mcp_servers in one edit behaves
         correctly.
         """
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
         )
 
         # Simulate a changed mcp_servers section with auto-reload opted out.
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
@@ -103,10 +103,10 @@ class TestMCPConfigWatch:
         """After an opted-out change, the watcher must not re-notify every
         tick: the snapshot is updated so the same content compares equal on
         the next pass."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
@@ -129,13 +129,13 @@ class TestMCPConfigWatch:
 
         A config that sets ONLY ``auxiliary.mcp.auto_reload_on_config_change:
         false`` must NOT disable the reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
         )
 
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "auxiliary": {"mcp": {"auto_reload_on_config_change": False}},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
@@ -160,7 +160,7 @@ class TestMCPConfigWatch:
         save_config_value('agent.reasoning_effort', ...) from /reasoning)
         fired a full MCP reconnect.
         """
-        import yaml
+        import hermes_yaml as yaml
         monkeypatch.setenv("MCP_GH_API_KEY", "sekrit-token")
 
         raw_servers = {
@@ -180,7 +180,7 @@ class TestMCPConfigWatch:
 
         # Unrelated-key save: mcp_servers content identical (raw templates),
         # only reasoning_effort changed — mtime moves.
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "agent": {"reasoning_effort": "high"},
             "mcp_servers": raw_servers,
         }))

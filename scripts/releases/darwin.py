@@ -28,7 +28,7 @@ def _darwin_feed(channel: str, light: bool = False) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def parse_mac_feed(text: str) -> dict[str, Any]:
-    import yaml  # lazy: PyYAML loads only on the feed path
+    import hermes_yaml as yaml  # lazy: YAML support loads only on the feed path
 
     feed = yaml.safe_load(text)
     if (
@@ -81,7 +81,7 @@ def mac_feed_references(text: str) -> list[str]:
 def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False) -> dict[str, Any]:
     """Validate both native legs, merge them, and rewrite artifact URLs into
     the immutable per-release tag namespace."""
-    import yaml  # lazy
+    import hermes_yaml as yaml  # lazy
 
     version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
     if not is_valid_version(version) or not _TAG_PATTERN.match(tag):

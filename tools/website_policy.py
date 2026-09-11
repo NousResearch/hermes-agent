@@ -69,9 +69,9 @@ def _load_policy_config(config_path: Path) -> Dict[str, Any]:
     if not config_path.exists():
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
-        import yaml
+        import hermes_yaml as yaml
     except ImportError:
-        logger.debug("PyYAML not installed — website blocklist disabled")
+        logger.debug("ruamel.yaml not installed — website blocklist disabled")
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}

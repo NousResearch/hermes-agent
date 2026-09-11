@@ -271,7 +271,7 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
 
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
-    import yaml
+    import hermes_yaml as yaml
     with open(manifest_file, encoding="utf-8-sig") as f:
         return yaml.safe_load(f) or {}
 

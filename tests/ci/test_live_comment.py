@@ -94,7 +94,7 @@ def test_workflow_watch_list_names_a_workflow_that_exists():
     A name that matches nothing makes the poller silently drop that run
     from the comment, which no unit test on its own would notice.
     """
-    yaml = pytest.importorskip("yaml")
+    yaml = pytest.importorskip("hermes_yaml")
     root = Path(__file__).resolve().parents[2]
     caller = yaml.safe_load(
         (root / ".github/workflows/ci-review-comment.yml").read_text(encoding="utf-8")
@@ -123,7 +123,7 @@ def test_poller_never_watches_its_own_workflow():
     itself would make the loop wait for itself and only ever exit on
     timeout.
     """
-    yaml = pytest.importorskip("yaml")
+    yaml = pytest.importorskip("hermes_yaml")
     root = Path(__file__).resolve().parents[2]
     doc = yaml.safe_load(
         (root / ".github/workflows/ci-review-comment.yml").read_text(encoding="utf-8")

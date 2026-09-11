@@ -38,7 +38,7 @@ uses pytest-xdist; the canonical runner does per-file subprocess isolation,
 which the POSIX-only wrapper handles):
 
 ```bash
-"/c/Program Files/Python311/python" -m pip install --user pytest pyyaml
+"/c/Program Files/Python311/python" -m pip install --user pytest ruamel.yaml==0.18.17
 export PYTHONPATH="$(pwd)"
 "/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short
 ```

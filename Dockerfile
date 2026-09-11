@@ -207,8 +207,9 @@ COPY pm/ pm/
 COPY hermes_constants.py hermes_constants.py
 # PM imports the shared stdlib runtime path and locking owners before deps exist.
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
+COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -m pm.cli install uv chromium; \
+    python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium")]'; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
     python3 -c 'from pathlib import Path; from pm.lock import Facts; from pm.registry import get_package; from pm.store import current_target; root = Path("/opt/hermes/tools"); fact = Facts(root / "facts.json").get("python"); binary = get_package("python").binary(root / fact["entry"], current_target()); Path("/usr/local/bin/python3").symlink_to(binary)'; \
     uv --version; \
@@ -217,6 +218,10 @@ RUN set -eu; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
     printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+
+# PM is resident too: never borrow application libraries or create its worker
+# environment under /root (unreachable to the runtime UID).
+RUN python3 -c 'from pathlib import Path; from pm.runtime_stage import stage_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes"); python = Path("/usr/local/bin/python3").resolve(); stage_runtime(Path("/usr/local/bin/uv"), python, root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'
 
 # Raw uv commands must use PM's staged interpreter, not download another
 # under /root where the unprivileged runtime user cannot traverse it.
@@ -393,6 +398,7 @@ RUN set -eu; \
         printf '{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback","updateMechanism":"external"}\n' \
             > /opt/hermes/install-stamp.json; \
     fi; \
+    python3 -c 'import json; from pathlib import Path; path = Path("/opt/hermes/install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     mkdir -p /etc/hermes; \
     python3 -c 'import json, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
 

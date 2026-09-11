@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -244,31 +244,13 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
     return True
 
 
-class IndentDumper(yaml.SafeDumper):
-    """PyYAML dumper that indents list items under mapping keys (2-space).
-
-    PyYAML emits "indentless" sequences while ruamel (:func:`atomic_roundtrip_yaml_update`)
-    indents them; mixing both in one ``config.yaml`` makes stricter parsers like ``js-yaml``
-    reject it, so every write path is forced to the same shape.
-
-    Forcing ``indentless=False`` aligns the two serializers so all write paths emit byte-identical layouts
-    (#31999).
-    """
-
-    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
-        return super().increase_indent(flow, False)
-
-
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
                       extra_content: str | None = None, create_mode: "int | None" = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
     def _write(f) -> None:
-        # allow_unicode=True writes emoji/kaomoji as real UTF-8. Without it PyYAML emits astral
-        # chars as `\UXXXXXXXX` escapes inside `\`-continued double-quoted strings — a structure
-        # stricter parsers and hand-edits routinely break into unclosed quotes, corrupting the config.
-        yaml.dump(data, f, Dumper=IndentDumper, default_flow_style=default_flow_style, sort_keys=sort_keys, allow_unicode=True)
+        yaml.safe_dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
         if extra_content:
             f.write(extra_content)
 
@@ -278,14 +260,9 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
-    from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
 
-    yaml_rt = YAML(typ="rt")
-    yaml_rt.preserve_quotes = True
-    yaml_rt.allow_unicode = True
-    yaml_rt.default_flow_style = False
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    yaml_rt = yaml.roundtrip_yaml()
     data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
@@ -328,13 +305,6 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     _roundtrip_dump(path, yaml_rt, config)
 
 
-# ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
-# reserved — so a str like "off" or "yes" is emitted unquoted. Every other config reader here
-# (PyYAML, yaml.safe_load sites) parses under YAML 1.1, where on/off/yes/no are booleans: an
-# unquoted ``approvals.mode: off`` would silently round-trip back as ``False``.
-_YAML11_AMBIGUOUS_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"})
-
-
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
@@ -343,7 +313,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     readable Unicode survive.
     """
     from ruamel.yaml.comments import CommentedMap
-    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
@@ -359,8 +329,6 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
                     current = CommentedMap()
                     dst[key] = current
                 _merge(current, value)
-            elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
-                dst[key] = DoubleQuotedScalarString(value)
             else:
                 dst[key] = value
         # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
@@ -380,15 +348,9 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
-# libyaml's CSafeLoader is ~8x faster than the pure-Python SafeLoader and a true drop-in for
-# ``safe_load`` (same restricted tag set); startup parses config.yaml and every plugin manifest,
-# so the slow path cost ~0.9 s of cold start.
-_fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
-
 def fast_safe_load(stream: Any) -> Any:
-    """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
-    return yaml.load(stream, Loader=_fast_yaml_loader)
+    """Use the shared safe reader (which selects ruamel's C parser when available)."""
+    return yaml.safe_load(stream)
 
 
 def _env_number(key: str, default, cast):

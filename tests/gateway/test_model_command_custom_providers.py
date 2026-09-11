@@ -1,6 +1,6 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
-import yaml
+import hermes_yaml as yaml
 import pytest
 
 from gateway.config import Platform

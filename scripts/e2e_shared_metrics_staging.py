@@ -47,7 +47,7 @@ def main() -> int:
     from hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
 
     # Resolve through the real config path so this exercises what a user gets.
-    import yaml
+    import hermes_yaml as yaml
 
     resolved = resolve_send_config(
         yaml.safe_load((scratch / "config.yaml").read_text(encoding="utf-8-sig"))

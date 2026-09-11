@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 import pm.plugins_state as pstate
 import pm.workspace as ws

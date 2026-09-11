@@ -59,7 +59,7 @@ name: Desktop Bundled Release
 # account id + an R2 API token (S3-compatible) with read/write on the
 # release bucket; CLOUDFLARE_R2_BUCKET and CLOUDFLARE_R2_PUBLIC_URL are
 # non-secret vars. scripts/releases/r2.py derives the S3 endpoint from
-# the account id. Upload/list operations need only Python; feed operations use PyYAML.
+# the account id. Upload/list operations need only Python; feed operations use ruamel.yaml.
 #
 # Windows Store submission (publish-win32-store): MSStore CLI via
 # microsoft/microsoft-store-apppublisher. Credentials live in the
@@ -1242,7 +1242,7 @@ jobs:
         # (feed-side); the pointer upload is the last write of the run.
         shell: bash
         run: |
-          uv run --no-project --with PyYAML==6.0.3 python -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
+          uv run --no-project --with ruamel.yaml==0.18.17 python -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
@@ -1816,7 +1816,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: uv run --no-project --with PyYAML==6.0.3 python -m scripts.bundles.release_artifacts promote --root verified
+      - run: uv run --no-project --with ruamel.yaml==0.18.17 python -m scripts.bundles.release_artifacts promote --root verified
       - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
   stable-phase-result:

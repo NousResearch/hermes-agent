@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 SKILL_MD = (
     Path(__file__).resolve().parents[2]

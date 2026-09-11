@@ -16,7 +16,7 @@
 // several minutes and burns GitHub API quota — but still gets the same
 // 2000+ external skills the deployed site has.
 //
-// If python3 or its deps (pyyaml) aren't available on the local machine, we
+// If python3 or its deps (ruamel.yaml) aren't available on the local machine, we
 // fall back to writing an empty skills.json so `npm run build` still
 // succeeds — the Skills Hub page just shows an empty state, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
@@ -48,7 +48,7 @@ function writeEmptyFallback(reason) {
   writeFileSync(outputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
-      `Install python3 + pyyaml locally for a populated Skills Hub page.`,
+      `Install python3 + ruamel.yaml locally for a populated Skills Hub page.`,
   );
 }
 

@@ -1,0 +1,16 @@
+[project]
+name = "hermes-pm-runtime"
+version = "0.0.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "packaging==26.0",
+  "tomli-w==1.2.0",
+  "ruamel.yaml==0.18.17",
+]
+
+[tool.uv]
+package = false
+
+# Deliberately independent: repairing the app cannot require resolving it.
+[tool.uv.workspace]
+members = []

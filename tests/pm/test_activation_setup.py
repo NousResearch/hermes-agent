@@ -2,6 +2,7 @@
 
 Only the downloaded tool payloads are fixtures: bootstrap uv locates the test
 interpreter, then delegates every dependency operation to real, offline uv.
+The real PM stage builder seeds its locked dependencies online before activation.
 PM/activation/setup code is copied unmodified; all state is disposable.
 """
 from __future__ import annotations
@@ -60,14 +61,14 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         "LANG": "C.UTF-8", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1",
         "UV_CACHE_DIR": str(home / ".cache" / "uv"), "UV_PYTHON_DOWNLOADS": "never",
     }
-    for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "utils.py"):
+    for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "hermes_yaml.py", "utils.py"):
         shutil.copy2(REPO / name, core / name)
     for name in ("pm", "hermes_cli"):
         shutil.copytree(REPO / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
     # Plugin selection imports the real CLI config reader even with no plugins.
     # Supply its installed YAML dependency, not a stub parser or config module.
-    import yaml
-    shutil.copytree(Path(yaml.__file__).parent, core / "yaml", ignore=shutil.ignore_patterns("__pycache__"))
+    import ruamel.yaml
+    shutil.copytree(Path(ruamel.yaml.__file__).parent, core / "ruamel" / "yaml", ignore=shutil.ignore_patterns("__pycache__"))
 
     # Never copy real user files: these are deliberately public fixture sentinels.
     protected = [core / ".env", home / ".local" / "bin", hermes_home / "skills",
@@ -96,6 +97,27 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     )
     assert locked.returncode == 0, locked.stdout + locked.stderr
     dependency_lock = (core / "uv.lock").read_bytes()
+
+    # Seed PM's own cache with its real locked wheels, not the application's
+    # fixture wheel or a copied host cache. Discard this environment so source
+    # still bootstraps and publishes the isolated PM runtime itself, offline.
+    seed = tmp_path / "pm-seed"
+    seed_env = {key: value for key, value in env.items() if key != "UV_OFFLINE"}
+    for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"):
+        if key in os.environ:
+            seed_env[key] = os.environ[key]
+    seeded = subprocess.run(
+        [interpreter, "-I", "-B", "-c",
+         "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+         "from pm.runtime_stage import stage_runtime; "
+         "stage_runtime(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), "
+         "project=Path(sys.argv[1]) / 'pm', offline=False)",
+         str(core), uv, interpreter, str(seed)],
+        cwd=tmp_path, env=seed_env, capture_output=True, text=True, timeout=180,
+    )
+    assert seeded.returncode == 0, seeded.stdout + seeded.stderr
+    shutil.rmtree(seed)
+    assert not (hermes_home / "installs").exists()
 
     docroot, base_url = served
     # Both the shell bootstrap and PM's fallback downloader stay on loopback.
@@ -174,7 +196,9 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert probe["version"] == "1.0"
     assert Path(probe["module"]).is_relative_to(Path(first["environment"]))
     assert probe["pythonpath"].split(os.pathsep)[0] == str(core)
-    assert len(operations("venv")) == len(operations("sync")) == 1
+    # Cold activation builds both PM's isolated runtime and the app environment.
+    assert "Preparing the isolated PM runtime" in cold.stderr
+    assert len(operations("venv")) == len(operations("sync")) == 2
     facts = json.loads((runtime / "facts.json").read_text())["packages"]
     assert facts["python"]["artifacts"] == [first_digest]
     assert facts["uv"]["artifacts"] == [uv_digest]
@@ -185,7 +209,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     untouched = _snapshot(protected)
     activate()
     assert selection() == first
-    assert len(operations("venv")) == len(operations("sync")) == 1
+    assert len(operations("venv")) == len(operations("sync")) == 2
     assert len([line for line in operations("python") if line.startswith("python install ")]) == 2
 
     second_digest = pin_python("second")
@@ -194,7 +218,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert second["stamp"] != first["stamp"]
     assert second["environment"] != first["environment"]
     assert Path(first["environment"]).is_dir()
-    assert len(operations("venv")) == len(operations("sync")) == 2
+    assert len(operations("venv")) == len(operations("sync")) == 3
     facts = json.loads((runtime / "facts.json").read_text())["packages"]
     assert facts["python"]["artifacts"] == [second_digest]
     assert (core / "uv.lock").read_bytes() == dependency_lock
@@ -207,5 +231,5 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert "setup failed" in failed.stderr
     assert "CALLER_SURVIVED:" in failed.stdout
     assert selection() == second
-    assert len(operations("sync")) == 3
+    assert len(operations("sync")) == 4
     assert len([line for line in operations("python") if line.startswith("python install ")]) == 4

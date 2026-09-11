@@ -100,7 +100,7 @@ def _load_catalog(lang: str) -> dict[str, str]:
         logger.debug("i18n catalog missing for %s at %s", lang, path)
         return _cache_catalog(lang, flat)
     try:
-        import yaml
+        import hermes_yaml as yaml
         with path.open("r", encoding="utf-8-sig") as f:
             _flatten_into(yaml.safe_load(f) or {}, "", flat)
     except Exception as exc:

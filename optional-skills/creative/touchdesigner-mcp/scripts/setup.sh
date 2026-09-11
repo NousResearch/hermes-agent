@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # setup.sh — Automated setup for twozero MCP plugin for TouchDesigner
 # Idempotent: safe to run multiple times.
+# Config editing requires ruamel.yaml in python3: pip install ruamel.yaml==0.18.17
 set -euo pipefail
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -52,11 +53,16 @@ elif grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
 else
     echo -e " ${WARN} Adding twozero_td MCP entry to Hermes config..."
     python3 -c "
-import yaml, sys, copy
+from ruamel.yaml import YAML
+
+yaml = YAML(typ='safe', pure=True)
+yaml.version = (1, 1)
+yaml.default_flow_style = False
+yaml.sort_base_mapping_type_on_output = False
 
 cfg_path = '$HERMES_CFG'
 with open(cfg_path, 'r') as f:
-    cfg = yaml.safe_load(f) or {}
+    cfg = yaml.load(f) or {}
 
 if 'mcp_servers' not in cfg:
     cfg['mcp_servers'] = {}
@@ -68,9 +74,9 @@ if 'twozero_td' not in cfg['mcp_servers']:
         'connect_timeout': 60
     }
     with open(cfg_path, 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(cfg, f)
 " 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
-              || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
+              || { echo -e " ${FAIL} Could not update config (is ruamel.yaml installed?)"; \
                    manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }
     manual_steps+=("Restart Hermes session to pick up config change")
 fi

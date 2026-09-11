@@ -48,7 +48,6 @@ dependencies = [
   "httpx[socks]==0.28.1",
   "rich==14.3.3",
   "tenacity==9.1.4",
-  "pyyaml==6.0.3",
   "tomli-w==1.2.0",  # Preserve relative dependency paths in staged plugin metadata.
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
@@ -674,7 +673,7 @@ plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.
-pm = ["lock.json", "artifact-mirror.json"]
+pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

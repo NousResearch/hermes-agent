@@ -18,7 +18,7 @@
 #
 # Staged payload layout: python/ and node/ are pm-staged termux .deb
 # trees ($PREFIX-shaped: data/data/com.termux/files/usr/...). The
-# installed layout is $PREFIX/lib/hermes-agent/{python,node,app,venv,bin} with
+# installed layout is $PREFIX/lib/hermes-agent/{tools,app,venv,pm-runtime,bin} with
 # exactly one leak: $PREFIX/bin/hermes -> lib/hermes-agent/bin/hermes.
 
 set -Eeuo pipefail
@@ -114,8 +114,9 @@ OUT_ABS="$(mkdir -p "$OUT" && cd "$OUT" && pwd)"
 # The container sees the payload at its real PREFIX path; the venv is built
 # staged trees so the shipped venv's absolute shebangs point at the REAL
 # $PREFIX path they will occupy on-device ($PREFIX is contractual).
-log "Creating venv with the bundled CPython (inside the container)"
+log "Creating application and PM environments with the bundled CPython (inside the container)"
 if [ -d "$PAYLOAD_ABS/venv" ]; then rm -rf "$PAYLOAD_ABS/venv"; fi
+if [ -d "$PAYLOAD_ABS/pm-runtime" ]; then rm -rf "$PAYLOAD_ABS/pm-runtime"; fi
 # The venv's dep list: the resolved graph with markers intact (the installer
 # evaluates them on bionic) and documented android build misses skipped --
 # uv pip check tolerates the app importing without them (its relay exporter
@@ -131,8 +132,8 @@ write_reqs_file(Path(sys.argv[2]), Path(sys.argv[3]))
 PYREQS
 # The bind mount is runner-owned: the container (any uid) can only write
 # into a dir the HOST pre-created with open perms (same as the wheelhouse).
-mkdir -p "$PAYLOAD_ABS/venv"
-chmod 0777 "$PAYLOAD_ABS/venv"
+mkdir -p "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime"
+chmod 0777 "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime"
 # Mount the payload at its REAL on-device path: the venv records
 # absolute paths (interpreter symlink, pyvenv.cfg) that must be correct
 # on-device from birth -- a /payload alias would bake container paths in.
@@ -145,6 +146,8 @@ docker run --rm --platform linux/arm64 \
     -v "$PAYLOAD_ABS/wheelhouse:/data/data/com.termux/files/usr/lib/hermes-agent/wheelhouse" \
     -v "$PAYLOAD_ABS/.work:/data/data/com.termux/files/usr/lib/hermes-agent/.work" \
     -v "$PAYLOAD_ABS/venv:/data/data/com.termux/files/usr/lib/hermes-agent/venv" \
+    -v "$PAYLOAD_ABS/pm-runtime:/data/data/com.termux/files/usr/lib/hermes-agent/pm-runtime" \
+    -v "$PAYLOAD_ABS/app:/data/data/com.termux/files/usr/lib/hermes-agent/app:ro" \
     "$IMAGE" bash -c '
         set -euo pipefail
         export PREFIX=/data/data/com.termux/files/usr
@@ -174,6 +177,20 @@ docker run --rm --platform linux/arm64 \
             --offline --no-index --only-binary :all: --find-links "$PREFIX/lib/hermes-agent/wheelhouse" \
             -r "$PREFIX/lib/hermes-agent/.work/resolved-reqs.txt"
         "$UV" pip check --python "$PREFIX/lib/hermes-agent/venv/bin/python"
+
+        # PM uses the shared locked builder with the verified bionic wheelhouse.
+        ROOT="$PREFIX/lib/hermes-agent"
+        "$PY" -I -B -c "
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from pm.runtime_stage import stage_runtime
+from scripts.bundles.payload import seal_pm_runtime
+root, python, uv = map(Path, sys.argv[2:])
+stage_runtime(uv, python, root / \"pm-runtime\", project=root / \"app/pm\",
+              wheelhouse=root / \"wheelhouse\", offline=True)
+seal_pm_runtime(root, python)
+" "$ROOT/app" "$ROOT" "$PY" "$UV"
     ' || fail "venv assembly failed inside the container (offline wheelhouse install)"
 
 # The install-method stamp (code-scoped, next to hermes_cli/): the deb IS
@@ -212,7 +229,7 @@ mkdir -p "$STAGE/DEBIAN" "$DEST/tools"
 for tool in python node uv npm ffmpeg ripgrep; do
     cp -a "$PAYLOAD_ABS/$tool" "$DEST/tools/"
 done
-cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/bin" "$DEST/"
+cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime" "$PAYLOAD_ABS/bin" "$DEST/"
 python3 "$HERE/payload_facts.py" "$DEST" "$PAYLOAD_ABS/.work/build_set.txt"
 
 python3 "$HERE/launchers.py" --payload "$DEST" --control "$STAGE/DEBIAN"
@@ -243,7 +260,8 @@ docker run --rm --platform linux/arm64 \
     -v "$DEB:/tmp/pkg.deb:ro" \
     -v "$HERE/check_deb.sh:/tmp/check.sh:ro" \
     -v "$HERE/validate_installed.py:/tmp/validate_installed.py:ro" \
-    "termux/termux-docker@$DIGEST" bash /tmp/check.sh \
+    "termux/termux-docker@$DIGEST" bash -c \
+        'source /tmp/check.sh; "$root/venv/bin/python" -m pm.cli status' \
     || fail "container validation failed"
 
 log "Built $DEB (validated)"

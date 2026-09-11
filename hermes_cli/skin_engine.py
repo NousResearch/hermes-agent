@@ -351,7 +351,7 @@ def _skins_dir() -> Path:
 def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """Load a skin definition from a YAML file; None on any failure."""
     try:
-        import yaml
+        import hermes_yaml as yaml
         with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:

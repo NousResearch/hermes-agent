@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import plugin_catalog as pc
 

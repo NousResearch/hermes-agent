@@ -7,7 +7,7 @@ persistence flows exclusively through persist_personality().
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-import yaml
+import hermes_yaml as yaml
 
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ class TestGatewayPersonalityNone:
             "display": {"personality": "helpful"},
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -138,7 +138,7 @@ class TestGatewayPersonalityNone:
             }
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -157,7 +157,7 @@ class TestGatewayPersonalityNone:
         runner = self._make_runner()
         config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -171,7 +171,7 @@ class TestGatewayPersonalityNone:
         # Built-ins are always available — an empty agent.personalities no
         # longer means "no personalities configured".
         runner = self._make_runner(personalities={})
-        (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}))
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"agent": {"personalities": {}}}))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:

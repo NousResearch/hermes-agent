@@ -139,7 +139,7 @@ def _managed_uv() -> tuple:
     keeps this module's bare-import surface stdlib-pure.
     """
     try:
-        from pm.ensure import uv as pm_uv
+        from pm.client import uv as pm_uv
 
         uv_bin, env = pm_uv(realize=True)
     except Exception:

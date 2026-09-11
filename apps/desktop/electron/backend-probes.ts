@@ -88,10 +88,10 @@ function canImportHermesCli(pythonPath: string, opts: { env?: NodeJS.ProcessEnv;
   }
 
   try {
-    const env = { ...process.env, ...opts.env }
+    const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env }
 
     // Bootstrap selects the committed generation before any dependency import.
-    execProbeSync(pythonPath, ['-c', 'import hermes_bootstrap; import yaml; import dotenv; import hermes_cli.config'], {
+    execProbeSync(pythonPath, ['-c', 'import hermes_bootstrap; import hermes_yaml; import dotenv; import hermes_cli.config'], {
       cwd: opts.cwd,
       env: { ...env, ...buildDesktopBackendEnv({ currentEnv: env }) },
       stdio: 'ignore',

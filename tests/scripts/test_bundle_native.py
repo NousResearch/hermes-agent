@@ -19,12 +19,21 @@ from scripts.bundles import native
 def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_path, monkeypatch):
     from hermes_cli.runtime_paths import site_packages
 
-    interpreter = tmp_path / "staged-python"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(interpreter)],
-                   capture_output=True, check=True, timeout=60)
-    target_python = interpreter / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    output = tmp_path / "payload"
+    target_python = output / "staged-python" / ("python.exe" if os.name == "nt" else "bin/python")
+    target_python.parent.mkdir(parents=True)
+    # PM seals a payload-owned base interpreter, not an external venv launcher.
+    # The POSIX host supplies its stdlib; Windows needs it beside the executable.
+    if os.name == "nt":
+        shutil.copytree(Path(sys.base_prefix), target_python.parent, dirs_exist_ok=True)
+    else:
+        shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), target_python)
     repo = tmp_path / "repo"
     repo.mkdir()
+    pm_project = Path(__file__).resolve().parents[2] / "pm"
+    (repo / "pm").mkdir()
+    for name in ("pyproject.toml", "uv.lock"):
+        shutil.copy2(pm_project / name, repo / "pm" / name)
     (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n[project.optional-dependencies]\npayloadtest=[]\n[tool.uv]\npackage=false\n', encoding="utf-8")
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
@@ -33,7 +42,6 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
-    output = tmp_path / "payload"
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
     monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
     monkeypatch.setattr(native, "_install_names", lambda names: 0)
@@ -44,7 +52,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr(native, "_arch_guard", lambda store: [])
     monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
     monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
-    monkeypatch.setattr("pm.packages.uv_cache_dir", lambda: tmp_path / "empty-cache")
+    monkeypatch.setattr("pm.packages.uv_cache_dir", lambda: tmp_path / "cache")
     real_run = native._run_live
     calls = []
     witness = tmp_path / "inventory-python.json"
@@ -53,6 +61,9 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     def child(argv, *, cwd, env):
         calls.append(argv[1])
         assert not (output / "manifest.json").exists()
+        marker = json.loads((output / "pm-runtime/pm-runtime.json").read_text())
+        assert (output / "pm-runtime" / marker["python"]).resolve() == target_python
+        assert (output / "pm-runtime" / marker["sitePackages"]).is_dir()
         result = real_run(argv, cwd=cwd, env=env)
         if argv[1] == "sync" and result[0] == 0:
             site = site_packages(output / "venv")

@@ -28,8 +28,8 @@ def _capture_selection(monkeypatch):
 def _make_plugin_dir(parent: Path, name: str, manifest: dict) -> Path:
     d = parent / name
     d.mkdir(parents=True, exist_ok=True)
-    import yaml
-    (d / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+    import hermes_yaml as yaml
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (d / "__init__.py").write_text("def register(ctx): pass\n", encoding="utf-8")
     return d
 

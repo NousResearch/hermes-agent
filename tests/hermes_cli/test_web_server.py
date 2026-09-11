@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     reload_env,
@@ -1813,7 +1813,7 @@ class TestWebServerEndpoints:
     def test_numeric_yaml_provider_key_can_be_activated_and_deleted(self):
         """Hand-edited `providers: 2070:` (YAML int key) must still activate.
 
-        PyYAML loads unquoted 2070 as int; string lookup then 404ed, so
+        YAML loads unquoted 2070 as int; string lookup then 404ed, so
         Desktop could list the endpoint but not assign or delete it.
         """
         from hermes_cli.config import get_config_path, load_config
@@ -1935,7 +1935,7 @@ class TestWebServerEndpoints:
         secret by the time Save sees it. Migrating it would duplicate the
         user's secret into a second env var they never asked for.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         from hermes_cli.config import custom_endpoint_key_env, get_config_path, get_env_value
 

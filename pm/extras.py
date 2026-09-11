@@ -164,7 +164,7 @@ def ensure_import(extra: str) -> None:
             f"extra {extra!r} is not supported on this platform "
             f"(gate: {marker!r}); the adapter degrades without it",
         )
-    from pm.ensure import sync_venv
+    from pm.client import sync_venv
 
     sync_venv([extra])
     # Activation is a process-boot operation. Never mix a newly resolved

@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
@@ -938,10 +938,8 @@ class TestWriteProfileMetaDurability:
     def _interrupted_write(profile_dir):
         """Run a ``write_profile_meta`` whose serialization fails mid-call.
 
-        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
-        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
-        it measures durability rather than the choice of entry point.  A
-        scoped ``MonkeyPatch.context`` is used instead of the fixture so the
+        Interrupt the shared serializer used by ``utils.atomic_yaml_write``.
+        A scoped ``MonkeyPatch.context`` is used instead of the fixture so the
         patch is reverted immediately, without touching the session-wide env
         isolation that shares the function-scoped ``monkeypatch`` instance.
         """
@@ -950,7 +948,6 @@ class TestWriteProfileMetaDurability:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(yaml, "safe_dump", _boom)
-            mp.setattr(yaml, "dump", _boom)
             with pytest.raises(RuntimeError):
                 profiles.write_profile_meta(profile_dir, description_auto=True)
 

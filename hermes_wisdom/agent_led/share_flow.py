@@ -372,7 +372,7 @@ class ShareFlow:
 
 def normalize_generated_package(package: SharePackage) -> SharePackage:
     """Materialize the generated metadata as part of the reviewable package."""
-    import yaml
+    import hermes_yaml as yaml
     from .setup_document import SETUP_PATH, render_setup_document
 
     files = []

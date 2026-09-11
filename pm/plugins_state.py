@@ -37,7 +37,7 @@ def _read_home_config(home: Path) -> Optional[dict[str, Any]]:
 
     # Missing YAML support is a broken runtime, not an empty plugin selection.
     import utils
-    from yaml import YAMLError
+    from ruamel.yaml.error import YAMLError
 
     try:
         config = utils.fast_safe_load(text)

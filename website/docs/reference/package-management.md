@@ -16,6 +16,7 @@ Each file has a separate role:
 | File | Role |
 |---|---|
 | `pm/lock.json` | Exact managed-tool versions, target-specific URLs, and SHA-256 hashes. |
+| `pm/pyproject.toml` and `pm/uv.lock` | The dependency manager's independent Python requirements and locked resolution. |
 | `pyproject.toml` and `uv.lock` | Python requirements, extras, platform markers, and the committed Python resolution. |
 | Tool-store `facts.json` | Installed tool entries, their identities, environment exports, and realized-file digests. |
 | Per-install `facts.json` | The selected Python environment, its input stamp, and enabled extras. |
@@ -169,9 +170,28 @@ installation work: shell configuration, launchers, `.env`, and bundled skills.
 Run the setup script separately if you want that full installation workflow.
 
 The bootstrap uses uv to install and locate Python, then waits for uv to exit.
-That Python runs PM directly. PM can then replace its uv entry without a running
-bootstrap process holding the old executable. PM writes failure receipts without
-PyYAML, including when dependency installation fails.
+PM prepares its own small, locked Python environment before reading plugin
+configuration or resolving application dependencies. Its project is deliberately
+independent of the application workspace: a broken application dependency must
+not prevent its dependency manager from starting. Each uv subprocess exits before
+PM runs, so it cannot hold the uv executable that PM needs to replace.
+
+PM's runtime contains `ruamel.yaml`, `packaging`, and `tomli-w`, not the application
+dependency tree. CLI commands and application-requested installs and repairs run
+there; read-only path and installed-environment lookups remain local. PM never
+adds its dependencies to an already-running agent's imports. First-party YAML
+readers and writers use ruamel; third-party packages can still require PyYAML in
+the application environment. Failure receipts remain stdlib-only.
+
+When lazy installs are disabled, an existing PM runtime can still check whether
+the application environment is current. If PM itself is missing or outdated,
+the request fails without downloading tools or dependencies. Run an explicit
+`hermes pm install` to prepare PM first.
+
+Native bundles and Docker images stage this same PM lock through the shared
+runtime builder. Termux supplies its verified offline wheelhouse to that
+builder. Nix builds the PM lock as a separate derivation. Packaged workers use
+only their recorded PM dependency directory, never the application's libraries.
 
 ### Activate an existing installation
 

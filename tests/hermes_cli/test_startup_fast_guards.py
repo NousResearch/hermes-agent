@@ -27,11 +27,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Modules that must NEVER be imported by the fast path. Each one either
-# pulls yaml/argparse/logging config or is itself a god-module.
+# pulls YAML/argparse/logging config or is itself a god-module.
 _FORBIDDEN_MODULES = (
     "hermes_cli.config",
     "hermes_cli.main",
-    "yaml",
+    "hermes_yaml",
+    "ruamel.yaml",
     "argparse",
     "cli",
     "run_agent",

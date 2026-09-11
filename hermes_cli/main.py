@@ -215,12 +215,10 @@ def _config_default_interface_early() -> str:
         else:
             cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
         if os.path.exists(cfg_path):
-            import yaml as _yaml_iface
+            import hermes_yaml as _yaml_iface
 
             with open(cfg_path, encoding="utf-8-sig") as _f:
-                raw = _yaml_iface.load(
-                    _f, Loader=getattr(_yaml_iface, "CSafeLoader", None) or _yaml_iface.SafeLoader
-                ) or {}
+                raw = _yaml_iface.safe_load(_f) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")

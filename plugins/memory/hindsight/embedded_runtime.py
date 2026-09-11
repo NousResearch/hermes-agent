@@ -128,7 +128,7 @@ def _generation_current(generation: Path) -> bool:
 
 def _uv_bridge(venv: Path) -> tuple[str, dict[str, str]]:
     """The sanctioned pm bridge: pinned uv binary + sanitized env for *venv*."""
-    from pm.ensure import uv as pm_uv
+    from pm.client import uv as pm_uv
 
     uv_bin, env = pm_uv(venv=venv)
     if not uv_bin:

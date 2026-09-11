@@ -241,7 +241,7 @@ def check_config(groq_key, eleven_key):
     config_path = HERMES_HOME / "config.yaml"
     if config_path.exists():
         try:
-            import yaml
+            import hermes_yaml as yaml
             with open(config_path, encoding="utf-8-sig") as f:
                 cfg = yaml.safe_load(f) or {}
 

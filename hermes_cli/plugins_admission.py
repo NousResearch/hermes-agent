@@ -90,7 +90,7 @@ def admit_plugin_set_change(
     …) or when the config write itself fails. The active environment and
     the previous config bytes are kept EXACTLY — no rollback re-resolve.
     """
-    from pm.ensure import sync_venv
+    from pm.client import sync_venv
 
     extra_dirs = tuple(extra_dirs)
     try:

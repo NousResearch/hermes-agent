@@ -1,5 +1,6 @@
 """A failed update lookup is not a current result or permission to apply."""
 import importlib
+from argparse import Namespace
 
 import pytest
 
@@ -53,10 +54,8 @@ def test_failed_resolution_stops_every_apply_path(tmp_path, monkeypatch, capsys,
     packages = [failed, healthy] if mixed else [failed]
     lock = prepare(tmp_path, monkeypatch, packages)
     before = lock.path.read_bytes()
-    args = ["update", *[p.name for p in packages], "--uv", "--npm"]
-    if check:
-        args.append("--check")
-    assert cli.main(args) == 1
+    args = Namespace(names=[p.name for p in packages], target=None, check=check, uv=True, npm=True)
+    assert cli.cmd_update(args) == 1
     assert "fixture index unavailable" in capsys.readouterr().out
     assert lock.path.read_bytes() == before
     assert not (tmp_path / "tools").exists()
@@ -69,7 +68,8 @@ def test_current_and_manual_results_are_successful_without_writes(tmp_path, monk
     package = UpdateFixture("no-update", versions)
     lock = prepare(tmp_path, monkeypatch, [package])
     before = lock.path.read_bytes()
-    for flags in (["--check"], []):
-        assert cli.main(["update", package.name, *flags]) == 0
+    for check in (True, False):
+        args = Namespace(names=[package.name], target=None, check=check, uv=False, npm=False)
+        assert cli.cmd_update(args) == 0
     assert lock.path.read_bytes() == before
     assert not (tmp_path / "tools").exists()

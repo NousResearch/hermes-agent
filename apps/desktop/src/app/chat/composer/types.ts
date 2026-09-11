@@ -5,6 +5,8 @@ import type { HermesGateway } from '@/hermes'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
+import type { ComposerModeFrame } from './contrib'
+
 export interface ContextSuggestion {
   text: string
   display: string
@@ -55,7 +57,11 @@ export interface ChatBarProps {
   onPickFolders?: () => void
   onPickImages?: () => void
   onRemoveAttachment?: (id: string) => void
-  onSteer?: (text: string) => Promise<boolean> | boolean
+  /** Steer the live turn (`session.redirect`/`session.steer`). Accepts true on
+   *  delivery, false when the turn raced to completion (callers queue the
+   *  words), or 'canceled' when the composer middleware consumed the send —
+   *  the caller must then restore the draft, NEVER queue the raw text. */
+  onSteer?: (text: string, opts?: ComposerModeFrame) => Promise<boolean | 'canceled'> | boolean
   /** Delivers a hidden note to the model mid-turn with no user turn (gateway session.steer). */
   onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean

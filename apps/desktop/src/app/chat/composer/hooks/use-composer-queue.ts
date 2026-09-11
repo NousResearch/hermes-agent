@@ -312,10 +312,12 @@ export function useComposerQueue({
 
       const accepted = await Promise.resolve(onSteer(entry.text))
 
-      // Rejected (turn already settling, gateway said no): leave the entry
-      // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
-      if (!accepted) {
+      // Rejected (turn already settling, gateway said no) OR canceled by the
+      // composer middleware: leave the entry queued exactly where it was — the
+      // settle drain picks it up, so the words are never lost. Only a DELIVERED
+      // redirect (`true`) consumes the entry: 'canceled' is a truthy string, so
+      // a truthiness test would silently drop the queued words.
+      if (accepted !== true) {
         return false
       }
 

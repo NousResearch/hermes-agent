@@ -727,6 +727,12 @@ export interface SubmitTextOptions {
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
   fromQueue?: boolean
+  /** Per-turn composer-mode frame from the middleware chain: the gateway
+   *  delivers `note` to the model through the api_content sidecar (it never
+   *  becomes part of the user's `content`) and persists `mode` as the row's
+   *  display_metadata (display-only; the transcript may badge the message). */
+  note?: string
+  mode?: string
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

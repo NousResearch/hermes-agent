@@ -40,7 +40,18 @@ export const COMPOSER_AREAS = {
   atCompletions: 'composer.atCompletions'
 } as const
 
-export interface ComposerDraft {
+/** Per-turn composer-mode frame: the model note + the display-only mode label.
+ *  Carried by `ComposerDraft` and handed to the gateway, which delivers the
+ *  note through the per-turn api_content sidecar (never mixed into the user's
+ *  `content`) and stores the label as the row's display_metadata. */
+export interface ComposerModeFrame {
+  /** Framing instructions for the model on this specific send. */
+  note?: string
+  /** Opaque composer-mode label (display-only; the transcript may badge it). */
+  mode?: string
+}
+
+export interface ComposerDraft extends ComposerModeFrame {
   text: string
   attachments?: ComposerAttachment[]
 }

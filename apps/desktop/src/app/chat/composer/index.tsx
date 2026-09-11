@@ -158,7 +158,16 @@ export function ChatBar({
         return false
       }
 
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
+      return onSubmitProp(draft.text, {
+        ...options,
+        attachments: draft.attachments,
+        // Composer-mode frame: per-turn model note + display-only label. The
+        // gateway delivers the note through the api_content sidecar (the
+        // user's `content` stays their words) and persists the label as
+        // display_metadata for the transcript to badge.
+        ...(draft.note ? { note: draft.note } : {}),
+        ...(draft.mode ? { mode: draft.mode } : {})
+      })
     },
     [onSubmitProp]
   )

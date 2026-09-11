@@ -761,6 +761,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
           ...(options?.displayKind === 'hidden' && { display_kind: 'hidden' }),
+          // Per-turn composer-mode frame: the gateway delivers the note to the
+          // model through the api_content sidecar (content stays the user's
+          // words) and stores the label as display_metadata (display-only).
+          ...(options?.note ? { note: options.note } : {}),
+          ...(options?.mode ? { mode: options.mode } : {}),
           // Typed into the floating HUD, so the user is looking at another app
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.

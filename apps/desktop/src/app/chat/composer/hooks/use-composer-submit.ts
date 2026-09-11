@@ -310,7 +310,18 @@ export function useComposerSubmit({
     clearDraft()
 
     void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
+      if (accepted === 'canceled') {
+        // The composer middleware consumed this steer — a cancel, not a
+        // rejection. Put the words back in the composer instead of queueing
+        // raw text the middleware just declined: nothing is lost and no
+        // unframed copy rides the queue behind the live turn.
+        loadIntoComposer(text, [])
+        focusInput()
+
+        return
+      }
+
+      if (accepted !== true && activeQueueSessionKey) {
         enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
       }
     })

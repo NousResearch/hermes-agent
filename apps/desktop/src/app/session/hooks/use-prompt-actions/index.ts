@@ -3,6 +3,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { type ComposerModeFrame, runComposerMiddleware } from '@/app/chat/composer/contrib'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
@@ -734,7 +735,7 @@ export function usePromptActions({
   // completed work intact. During a tool it waits for the safe result boundary.
   // Returns false when the turn raced to completion so the composer can queue.
   const redirectPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string, opts?: ComposerModeFrame): Promise<boolean | 'canceled'> => {
       const text = sanitizeComposerInput(rawText).trim()
       // Ref, not the closure-captured prop — see cancelRun above. A redirect
       // reaches the live model mid-turn, so a stale target delivers the user's
@@ -744,6 +745,27 @@ export function usePromptActions({
       if (!text || !sessionId) {
         return false
       }
+
+      // The composer middleware runs exactly ONCE here — before the RPC and
+      // before the session-not-found retry — so a redirect that races a
+      // reconnect is framed exactly like the retry that finally delivers it
+      // (inside `send` it would fire twice). `null` is a CANCEL, not a
+      // rejection: it returns 'canceled' so the caller restores the draft
+      // instead of queueing raw text the middleware just declined — `false`
+      // keeps its "queue the words" meaning.
+      const draft = await runComposerMiddleware({
+        text,
+        ...(opts?.note ? { note: opts.note } : {}),
+        ...(opts?.mode ? { mode: opts.mode } : {})
+      })
+
+      if (!draft) {
+        return 'canceled'
+      }
+
+      const framedText = draft.text
+      const note = draft.note
+      const mode = draft.mode
 
       // Accepted whether the live turn was redirected in place or queued for
       // the next turn (the build window, before the agent is wired) — either
@@ -756,7 +778,9 @@ export function usePromptActions({
         // gateway, in arrival order: sealed already-streamed output above,
         // correction bubble below it, post-redirect deltas below that
         // (#73793, #83151).
-        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { appendAfterActiveReply: true })
+        const messageId = appendSessionTextMessage(id, 'user', framedText, undefined, {
+          appendAfterActiveReply: true
+        })
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({
@@ -774,7 +798,12 @@ export function usePromptActions({
           })
 
         try {
-          const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+          const result = await requestGateway<SessionRedirectResponse>('session.redirect', {
+            session_id: id,
+            text: framedText,
+            ...(note ? { note } : {}),
+            ...(mode ? { mode } : {})
+          })
 
           if (result?.status === 'redirected') {
             triggerHaptic('submit')

@@ -1,11 +1,11 @@
 {
   "name": "fleet-models",
-  "label": "Models",
-  "description": "Every agent's model waterfall from one file — live settings, hosts, prices, usage and cost, with preview, apply and revert",
-  "icon": "Cpu",
-  "version": "1.0.1",
+  "label": "Fleet Models",
+  "description": "Every agent's model waterfall from one file (~/.hermes/fleet/models.yaml) \u2014 live settings, hosts, prices, usage and cost, with preview, apply and revert",
+  "icon": "Activity",
+  "version": "1.0.2",
   "tab": {
-    "path": "/models",
+    "path": "/fleet-models",
     "position": "after:kanban"
   },
   "entry": "dist/index.js",

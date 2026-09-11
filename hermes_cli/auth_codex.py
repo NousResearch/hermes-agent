@@ -647,6 +647,11 @@ def _pool_codex_access_token() -> str:
     """First non-empty pool access_token not in an exhaustion cooldown window, else "".
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
+    When the selected entry's token is within ``CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS``
+    of expiry, adopt a fresh pair from ``~/.codex/auth.json`` (kept current by the Codex
+    CLI) via ``_recover_codex_tokens_from_cli`` — the self-heal the singleton path already
+    has (issue #63413). A recovery failure must not swallow the entry token: it may still
+    have up to the skew window of life left, so it falls through instead of escaping.
     """
     from hermes_cli.auth import _nonempty_str
     try:
@@ -654,7 +659,17 @@ def _pool_codex_access_token() -> str:
             token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
             in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
-                return token.strip()
+                token = token.strip()
+                if _codex_access_token_is_expiring(token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+                    try:
+                        recovered = _recover_codex_tokens_from_cli("pool access_token expiring")
+                    except Exception:
+                        logger.debug("Codex pool self-heal failed; falling back to the "
+                                     "entry access_token", exc_info=True)
+                        recovered = None
+                    if recovered and _nonempty_str(recovered.get("access_token")):
+                        return _stripped(recovered.get("access_token"))
+                return token
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""

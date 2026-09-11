@@ -543,6 +543,7 @@ export interface SlashHandlerContext {
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
+    recoverGateway?: () => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>

@@ -60,6 +60,21 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
+def _ensure_mcp_servers_dict(config: dict) -> Dict[str, dict]:
+    """Return the ``mcp_servers`` dict, coercing a non-dict (e.g. the legacy
+    ``mcp_servers: ''`` string default) to an empty dict in place.
+
+    ``config.setdefault("mcp_servers", {})`` returns the existing value when
+    the key is present — so a string ``''`` (the historical default) is
+    returned as-is and indexing it raises ``TypeError``. Coerce instead.
+    """
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = {}
+        config["mcp_servers"] = servers
+    return servers
+
+
 def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config (non-empty lists only)."""
     tools_cfg = cfg.get("tools", {})
@@ -80,7 +95,8 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     if not _validate_or_warn(name, server_config):
         return False
     config = load_config()
-    config.setdefault("mcp_servers", {})[name] = server_config
+    servers = _ensure_mcp_servers_dict(config)
+    servers[name] = server_config
     save_config(config)
     return True
 
@@ -852,7 +868,8 @@ def cmd_mcp_configure(args):
         server_entry["tools"]["include"] = [tool_names[i] for i in sorted(chosen)]
         server_entry["tools"].pop("exclude", None)
 
-    config.setdefault("mcp_servers", {})[name] = server_entry
+    config = _ensure_mcp_servers_dict(config)
+    config[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
     _info("Start a new session for changes to take effect.")

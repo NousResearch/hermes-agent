@@ -972,6 +972,44 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    def test_close_fails_when_process_survives_kill(self, tmp_path, monkeypatch):
+        """On POSIX, _profile_is_locked() never trips (it only detects Windows'
+        deny-all-while-open semantics), so the success verdict must not rest on
+        it alone. A process that survives both terminate() and kill() (e.g. a
+        real-profile Chrome that AccessDenied silently swallowed) must make
+        close_browser_holding_profile report failure, not a false "closed"."""
+        import hermes_cli.browser_connect as bc
+
+        class FakeProc:
+            def children(self, recursive=True):
+                return []
+
+            def terminate(self):
+                pass  # process ignores SIGTERM
+
+            def kill(self):
+                pass  # kill() also has no effect (e.g. AccessDenied)
+
+        survivor = FakeProc()
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def wait_procs(self, procs, timeout=None):
+                return [], list(procs)  # nothing ever exits
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        monkeypatch.setattr(bc, "_processes_holding_profile", lambda src: iter([survivor]))
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: False)  # never trips on POSIX
+        monkeypatch.setattr(bc, "_resolve_source_profile", lambda s: ("Default", None))
+        monkeypatch.setattr(bc, "_last_used_profile", lambda s: "Default")
+
+        closed, msg = bc.close_browser_holding_profile(str(tmp_path), timeout=0.1)
+        assert closed is False
+        assert "still running" in msg.lower() or "could not terminate" in msg.lower()
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \

@@ -57,7 +57,7 @@ const DEFAULT_BOARD = 'default'
 /** Board scope = a first-class Hermes project. Its primary repo becomes the
  *  board's default workspace root; new tasks inherit it as a worktree with a
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
-function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
+export function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
   const k = useKanban()
   const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
   const projects = data?.projects ?? []

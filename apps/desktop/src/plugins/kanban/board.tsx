@@ -82,7 +82,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { columnMeta, type BoardsResponse, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -1103,10 +1103,14 @@ export function KanbanBoardPage() {
     mutationFn: (patch: Record<string, unknown>) => updateBoard(slug, patch),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: (_, patch) => {
-      // Optimistically update so switches reflect new state immediately
-      if (currentBoard) {
-        Object.assign(currentBoard, patch)
-      }
+      // Optimistically update via an immutable cache write (never mutate the
+      // cached board object in place) so react-query's reference-identity
+      // and reconciliation stay correct.
+      qc.setQueryData<BoardsResponse>(BOARDS_KEY, prev =>
+        prev
+          ? { ...prev, boards: prev.boards.map(b => (b.slug === slug ? { ...b, ...patch } : b)) }
+          : prev
+      )
       void qc.invalidateQueries({ queryKey: BOARDS_KEY })
     }
   })
@@ -1365,27 +1369,30 @@ export function KanbanBoardPage() {
         <div className="ml-auto flex items-center gap-2">
           {currentBoard && (
             <>
-              <Tip label="Dispatch enabled: allow agents to pick up tasks from this board">
+              <Tip label={k.boardDispatchEnabled}>
                 <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
                   <Switch
+                    aria-label={k.boardDispatchEnabled}
                     checked={currentBoard.dispatch_enabled ?? true}
                     onCheckedChange={enabled => toggleBoardSetting.mutate({ dispatch_enabled: enabled })}
                   />
                   <span>Dispatch</span>
                 </label>
               </Tip>
-              <Tip label="Auto-decompose: automatically break down tasks into subtasks">
+              <Tip label={k.boardAutoDecomposeEnabled}>
                 <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
                   <Switch
+                    aria-label={k.boardAutoDecomposeEnabled}
                     checked={currentBoard.auto_decompose_enabled ?? true}
                     onCheckedChange={enabled => toggleBoardSetting.mutate({ auto_decompose_enabled: enabled })}
                   />
                   <span>Decompose</span>
                 </label>
               </Tip>
-              <Tip label="Review dispatch: send completed tasks for review">
+              <Tip label={k.boardReviewDispatchEnabled}>
                 <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
                   <Switch
+                    aria-label={k.boardReviewDispatchEnabled}
                     checked={currentBoard.review_dispatch_enabled ?? true}
                     onCheckedChange={enabled => toggleBoardSetting.mutate({ review_dispatch_enabled: enabled })}
                   />
@@ -1413,7 +1420,7 @@ export function KanbanBoardPage() {
         </div>
       </header>
 
-      {settingsOpen && <OrchestrationPanel />}
+      {settingsOpen && <OrchestrationPanel board={currentBoard} />}
 
       {board && <Intro />}
 

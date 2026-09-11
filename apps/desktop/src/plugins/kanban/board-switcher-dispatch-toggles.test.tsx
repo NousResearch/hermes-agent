@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
 import { $boardSlug, bindApi } from './api'
-import { BoardSwitcher } from './board-switcher'
+import { KanbanBoardPage } from './board'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { BoardMeta } from './types'
 
@@ -23,6 +23,10 @@ let patched: Array<{ slug: string; patch: Record<string, unknown> }>
 const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<unknown> => {
   if (path === '/boards' && (!options || options.method === undefined || options.method === 'GET')) {
     return { boards: boards.map(b => ({ ...b })), current: 'proj' }
+  }
+
+  if (path.startsWith('/board')) {
+    return { assignees: [], columns: [], latest_event_id: 0, now: Date.now(), tenants: [] }
   }
 
   const patchMatch = /^\/boards\/([^/]+)$/.exec(path)
@@ -58,7 +62,7 @@ beforeEach(() => {
     { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
     () => vi.fn()
   )
-  $boardSlug.set('')
+  $boardSlug.set('proj')
 })
 
 afterEach(() => {
@@ -69,27 +73,16 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function openSwitcher() {
-  return render(
+// The per-board dispatch/decompose/review toggles now live inline in the
+// board page's header (see board.tsx) — the old dropdown "Settings…" dialog
+// was removed. Mount the page directly instead of driving BoardSwitcher's menu.
+async function openBoardSettings() {
+  render(
     <QueryClientProvider client={client}>
-      <BoardSwitcher />
+      <KanbanBoardPage />
     </QueryClientProvider>
   )
-}
-
-// Radix's dropdown trigger opens on pointerdown (a synthetic 'click' fireEvent
-// alone won't do it) — same technique as project-menu.test.tsx (#67500).
-const openTriggerMenu = (trigger: HTMLElement) => {
-  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
-  fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
-  fireEvent.click(trigger)
-}
-
-async function openBoardSettings() {
-  openSwitcher()
-  openTriggerMenu(await screen.findByRole('button', { name: /Proj/ }))
-  const settingsItem = await screen.findByRole('menuitem', { name: en.settingsDots })
-  fireEvent.click(settingsItem)
+  await screen.findByRole('switch', { name: en.boardDispatchEnabled })
 }
 
 describe('per-board dispatch toggles', () => {
@@ -109,7 +102,7 @@ describe('per-board dispatch toggles', () => {
     await openBoardSettings()
 
     const dispatchSwitch = await screen.findByRole('switch', { name: en.boardDispatchEnabled })
-    fireEvent.click(dispatchSwitch)
+    dispatchSwitch.click()
 
     await waitFor(() => expect(patched).toContainEqual({ slug: 'proj', patch: { dispatch_enabled: false } }))
     // The other two flags are untouched by this write.

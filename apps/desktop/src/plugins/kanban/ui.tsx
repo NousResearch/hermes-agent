@@ -15,7 +15,7 @@ import {
   relativeTime,
   useQuery
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
 import { columnLabel, useKanban } from './i18n'
@@ -279,5 +279,90 @@ export function ScrollFade({ children, deps, max = '9rem' }: { children: ReactNo
     <FadeScroll deps={deps} maxHeight={max}>
       {children}
     </FadeScroll>
+  )
+}
+
+const HTTP_URL_RE = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?)']/i
+const MD_LINK_RE = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/
+const URL_OR_MD_RE = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?)']/gi
+
+/** First http(s) URL in markdown-link or bare form. */
+export function firstHttpUrl(text: string): null | string {
+  const md = text.match(MD_LINK_RE)
+  if (md?.[2]) return md[2]
+  return text.match(HTTP_URL_RE)?.[0] ?? null
+}
+
+function stopCardClick(event: MouseEvent) {
+  event.stopPropagation()
+}
+
+function KanbanLink({ children, href }: { children: ReactNode; href: string }) {
+  // Same-window <a href> hits webContents `will-navigate`, which opens the
+  // system browser. `target=_blank` is denied (window-open-policy).
+  return (
+    <a
+      className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+      href={href}
+      onAuxClick={stopCardClick}
+      onClick={stopCardClick}
+      rel="noopener noreferrer"
+    >
+      {children}
+    </a>
+  )
+}
+
+/** Render `[label](url)` and bare http(s) URLs as real anchors. */
+export function RichKanbanText({ className, text }: { className?: string; text: string }) {
+  const nodes: ReactNode[] = []
+  let cursor = 0
+  let key = 0
+  for (const match of text.matchAll(URL_OR_MD_RE)) {
+    const index = match.index ?? 0
+    if (index > cursor) nodes.push(text.slice(cursor, index))
+    nodes.push(
+      match[1] && match[2] ? (
+        <KanbanLink href={match[2]} key={key++}>
+          {match[1]}
+        </KanbanLink>
+      ) : (
+        <KanbanLink href={match[0]} key={key++}>
+          {match[0]}
+        </KanbanLink>
+      )
+    )
+    cursor = index + match[0].length
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor))
+  return <span className={className}>{nodes.length ? nodes : text}</span>
+}
+
+export function linkLabel(url: string): string {
+  try {
+    const path = new URL(url).pathname.split('/').filter(Boolean)
+    return path[path.length - 1] || url
+  } catch {
+    return url
+  }
+}
+
+/** Compact “open original” chip. Clicks must not open the card drawer. */
+export function KanbanUrlChip({ className, text }: { className?: string; text: string }) {
+  const ext = firstHttpUrl(text)
+  if (!ext) return null
+  return (
+    <a
+      className={
+        className ??
+        'inline-flex min-w-0 shrink-0 items-center gap-0.5 text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary'
+      }
+      href={ext}
+      onClick={stopCardClick}
+      rel="noopener noreferrer"
+    >
+      <Codicon name="link-external" size="0.7rem" />
+      {linkLabel(ext)}
+    </a>
   )
 }

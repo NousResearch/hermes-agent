@@ -69,6 +69,8 @@ import {
   Section,
   shortId,
   StatusMenu,
+  KanbanUrlChip,
+  RichKanbanText,
   useDefaultAssignee,
   useKanban
 } from './ui'
@@ -397,7 +399,9 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">
+          <RichKanbanText text={body} />
+        </p>
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -741,9 +745,15 @@ export function TaskDrawer({
           </div>
         </div>
         {task && (
-          <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
-          </h2>
+          <>
+            <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
+              <RichKanbanText text={task.title || task.id} />
+            </h2>
+            <KanbanUrlChip
+              className="mt-1 inline-flex items-center gap-1 text-[0.75rem] text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+              text={`${task.title}\n${task.body ?? ''}`}
+            />
+          </>
         )}
       </header>
 

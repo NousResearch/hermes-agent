@@ -318,10 +318,7 @@ def test_guard_refuses_when_reap_does_not_clear_holders():
     assert killed == [[200]]
 
 
-def test_guard_keeps_clean_refusal_when_gateway_resume_fails():
-    token = {"resume_needed": True}
-    resume = MagicMock(side_effect=RuntimeError("gateway liveness timed out"))
-
+def _run_refusal_with_resume(token, resume):
     with patch.object(
         cli_main, "_detect_venv_python_processes", return_value=_holders()
     ), patch.object(
@@ -339,7 +336,93 @@ def test_guard_keeps_clean_refusal_when_gateway_resume_fails():
             update_cmd_windows._clear_windows_venv_holders_or_exit(
                 _update_args(), gateway_mode=False, _windows_gateway_resume=token
             )
+    return excinfo.value.code
 
-    assert excinfo.value.code == 2
+
+def test_guard_keeps_clean_refusal_when_gateway_resume_fails(monkeypatch):
+    monkeypatch.delenv(cli_main._UPDATE_REEXEC_ENV, raising=False)
+    token = {"resume_needed": True}
+    resume = MagicMock(side_effect=RuntimeError("gateway liveness timed out"))
+
+    assert _run_refusal_with_resume(token, resume) == 2
+    resume.assert_called_once_with(token)
+    assert token["resume_needed"] is True
+
+
+def test_handoff_refusal_retries_gateway_resume_before_hard_exit(monkeypatch):
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_ENV, "1")
+    token = {"resume_needed": True}
+    attempts = []
+
+    def resume(resume_token):
+        attempts.append(resume_token)
+        if len(attempts) == 1:
+            raise RuntimeError("gateway liveness timed out")
+        resume_token["resume_needed"] = False
+
+    assert _run_refusal_with_resume(token, resume) == 2
+    assert attempts == [token, token]
+    assert token["resume_needed"] is False
+
+
+def test_handoff_retry_rechecks_liveness_without_duplicate_relaunch(monkeypatch):
+    from hermes_cli import gateway, gateway_windows
+
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_ENV, "1")
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
+    relaunch = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway, "launch_detached_profile_gateway_restart", relaunch)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_wait_for_gateway_ready",
+        MagicMock(side_effect=[[], [4321]]),
+    )
+    monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None)
+    token = {
+        "resume_needed": True,
+        "profiles": {"default": 1234},
+        "unmapped": [],
+    }
+
+    assert _run_refusal_with_resume(
+        token, cli_main._resume_windows_gateways_after_update
+    ) == 2
+    relaunch.assert_called_once_with("default", 1234)
+    assert token["resume_needed"] is False
+
+
+def test_registered_gateway_resume_retry_is_best_effort():
+    token = {"resume_needed": True}
+    resume = MagicMock(side_effect=RuntimeError("gateway liveness timed out"))
+    registered = []
+    opts = SimpleNamespace(gw_input_fn=input, assume_yes=True)
+
+    with patch.object(
+        update_cmd, "_resolve_update_options", return_value=opts
+    ), patch.object(
+        update_cmd, "_begin_update_receipt_and_plan", return_value=None
+    ), patch.object(
+        update_cmd, "_record_update_step"
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=token
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update", resume
+    ), patch.object(
+        cli_main, "_is_windows", return_value=True
+    ), patch.object(
+        update_cmd, "_clear_windows_venv_holders_or_exit", side_effect=SystemExit(2)
+    ), patch(
+        "atexit.register", side_effect=lambda callback, *args: registered.append((callback, args))
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            update_cmd._cmd_update_impl(_update_args(), gateway_mode=False)
+        assert excinfo.value.code == 2
+        assert len(registered) == 1
+        callback, callback_args = registered[0]
+        callback(*callback_args)
+
     resume.assert_called_once_with(token)
     assert token["resume_needed"] is True

@@ -36,6 +36,7 @@ from hermes_cli.update_cmd_windows import (  # noqa: F401
     _refresh_bootstrap_cache_scripts, _refresh_windows_gateway_launchers,
     _refuse_gateway_ancestor_tree_kill, _relaunch_stopped_serves,
     _restore_windows_gateway_service, _resume_windows_gateways_after_update,
+    _resume_windows_gateways_after_update_best_effort,
     _resume_windows_gateways_and_merge_outcome, _self_and_non_gateway_ancestor_pids,
     _serve_relaunch_commands, _start_windows_gateway_service, _stop_process_trees,
     _stop_windows_gateway_service, _venv_launcher_ancestors,
@@ -1294,7 +1295,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+        _atexit.register(_resume_windows_gateways_after_update_best_effort, _windows_gateway_resume)
 
     # Any venv python still running (typically the Desktop `hermes serve` backend) keeps .pyd
     # locked and would corrupt the sync; refuse rather than race (the app respawns a killed

@@ -1108,6 +1108,16 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     if not _m()._is_windows():
         token["resume_needed"] = False
         return
+    pending_verification = token.get("relaunch_verification_pending")
+    if isinstance(pending_verification, dict):
+        profiles = pending_verification.get("profiles") or {}
+        unmapped = pending_verification.get("unmapped") or []
+        _verify_relaunched_gateways_alive(token, profiles, unmapped)
+        token.pop("relaunch_verification_pending", None)
+        token["profiles"] = {}
+        token["unmapped"] = []
+        token["resume_needed"] = False
+        return
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
     _m()._refresh_windows_gateway_launchers()
@@ -1123,13 +1133,26 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         return
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
+        token["relaunch_verification_pending"] = {
+            "profiles": dict(profiles),
+            "unmapped": list(unmapped),
+        }
         _verify_relaunched_gateways_alive(token, profiles, unmapped)
+        token.pop("relaunch_verification_pending", None)
     token["resume_needed"] = False
     if relaunched:
         print(f"\n  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
     if unmapped_relaunched:
         lead = "" if relaunched else "\n"
         print(f"{lead}  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)")
+
+
+def _resume_windows_gateways_after_update_best_effort(token: dict | None) -> None:
+    """Resume paused Windows gateways without letting cleanup failure escape."""
+    from hermes_cli.update_cmd import _m
+
+    with _best_effort("Windows gateway service restart incomplete: %s"):
+        _m()._resume_windows_gateways_after_update(token)
 
 
 def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume, gateway_mode: bool):
@@ -1209,9 +1232,14 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
     from hermes_cli.update_cmd import _m, _record_update_step, _refuse_gateway_ancestor_tree_kill
 
     def _resume_and_exit():
-        with _best_effort("Windows gateway service restart incomplete: %s"):
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        # Keep a failed token pending for the registered atexit retry.
+        _resume_windows_gateways_after_update_best_effort(_windows_gateway_resume)
+        if (
+            isinstance(_windows_gateway_resume, dict)
+            and _windows_gateway_resume.get("resume_needed")
+            and os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+        ):
+            # The Windows hand-off boundary uses os._exit(), which skips atexit.
+            _resume_windows_gateways_after_update_best_effort(_windows_gateway_resume)
         sys.exit(2)
 
     holders = _m()._detect_venv_python_processes()

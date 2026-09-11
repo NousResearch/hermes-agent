@@ -1,8 +1,13 @@
 #
 # docker-compose.yml for Hermes Agent
 #
-# Usage:
+# Usage (Linux):
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
+#
+# Usage (macOS — Docker Desktop):
+#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) \
+#     docker compose -f docker-compose.yml -f docker-compose.macos.yml up -d
+# See docker-compose.macos.yml for why the override is needed.
 #
 # Set HERMES_UID / HERMES_GID to the host user that owns ~/.hermes so
 # files created inside the container stay readable/writable on the host.

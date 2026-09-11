@@ -234,10 +234,11 @@ class TestFallbackMirrorEndToEnd:
         assert len(slack_env["send"]) == 1
         reply_session = store.get_or_create_session(source)
         assert reply_session.session_id == session.session_id
-        messages = store.load_transcript(reply_session.session_id)
-        assert [(m["role"], m["content"]) for m in messages] == [
-            ("user", "[Cron delivery: managed]\nmorning brief")
-        ]
+        messages = store._db.pending_deliveries(reply_session.session_id)
+        assert [m["content"] for m in messages] == ["[Cron delivery: managed]\nmorning brief"]
+        # A delivered brief is reference data for the next real user input, not a
+        # standalone synthetic turn that could alter an active request's prefix.
+        assert store.load_transcript(reply_session.session_id) == []
 
     def test_explicit_target_with_attach_mirrors(self, slack_env):
         job = {

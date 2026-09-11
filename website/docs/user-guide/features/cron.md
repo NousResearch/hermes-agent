@@ -610,8 +610,14 @@ After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery:
 can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
 on a job to opt out of this thread-per-run behaviour.
 
-The mirror is written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
-the conversation history alternation-safe across all model providers.
+The mirror is stored as pending reference data labelled `[Cron delivery: <task name>]`.
+At the next admitted user turn, bounded references are attached to that user's message;
+they are not independent instructions or authorization. If a turn is already running,
+a follow-up is queued instead of interrupting or steering that turn with missing context.
+The active history and system prompt stay unchanged. References are acknowledged with
+the persisted user message, so completion and reload do not replay them as new input.
+Each turn includes at most 16 deliveries and 32,000 characters of reference text;
+oversized briefs are marked as truncated and additional deliveries wait for later turns.
 
 #### Flat, in-channel continuation (Slack)
 

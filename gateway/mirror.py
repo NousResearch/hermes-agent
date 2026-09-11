@@ -115,14 +115,14 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:
-    """Append a message to the SQLite session database."""
-    try:
-        from hermes_state_registry import acquire, release_or_close
+    """Append a message to the SQLite session database; caller reports failures."""
+    from hermes_state_registry import acquire, release_or_close
 
-        db = acquire()
-        try:
+    db = acquire()
+    try:
+        if message.get("mirror_source") == "cron" and message.get("role") == "user":
+            db.append_pending_delivery(session_id, message.get("content"), source="cron")
+        else:
             db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
-        finally:
-            release_or_close(db)
-    except Exception as e:
-        logger.debug("Mirror SQLite write failed: %s", e)
+    finally:
+        release_or_close(db)

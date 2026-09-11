@@ -79,13 +79,20 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
         return False
 
 
-def _kill_port_process(port: int) -> None:
-    """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX, taskkill /F on Windows."""
+def _kill_port_process(port: int, session_path: Path) -> None:
+    """Kill *this session's* bridge listening on the given TCP port; SIGTERM on POSIX, taskkill /F on Windows.
+
+    "Any node bridge" is too wide: a second Hermes profile (or another app's node server) holding the
+    port is a stranger, and killing it takes down a live WhatsApp session that this gateway does not own.
+    Ownership is the same check the pidfile path uses — the session path must appear in the cmdline.
+    """
     with suppress(Exception):
         for pid in (_windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)):
             # Killing a mistyped or recycled PID is unrecoverable — verify first.
-            if pid <= 0 or not _pid_looks_like_node_bridge(pid):
-                logger.warning("[whatsapp] Not killing PID %s on port %d: process is not a node bridge (or identity unverifiable)", pid, port)
+            if pid <= 0 or not _pid_looks_like_node_bridge(pid) or not _bridge_pid_is_ours(pid, session_path, None):
+                logger.warning(
+                    "[whatsapp] Port %d is held by PID %s, which is not this session's bridge; leaving it "
+                    "running. Set platforms.whatsapp.extra.bridge_port to a free port.", port, pid)
                 continue
             if _IS_WINDOWS:
                 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -467,7 +474,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if await self._reuse_running_bridge(bridge_path):
                 return True
             _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
+            _kill_port_process(self._bridge_port, self._session_path)
             await asyncio.sleep(1)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"

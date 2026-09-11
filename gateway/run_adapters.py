@@ -907,6 +907,16 @@ class GatewayAdapterLifecycleMixin:
             )
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
+            port_binding_platforms = sorted(
+                platform.value
+                for platform, platform_config in profile_cfg.platforms.items()
+                if platform_config.enabled
+                and _platform_binds_port(
+                    platform.value,
+                    platform_config.extra,
+                    platform_config=platform_config,
+                )
+            )
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
@@ -914,11 +924,6 @@ class GatewayAdapterLifecycleMixin:
                 "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
                 "for that profile, or change dm_policy/group_policy away from 'open'."
             )
-        port_binding_platforms = sorted(
-            platform.value
-            for platform, platform_config in profile_cfg.platforms.items()
-            if platform_config.enabled and _platform_binds_port(platform.value, platform_config.extra)
-        )
         if port_binding_platforms:
             raise SecondaryPortBindingConfigError(
                 f"Profile '{profile_name}' enables port-binding platform(s) "

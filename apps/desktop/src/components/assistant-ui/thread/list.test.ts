@@ -9,7 +9,12 @@ import {
   liveTailStart,
   type MessageGroup,
   resolveThreadScrollTarget,
+  RUN_START_SNAP_THRESHOLD_PX,
+  shouldClampTranscriptBudget,
+  shouldRePinOnTranscriptReload,
+  shouldSnapOnRunStart,
   subscribeToThreadForeground,
+  transcriptBackfillFrameCount,
   transcriptPaneBudget
 } from './list'
 
@@ -95,6 +100,18 @@ describe('transcriptPaneBudget', () => {
     expect(transcriptPaneBudget(1, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+  })
+})
+
+describe('shouldClampTranscriptBudget', () => {
+  it('never snaps a visible pane back after Show earlier', () => {
+    expect(shouldClampTranscriptBudget(false, 10, 5)).toBe(false)
+    expect(shouldClampTranscriptBudget(false, 5, 5)).toBe(false)
+  })
+
+  it('snaps only a hot-hidden pane that outgrew the retention budget', () => {
+    expect(shouldClampTranscriptBudget(true, 10, 5)).toBe(true)
+    expect(shouldClampTranscriptBudget(true, 5, 5)).toBe(false)
   })
 })
 
@@ -307,5 +324,44 @@ describe('liveTailStart', () => {
 
       expect(rendered(liveTailStart(groups))).toBeLessThanOrEqual(rendered(oldStart))
     }
+  })
+})
+
+describe('transcriptBackfillFrameCount', () => {
+  it('settles a full pane in at most three prepend commits', () => {
+    expect(transcriptBackfillFrameCount()).toBeLessThanOrEqual(3)
+  })
+})
+
+describe('shouldSnapOnRunStart', () => {
+  it('snaps when the viewport is already at the bottom', () => {
+    expect(shouldSnapOnRunStart(0)).toBe(true)
+  })
+
+  it('snaps when the viewport is a line or two off the bottom', () => {
+    expect(shouldSnapOnRunStart(RUN_START_SNAP_THRESHOLD_PX - 1)).toBe(true)
+  })
+
+  it('leaves a reader who has scrolled into history alone', () => {
+    expect(shouldSnapOnRunStart(RUN_START_SNAP_THRESHOLD_PX)).toBe(false)
+    expect(shouldSnapOnRunStart(400)).toBe(false)
+  })
+})
+
+describe('shouldRePinOnTranscriptReload', () => {
+  it('pins on a session switch even before the transcript has settled', () => {
+    expect(shouldRePinOnTranscriptReload({ sessionSwitched: true, settledNonEmpty: false })).toBe(true)
+  })
+
+  it('pins on a session switch even when the prior session had settled', () => {
+    expect(shouldRePinOnTranscriptReload({ sessionSwitched: true, settledNonEmpty: true })).toBe(true)
+  })
+
+  it('preserves the reader position on a same-session refresh after settling', () => {
+    expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: true })).toBe(false)
+  })
+
+  it('pins on a cold-load arrival (same session, never settled non-empty)', () => {
+    expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: false })).toBe(true)
   })
 })

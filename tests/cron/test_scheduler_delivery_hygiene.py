@@ -68,12 +68,24 @@ def test_prepares_run_scoped_artifact_and_recovers_only_that_run(tmp_path):
     stale = tmp_path / "run-older" / "report.html"
     stale.parent.mkdir()
     stale.write_text("old", encoding="utf-8")
-    artifact.write_text("current", encoding="utf-8")
+    artifact.write_text(
+        "<!DOCTYPE html>\n<html><body>current report</body></html>", encoding="utf-8")
 
     recovered = S._recover_run_scoped_artifact_delivery(job, "old summary\nMEDIA:" + str(stale))
     assert recovered is not None
     assert "MEDIA:" + str(artifact) in recovered
     assert str(stale) not in recovered
+
+
+def test_rejects_non_html_artifact_for_html_template(tmp_path):
+    """A .html template that received non-HTML content must not be delivered."""
+    job = {
+        "name": "research-paper-synthesis-daily",
+        "delivery_artifact_template": str(tmp_path / "{execution_id}" / "report.html"),
+    }
+    artifact, _prompt = S._prepare_delivery_artifact(job, "run-current")
+    artifact.write_text("the model wrote narration here, not a report", encoding="utf-8")
+    assert S._recover_run_scoped_artifact_delivery(job, "") is None
 
 
 def test_rejects_artifact_template_without_execution_id(tmp_path):
@@ -102,6 +114,41 @@ def test_strip_suppresses_bold_markdown_verification_narration():
     assert out.strip() in ("", "[SILENT]"), (
         "verification narration must be suppressed, got: %r" % out[:200]
     )
+
+
+_FIRST_PERSON_LEAK_CASE = (
+    "The relevant verification for this skill is the provenance lint, which I already ran — "
+    "it passed cleanly (exit 0, 0 orphaned concepts, all 5 new concept pages trace to their papers/ sources).\n\n"
+    "`scripts/run_tests.sh` does not apply here. That suite tests the KenseiAgent codebase, and this run "
+    "touched no code in that repo — it produced content artifacts only:\n\n"
+    "- **10 raw pages** (`~/docs/wiki/raw/papers/`) — written and confirmed on disk\n"
+    "- **5 concept pages** (`~/docs/wiki/concepts/`) — written, provenance-verified\n"
+    "- **HTML report** written (19,146 bytes, confirmed via `ls -la`)\n\n"
+    "The deliverable is complete and the report was already delivered via the MEDIA tag."
+)
+
+
+def test_strip_suppresses_first_person_process_narration():
+    """The 2026-09-11 research-paper-synthesis leak: first-person process
+    narration plus artifact-write bullets, no [SILENT]/MEDIA marker. The
+    bullets masqueraded as a summary because none matched evidence vocabulary."""
+    out = S._strip_verification_leak(_FIRST_PERSON_LEAK_CASE)
+    assert out.strip() == "", (
+        "first-person verification narration must be suppressed, got: %r" % out[:200]
+    )
+
+
+def test_strip_keeps_legit_summary_beside_first_person_phrasing():
+    """A real summary with a MEDIA tag must never be suppressed by the
+    first-person narration guard (it truncates at MEDIA: before that guard)."""
+    resp = (
+        "📡 Research digest — 11/09/26\n\n"
+        "3 new papers in agent-memory, 1 write-now mashup.\n\n"
+        "MEDIA:/home/kensei/.hermes/cron/output/x/2026-09-11.html"
+    )
+    out = S._strip_verification_leak(resp)
+    assert "Research digest" in out
+    assert "MEDIA:" in out
 
 
 def test_strip_keeps_legit_summary_with_media_tag():

@@ -493,6 +493,30 @@ def _llm_configs(longform: bool = False) -> list[dict]:
     return configs
 
 
+def _classify_failure_reason(status_code, body_text) -> Optional[str]:
+    """Classify a provider HTTP failure from status + response body.
+
+    Returns a stable reason string for the credential pool, or None when the
+    failure is not a credential-level condition. Zero-credit/quota-exhausted
+    responses often arrive as HTTP 400 with provider-specific wording, so the
+    body must be inspected rather than trusting the status code alone.
+    """
+    if status_code in (401, 403):
+        return "auth"
+    if status_code == 402:
+        return "insufficient_credits"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code == 400:
+        lowered = (body_text or "").lower()
+        if any(marker in lowered for marker in (
+            "insufficient balance", "insufficient credit", "credit insufficient",
+            "balance=0", "balance is 0", "quota exhausted", "quota exceeded",
+        )):
+            return "insufficient_credits"
+    return None
+
+
 def _call_llm_chain(system: str, user: str, *, timeout: int = 90,
                     max_tokens: int = 3000, longform: bool = False) -> Optional[str]:
     """Try every governed route, rotating a native pool after failed calls."""
@@ -509,12 +533,19 @@ def _call_llm_chain(system: str, user: str, *, timeout: int = 90,
                 return result
             pool = cfg.get("_credential_pool")
             failure_status = cfg.get("_failure_status")
-            if pool is None or not credential_id or failure_status not in {401, 402, 403, 429}:
+            failure_reason = cfg.get("_failure_reason")
+            # Rotate on credential-level failures: auth (401/403), payment
+            # (402), rate limit (429), and zero-credit responses that surface
+            # as HTTP 400. A plain 400 without a credit-classified body is a
+            # request problem — retrying the same or another credential of the
+            # same provider will not help, so stop here.
+            rotatable = failure_reason in {"auth", "insufficient_credits", "rate_limit"}
+            if pool is None or not credential_id or failure_status is None or not rotatable:
                 break
             next_entry = pool.mark_exhausted_and_rotate(
                 status_code=failure_status, credential_id=credential_id,
                 api_key_hint=cfg.get("key"),
-                failure_reason="rate_limit" if failure_status == 429 else "auth",
+                failure_reason=failure_reason,
             )
             if next_entry is None:
                 break
@@ -528,6 +559,20 @@ def _llm_config() -> Optional[dict]:
     """First endpoint in the chain (kept for callers gating on LLM availability)."""
     configs = _llm_configs()
     return configs[0] if configs else None
+
+
+def _call_llm_first(system: str, user: str, *, timeout: int = 90,
+                    max_tokens: int = 3000, longform: bool = False) -> Optional[str]:
+    """First non-empty body across the governed chain, with pool rotation.
+
+    Callers that do not need per-attempt control should prefer this over
+    hand-rolled ``for cfg in _llm_configs(...)`` loops: it delegates to
+    ``_call_llm_chain`` so credential-level failures (auth, 402, 429 and
+    zero-credit HTTP 400s) rotate the provider's credential pool before the
+    next route is attempted.
+    """
+    return _call_llm_chain(system, user, timeout=timeout, max_tokens=max_tokens,
+                           longform=longform)
 
 
 _FALLBACK_ALERTED = False
@@ -579,6 +624,9 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
             return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() or None
         except Exception as exc:
             cfg["_failure_status"] = getattr(exc, "status_code", None)
+            cfg["_failure_reason"] = _classify_failure_reason(
+                cfg["_failure_status"], str(exc),
+            )
             print(f"[llm_generate] Hermes provider call failed: {exc}", file=sys.stderr)
             return None
 
@@ -633,6 +681,7 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
 
         if r.status_code != 200:
             cfg["_failure_status"] = r.status_code
+            cfg["_failure_reason"] = _classify_failure_reason(r.status_code, r.text[:400])
             transient = r.status_code == 429 or r.status_code >= 500
             if transient and attempt == 0:
                 print(

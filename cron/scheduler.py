@@ -2313,6 +2313,14 @@ def run_job(
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
         return early
+    # KENSEI CUSTOM — reserve this run's delivery artifact BEFORE the model call so
+    # the prompt can point the agent at an execution-scoped path (never a reusable
+    # date-only path). Requires the caller-supplied execution_id; manual fires
+    # without one skip artifact handling entirely.
+    if execution_id:
+        _artifact_path, artifact_prompt = _prepare_delivery_artifact(job, execution_id)
+        if artifact_prompt:
+            prompt = f"{prompt}\n\n{artifact_prompt}"
     from run_agent import AIAgent
 
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
@@ -2355,6 +2363,32 @@ def run_job(
         if stripped != final_response:
             logger.info("Job '%s': verification leakage stripped from final response", job_name)
             final_response = stripped
+        # KENSEI CUSTOM — run-scoped artifact contract. When this fire reserved a
+        # delivery artifact, the reserved file is the deliverable: a valid artifact
+        # replaces the model's final response with a compact scheduler-generated
+        # summary + MEDIA path (the model's prose may be verification narration), and
+        # a missing/empty artifact fails the run closed instead of delivering the
+        # model's self-reported "done" text.
+        if job.get("_active_delivery_artifact"):
+            artifact_delivery = _recover_run_scoped_artifact_delivery(job, final_response)
+            if artifact_delivery:
+                logger.info(
+                    "Job '%s': delivering run-scoped artifact %s",
+                    job_name, job["_active_delivery_artifact"])
+                final_response = artifact_delivery
+            else:
+                _missing = job.pop("_active_delivery_artifact", None)
+                logger.error(
+                    "Job '%s': run-scoped artifact missing or invalid: %s",
+                    job_name, _missing)
+                _audit.write({}, "Run-scoped delivery artifact missing or invalid")
+                output = (
+                    _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt or "")
+                    + f"Run-scoped delivery artifact was not written: {_missing}\n"
+                )
+                return False, output, "", (
+                    "Run-scoped delivery artifact missing or invalid: "
+                    f"{_missing}")
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
@@ -2376,6 +2410,10 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        # KENSEI CUSTOM — the artifact reservation must never leak into the next
+        # fire of the same job dict (a stale reservation would let a later run
+        # "recover" an artifact from a different execution).
+        job.pop("_active_delivery_artifact", None)
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
             _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
@@ -2660,12 +2698,30 @@ def _strip_verification_leak(text: str) -> str:
         r'html\.parser|html validity|lint|cron-output|verified|verification|'
         r'director(?:y|ies)|file exists|path:|size:|no test files|no new issues|'
         r'pre-existing|unrelated|no issues needed|repair|deliverable is|'
-        r'media path|dark-mode|media_delivery|safe root)'
+        r'media path|dark-mode|media_delivery|safe root|'
+        # 2026-09-11 research-paper-synthesis leak class: process-narration
+        # bullets that describe artifact writes/confirmations rather than the
+        # run's subject matter.
+        r'confirmed|on disk|orphaned|provenance|written to|appended to|'
+        r'persisted|updated\b)'
         r'|\b(?:bytes?|kb|mb)\b',
+        re.IGNORECASE,
+    )
+    # First-person process narration anywhere in the text is itself evidence the
+    # run delivered verification prose instead of a summary (2026-09-11 leak:
+    # "the provenance lint, which I already ran — it passed cleanly (exit 0...)").
+    _FIRST_PERSON_NARRATION_RE = re.compile(
+        r'\bI\s+(?:already\s+)?(?:ran|verified|checked|executed|confirmed)\b',
         re.IGNORECASE,
     )
 
     has_summary = bool(_SUMMARY_LINE_RE.search(stripped) or _URL_RE.search(stripped))
+    if not has_summary and _FIRST_PERSON_NARRATION_RE.search(stripped):
+        logger.info(
+            "cron: suppressing first-person verification narration: %s",
+            stripped[:200],
+        )
+        return ""
     if not has_summary:
         # Check for non-verification bullet lines
         for line in stripped.split("\n"):
@@ -2739,9 +2795,20 @@ def _recover_run_scoped_artifact_delivery(job: dict, _response: str) -> Optional
     artifact = Path(raw_path) if raw_path else None
     if artifact is None or not artifact.is_file() or artifact.stat().st_size == 0:
         return None
-    template = str(job.get("delivery_artifact_summary") or "📄 {name} — {date}\nReport attached.")
+    # KENSEI CUSTOM — type gate: jobs declaring an HTML artifact template must
+    # deliver HTML. An agent that wrote the model's narration (or any other
+    # non-HTML file) to the reserved path must not be delivered as a report.
+    template = str(job.get("delivery_artifact_template") or "").strip()
+    if template.lower().endswith((".html", ".htm")):
+        head = artifact.read_bytes()[:1024].lower()
+        if b"<html" not in head and b"<!doctype html" not in head and b"<!doctype html>" not in head:
+            logger.warning(
+                "Job '%s': artifact %s is not HTML (declared via template suffix)",
+                job.get("id"), artifact)
+            return None
+    template_summary = str(job.get("delivery_artifact_summary") or "📄 {name} — {date}\nReport attached.")
     try:
-        summary = template.format(
+        summary = template_summary.format(
             name=job.get("name") or job.get("id", "Cron report"),
             date=datetime.now().astimezone().strftime("%d/%m/%Y"),
         )
@@ -3835,6 +3902,19 @@ def _maybe_reap_dead_owners() -> None:
                 _reclaimed)
     except Exception as _reap_exc:
         logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
+    # KENSEI CUSTOM — bounded shutdown replay. Jobs whose latest execution is a
+    # fresh, provably shutdown-caused interruption get exactly one replay fire
+    # (tombstoned by source execution ID in cron/replay-tombstones.db).
+    try:
+        from cron.replay import replay_sweep
+
+        _replayed = replay_sweep()
+        if _replayed:
+            logger.warning(
+                "Replayed %d cron job(s) interrupted by a recent shutdown: %s",
+                len(_replayed), ", ".join(_replayed))
+    except Exception as _replay_exc:
+        logger.debug("Shutdown replay sweep failed: %s", _replay_exc)
 
 
 def _sweep_stale_inflight_for_tick(due_jobs: list) -> None:

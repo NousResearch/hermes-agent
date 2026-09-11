@@ -14,7 +14,7 @@ from typing import Optional
 
 import context_enrich
 import kb_retrieve
-from llm_generate import _call_llm, _llm_configs, _load_voice_skill, gate_post
+from llm_generate import _call_llm, _call_llm_chain, _llm_configs, _load_voice_skill, gate_post
 
 
 class ReviewUnavailable(RuntimeError):
@@ -68,12 +68,11 @@ def _call_llm_first(system: str, user: str) -> Optional[str]:
 
     Uses the longform chain (CommandCode deepseek-v4-flash, opencode minimax-m3)
     since blog posts are long-form content where prose quality matters.
+    Delegates to llm_generate._call_llm_chain so credential-level failures
+    (auth, 402, 429, zero-credit HTTP 400) rotate the pool, matching the
+    article generator's fallback behaviour.
     """
-    for cfg in _llm_configs(longform=True):
-        body = _call_llm(system, user, cfg, timeout=180, max_tokens=8000)
-        if body:
-            return body
-    return None
+    return _call_llm_chain(system, user, timeout=180, max_tokens=8000, longform=True)
 
 
 def _extract_title(body: str) -> Optional[str]:

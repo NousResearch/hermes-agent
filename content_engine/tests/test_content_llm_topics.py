@@ -134,6 +134,118 @@ def test_call_llm_chain_attempts_every_governed_route(monkeypatch):
     assert attempted == ["one", "two", "three"]
 
 
+class _FakeEntry:
+    """Mimics the PooledCredential attributes the chain reads."""
+
+    def __init__(self, entry_id, key):
+        self.id = entry_id
+        self.runtime_api_key = key
+
+
+class _FakePool:
+    """Minimal credential pool double recording rotation calls."""
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+        self.calls = []
+
+    def mark_exhausted_and_rotate(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._entries:
+            return self._entries.pop(0)
+        return None
+
+
+def test_call_llm_chain_rotates_pool_on_zero_credit_http_400(monkeypatch):
+    """Zero-credit failures arrive as HTTP 400; the same provider's next
+    credential must be tried before advancing to the next route (the
+    blog-backlog-pregen balance=0 regression)."""
+    pool = _FakePool([_FakeEntry("cred-2", "key-b")])
+    configs = [{
+        "provider": "p", "base": "https://p.test/v1", "model": "m",
+        "key": "key-a", "_credential_pool": pool, "_credential_id": "cred-1",
+    }]
+    bodies = []
+    monkeypatch.setattr(lg, "_llm_configs", lambda longform=False: configs)
+
+    def fake_call(_system, _user, cfg, **_kwargs):
+        bodies.append(cfg["key"])
+        if cfg["key"] == "key-a":
+            cfg["_failure_status"] = 400
+            cfg["_failure_reason"] = "insufficient_credits"
+            return None
+        return "recovered-on-second-credential"
+
+    monkeypatch.setattr(lg, "_call_llm", fake_call)
+
+    assert lg._call_llm_chain("system", "user") == "recovered-on-second-credential"
+    assert bodies == ["key-a", "key-b"]
+    assert pool.calls == [{
+        "status_code": 400, "credential_id": "cred-1",
+        "api_key_hint": "key-a", "failure_reason": "insufficient_credits",
+    }]
+
+
+def test_call_llm_chain_does_not_retry_plain_http_400(monkeypatch):
+    """A 400 without credit wording is a request problem: no pool rotation,
+    no second attempt on the same provider."""
+    pool = _FakePool([_FakeEntry("cred-2", "key-b")])
+    configs = [{
+        "provider": "p", "base": "https://p.test/v1", "model": "m",
+        "key": "key-a", "_credential_pool": pool, "_credential_id": "cred-1",
+    }]
+    calls = []
+    monkeypatch.setattr(lg, "_llm_configs", lambda longform=False: configs)
+
+    def fake_call(_system, _user, cfg, **_kwargs):
+        calls.append(cfg["key"])
+        cfg["_failure_status"] = 400
+        cfg["_failure_reason"] = None
+        return None
+
+    monkeypatch.setattr(lg, "_call_llm", fake_call)
+
+    assert lg._call_llm_chain("system", "user") is None
+    assert calls == ["key-a"]
+    assert pool.calls == []
+
+
+def test_classify_failure_reason_zero_credit_variants():
+    assert lg._classify_failure_reason(400, "credit insufficient balance: balance=0") == "insufficient_credits"
+    assert lg._classify_failure_reason(400, "Insufficient Balance in account") == "insufficient_credits"
+    assert lg._classify_failure_reason(400, "quota exhausted for this key") == "insufficient_credits"
+    assert lg._classify_failure_reason(402, "payment required") == "insufficient_credits"
+    assert lg._classify_failure_reason(401, "unauthorised") == "auth"
+    assert lg._classify_failure_reason(403, "forbidden") == "auth"
+    assert lg._classify_failure_reason(429, "slow down") == "rate_limit"
+    assert lg._classify_failure_reason(400, "invalid model name") is None
+    assert lg._classify_failure_reason(500, "internal error") is None
+
+
+def test_call_llm_records_failure_reason_on_http_error(monkeypatch):
+    """_call_llm must stamp _failure_reason so the chain can classify."""
+    class Response:
+        status_code = 400
+        text = "credit insufficient balance: balance=0"
+
+        @staticmethod
+        def json():
+            return {}
+
+    class Session:
+        trust_env = True
+
+        @staticmethod
+        def post(*_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(requests, "Session", Session)
+    cfg = {"base": "https://example.test/v1", "model": "test", "key": "test"}
+    assert lg._call_llm("system", "user", cfg) is None
+    assert cfg["_failure_status"] == 400
+    assert cfg["_failure_reason"] == "insufficient_credits"
+
+
 def _clear_builtin_keys(monkeypatch):
     for name in _BUILTIN_KEY_VARS:
         monkeypatch.delenv(name, raising=False)

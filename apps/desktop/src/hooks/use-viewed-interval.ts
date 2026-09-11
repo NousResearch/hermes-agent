@@ -21,11 +21,31 @@ export function useViewedInterval(callback: () => void, intervalMs: number, enab
     }
 
     let intervalId: null | number = null
+    // ponytail: shared timer guard — coalesce overlapping ticks + throttle to 80% interval, one fix covers all callers
+    let lastInvokeMs = 0
+    let inFlight = false
 
     const stop = () => {
       if (intervalId !== null) {
         window.clearInterval(intervalId)
         intervalId = null
+      }
+    }
+
+    const guardedCallback = () => {
+      const now = Date.now()
+      if (inFlight) {
+        return
+      }
+      if (now - lastInvokeMs < Math.max(200, intervalMs * 0.8)) {
+        return
+      }
+      inFlight = true
+      lastInvokeMs = now
+      try {
+        callbackRef.current()
+      } finally {
+        inFlight = false
       }
     }
 
@@ -39,8 +59,8 @@ export function useViewedInterval(callback: () => void, intervalMs: number, enab
       }
 
       if (intervalId === null) {
-        callbackRef.current()
-        intervalId = window.setInterval(() => callbackRef.current(), intervalMs)
+        guardedCallback()
+        intervalId = window.setInterval(guardedCallback, intervalMs)
       }
     }
 

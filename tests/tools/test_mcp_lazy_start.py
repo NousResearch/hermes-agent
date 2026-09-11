@@ -334,3 +334,33 @@ class TestResolveServerLazy:
 
     def test_explicit_false(self):
         assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": False}) is False
+
+
+class TestLazyStartupWithZeroTtlCache:
+    """A server whose ``tools/list`` reported ``ttlMs: 0`` must still register lazily from its
+    on-disk snapshot; expiry applies only to positive TTLs (tests/tools/test_mcp_schema_cache_ttl.py)."""
+
+    def test_zero_ttl_entry_registers_without_connect(self, tmp_path, monkeypatch):
+        from tools import mcp_schema_cache as sc
+
+        monkeypatch.setattr(sc, "_cache_path", lambda: tmp_path / "cache.json")
+        config = _lazy_config()
+        fp = sc.config_fingerprint(config["playwright"])
+        sc.write_cache_entry("playwright", fp, tools=_fake_cache_entry()["tools"], ttl_ms=0)
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch(
+                 "tools.mcp_tool_registration._register_from_cache_sync",
+                 return_value=["mcp_playwright_browser_navigate"],
+             ) as mock_register, \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock) as mock_discover, \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop") as mock_loop, \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+
+            _mcp_discovery.register_mcp_servers(config)
+
+        mock_register.assert_called_once()
+        assert mock_register.call_args.args[2]["tools"] == _fake_cache_entry()["tools"]
+        mock_discover.assert_not_called()
+        mock_run.assert_not_called()
+        mock_loop.assert_not_called()

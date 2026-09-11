@@ -49,3 +49,17 @@ def test_cache_scope_round_trips():
         "srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000, cache_scope="private"
     )
     assert sc.get_cached_entry("srv", "fp")["cache_scope"] == "private"
+
+
+@pytest.mark.parametrize("ttl_ms", [0, -1])
+def test_non_positive_ttl_is_served_like_absent_ttl(ttl_ms, monkeypatch):
+    """A 0 or negative ttlMs entry stays eligible over time exactly like one written with no TTL."""
+    real_time = time.time
+    monkeypatch.setattr(sc.time, "time", lambda: real_time())
+    sc.write_cache_entry("with-ttl", "fp", tools=[{"name": "t"}], ttl_ms=ttl_ms)
+    sc.write_cache_entry("no-ttl", "fp", tools=[{"name": "t"}])
+    monkeypatch.setattr(sc.time, "time", lambda: real_time() + 3600.0)
+    with_ttl = sc.get_cached_entry("with-ttl", "fp")
+    no_ttl = sc.get_cached_entry("no-ttl", "fp")
+    assert (with_ttl is not None) == (no_ttl is not None)
+    assert with_ttl["tools"] == [{"name": "t"}]

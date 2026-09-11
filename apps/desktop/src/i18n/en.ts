@@ -3120,6 +3120,14 @@ export const en: Translations = {
     }
   },
 
+  guidedGreeting: {
+    lines: [
+      "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
+      "Hey there, I'm Hermes. A couple of quick things and this will feel like yours, then we'll find you something worth doing.\n\nSo, what should I call you?",
+      "Hi, you found me. I'm Hermes. Let me get everything arranged around you, then we'll pick something real to start on.\n\nFirst things first though, what should I call you?"
+    ],
+    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  },
   install: {
     stageStates: {
       pending: 'Pending',

@@ -3267,6 +3267,14 @@ export const zh: Translations = {
     }
   },
 
+  guidedGreeting: {
+    lines: [
+      '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
+      '你好，我是 Hermes。几个小问题，这里就像是你自己的了，然后我们找点值得做的事。\n\n那么，我该怎么称呼你？',
+      '嗨，你找到我了。我是 Hermes。让我先把一切安排到位，然后我们挑一件实实在在的事开始。\n\n不过第一件事：我该怎么称呼你？'
+    ],
+    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',

@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { readKey, writeKey } from '@/lib/storage'
+import { setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 
 const SEEN_KEY = 'hermes-intro-reveal-seen-v1'
 
@@ -15,7 +16,7 @@ const INITIAL: IntroRevealState = { phase: 'hidden' }
 
 export const $introReveal = atom<IntroRevealState>(INITIAL)
 
-// Step 4's store/onboarding-presence mirrors this phase for ambient chrome.
+$introReveal.subscribe(state => setOnboardingSurfaceActive('intro', state.phase !== 'hidden'))
 
 export function hasSeenIntroReveal(): boolean {
   return readKey(SEEN_KEY) === '1'

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -9,6 +10,7 @@ import { cn } from '@/lib/utils'
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
+  const onboarding = useOnboardingChatActive()
   const [label, setLabel] = useState<null | string>(profile)
 
   useEffect(() => {
@@ -16,6 +18,11 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
       setLabel(profile)
     }
   }, [profile])
+
+  // The banked greeting and handoff card already explain the profile swap.
+  if (onboarding) {
+    return null
+  }
 
   return (
     <div

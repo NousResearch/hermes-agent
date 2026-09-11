@@ -2679,6 +2679,10 @@ export interface Translations {
     }
   }
 
+  guidedGreeting: {
+    lines: readonly string[]
+    nameSuggestion: (name: string) => string
+  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string

@@ -191,9 +191,9 @@ function findToolPartIndex(
       part.result === undefined &&
       part.completedAt === undefined
     ) {
-      // A new identified start cannot replace a different identified call.
-      // Only id-less placeholders may acquire an ID on a later start event.
-      if (stableId && phase === 'running' && part.toolCallId && !part.toolCallId.startsWith('live-tool:')) {
+      // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
+      const requestBacked = name === 'clarify' || name === 'setup_mcp'
+      if (!requestBacked && stableId && phase === 'running' && part.toolCallId && !part.toolCallId.startsWith('live-tool:')) {
         continue
       }
 

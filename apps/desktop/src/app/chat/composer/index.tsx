@@ -152,11 +152,23 @@ export function ChatBar({
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const draft = await runComposerMiddleware({
+        text: value,
+        attachments: options?.attachments,
+        // A queue drain carries the frame sealed at enqueue time. Pass it INTO
+        // the chain so the middleware can hand it back untouched; re-deriving
+        // here would stamp the drain with whatever mode is live NOW.
+        ...(options?.note ? { note: options.note } : {}),
+        ...(options?.mode ? { mode: options.mode } : {}),
+        ...(options?.fromQueue ? { fromQueue: true } : {})
+      })
 
       if (!draft) {
         return false
       }
+
+      const note = draft.note ?? options?.note
+      const mode = draft.mode ?? options?.mode
 
       return onSubmitProp(draft.text, {
         ...options,
@@ -165,8 +177,8 @@ export function ChatBar({
         // gateway delivers the note through the api_content sidecar (the
         // user's `content` stays their words) and persists the label as
         // display_metadata for the transcript to badge.
-        ...(draft.note ? { note: draft.note } : {}),
-        ...(draft.mode ? { mode: draft.mode } : {})
+        ...(note ? { note } : {}),
+        ...(mode ? { mode } : {})
       })
     },
     [onSubmitProp]

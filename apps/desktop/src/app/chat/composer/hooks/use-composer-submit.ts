@@ -36,7 +36,7 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean
+  queueCurrentDraft: () => Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
@@ -273,7 +273,7 @@ export function useComposerSubmit({
         // queue the whole payload for the next turn. Same for a turn parked on
         // an approval/sudo/secret prompt: a steer can't reach the model while
         // the tool batch is blocked, so the message runs as the next turn.
-        queueCurrentDraft()
+        void queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).
@@ -332,7 +332,7 @@ export function useComposerSubmit({
       return
     }
 
-    queueCurrentDraft()
+    void queueCurrentDraft()
     focusInput()
   }
 

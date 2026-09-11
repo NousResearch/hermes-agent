@@ -16,6 +16,12 @@ export interface QueuedPromptEntry {
   displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
+  /** Composer-mode frame sealed at ENQUEUE time (`note` model framing + the
+   *  display-only `mode` label). Every drain hands the sealed frame back to
+   *  the submit options so a queued send carries the mode it was queued
+   *  WITH — never whatever mode happens to be live when the drain runs. */
+  mode?: string
+  note?: string
 }
 
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
@@ -128,7 +134,14 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    displayText?: string
+    displayKind?: 'hidden'
+    mode?: string
+    note?: string
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -141,6 +154,8 @@ export const enqueueQueuedPrompt = (
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
+    ...(payload.mode ? { mode: payload.mode } : {}),
+    ...(payload.note ? { note: payload.note } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }

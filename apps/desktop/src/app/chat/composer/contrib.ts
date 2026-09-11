@@ -54,6 +54,10 @@ export interface ComposerModeFrame {
 export interface ComposerDraft extends ComposerModeFrame {
   text: string
   attachments?: ComposerAttachment[]
+  /** True when this draft is the drain of a queued entry. The chain must hand
+   *  `note`/`mode` back UNTOUCHED in that case: the queue sealed the frame at
+   *  enqueue time, and re-deriving would stamp the send with the live mode. */
+  fromQueue?: boolean
 }
 
 /** Payload of a `composer.middleware` data contribution. */

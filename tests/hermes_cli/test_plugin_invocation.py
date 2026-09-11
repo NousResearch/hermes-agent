@@ -10,6 +10,7 @@ from hermes_cli.plugin_invocation import (
     PluginInvocationContext,
     PluginInvocationContextUnavailable,
     _bind_plugin_invocation,
+    _revoke_plugin_invocation,
 )
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
@@ -85,6 +86,25 @@ def test_availability_filters_discovery_and_dispatch(neutral_consumer):
     assert plugins.is_plugin_command_registered("context-probe") is True
 
 
+def test_expired_context_denies_before_always_true_predicate(monkeypatch):
+    manager = PluginManager(scope_key="/tmp/hermes-plugin-expired-test")
+    context = PluginContext(PluginManifest(name="neutral-consumer", source="user"), manager)
+    predicate_calls = []
+
+    def always_true(invocation):
+        predicate_calls.append(invocation)
+        return True
+
+    context.register_command("expired", lambda _raw: None, availability=always_true)
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
+    invocation = _invocation()
+    _revoke_plugin_invocation(invocation)
+
+    assert plugins.get_plugin_commands(invocation) == {}
+    assert plugins.get_plugin_command_handler("expired", invocation) is None
+    assert predicate_calls == []
+
+
 def test_bound_handler_sees_exact_context_and_binding_resets(neutral_consumer):
     context, _manager, seen = neutral_consumer
     invocation = _invocation(authenticated_actor="user-7")
@@ -126,7 +146,9 @@ def test_predicate_exception_and_awaitable_fail_closed(monkeypatch, caplog):
     monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
 
     assert plugins.get_plugin_commands(_invocation()) == {}
-    assert "command availability failed" in caplog.text
+    assert "command availability failed (ZeroDivisionError)" in caplog.text
+    assert "division by zero" not in caplog.text
+    assert "Traceback" not in caplog.text
     assert "returned an awaitable" in caplog.text
 
 

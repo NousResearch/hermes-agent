@@ -36,6 +36,7 @@ from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.plugin_invocation import (
     PluginInvocationContext,
+    PluginInvocationContextUnavailable,
     _context_without_plugin_invocation,
     current_plugin_invocation,
 )
@@ -2006,15 +2007,19 @@ def _plugin_command_available(
     availability = entry.get("availability")
     if availability is None:
         return True
-    if invocation is None:
+    if not isinstance(invocation, PluginInvocationContext):
+        return False
+    try:
+        invocation._read(None)
+    except PluginInvocationContextUnavailable:
         return False
     try:
         result = availability(invocation)
-    except Exception:
+    except Exception as exc:
         logger.warning(
-            "Plugin %s command availability failed; command hidden",
+            "Plugin %s command availability failed (%s); command hidden",
             entry.get("plugin") or "<unknown>",
-            exc_info=True,
+            type(exc).__name__,
         )
         return False
     if inspect.isawaitable(result):

@@ -35,6 +35,15 @@ def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
     manager = PluginManager(scope_key="/tmp/hermes-tui-plugin-context-test")
     context = PluginContext(PluginManifest(name="neutral-consumer", source="user"), manager)
     seen = []
+    availability_contexts = []
+
+    def available(invocation):
+        availability_contexts.append(invocation)
+        return (
+            invocation.platform == "tui"
+            and invocation.session_id == "tui-session"
+            and invocation.execution_kind == "root"
+        )
 
     def handler(raw_args):
         invocation = context.invocation
@@ -55,11 +64,7 @@ def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
     context.register_command(
         "context-probe",
         handler,
-        availability=lambda invocation: (
-            invocation.platform == "tui"
-            and invocation.session_id == "tui-session"
-            and invocation.execution_kind == "root"
-        ),
+        availability=available,
     )
     monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: manager)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
@@ -91,6 +96,9 @@ def test_catalog_and_dispatch_use_live_session_context(server, monkeypatch):
         _ = invocation.profile
     with pytest.raises(PluginInvocationContextUnavailable):
         _ = context.invocation
+    for discovered_context in availability_contexts:
+        with pytest.raises(PluginInvocationContextUnavailable, match="expired"):
+            _ = discovered_context.session_id
 
 
 def test_unavailable_registered_command_does_not_dispatch(server, monkeypatch):

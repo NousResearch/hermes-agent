@@ -17,6 +17,98 @@ export type Locale =
   | "hu"
   | "ar";
 
+export interface WisdomTranslations {
+  syncRecovery?: import('@hermes/shared').WisdomSyncCopy
+  notificationPreferences: import('@hermes/shared').WisdomMuteCopy;
+  tab: string
+  browseHub: string
+  title: string
+  loading: string
+  unavailable: string
+  setup: string
+  setupDisclosure: string
+  setupAction: string
+  settingUp: string
+  scanLocal: string
+  search: string
+  potential: string
+  potentialHelp: string
+  noSuggestions: string
+  browseLocal: (count: number) => string
+  browseLocalHelp: string
+  ownerReview: string
+  ownerReviewHelp: string
+  noDrafts: string
+  prepare: string
+  continueDraft: string
+  localOnly: string
+  qualifiedLocally: string
+  qualificationFirst: (organizationName?: string | null) => string
+  qualificationReturning: string
+  savedLocally: string
+  reviewExact: string
+  draftState: (state: string) => string
+  serverScanPassed: string
+  noDescription: string
+  managedInstalls: string
+  close: string
+  readEvery: string
+  editReview: string
+  unsavedChanges: string
+  saveAndRescan: string
+  savingRevision: string
+  resetChanges: string
+  reviewedHashes: string
+  prepareTitle: string
+  prepareNotice: string
+  ownerDescription: string
+  systemSpecification: string
+  localOverlay: string
+  cancel: string
+  submit: string
+  submitting: string
+  publishing: string
+  approve: string
+  decline: string
+  checkUpdates: (count: number) => string
+  checking: string
+  refreshShared: string
+  refreshingShared: string
+  installReferenceLabel: string
+  installReferencePlaceholder: string
+  installReferenceHelp: string
+  reviewInstall: string
+  planningInstall: string
+  updateModeLabel: string
+  updateModeDefault: string
+  updateModeManual: string
+  updateModeAutomatic: string
+  updateModeRequired: string
+  updateModeHelp: string
+  updateModePlan: (mode: string) => string
+  activityReady: (count: number) => string
+  decisionPublished: (skill: string) => string
+  decisionChanges: (skill: string) => string
+  decisionDeclined: (skill: string) => string
+  decisionChanged: (skill: string, state: string) => string
+  installedNotice: (skill: string, version?: string) => string
+  updateNotice: (skill: string, version?: string) => string
+  newSkillNotice: (skill: string) => string
+  archivedNotice: (skill: string) => string
+  takedownNotice: (skill: string) => string
+  markSeen: string
+  install: string
+  uninstall: string
+  checkSkill: string
+  updateAvailable: (version?: number) => string
+  reviewUpdate: string
+  installed: (version: number, mode: string) => string
+  confirmAction: (action: string) => string
+  acceptCompatibility: string
+  acceptSensitive: string
+  preserveModified: string
+}
+
 export interface Translations {
   // ── Common ──
   common: {
@@ -366,6 +458,20 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -437,6 +543,7 @@ export interface Translations {
 
   // ── Skills page ──
   skills: {
+    wisdom: WisdomTranslations;
     title: string;
     searchPlaceholder: string;
     enabledOf: string;
@@ -551,6 +658,7 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;

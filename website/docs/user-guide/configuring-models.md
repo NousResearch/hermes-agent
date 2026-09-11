@@ -9,7 +9,7 @@ Hermes uses two kinds of model slots:
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
 - **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
-This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
+This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](/user-guide/local-models).
 
 :::tip Fastest path: Nous Portal
 [Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
@@ -57,7 +57,7 @@ Prompt caches are keyed to the model serving the request, so any mid-conversatio
 
 ### Unattended data-training tiers
 
-Models such as `muse-spark-1.2-contributor` are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
+Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
 
 If training on the unattended workload's data is acceptable, record a persistent acknowledgement:
 
@@ -73,7 +73,7 @@ Click **Show auxiliary** to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain, then Hermes' built-in auxiliary discovery chain. Override a specific task when you want a cheaper or faster model for a side-job.
+Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain. It never guesses a provider you did not configure: with a main provider selected and no fallback declared, the side task is skipped with a warning rather than billed to another account you happen to be logged into. (Hermes' built-in discovery chain only runs when no main provider is selected at all.) Override a specific task when you want a cheaper or faster model for a side-job.
 
 ### Common override patterns
 
@@ -163,7 +163,7 @@ auxiliary:
         model: inclusionai/ring-2.6-1t:free
 ```
 
-When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain before the built-in auxiliary discovery chain.
+When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain. If that is also absent and the main provider cannot serve the call, the task is skipped with a warning — Hermes does not fall through to other logged-in providers.
 
 ## Per-provider request options
 
@@ -234,6 +234,19 @@ omitted, Hermes keeps its normal provider and model capability detection.
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::
 
+### Nous Portal: which wire carries Claude
+
+Nous Portal serves its `anthropic/*` models on two routes: OpenAI-compatible `/v1/chat/completions` and the native Anthropic Messages wire `/v1/messages`. `nous.anthropic_wire` picks one:
+
+```yaml
+nous:
+  anthropic_wire: chat     # default. "native" = the Anthropic Messages wire; "auto" = decide per session
+```
+
+`chat` is the default for now. The native wire is the better transport (signed thinking blocks pass through unchanged, native `cache_control` scopes), but on the Portal's OpenRouter-served path it currently re-writes the previous turn's prompt cache on 14–20% of consecutive calls in concurrent tool loops, which is 15–20% of a fan-out's cache-write bill; the chat route measured 0 on the same test. Set `native` to opt back in (for example once the portal-side fix has shipped). Only `anthropic/*` models are affected; everything else on Nous already uses chat/completions.
+
+`auto` is for when the Portal serves the same model from more than one upstream. A session starts on chat, Hermes reads which upstream answered the first call, and switches that session to native only when the upstream is one where native is known to be clean (the switch happens between calls, so no in-flight response and no warm cache is lost). Today no upstream is cleared, so `auto` behaves exactly like `chat`; it exists so the flip can be made from a measurement rather than a config change.
+
 ## When does it take effect?
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.
@@ -286,7 +299,7 @@ A one-turn switch breaks the provider's prompt-cache prefix twice (switching out
 
 ### Custom aliases
 
-Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform. There are two equivalent formats — pick whichever fits your workflow.
+Define your own short names for models you reach for often, then use `/model <alias>` in a running session or `hermes chat --model <alias>` at startup. There are two equivalent formats — pick whichever fits your workflow.
 
 **Canonical (top-level `model_aliases:`)** — full control over provider + base_url:
 
@@ -300,6 +313,26 @@ model_aliases:
     model: grok-4
     provider: x-ai
 ```
+
+An alias that points at its own endpoint can also carry that endpoint's
+credential, with either `api_key` (a literal, or a `"${VAR}"` reference) or
+`key_env` (the name of an environment variable). If both are set, `api_key`
+wins:
+
+```yaml
+model_aliases:
+  theta:
+    model: theta-1
+    provider: custom
+    base_url: "https://theta.example.com/v1"
+    key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
+```
+
+When an alias sets neither, the key is resolved from the alias **host** —
+`OLLAMA_API_KEY` for an `ollama.com` endpoint, `DEEPSEEK_API_KEY` for
+`api.deepseek.com`, and so on. It is never inherited from whichever provider
+happened to be active before the switch, so switching to an alias cannot send
+one provider's secret to another provider's host.
 
 **Short string form (`model.aliases.<name>: provider/model`)** — convenient from the shell because `hermes config set` writes scalars and now also parses inline list/mapping literals, though this short alias form still can't carry a custom `base_url`:
 

@@ -38,19 +38,21 @@ Run:  PYTHONPATH=<repo> python3 -m pytest tests/tools/test_exec_code_guard_adver
 
 import pytest
 
+import tools.approval_context as _approval_ctx_mod
+
 from tools.approval import (
-    _execute_code_has_dangerous_ops,
-    _execute_code_has_self_destructive_ops,
     check_execute_code_guard,
 )
 from tools.exec_code_policy import (
     _execute_code_has_capability_leak,
+    _execute_code_has_dangerous_ops,
+    _execute_code_has_self_destructive_ops,
     _execute_code_has_sensitive_write,
     _execute_code_touches_sensitive_path,
     _classify_exec_code_imports,
     _log_blocked_exec_code,
 )
-from agent.conversation_loop import _tool_results_contain_user_blocked
+from agent.turn_tool_round import _tool_results_contain_user_blocked
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -89,7 +91,7 @@ def test_eval_kill_string_hard_blocked(monkeypatch):
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
     result = check_execute_code_guard(
         'import os\neval("os.kill")(os.getpid(), 15)', env_type="local"
     )
@@ -140,7 +142,7 @@ def test_ordinary_dangerous_op_approved_under_trust_gate(monkeypatch, mode_gate)
     if mode_gate == "yolo":
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     else:
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
     result = check_execute_code_guard(
         'import subprocess\nsubprocess.run(["ls"])', env_type="local"
     )
@@ -153,7 +155,7 @@ def test_kill_never_overridden_by_trust_gate(monkeypatch, mode_gate):
     if mode_gate == "yolo":
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     else:
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
     result = check_execute_code_guard(
         "import os\nos.kill(os.getpid(), 15)", env_type="local"
     )
@@ -167,7 +169,7 @@ def test_session_approval_respected(monkeypatch):
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval_module, "is_approved", lambda *a, **k: True)
     result = check_execute_code_guard(
         'import os\nos.remove("/tmp/x")', env_type="local"
@@ -175,16 +177,22 @@ def test_session_approval_respected(monkeypatch):
     assert result["approved"] is True
 
 
-def test_smart_approve_verdict(monkeypatch):
-    """smart mode APPROVE → approved with smart_approved flag; no prompt."""
+def test_cli_smart_approve_verdict(monkeypatch):
+    """smart mode APPROVE → approved with smart_approved flag; no prompt.
+
+    Upstream's guardian-LLM seam is ``tools.approval._smart_verdict`` (the
+    pre-decomposition ``_smart_approve`` observer pair is gone); the decision
+    itself only runs once the script reaches the gate — i.e. for a CLI context
+    whose static scan found a dangerous op, or a gateway/ask context.
+    """
     import tools.approval as approval_module
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_smart_approve", lambda c, d: "approve")
-    monkeypatch.setattr(approval_module, "_prepare_smart_approval_observer", lambda **k: {})
-    monkeypatch.setattr(approval_module, "_observe_smart_approval_verdict", lambda *a, **k: None)
+    monkeypatch.setattr(approval_module, "_smart_verdict", lambda *a, **k: "approve")
     result = check_execute_code_guard(
         'import os\nos.remove("/tmp/x")', env_type="local"
     )
@@ -192,29 +200,46 @@ def test_smart_approve_verdict(monkeypatch):
     assert result.get("smart_approved") is True
 
 
-def test_smart_deny_verdict_blocked(monkeypatch):
-    """smart mode DENY in a non-gateway context → hard denial, no retry."""
+def test_cli_smart_deny_verdict_goes_to_panel(monkeypatch):
+    """smart mode DENY with the owner present → one-operation override, no persistence.
+
+    The guardian's DENY is not silently downgraded and nothing is allowlisted: the
+    owner still gets the panel (once/deny only) and the denial is final for the turn.
+    """
     import tools.approval as approval_module
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+    from tools.terminal_tool import set_approval_callback
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_smart_approve", lambda c, d: "deny")
-    monkeypatch.setattr(approval_module, "_prepare_smart_approval_observer", lambda **k: {})
-    monkeypatch.setattr(approval_module, "_observe_smart_approval_verdict", lambda *a, **k: None)
-    result = check_execute_code_guard(
-        'import os\nos.remove("/tmp/x")', env_type="local"
-    )
+    monkeypatch.setattr(approval_module, "_smart_verdict", lambda *a, **k: "deny")
+    seen = []
+
+    def _cb(command, description, **kwargs):
+        seen.append(kwargs)
+        return "deny"
+
+    set_approval_callback(_cb)
+    try:
+        result = check_execute_code_guard(
+            'import os\nos.remove("/tmp/x")', env_type="local"
+        )
+    finally:
+        set_approval_callback(None)
+
+    assert seen, "owner never saw the one-operation override panel"
+    assert all(kw.get("allow_permanent") is False for kw in seen), seen
     assert result["approved"] is False
-    assert "BLOCKED by smart approval" in result["message"]
-    assert "Do NOT retry" in result["message"]
+    assert result["outcome"] == "denied"
 
 
 def test_single_query_deny_mode(monkeypatch):
     """-q mode with deny policy → blocked (escape hatch no longer auto-approves)."""
     import tools.approval as approval_module
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: True)
-    monkeypatch.setattr(approval_module, "_get_single_query_approval_mode", lambda: "deny")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_single_query_approval_mode", lambda: "deny")
     result = check_execute_code_guard("print('hi')", env_type="local")
     assert result["approved"] is False
     assert result["outcome"] == "blocked"
@@ -1101,7 +1126,7 @@ def test_benign_script_auto_approves_cli(monkeypatch):
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
     result = check_execute_code_guard(
         'import json, math\nprint(json.dumps({"x": math.sqrt(4)}))',
         env_type="local",

@@ -18,12 +18,14 @@ star imports, assignment aliases, and pathlib writes).
 
 import pytest
 
+import tools.approval_context as _approval_ctx_mod
+
 from tools.approval import (
-    _execute_code_has_dangerous_ops,
-    _execute_code_has_self_destructive_ops,
     check_execute_code_guard,
 )
 from tools.exec_code_policy import (
+    _execute_code_has_dangerous_ops,
+    _execute_code_has_self_destructive_ops,
     _execute_code_has_sensitive_write,
     _execute_code_has_package_acquisition,
     _execute_code_touches_sensitive_path,
@@ -196,7 +198,7 @@ def test_sensitive_write_hard_blocked_in_all_modes(monkeypatch, mode_gate):
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
     # normal: nothing to patch — env_type="local" goes through the guard
 
@@ -230,7 +232,7 @@ def test_eval_exec_guard_not_auto_approved(monkeypatch):
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
     result = check_execute_code_guard(
         'import os\neval("os.kill")(os.getpid(), 15)', env_type="local"
     )
@@ -244,7 +246,7 @@ def test_eval_exec_guard_not_auto_approved(monkeypatch):
 # Conversation-loop user-denial halt (plain-text + JSON-wrapped BLOCKED)
 # ─────────────────────────────────────────────────────────────────────
 
-from agent.conversation_loop import (
+from agent.turn_tool_round import (
     _tool_results_contain_user_blocked,
     _user_blocked_halt_response,
 )
@@ -381,20 +383,39 @@ def test_builtin_alias_benign_passes(code):
     assert _execute_code_has_dangerous_ops(code) is None
 
 
-def test_builtin_open_alias_not_auto_approved(monkeypatch):
-    """op = open 写文件必须落到审批弹窗，不能 auto-approve（2026-08-26 漏洞）。"""
+def test_builtin_open_alias_cli_reaches_panel(monkeypatch):
+    """op = open 别名写文件在交互式 CLI 必须落到审批弹窗，不能 auto-approve
+    （2026-08-26 漏洞）。
+
+    新架构下本地非交互路径仍是上游的 auto-approve 契约（脚本自身的
+    terminal() 调用有逐次守卫），只有交互式 CLI 例外：静态扫描命中危险操作
+    的脚本走 Dangerous Command panel，用户显式决策。
+    """
     import tools.approval as approval_module
+    from tools.terminal_tool import set_approval_callback
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
     monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-    result = check_execute_code_guard(
-        "op = open\nwith op('/tmp/t.txt', 'w') as f:\n    f.write('x')",
-        env_type="local",
-    )
-    assert result["approved"] is False or result.get("outcome") in (
-        "blocked", "denied", "pending",
-    )
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "manual")
+    seen = []
+
+    def _cb(command, description, **kwargs):
+        seen.append(description)
+        return "deny"
+
+    set_approval_callback(_cb)
+    try:
+        result = check_execute_code_guard(
+            "op = open\nwith op('/tmp/t.txt', 'w') as f:\n    f.write('x')",
+            env_type="local",
+        )
+    finally:
+        set_approval_callback(None)
+
+    assert seen, "aliased dangerous write never reached the approval panel"
+    assert result["approved"] is False
 
 
 @pytest.mark.parametrize("code", [
@@ -482,7 +503,7 @@ def test_library_writer_sensitive_hard_blocked_in_all_modes(monkeypatch, mode_ga
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
 
     result = check_execute_code_guard(code, env_type="local")
@@ -599,7 +620,7 @@ def test_composed_attr_sensitive_write_hard_blocked_in_all_modes(monkeypatch, mo
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
 
     result = check_execute_code_guard(code, env_type="local")
@@ -619,7 +640,7 @@ def test_path_object_var_sensitive_write_hard_blocked_in_all_modes(monkeypatch, 
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
 
     result = check_execute_code_guard(code, env_type="local")
@@ -692,7 +713,7 @@ def test_sibling_scope_kill_hard_blocked_in_all_modes(monkeypatch, mode_gate):
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
     result = check_execute_code_guard(SIBLING_SCOPE_KILL, env_type="local")
     assert result["approved"] is False
@@ -777,7 +798,7 @@ def test_open_keyword_sensitive_write_hard_blocked_in_all_modes(
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
@@ -870,7 +891,7 @@ def test_comprehension_target_kill_hard_blocked_in_all_modes(
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
@@ -947,7 +968,7 @@ def test_package_acquisition_owner_gated_in_all_modes(monkeypatch, mode_gate, co
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
         monkeypatch.setattr(
-            approval_module, "_get_approval_mode", lambda: "off"
+            _approval_ctx_mod, "_get_approval_mode", lambda: "off"
         )
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
@@ -992,6 +1013,75 @@ def test_package_acquisition_benign_passes(code):
 def test_package_acquisition_unresolvable_fails_closed(code):
     from tools.exec_code_policy import _PACKAGE_UNRESOLVABLE
     assert _execute_code_has_package_acquisition(code) == _PACKAGE_UNRESOLVABLE
+
+
+# ── owner-gate scope for the unresolvable launch (2026-09-11 rebase adaptation) ──
+# An unresolvable command line is an *inference*, not evidence: `subprocess.run(
+# [sys.executable, "-c", ...])` is ordinary execute_code usage (upstream kernel
+# test test_subprocess_fd_output_reaches_the_result runs exactly that shape), so
+# it is not turned into an unconditional hard block. The owner gate is applied
+# where an owner can answer — the fact is carried into the CLI panel / gateway
+# prompt — and where the local auto-approve contract applies (no approval
+# surface, --yolo, approvals.mode=off) the session-level trust stands. Identified
+# acquisition above stays unconditional; this residual is documented in the PR.
+UNRESOLVABLE_LAUNCH = (
+    'import subprocess, sys\n'
+    'subprocess.run([sys.executable, "-c", "print(1)"])'
+)
+
+
+def _no_approval_surface(monkeypatch, approval_module, *, cli=False, mode="manual"):
+    if cli:
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    else:
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: mode)
+
+
+@pytest.mark.parametrize("mode_gate", ["normal", "yolo", "off"])
+def test_unresolvable_launch_without_a_surface_keeps_upstream_contract(monkeypatch, mode_gate):
+    """无审批面的本地会话（含显式 --yolo / mode=off）：沿用上游 auto-approve 契约。
+
+    这里没有可 fail closed 的对象——上游对该上下文本来就是 trusted-by-config，
+    且强制阻断会误伤 `subprocess.run([sys.executable, ...])` 这类正常用法
+    （上游 kernel 用例正是这个形状）。已识别的包获取仍在上面无条件拦截。
+    """
+    import tools.approval as approval_module
+    _no_approval_surface(monkeypatch, approval_module)
+    if mode_gate == "yolo":
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    elif mode_gate == "off":
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
+    result = check_execute_code_guard(UNRESOLVABLE_LAUNCH, env_type="local")
+    assert result["approved"] is True
+
+
+def test_unresolvable_launch_cli_reaches_panel(monkeypatch):
+    """交互式 CLI：无法排除包获取 → 必须由 owner 决策，不能 auto-approve。"""
+    import tools.approval as approval_module
+    from tools.terminal_tool import set_approval_callback
+
+    _no_approval_surface(monkeypatch, approval_module, cli=True)
+    seen = []
+
+    def _cb(command, description, **kwargs):
+        seen.append(description)
+        return "deny"
+
+    set_approval_callback(_cb)
+    try:
+        result = check_execute_code_guard(UNRESOLVABLE_LAUNCH, env_type="local")
+    finally:
+        set_approval_callback(None)
+
+    assert seen, "unresolvable process launch never reached the approval panel"
+    assert any("包获取" in d for d in seen), seen
+    assert result["approved"] is False
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1080,7 +1170,7 @@ def test_attrgetter_kill_hard_blocked_in_all_modes(monkeypatch, mode_gate):
     if mode_gate == "yolo":
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
     assert result["outcome"] == "hard_blocked"
@@ -1111,7 +1201,7 @@ def test_eval_string_kill_hard_blocked_in_all_modes(monkeypatch, mode_gate):
     if mode_gate == "yolo":
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
     assert result["outcome"] == "hard_blocked"
@@ -1153,7 +1243,7 @@ def test_wrapper_variant_owner_gated_in_all_modes(monkeypatch, mode_gate, code):
     if mode_gate == "yolo":
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
     elif mode_gate == "off":
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(_approval_ctx_mod, "_get_approval_mode", lambda: "off")
     result = check_execute_code_guard(code, env_type="local")
     assert result["approved"] is False
     assert result["outcome"] == "package_acquisition"

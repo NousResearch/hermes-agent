@@ -53,6 +53,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
+    '/wisdom': 'mixed',
     '/personality': 'options',
     '/queue': 'text',
     '/retry': null,
@@ -62,7 +63,13 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+  {
+    '/tasks': '/agents',
+    '/background': '/bg',
+    '/q': '/queue',
+    '/proactive': '/loop',
+    '/collective-wisdom-install': '/wisdom'
+  }
 )
 
 describe('desktop slash command curation', () => {
@@ -101,6 +108,15 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('surfaces the shared /wisdom command and hides its legacy install alias', () => {
+    expect(resolveDesktopCommand('/wisdom')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/wisdom')).toBe('mixed')
+    expect(isDesktopSlashSuggestion('/wisdom')).toBe(true)
+    expect(isDesktopSlashCommand('/wisdom')).toBe(true)
+    expect(isDesktopSlashSuggestion('/collective-wisdom-install')).toBe(false)
+    expect(isDesktopSlashCommand('/collective-wisdom-install')).toBe(true)
   })
 
   it('groups complete.slash rows by backend kind, not the desktop table', () => {
@@ -171,12 +187,25 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('does not run /login on desktop before the catalog is loaded', () => {
+    rememberDesktopCommandsCatalog(undefined)
+    expect(isDesktopSlashCommand('/login')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/login')).toBe('/login is managed from the desktop sidebar.')
+  })
+
   it('routes /wake through the desktop wake action instead of the slash worker', () => {
     expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
     expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
     expect(isDesktopSlashSuggestion('/wake')).toBe(true)
     expect(isDesktopSlashCommand('/wake')).toBe(true)
     expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
   })
 
   it('treats /browser as an executable action command (local-gateway connect)', () => {
@@ -226,15 +255,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
       '/bg',
-      '/btw',
       '/debug',
       '/goal',
       '/personality',
@@ -249,6 +278,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {

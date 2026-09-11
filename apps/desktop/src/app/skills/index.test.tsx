@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import type * as HubActions from '@/store/hub-actions'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -17,6 +18,8 @@ const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
+const getOfficialSkills = vi.fn()
+const getWisdomEntitlement = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -33,13 +36,32 @@ vi.mock('@/hermes', async importOriginal => ({
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles(),
-  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile)
+  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile),
+  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile),
+  getWisdomEntitlement: (profile?: null | string) => getWisdomEntitlement(profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
+}))
+
+// Tab contents have their own suites; this suite owns route-to-panel selection.
+vi.mock('@/components/chat/code-editor', () => ({ CodeEditor: () => null }))
+vi.mock('./collective-tab', () => ({
+  CollectiveTab: () => <section aria-label="Collective workspace" />
+}))
+vi.mock('./plugins-tab', () => ({
+  PluginsTab: () => <section aria-label="Plugins workspace" />
+}))
+
+// The catalog Install button routes through the hub action pipeline — stub the
+// action entrypoint (real module kept: SkillsView reads $hubActions and the
+// query keys from it).
+vi.mock('@/store/hub-actions', async importOriginal => ({
+  ...(await importOriginal<typeof HubActions>()),
+  installHubSkill: vi.fn().mockResolvedValue(undefined)
 }))
 
 // The vision detail navigates to Settings → Models via useNavigate; spy on it
@@ -64,19 +86,25 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(tab = 'toolsets') {
   const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[`/skills?tab=${tab}`]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
     )
   })
+
+  if (vi.isFakeTimers()) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50)
+    })
+  }
 
   return result!
 }
@@ -87,6 +115,13 @@ beforeEach(() => {
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
+  getOfficialSkills.mockResolvedValue({ skills: [] })
+  getWisdomEntitlement.mockResolvedValue({
+    entitled: true,
+    org_id: 'org-1',
+    scopes: ['wisdom:read'],
+    expires_at: Date.now() / 1000 + 60
+  })
   getSkillContent.mockResolvedValue({
     name: 'web-research',
     path: '/skills/web-research/SKILL.md',
@@ -99,6 +134,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.clearAllMocks()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
@@ -110,6 +146,113 @@ afterEach(() => {
 // (2× in a row on PR #93612, plus a main run the same hour). Give this file
 // headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
+  it.each([
+    ['collective', 'Collective workspace', 'Plugins workspace'],
+    ['plugins', 'Plugins workspace', 'Collective workspace']
+  ])('opens the %s deep link without replacing the other workspace', async (tab, selected, other) => {
+    await renderSkills(tab)
+
+    expect(await screen.findByRole('region', { name: selected })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: other })).toBeNull()
+    expect(navigateSpy).not.toHaveBeenCalledWith({ pathname: '/skills', search: '', hash: '' }, { replace: true })
+    const otherTab = other.replace(' workspace', '')
+    fireEvent.click(screen.getByRole('button', { name: otherTab }))
+    expect(navigateSpy).toHaveBeenCalledWith(
+      { pathname: '/skills', search: `?tab=${otherTab.toLowerCase()}`, hash: '' },
+      { replace: true }
+    )
+  })
+
+  it('hides Collective Wisdom and redirects its deep link when local entitlement is absent', async () => {
+    getWisdomEntitlement.mockResolvedValue({ entitled: false, org_id: null, scopes: [], expires_at: null })
+    await renderSkills('collective')
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+    await waitFor(() =>
+      expect(navigateSpy).toHaveBeenCalledWith({ pathname: '/skills', search: '', hash: '' }, { replace: true })
+    )
+  })
+
+  it('fails closed when an entitlement response is already expired', async () => {
+    getWisdomEntitlement.mockResolvedValue({
+      entitled: true,
+      org_id: 'org-1',
+      scopes: ['wisdom:read'],
+      expires_at: Date.now() / 1000 - 1
+    })
+
+    await renderSkills('collective')
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+  })
+
+  it('rechecks entitlement after switching away and back while probes are pending', async () => {
+    const { SkillsView } = await import('./index')
+
+    const page = (profile: string) => (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SkillsView fixedProfile={profile} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    const result = render(page('eligible'))
+    expect(await screen.findByRole('button', { name: 'Collective' })).toBeTruthy()
+
+    getWisdomEntitlement.mockImplementation(() => new Promise(() => {}))
+    result.rerender(page('other'))
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    result.rerender(page('eligible'))
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+  })
+
+  it('hides Collective when its positive JWT reaches expires_at', async () => {
+    vi.useFakeTimers()
+    const expiresAt = Date.now() / 1000 + 1
+    getWisdomEntitlement.mockResolvedValue({
+      entitled: true,
+      org_id: 'org-1',
+      scopes: ['wisdom:read'],
+      expires_at: expiresAt
+    })
+
+    await renderSkills('collective')
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).not.toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_001)
+    })
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+  })
+
+  it('fails closed when a recheck errors after a positive result', async () => {
+    vi.useFakeTimers()
+    getWisdomEntitlement
+      .mockResolvedValueOnce({
+        entitled: true,
+        org_id: 'org-1',
+        scopes: ['wisdom:read'],
+        expires_at: Date.now() / 1000 + 60
+      })
+      .mockRejectedValue(new Error('probe failed'))
+
+    await renderSkills('collective')
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).not.toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+    })
+
+    expect(getWisdomEntitlement).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+  })
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
@@ -269,6 +412,37 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(await screen.findByText('version')).toBeTruthy()
     expect(await screen.findByText('1.2.0')).toBeTruthy()
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
+  })
+
+  it('uses editorial skill copy while keeping canonical identifiers for actions', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Use when researching the web.',
+        editorial_name: 'Research the Web',
+        editorial_description: 'Find and compare trustworthy sources online.',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled'
+      }
+    ])
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    expect((await screen.findAllByText('Research the Web')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Find and compare trustworthy sources online.')).toBeTruthy()
+    expect(screen.queryByText('Use when researching the web.')).toBeNull()
+    expect(getSkillContent).toHaveBeenCalledWith('web-research', 'default')
   })
 
   it('hub picker refuses to reinstall an already-installed skill', async () => {
@@ -432,5 +606,82 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
+  })
+
+  it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {
+    // The full official catalog renders BELOW the installed list; each row
+    // carries an Install button (no toggle until installed) that routes
+    // through the standard hub action pipeline scoped to the Capabilities
+    // profile. Already-installed catalog entries are filtered out.
+    const { installHubSkill } = await import('@/store/hub-actions')
+
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Research the web',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled'
+      }
+    ])
+    getOfficialSkills.mockResolvedValue({
+      skills: [
+        {
+          name: 'gif-search',
+          description: 'Search GIFs',
+          identifier: 'official/gifs/gif-search',
+          category: 'gifs',
+          installed: false,
+          tags: ['gifs']
+        },
+        {
+          name: 'web-research',
+          description: 'already here under a different source',
+          identifier: 'official/research/web-research',
+          category: 'research',
+          installed: false,
+          tags: []
+        },
+        {
+          name: 'ascii-art',
+          description: 'ASCII art',
+          identifier: 'official/creative/ascii-art',
+          category: 'creative',
+          installed: true,
+          tags: []
+        }
+      ]
+    })
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // Catalog section header + the one genuinely-available row. Rows already
+    // installed (lock flag OR name collision with the installed list) are gone.
+    expect(await screen.findByText('Available to install')).toBeTruthy()
+    expect(await screen.findByText('gif-search')).toBeTruthy()
+    expect(screen.queryByText('ascii-art')).toBeNull()
+
+    // The installed skill still shows its toggle; the catalog row shows
+    // Install instead of a switch.
+    expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
+    const install = screen.getByRole('button', { name: 'Install' })
+
+    await act(async () => {
+      fireEvent.click(install)
+    })
+
+    await waitFor(() =>
+      expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
+    )
   })
 })

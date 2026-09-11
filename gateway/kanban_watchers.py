@@ -283,15 +283,28 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    breakdown = None
+                    if ready_pending and not any_spawned:
+                        # Waiting on a concurrency cap or on a provider that is
+                        # rate-limiting is expected idleness, not a stuck
+                        # dispatcher; only the rest extends the alarm streak.
+                        breakdown = await _to_thread_process_service(dispatcher.ready_breakdown)
+                        stuck_candidates = breakdown["total"] - breakdown["capacity_capped"] - breakdown["provider_failed"]
+                        bad_ticks = bad_ticks + 1 if stuck_candidates > 0 else 0
+                    else:
+                        bad_ticks = 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
+                    bd = breakdown or {}
                     logger.warning(
                         "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned. Check "
+                        "%d consecutive ticks but 0 workers spawned "
+                        "(ready=%s spawn_rejected=%s unclassified=%s; excluded from the alarm: "
+                        "capacity_capped=%s provider_failed=%s; samples=%s). Check "
                         "profile health (venv, PATH, credentials) and "
                         "`hermes kanban list --status ready`.",
-                        bad_ticks,
+                        bad_ticks, bd.get("total"), bd.get("spawn_rejected"), bd.get("unclassified"),
+                        bd.get("capacity_capped"), bd.get("provider_failed"), bd.get("samples"),
                     )
                     last_warn_at = now
             except asyncio.CancelledError:

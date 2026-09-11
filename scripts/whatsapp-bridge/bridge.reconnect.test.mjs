@@ -148,3 +148,63 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 }
 
 console.log('bridge.reconnect.test.mjs: all assertions passed');
+
+// -- backoff + single in-flight timer (2026-09-11) -------------------------
+
+// Repeated closes without a successful open grow the delay exponentially
+// (capped, jittered from the third attempt), duplicate requests while a
+// timer is armed are ignored, and reset() returns to the fast path.
+{
+  const timers = [];
+  const logs = [];
+  const schedule = createReconnectScheduler(async () => {}, {
+    retryDelayMs: 5000,
+    maxDelayMs: 60000,
+    log: line => logs.push(line),
+    setTimeoutFn: (fn, ms) => timers.push({ fn, ms }),
+    random: () => 1, // deterministic: always the ceiling
+  });
+
+  schedule(3000);                     // attempt 1
+  assert.equal(timers[0].ms, 3000);
+  schedule(3000);                     // duplicate while armed: ignored
+  assert.equal(timers.length, 1);
+  assert.match(logs[0], /already pending/);
+
+  timers[0].fn(); await tick(); await tick();   // start ok -> pending cleared
+  schedule(3000);                     // attempt 2: still the hint
+  assert.equal(timers[1].ms, 3000);
+  timers[1].fn(); await tick(); await tick();
+  schedule(3000);                     // attempt 3: 3000 * 2^1 = 6000
+  assert.equal(timers[2].ms, 6000);
+  timers[2].fn(); await tick(); await tick();
+  schedule(3000);                     // attempt 4: 12000
+  assert.equal(timers[3].ms, 12000);
+  timers[3].fn(); await tick(); await tick();
+  for (let i = 0; i < 6; i += 1) {    // keeps doubling until the cap
+    schedule(3000);
+    timers[timers.length - 1].fn(); await tick(); await tick();
+  }
+  assert.equal(timers[timers.length - 1].ms, 60000, 'delay must cap at maxDelayMs');
+
+  schedule.reset();                   // 'open' happened
+  schedule(1000);
+  assert.equal(timers[timers.length - 1].ms, 1000, 'reset must restore the fast path');
+}
+
+// Jitter stays inside [ceiling/2, ceiling].
+{
+  const timers = [];
+  const schedule = createReconnectScheduler(async () => {}, {
+    setTimeoutFn: (fn, ms) => timers.push({ fn, ms }),
+    log: () => {},
+    random: () => 0,
+  });
+  for (let i = 0; i < 3; i += 1) {
+    schedule(4000);
+    timers[timers.length - 1].fn(); await tick(); await tick();
+  }
+  assert.equal(timers[2].ms, 4000, 'attempt 3 with random()=0 is exactly ceiling/2 (8000/2)');
+}
+
+console.log('bridge.reconnect backoff tests: ok');

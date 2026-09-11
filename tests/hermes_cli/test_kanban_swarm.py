@@ -2,12 +2,31 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.profiles import get_profile_dir
 from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
     create_swarm,
     latest_blackboard,
     post_blackboard_update,
 )
+
+
+@pytest.fixture(autouse=True)
+def forced_skills(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    for profile, skill_name in (
+        ("reviewer", "requesting-code-review"),
+        ("writer", "humanizer"),
+    ):
+        skill_dir = get_profile_dir(profile) / "skills" / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: Swarm test skill.\n---\n",
+            encoding="utf-8",
+        )
 
 
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):

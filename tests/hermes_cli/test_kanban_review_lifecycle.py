@@ -481,6 +481,12 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    skill_dir = kanban_home / "profiles" / "reviewer" / "skills" / "domain-specific-review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: domain-specific-review\ndescription: Review domain changes.\n---\n",
+        encoding="utf-8",
+    )
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
 

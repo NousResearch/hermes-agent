@@ -8,6 +8,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 from __future__ import annotations
 
 import re
+import time
 from functools import partial
 from pathlib import Path
 import weakref
@@ -50,6 +51,37 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 # every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
 # unattended gate where a false drop means silent work pileup.
 MAX_SEND_FAILURES = 12
+# Network-gap handling (2026-09-11). A 17-minute Wi-Fi drop produced 12 consecutive "Not connected to
+# WhatsApp" send failures for one sub and ``unsub()`` dropped it for good: the task later completed with
+# nobody notified. Errors that describe the HOST being offline (DNS, connect refused, adapter bridge
+# down) say nothing about the destination chat, so they do not count toward MAX_SEND_FAILURES; the sub is
+# deferred with capped exponential backoff (+ jitter) and resumes as soon as a send succeeds. Only after
+# ``_NETWORK_DEFER_RETAIN_SECONDS`` of uninterrupted deferral does the ordinary counter take over again.
+_NETWORK_ERROR_MARKERS = (
+    "nodename nor servname", "name or service not known", "temporary failure in name resolution",
+    "connection refused", "connection reset", "network is unreachable", "no route to host",
+    "not connected to whatsapp", "bridge not connected", "not connected", "connecterror",
+    "cannot connect to host", "all connection attempts failed", "session is closed",
+    "transport disconnected", "socket mode unhealthy", "timed out", "timeout",
+)
+_NETWORK_DEFER_BASE_SECONDS = 5.0
+_NETWORK_DEFER_CAP_SECONDS = 300.0
+_NETWORK_DEFER_RETAIN_SECONDS = 6 * 3600
+_FAILURE_DEDUPE_SECONDS = 30 * 60
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """True when the failure looks like the host/adapter being offline rather than a dead chat."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _NETWORK_ERROR_MARKERS)
+
+
+def _network_defer_seconds(attempt: int) -> float:
+    """Capped exponential backoff with full jitter: 5s, 10s, 20s ... 300s."""
+    import random
+    ceiling = min(_NETWORK_DEFER_CAP_SECONDS, _NETWORK_DEFER_BASE_SECONDS * (2 ** max(0, attempt - 1)))
+    return random.uniform(ceiling / 2, ceiling)
+_FAILURE_KINDS = frozenset({"crashed", "gave_up"})
 
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
@@ -383,6 +415,9 @@ class _KanbanNotification:
         self.d = d
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
+        # Per-sub network-outage backoff state, shared across ticks via the runner.
+        self.sub_defer: dict[tuple, dict[str, Any]] = getattr(runner, "_kanban_sub_defer", None) or {}
+        runner._kanban_sub_defer = self.sub_defer
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
@@ -406,10 +441,21 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.failure_dedupe: dict[tuple, dict[str, Any]] = getattr(
+            runner, "_kanban_failure_dedupe", {},
+        )
+        runner._kanban_failure_dedupe = self.failure_dedupe
+        self.events: list[Any] = []
+        self.event_suffixes: dict[int, str] = {}
+        self._dedupe_before: Optional[dict[str, Any]] = None
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
     async def rewind(self) -> None:
+        if self._dedupe_before is None:
+            self.failure_dedupe.pop(self.sub_key, None)
+        else:
+            self.failure_dedupe[self.sub_key] = self._dedupe_before
         await _to_thread_process_service(
             self.runner._kanban_rewind, self.sub, self.d["cursor"], self.d.get("old_cursor", 0), self.board_slug,
         )
@@ -422,9 +468,51 @@ class _KanbanNotification:
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
+        outage = self.sub_defer.pop(self.sub_key, None)
+        if outage and outage.get("logged"):
+            logger.info(
+                "kanban notifier: delivery for %s on %s resumed after network outage (%d deferred attempts)",
+                self.task_id, self.platform_str, outage.get("attempts", 0),
+            )
+
+    def deferred_for_network(self) -> bool:
+        """True while this sub sits in a network-outage backoff window."""
+        outage = self.sub_defer.get(self.sub_key)
+        return bool(outage) and time.monotonic() < outage.get("until", 0.0)
+
+    async def _defer_for_network(self, exc: Exception) -> bool:
+        """Park the sub instead of counting a host-offline error as a dead chat.
+
+        Returns False (caller falls through to the ordinary counter) when the
+        error is not network-shaped or the outage has outlasted the retention.
+        """
+        if not _is_transient_network_error(exc):
+            return False
+        now = time.monotonic()
+        outage = self.sub_defer.get(self.sub_key) or {"since": now, "attempts": 0, "logged": False}
+        if now - outage["since"] > _NETWORK_DEFER_RETAIN_SECONDS:
+            return False
+        outage["attempts"] += 1
+        outage["until"] = now + _network_defer_seconds(outage["attempts"])
+        self.sub_defer[self.sub_key] = outage
+        if not outage["logged"]:
+            outage["logged"] = True
+            logger.warning(
+                "kanban notifier: delivery for %s on %s deferred by network outage (%s); "
+                "subscription kept, retrying with backoff up to %ds for %dh",
+                self.task_id, self.platform_str, str(exc)[:160],
+                int(_NETWORK_DEFER_CAP_SECONDS), _NETWORK_DEFER_RETAIN_SECONDS // 3600,
+            )
+        else:
+            logger.debug("kanban notifier: %s still deferred (attempt %d, next in %.0fs)",
+                         self.task_id, outage["attempts"], outage["until"] - now)
+        await self.rewind()
+        return True
 
     async def delivery_failed(self, fmt: str, prefix: tuple, drop_fmt: str, exc: Exception, exc_info: bool) -> None:
         """Bump the failure counter; drop the sub past the limit, else rewind the claim so the next tick retries."""
+        if await self._defer_for_network(exc):
+            return
         fails = self.sub_fail_counts.get(self.sub_key, 0) + 1
         self.sub_fail_counts[self.sub_key] = fails
         logger.warning(fmt, *prefix, fails, MAX_SEND_FAILURES, exc, exc_info=exc_info)
@@ -441,6 +529,45 @@ class _KanbanNotification:
 
     # -- formatting --
 
+    @staticmethod
+    def _failure_error(ev: Any) -> str:
+        payload = getattr(ev, "payload", None) or {}
+        return _safe_review_reason(payload.get("error") or payload.get("reason") or "unknown error", 200)
+
+    @staticmethod
+    def _digest(state: dict[str, Any]) -> str:
+        count = int(state.get("suppressed", 0))
+        if not count:
+            return ""
+        return f"\nCrash storm digest: {count} suppressed; latest error: {state.get('latest_error') or 'unknown error'}"
+
+    def prepare_events(self) -> None:
+        """Suppress repeated task failures while preserving recovery and expiry digests."""
+        now = time.monotonic()
+        state = self.failure_dedupe.get(self.sub_key)
+        self._dedupe_before = dict(state) if state is not None else None
+        for ev in self.d["events"]:
+            if ev.kind in _FAILURE_KINDS:
+                if state is not None and now - state["last_emitted"] < _FAILURE_DEDUPE_SECONDS:
+                    state["suppressed"] += 1
+                    state["latest_error"] = self._failure_error(ev)
+                    continue
+                suffix = self._digest(state) if state is not None else ""
+                state = {"last_emitted": now, "suppressed": 0, "latest_error": self._failure_error(ev)}
+                self.failure_dedupe[self.sub_key] = state
+                if suffix:
+                    self.event_suffixes[ev.id] = suffix
+                self.events.append(ev)
+                continue
+
+            if state is not None:
+                suffix = self._digest(state)
+                if suffix:
+                    self.event_suffixes[ev.id] = suffix
+                self.failure_dedupe.pop(self.sub_key, None)
+                state = None
+            self.events.append(ev)
+
     def format_event(self, ev: Any) -> Optional[str]:
         """Render one event; accumulates wake handoff/review detail. None → silent kind."""
         formatter = _EVENT_FORMATTERS.get(ev.kind)
@@ -451,12 +578,12 @@ class _KanbanNotification:
             self.wake_handoff = handoff
         if review_detail is not None:
             self.wake_review_detail = review_detail
-        return msg
+        return msg + self.event_suffixes.get(ev.id, "")
 
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = {ev.kind for ev in self.events if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         if not self.wake_kinds:
             return
         if self.is_push_adapter:
@@ -550,7 +677,7 @@ class _KanbanNotification:
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
-        for ev in self.d["events"]:
+        for ev in self.events:
             msg = self.format_event(ev)
             if msg is None:
                 continue
@@ -585,6 +712,10 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        if self.deferred_for_network():
+            # Backoff window still open: give the claim back, try again on a later tick.
+            await self.rewind()
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:
@@ -600,6 +731,8 @@ class _KanbanNotification:
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
+
+        self.prepare_events()
 
         if not await self._send_pings():
             return

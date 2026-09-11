@@ -482,6 +482,9 @@ const PAGE_SIZE = 60;
 // place that needs to follow.
 const SKILLS_URL = "/docs/api/skills.json";
 const META_URL = "/docs/api/skills-meta.json";
+// Idle timeout for the catalog fetch — abort only when the transfer has
+// produced no bytes for this long, so slow-but-alive downloads survive.
+const CATALOG_STALL_TIMEOUT_MS = 45_000;
 
 function buildSearchHaystack(s: Skill): string {
   // Pre-compute the lowercase blob the search filter scans. Done once at
@@ -536,6 +539,8 @@ export default function SkillsDashboard() {
   // mount from the same CDN that serves the docs.
   const [data, setData] = useState<{ skills: Skill[]; meta: IndexMeta } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Bumped by the error card's Retry button to re-run the catalog load.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [search, setSearch] = useState("");
   // Debounced copy of `search` — used by the filter. Without the debounce,
@@ -551,16 +556,41 @@ export default function SkillsDashboard() {
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
+  // The catalog comes from the docs CDN (skills.json 301s onto GitHub
+  // Pages, ~50 MB raw). A connection that silently hangs — polluted DNS,
+  // TLS resets — would otherwise leave the page on "Loading the
+  // catalog…" forever, so read the body as a stream and abort only when
+  // no bytes have arrived for CATALOG_STALL_TIMEOUT_MS. Slow-but-alive
+  // transfers keep resetting the timer and are never cut off (#97861).
   useEffect(() => {
+    const ctrl = new AbortController();
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const armStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => ctrl.abort(), CATALOG_STALL_TIMEOUT_MS);
+    };
     let cancelled = false;
+    const readJson = async (url: string): Promise<unknown> => {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+      if (!res.body) return res.json();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armStallTimer();
+        text += decoder.decode(value, { stream: true });
+      }
+      return JSON.parse(text);
+    };
     (async () => {
       try {
+        armStallTimer();
         const [sk, mt] = await Promise.all([
-          fetch(SKILLS_URL).then((r) => {
-            if (!r.ok) throw new Error(`skills.json HTTP ${r.status}`);
-            return r.json();
-          }),
-          fetch(META_URL).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+          readJson(SKILLS_URL),
+          readJson(META_URL).catch(() => ({})),
         ]);
         if (cancelled) return;
         const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
@@ -569,13 +599,26 @@ export default function SkillsDashboard() {
         setData({ skills: skillsArr, meta: mt || {} });
       } catch (err) {
         if (cancelled) return;
+        if (ctrl.signal.aborted) {
+          setLoadError(
+            `catalog fetch stalled — no data received for ${CATALOG_STALL_TIMEOUT_MS / 1000}s`,
+          );
+          return;
+        }
         setLoadError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
       cancelled = true;
+      ctrl.abort();
+      if (stallTimer) clearTimeout(stallTimer);
     };
-  }, []);
+  }, [reloadKey]);
+
+  const retryCatalogLoad = () => {
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
+  };
 
   // Debounce the search input — 150ms feels instant while preventing the
   // filter from running on every individual keystroke.
@@ -701,11 +744,6 @@ export default function SkillsDashboard() {
                 {data ? allSkillsLocal.length.toLocaleString() : "…"}
               </strong>{" "}
               skills across {sources.length - 1} registries
-              {loadError && (
-                <span style={{ color: "#f87171", marginLeft: 8 }}>
-                  · failed to load catalog ({loadError})
-                </span>
-              )}
             </p>
             {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
               <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
@@ -904,6 +942,19 @@ export default function SkillsDashboard() {
                 <p className={styles.emptyDesc}>
                   Fetching 88k+ skills across every registry. One moment.
                 </p>
+              </div>
+            ) : loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.emptyIcon}>{"\u26A0\uFE0F"}</div>
+                <h3 className={styles.emptyTitle}>Couldn't load the catalog</h3>
+                <p className={styles.emptyDesc}>
+                  {loadError}. The catalog is served from a public CDN —
+                  restricted networks may need a working proxy. Check your
+                  connection and retry.
+                </p>
+                <button className={styles.emptyReset} onClick={retryCatalogLoad}>
+                  Retry
+                </button>
               </div>
             ) : visible.length > 0 ? (
               <>

@@ -215,18 +215,6 @@ class LintMixin:
         except Exception:  # noqa: BLE001
             return None
 
-    def _lsp_handles_extension(self, ext: str) -> bool:
-        """True iff some registered LSP server claims ``ext`` (static registry
-        only; safe on remote backends). Decides whether pre-write content is
-        worth capturing for the line-shift map."""
-        if not ext:
-            return False
-        try:
-            from agent.lsp.servers import SERVERS
-        except Exception:  # noqa: BLE001
-            return False
-        return any(ext.lower() in srv.extensions for srv in SERVERS)
-
     def _has_ancestor_tsconfig(self, path: str) -> bool:
         """True iff a tsconfig.json exists in ``path``'s directory or any ancestor.
         Host-side walk, local backend only: on a remote backend this answers False so

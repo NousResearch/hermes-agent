@@ -74,6 +74,10 @@ def main():
         if msg is None:
             return 0
 
+        if log_path := os.environ.get("MOCK_LSP_MESSAGES_LOG"):
+            with open(f"{log_path}.{os.getpid()}", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"message": msg, "argv": sys.argv[1:], "cwd": os.getcwd()}) + "\n")
+
         if "id" in msg and msg.get("method") == "initialize":
             if script == "slow":
                 time.sleep(1.0)

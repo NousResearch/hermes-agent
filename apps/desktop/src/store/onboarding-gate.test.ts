@@ -48,7 +48,6 @@ function enableOnboarding() {
 
 describe('onboarding phase record', () => {
   it('advances from the real intro edge through guided, handoff and accepted completion in order', async () => {
-    const open = enableOnboarding()
     vi.stubGlobal('hermesDesktop', { guestOnboardingEnabled: false })
     const phases: OnboardingPhase[] = []
 
@@ -66,15 +65,15 @@ describe('onboarding phase record', () => {
     expect(await runGuideKickoff(kickoff)).toBe(false)
     expect(kickoff).not.toHaveBeenCalled()
     expect(phases).toEqual([])
-    expect(open).not.toHaveBeenCalled()
 
-    enableOnboarding()
+    const open = enableOnboarding()
     act(() => $desktopOnboarding.set({ ...$desktopOnboarding.get(), firstRunSkipped: true }))
     gate.rerender(createElement(IntroRevealGate, { enabled: false }))
     gate.rerender(createElement(IntroRevealGate, { enabled: true }))
     expect($onboardingGate.get().phase).toBe('idle')
     act(() => $desktopOnboarding.set({ ...$desktopOnboarding.get(), firstRunSkipped: false }))
     expect($onboardingGate.get().phase).toBe('cinematic')
+    expect(open).toHaveBeenCalledTimes(1)
     completeOnboardingFlow()
     beginOnboardingHandoff()
     expect($onboardingGate.get().phase).toBe('cinematic')

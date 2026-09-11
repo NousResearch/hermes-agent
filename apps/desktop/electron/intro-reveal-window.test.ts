@@ -1,7 +1,7 @@
-import { BrowserWindow, ipcRenderer } from 'electron'
-import { afterEach, expect, it, vi } from 'vitest'
+import { BrowserWindow, ipcMain, ipcRenderer } from 'electron'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { createIntroRevealWindowController, INTRO_REVEAL_WATCHDOG_MS } from './intro-reveal-window'
+import { INTRO_REVEAL_WATCHDOG_MS } from './intro-reveal-window'
 
 interface IntroPayload {
   hideMain?: boolean
@@ -65,6 +65,10 @@ vi.mock('electron', async () => {
     },
     ipcMain: Object.assign(new EventEmitter(), {
       handle: (channel: string, handler: (event: IntroInvokeEvent, payload?: IntroPayload) => { ok: boolean }) => {
+        if (native.handlers.has(channel)) {
+          throw new Error(`Attempted to register a second handler for '${channel}'`)
+        }
+
         native.handlers.set(channel, handler)
       }
     }),
@@ -80,9 +84,12 @@ vi.mock('electron', async () => {
   }
 })
 
+beforeEach(() => vi.resetModules())
+
 afterEach(() => {
   vi.useRealTimers()
   native.handlers.clear()
+  ipcMain.removeAllListeners()
 })
 
 it('keeps the independent native watchdog longer than the renderer deadman', async () => {
@@ -93,14 +100,39 @@ it('keeps the independent native watchdog longer than the renderer deadman', asy
   expect(INTRO_REVEAL_WATCHDOG_MS).toBeGreaterThan(timeline.INTRO_DEADMAN_MS)
 })
 
+it('does not open an intro window when onboarding is disabled', async () => {
+  const { createIntroRevealWindowController } = await import('./intro-reveal-window')
+
+  await import('./preload')
+  const main = new BrowserWindow()
+  const options = {
+    enabled: false,
+    isMac: process.platform === 'darwin',
+    loadWindowUrl: vi.fn(),
+    log: vi.fn(),
+    mainWindow: () => main,
+    preloadPath: '/test/preload.cjs',
+    rendererIndex: () => '/test/index.html',
+    showMain: vi.fn(),
+    wireWindow: vi.fn()
+  }
+
+  const disabled = createIntroRevealWindowController(options)
+
+  expect(await native.bridge?.introReveal.open({ hideMain: true })).toEqual({ ok: false })
+  expect(options.loadWindowUrl).not.toHaveBeenCalled()
+  disabled.destroy()
+})
+
 it('forwards ownership payloads and restores the app on close or a stalled renderer', async () => {
   vi.useFakeTimers()
+  const { createIntroRevealWindowController } = await import('./intro-reveal-window')
+
   await import('./preload')
   const main = new BrowserWindow()
   const showMain = vi.fn(() => main.show())
-
   const options = {
-    enabled: false,
+    enabled: true,
     isMac: process.platform === 'darwin',
     loadWindowUrl: vi.fn(),
     log: vi.fn(),
@@ -111,13 +143,7 @@ it('forwards ownership payloads and restores the app on close or a stalled rende
     wireWindow: vi.fn()
   }
 
-  const disabled = createIntroRevealWindowController(options)
-
-  expect(await native.bridge?.introReveal.open({ hideMain: true })).toEqual({ ok: false })
-  expect(options.loadWindowUrl).not.toHaveBeenCalled()
-  disabled.destroy()
-
-  const controller = createIntroRevealWindowController({ ...options, enabled: true })
+  const controller = createIntroRevealWindowController(options)
 
   // Main starts unshown; closing still has to reveal it.
   await native.bridge?.introReveal.open({ hideMain: true })

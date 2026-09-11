@@ -271,6 +271,21 @@ def main():
     except Exception:
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
+    # Warm the Python toolchain probe off-thread during the same idle window.
+    # The first system-prompt build sits on the time-to-first-token path and
+    # otherwise pays the probe's serial python3/pip subprocess calls behind
+    # a bounded wait (#74462) — the agent-init warm fires too late here
+    # because the TUI builds the agent at the first prompt. Idempotent and
+    # fail-safe; skipped when the probe is disabled in config.
+    try:
+        from hermes_cli.config import read_raw_config
+        from tools.env_probe import warm_environment_probe_async
+        _probe_cfg = (read_raw_config() or {}).get("agent", {})
+        if not isinstance(_probe_cfg, dict) or _probe_cfg.get("environment_probe", True):
+            warm_environment_probe_async()
+    except Exception:
+        logger.debug("env probe prewarm (tui) failed to start", exc_info=True)
+
     while True:
         raw = sys.stdin.readline()
         if not raw:

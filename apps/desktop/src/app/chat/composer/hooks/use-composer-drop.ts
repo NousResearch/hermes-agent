@@ -3,7 +3,7 @@ import { type DragEvent as ReactDragEvent, useRef, useState } from 'react'
 import { triggerHaptic } from '@/lib/haptics'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../../hooks/use-composer-actions'
-import { dragHasAttachments, droppedFileInlineRefs, type InlineRefInput } from '../inline-refs'
+import { createDragLifecycleGate, type DragLifecycleGate, droppedFileInlineRefs, type InlineRefInput } from '../inline-refs'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerDropArgs {
@@ -19,6 +19,12 @@ interface UseComposerDropArgs {
  * resolves directly; OS/Finder drops (absolute local paths a remote gateway
  * can't read, image bytes vision needs) route through the upload pipeline.
  * Off the keystroke path; consumes `insertInlineRefs` + the attach handler.
+ *
+ * Windows sparse drag (#97702): the shared `createDragLifecycleGate`
+ * arms on the first dragenter signal (typed file drag OR a fully-empty
+ * Windows Explorer transfer) and keeps dragover alive for the same drag,
+ * so the app-lifetime react-dnd HTML5Backend's capture-time
+ * `dropEffect='none'` cannot suppress the eventual drop.
  */
 export function useComposerDrop({
   cwd,
@@ -28,14 +34,24 @@ export function useComposerDrop({
 }: UseComposerDropArgs) {
   const [dragActive, setDragActive] = useState(false)
   const dragDepthRef = useRef(0)
+  // One gate per composer instance; stable across re-renders.
+  const gateRef = useRef<DragLifecycleGate | null>(null)
+  const gate = gateRef.current ?? (gateRef.current = createDragLifecycleGate(HERMES_PATHS_MIME))
 
   const resetDragState = () => {
     dragDepthRef.current = 0
+    gate.reset()
     setDragActive(false)
   }
 
   const handleDragEnter = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    // A genuinely new drag (not a nested-child re-enter) must reset
+    // any unrecovered gate state before the new drag is evaluated.
+    if (dragDepthRef.current === 0) {
+      gate.reset()
+    }
+
+    if (!onAttachDroppedItems || !gate.onEnter(event.dataTransfer)) {
       return
     }
 
@@ -48,7 +64,7 @@ export function useComposerDrop({
   }
 
   const handleDragOver = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    if (!onAttachDroppedItems || !gate.onOver(event.dataTransfer)) {
       return
     }
 
@@ -65,7 +81,10 @@ export function useComposerDrop({
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
 
     if (dragDepthRef.current === 0) {
+      gate.onLeave(true)
       setDragActive(false)
+    } else {
+      gate.onLeave(false)
     }
   }
 
@@ -105,7 +124,7 @@ export function useComposerDrop({
   }
 
   const handleInputDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    if (!gate.onOver(event.dataTransfer)) {
       return
     }
 
@@ -115,7 +134,7 @@ export function useComposerDrop({
   }
 
   const handleInputDrop = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    if (!gate.onOver(event.dataTransfer)) {
       return
     }
 

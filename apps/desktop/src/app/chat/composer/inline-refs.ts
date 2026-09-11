@@ -49,6 +49,120 @@ export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: str
   return Array.from(transfer.items || []).some(item => item.kind === 'file')
 }
 
+/**
+ * Windows Explorer / Chromium sparse external file drag.
+ *
+ * During `dragenter`/`dragover` the OS can expose an entirely empty
+ * `DataTransfer` (no `types`, no `items` with `kind=file`) while the `File`
+ * payload only materialises at `drop`. The ONLY known production source of
+ * such a fully empty native DataTransfer on this app is an external OS file
+ * drag — internal in-app drags always carry at least `text/plain` or the
+ * `application/x-hermes-paths` custom MIME. An empty dragenter is therefore
+ * a credible signal of an external file drag, even though it is not yet
+ * proof of one. Callers that use this for `preventDefault` MUST still
+ * verify `extractDroppedFiles(...).length > 0` at drop time.
+ *
+ * This intentionally does NOT consider transfers with a non-empty `types`
+ * array: those are either real file drags (`Files`), in-app drags
+ * (`application/x-hermes-paths`), or unrelated text drags (`text/plain`) —
+ * the existing `dragHasAttachments` helper already classifies them.
+ */
+export function isSparseExternalFileDrag(transfer: DataTransfer | null): boolean {
+  if (!transfer) {
+    return false
+  }
+
+  const types = transfer.types
+
+  if (types && types.length !== 0) {
+    return false
+  }
+
+  const items = transfer.items
+
+  if (items && items.length !== 0) {
+    return false
+  }
+
+  return true
+}
+
+/**
+ * Stateful, event-lifecycle-aware drag accept gate. Use this to wrap a
+ * native HTML5 drop zone so the bubble-phase `dragover` keeps drop alive
+ * for the Windows Explorer sparse case (see {@link isSparseExternalFileDrag})
+ * WITHOUT blanket-classifying every empty `DataTransfer` as a file drag.
+ *
+ * Invariants:
+ * - `onEnter` arms the gate on the FIRST credible signal (typed file drag
+ *   OR a fully-empty transfer). Once armed, subsequent `onOver` calls
+ *   accept the drag even if the transfer is still empty.
+ * - A `dragover` that fires WITHOUT a prior `dragenter` for this drag does
+ *   NOT arm the gate and is rejected — no spurious "file drag active" UI.
+ * - `onLeave(atRootDepth: true)` and `reset()` clear the gate. The caller
+ *   tracks nested dragenter/leave depth and only calls `onLeave(true)` when
+ *   depth returns to 0.
+ * - This is intentionally NOT a React hook so the gate can be unit-tested
+ *   without a renderer; callers keep it in a `useRef` for stability.
+ */
+export interface DragLifecycleGate {
+  /** Returns true if the dragenter should be accepted (and preventDefault'd). */
+  onEnter(transfer: DataTransfer | null): boolean
+  /** Returns true if the dragover should keep drop alive (and preventDefault'd). */
+  onOver(transfer: DataTransfer | null): boolean
+  /** Caller passes `true` when leaving the root depth to disarm the gate. */
+  onLeave(atRootDepth: boolean): void
+  /** Force-clear the gate (drop, unmount, or explicit abort). */
+  reset(): void
+}
+
+export function createDragLifecycleGate(pathsMime: string): DragLifecycleGate {
+  let crediblyArmed = false
+
+  return {
+    onEnter(transfer) {
+      if (dragHasAttachments(transfer, pathsMime)) {
+        crediblyArmed = true
+
+        return true
+      }
+
+      if (isSparseExternalFileDrag(transfer)) {
+        // Tentative arm: an empty transfer is the only known signal of a
+        // Windows Explorer / Chromium sparse file drag. The drop handler
+        // must still gate on `extractDroppedFiles(...).length > 0`.
+        crediblyArmed = true
+
+        return true
+      }
+
+      return false
+    },
+
+    onOver(transfer) {
+      if (dragHasAttachments(transfer, pathsMime)) {
+        return true
+      }
+
+      // Stay open for the same drag we tentatively armed on enter — the
+      // browser keeps re-firing dragover until drop or dragleave, and
+      // dropping the gate here would let the app-lifetime HTML5Backend's
+      // capture-time `dropEffect='none'` suppress the eventual drop.
+      return crediblyArmed
+    },
+
+    onLeave(atRootDepth) {
+      if (atRootDepth) {
+        crediblyArmed = false
+      }
+    },
+
+    reset() {
+      crediblyArmed = false
+    }
+  }
+}
+
 export function droppedFileInlineRef(candidate: DroppedFile, cwd: string | null | undefined) {
   if (!candidate.path) {
     return null

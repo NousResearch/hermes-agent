@@ -29,7 +29,8 @@ import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import {
-  dragHasAttachments,
+  createDragLifecycleGate,
+  type DragLifecycleGate,
   droppedFileInlineRefs,
   type InlineRefInput,
   insertInlineRefsIntoEditor
@@ -98,6 +99,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const draftRef = useRef(draft)
   const composingRef = useRef(false)
   const dragDepthRef = useRef(0)
+  // One stateful gate per edit composer. See inline-refs.createDragLifecycleGate
+  // for the #97702 Windows-sparse-drag rationale; an external Explorer drag
+  // exposes empty types/items on dragenter until the drop fires, and a static
+  // predicate would either blank-accept or fail to keep dropEffect=copy alive.
+  const dragGateRef = useRef<DragLifecycleGate | null>(null)
+
+  const dragGate =
+    dragGateRef.current ??
+    (dragGateRef.current = createDragLifecycleGate(HERMES_PATHS_MIME))
+
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
@@ -487,11 +498,18 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const resetDragState = useCallback(() => {
     dragDepthRef.current = 0
+    dragGate.reset()
     setDragActive(false)
-  }, [])
+  }, [dragGate])
 
   const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    // A genuinely new drag (not a nested-child re-enter) must reset
+    // any unrecovered gate state before evaluating the new drag.
+    if (dragDepthRef.current === 0) {
+      dragGate.reset()
+    }
+
+    if (!dragGate.onEnter(event.dataTransfer)) {
       return
     }
 
@@ -504,7 +522,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }
 
   const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    if (!dragGate.onOver(event.dataTransfer)) {
       return
     }
 
@@ -517,12 +535,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
 
     if (dragDepthRef.current === 0) {
+      dragGate.onLeave(true)
       setDragActive(false)
+    } else {
+      dragGate.onLeave(false)
     }
   }
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+    if (!dragGate.onOver(event.dataTransfer)) {
       return
     }
 

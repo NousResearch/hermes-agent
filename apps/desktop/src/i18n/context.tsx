@@ -159,7 +159,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
           const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
 
           if (!cancelled && !userLocaleRef.current) {
-            setLocaleState(resolveInitialLocale(saved, machineProfile?.locale))
+            setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
           }
         })
         .catch(error => {

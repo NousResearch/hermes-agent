@@ -131,7 +131,7 @@ export function osPreferredLocale(tag: string | null | undefined): Locale | null
 }
 
 /** An explicit choice must win even when it differs from the OS language. */
-export function resolveInitialLocale(saved: unknown, osLocale: string | null | undefined): Locale {
+export function resolveInitialLocale(saved: string | null | undefined, osLocale: string | null | undefined): Locale {
   if (isSupportedLocaleValue(saved)) {
     return normalizeLocale(saved)
   }

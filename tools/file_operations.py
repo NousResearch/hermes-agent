@@ -1382,7 +1382,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 pattern, path, target, file_glob, limit, offset, output_mode, context, order)
             if multi is not None:
                 return multi
-            return self._path_not_found_result(path)
+            return self._path_not_found_result(path, target)
         result = self._dispatch_search(pattern, path, target, file_glob, limit, offset,
                                        output_mode, context, order)
         exclusions = self._macos_search_exclusions(path)

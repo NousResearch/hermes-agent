@@ -504,6 +504,15 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
             "in the same tool, then try an absolute path, a simpler command, a different "
             "working directory, or a different tool such as read_file/write_file/patch."
         )
+    if tool_name == "search_files":
+        return common + (
+            "search_files uses REGEX for target='content' (the default) and GLOB "
+            "for target='files'. A leading '*' is invalid regex (\"nothing to "
+            "repeat\") — the most common cause of this loop. To find a file/folder "
+            "BY NAME use target='files' (e.g. pattern='config'); to search file "
+            "CONTENTS use a regex like 'foo' or 'foo.*bar'. If the path is wrong, "
+            "use the 'Similar paths' in the error or run terminal with find/ls."
+        )
     return common + (
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "

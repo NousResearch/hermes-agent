@@ -160,6 +160,52 @@ def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
 
 _REGEX_NEWLINE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\n")
 
+# Substrings rg/grep emit when a content-mode regex fails to parse *because of
+# a repetition/quantifier problem* — the signature of a glob-style pattern
+# (e.g. "*.py") used in target='content', where a leading '*' is "nothing to
+# repeat". Only these trigger the glob hint; a generic "regex parse error"
+# (e.g. an unclosed "[" bracket) is left untouched so we never mislabel
+# non-glob errors as glob mistakes.
+_REGEX_REPETITION_ERROR_MARKERS = (
+    "nothing to repeat",
+    "repetition operator",
+    "bad repetition",
+    "unrecognized character after",
+)
+
+
+def _glob_as_regex_hint_suffix(pattern: str) -> str:
+    """Didactic suffix for a content-mode regex *repetition* error.
+
+    Mirrors ``tools.file_tools._glob_as_regex_error`` but lives here to avoid
+    an import cycle (file_tools imports from file_operations). Returns an empty
+    string only when ``pattern`` is empty.
+    """
+    bare = (pattern or "").replace("*", "") or "query"
+    return (
+        f" {pattern!r} looks like a glob but target='content' uses REGEX. "
+        "To find files/folders BY NAME use target='files' (glob): "
+        f"search_files(pattern={bare!r}, target='files'). "
+        f"To search file CONTENTS use regex like {bare!r} or {bare + '.*'!r}."
+    )
+
+
+def _maybe_enrich_regex_error(error: str, pattern: str) -> str:
+    """Append the glob-as-regex hint only for a regex *repetition* failure.
+
+    A leading '*' ("nothing to repeat") is the glob pitfall this targets; other
+    parse errors (unclosed brackets, bad escapes) are unrelated to glob/regex
+    confusion and are returned unchanged.
+    """
+    if not error or not pattern:
+        return error
+    lower = error.lower()
+    if not any(marker in lower for marker in _REGEX_REPETITION_ERROR_MARKERS):
+        return error
+    if "looks like a glob" in error:
+        return error  # already enriched
+    return error + _glob_as_regex_hint_suffix(pattern)
+
 
 def _pattern_has_regex_newline(pattern: str) -> bool:
     """True when a content regex wants to match a newline: a literal newline or a
@@ -485,7 +531,7 @@ class SearchMixin:
             return self._search_files(pattern, path, limit, offset, order)
         return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
 
-    def _path_not_found_result(self, path: str) -> SearchResult:
+    def _path_not_found_result(self, path: str, target: str = "content") -> SearchResult:
         """Error result for a missing search root, with nearby-entry suggestions."""
         parent = os.path.dirname(path) or "."
         basename_query = os.path.basename(path)
@@ -500,6 +546,11 @@ class SearchMixin:
                     if e and (lq in e.lower() or e.lower() in lq or e.lower().startswith(lq[:3]))]
                 if candidates:
                     hint_parts.append("Similar paths: " + ", ".join(candidates[:5]))
+        if target != "files":
+            hint_parts.append(
+                "Tip: to search by NAME use target='files' (glob); the "
+                "default target='content' searches file CONTENTS with regex"
+            )
         return SearchResult(error=". ".join(hint_parts), total_count=0)
 
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
@@ -809,6 +860,8 @@ class SearchMixin:
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation")
+        if result.error:
+            result.error = _maybe_enrich_regex_error(result.error, pattern)
         if (not result.error and result.total_count == 0
                 and not result.matches and not result.files and not result.counts):
             try:

@@ -21,6 +21,7 @@ import pytest
 
 from plugins.platforms.photon import adapter as adapter_mod
 from plugins.platforms.photon import cli as cli_mod
+from plugins.platforms.photon import sidecar_paths
 
 _NODE_ON_PATH = __import__("shutil").which("node") is not None
 _requires_node = pytest.mark.skipif(
@@ -41,7 +42,7 @@ def test_regression_return_code_zero_on_success(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
     assert cli_mod._install_sidecar() == 0
 
 
@@ -73,7 +74,7 @@ def test_regression_oserror_on_log_write_does_not_propagate(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr="npm ERR!"),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", _UnwritablePath(error_log))
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", _UnwritablePath(error_log))
 
     rc = cli_mod._install_sidecar()
     assert rc == 1  # still returns the npm exit code
@@ -99,7 +100,7 @@ def test_regression_empty_stderr_does_not_write_log(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=""),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
 
     cli_mod._install_sidecar()
 
@@ -129,7 +130,7 @@ def test_regression_permissionerror_on_success_unlink_does_not_propagate(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", _UnremovablePath(error_log))
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", _UnremovablePath(error_log))
 
     rc = cli_mod._install_sidecar()
     assert rc == 0  # PermissionError on cleanup must not fail the install
@@ -149,7 +150,7 @@ def test_regression_long_stderr_truncated_before_write(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=huge_stderr),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
 
     cli_mod._install_sidecar()
 
@@ -167,7 +168,7 @@ def test_regression_none_stderr_does_not_crash(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=None),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
 
     rc = cli_mod._install_sidecar()
     assert rc == 1  # must not raise AttributeError
@@ -192,7 +193,7 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
     cli_mod._install_sidecar()
     assert not error_log.exists(), "Success must clear the stale error log"
 
@@ -200,8 +201,8 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     # Create spectrum-ts inside node_modules/ — the content check requires it.
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
 
     with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):
         result = adapter_mod.check_requirements()
@@ -222,8 +223,8 @@ def test_regression_debug_log_emitted_even_without_error_log(
     setup, not a failed install), check_requirements() must still emit a DEBUG
     line pointing to the sidecar path."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
     # NS-606: disable self-heal so the debug-log branch is reached.
     monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules NOT created, error log NOT created

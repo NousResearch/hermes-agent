@@ -48,12 +48,11 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (  # noqa: E402
-    MessageEvent,
-    MessageType,
+from gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL  # noqa: E402
 
 
@@ -187,7 +186,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.run.merge_pending_message_event"):
+        with patch("gateway.platforms.base.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         parent.interrupt.assert_called_once_with("please stop")
@@ -208,7 +207,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.run.merge_pending_message_event"):
+        with patch("gateway.platforms.base.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
         parent.interrupt.assert_not_called()
@@ -236,9 +235,12 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
 
-        with patch("gateway.run.merge_pending_message_event"):
+        with patch("gateway.platforms.base.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
-        parent.steer.assert_called_once_with("course-correct")
+        parent.steer.assert_called_once()
+        injected = parent.steer.call_args.args[0]
+        assert injected.endswith("course-correct")
+        assert '"chat_id": "123"' in injected
         parent.interrupt.assert_not_called()
 

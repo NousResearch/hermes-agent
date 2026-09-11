@@ -5,7 +5,7 @@ do not exist anywhere in DEFAULT_CONFIG. Known keys (present at any depth)
 are never reported; underscore-prefixed internal keys are skipped.
 """
 
-from hermes_cli.doctor import collect_unknown_config_keys
+from hermes_cli.doctor_config import collect_unknown_config_keys
 
 
 def test_known_keys_not_reported():

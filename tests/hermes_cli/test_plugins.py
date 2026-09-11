@@ -17,15 +17,14 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
-    _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
-    get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
     resolve_plugin_command_result,
     _portable_skill_namespace,
 )
+from hermes_cli.plugins_pre_tool_call import _dispatch_pre_tool_call_hooks, get_pre_tool_call_block_message
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
@@ -1186,10 +1185,8 @@ class TestForceReloadSymmetry:
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time
 
-        from hermes_cli.plugins import (
-            _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
-            resolve_pre_tool_block,
-        )
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        from hermes_cli.plugins_pre_tool_call import resolve_pre_tool_block
 
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
@@ -1364,7 +1361,7 @@ class TestPreToolCallDirective:
 
     def test_first_party_observer_receives_pre_tool_call(self, monkeypatch):
         from hermes_cli import observability
-        from hermes_cli.plugins import get_pre_tool_call_directive
+        from hermes_cli.plugins_pre_tool_call import get_pre_tool_call_directive
 
         observed = []
         monkeypatch.setattr(
@@ -1401,7 +1398,7 @@ class TestPreToolCallDirective:
         ]
 
     def test_approve_directive_returned(self, monkeypatch):
-        from hermes_cli.plugins import get_pre_tool_call_directive
+        from hermes_cli.plugins_pre_tool_call import get_pre_tool_call_directive
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
@@ -1413,7 +1410,7 @@ class TestPreToolCallDirective:
 
     def test_approve_without_message_is_valid(self, monkeypatch):
         """approve may omit a message (block may not)."""
-        from hermes_cli.plugins import get_pre_tool_call_directive
+        from hermes_cli.plugins_pre_tool_call import get_pre_tool_call_directive
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "approve"}],
@@ -1427,7 +1424,7 @@ class TestResolvePreToolBlock:
 
 
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
+        from hermes_cli.plugins_pre_tool_call import resolve_pre_tool_block
         from tools import approval
         from tools import approval_context
 
@@ -1455,7 +1452,7 @@ class TestResolvePreToolBlock:
         assert seen == {"turn_id": "turn-1", "tool_call_id": "call-1"}
 
     def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
+        from hermes_cli.plugins_pre_tool_call import resolve_pre_tool_block
 
         seen = {}
 
@@ -1487,7 +1484,7 @@ class TestResolvePreToolBlock:
 
 
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
-        from hermes_cli.plugins import resolve_pre_tool_block
+        from hermes_cli.plugins_pre_tool_call import resolve_pre_tool_block
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
@@ -1641,7 +1638,7 @@ class TestThreadToolWhitelist:
     """Tests for the thread-local tool whitelist used by background review forks."""
 
     def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
-        from hermes_cli.plugins import (
+        from hermes_cli.plugins_pre_tool_call import (
             set_thread_tool_whitelist,
             clear_thread_tool_whitelist,
         )
@@ -1658,7 +1655,7 @@ class TestThreadToolWhitelist:
 
 
     def test_clear_restores_unrestricted_behavior(self, monkeypatch):
-        from hermes_cli.plugins import (
+        from hermes_cli.plugins_pre_tool_call import (
             set_thread_tool_whitelist,
             clear_thread_tool_whitelist,
         )
@@ -1677,7 +1674,7 @@ class TestThreadToolWhitelist:
         """Setting a whitelist in one thread must NOT leak into another."""
         import threading
 
-        from hermes_cli.plugins import (
+        from hermes_cli.plugins_pre_tool_call import (
             set_thread_tool_whitelist,
             clear_thread_tool_whitelist,
         )

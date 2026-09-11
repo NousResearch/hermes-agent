@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from hermes_cli import lifecycle, plugins
+from hermes_cli import lifecycle, plugins, plugins_pre_tool_call
 from agent import relay_runtime
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.plugins import PluginManager
@@ -776,7 +776,7 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 
     lifecycle.invoke_hook("on_session_start", **base)
     lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
-    block_message = plugins.resolve_pre_tool_block(
+    block_message = plugins_pre_tool_call.resolve_pre_tool_block(
         "write_file",
         {"path": "sensitive-path"},
         task_id=base["task_id"],

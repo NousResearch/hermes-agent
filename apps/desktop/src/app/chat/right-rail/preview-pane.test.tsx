@@ -640,4 +640,29 @@ describe('PreviewPane console state', () => {
       profile: 'macmini'
     })
   })
+
+  // #101880: guest window.print() segfaults the macOS native print panel —
+  // the pane stubs print in every guest document so the panel is never built.
+  it('stubs window.print in the guest on dom-ready', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const executeJavaScript = vi.fn(async (_code: string) => undefined)
+
+    Object.assign(webview, { executeJavaScript })
+
+    act(() => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+    expect(String(executeJavaScript.mock.calls[0]?.[0])).toContain('window.print')
+  })
 })

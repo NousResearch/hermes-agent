@@ -165,11 +165,18 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         from agent.title_generator import maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
+        # Prefer the pristine persist override (str or multimodal list): the live
+        # content can carry API-only scaffolding (ask sandwich, reaction/speech
+        # notes), and a title must come from what the USER typed, never from it.
         user_text = ""
-        for msg in reversed(messages or []):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                user_text = flatten_message_text(msg.get("content")).strip()
-                break
+        persist_text = getattr(agent, "_persist_user_message_override", None)
+        if persist_text:
+            user_text = flatten_message_text(persist_text).strip()
+        if not user_text:
+            for msg in reversed(messages or []):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    user_text = flatten_message_text(msg.get("content")).strip()
+                    break
         if not user_text:
             return
         # The session row is created lazily; force it now or the title write matches

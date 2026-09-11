@@ -160,9 +160,17 @@ class TestRecurringJobStuckInErrorStateIsRecoverable:
 
     @staticmethod
     def _force_error_state(job_id):
-        """Reproduce the exact state _mark_job_run_locked produces when
-        compute_next_run() fails for a recurring job (e.g. croniter
-        missing): state=error, enabled stays True, next_run_at=None."""
+        """Reproduce the state produced when next-run computation fails.
+
+        Expire the interval's crash-safe reserved slot so completion must
+        compute another one; a future reservation is intentionally preserved.
+        """
+        record = get_job(job_id)
+        assert isinstance(record, dict)
+        record["next_run_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        ).isoformat()
+        save_jobs([record])
         with mock.patch("cron.jobs.compute_next_run", return_value=None):
             mark_job_run(job_id, success=True)
 

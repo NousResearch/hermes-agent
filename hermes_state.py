@@ -931,13 +931,30 @@ class SessionDB(
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
-        with self._read_ctx() as conn:
-            return conn.execute(sql, params).fetchone()
+        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchone())
 
     def _read_all(self, sql: str, params: Any = ()) -> List[sqlite3.Row]:
         """``fetchall()`` of one read-only statement via ``_read_ctx``."""
-        with self._read_ctx() as conn:
-            return conn.execute(sql, params).fetchall()
+        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall())
+
+    def _read_retrying_ioerr(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Run an idempotent SELECT through ``_read_ctx``, retrying a transient SQLITE_IOERR.
+
+        A warm ``mode=ro`` pooled reader can hit the same millisecond-wide WAL transition window as a
+        read-only OPEN (#100436) when its statement executes or steps: a sibling process's checkpoint /
+        WAL reset / frame flush surfaces ``disk I/O error`` because a read-only connection cannot rewrite
+        the -shm index (#100871, WSL2 ext4-on-vhdx, multi-process). The window closes on its own, so
+        the statement is replayed on the SAME connection within the read-only IOERR budget -- never
+        closed and reopened (close() cancels this process's POSIX locks for every sibling connection),
+        never quarantined (busy is not broken). A persistent IOERR exhausts the budget and propagates."""
+        for attempt in range(_READ_ONLY_IOERR_RETRY_ATTEMPTS + 1):
+            try:
+                with self._read_ctx() as conn:
+                    return fn(conn)
+            except sqlite3.OperationalError as exc:
+                if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or _DISK_IO_ERROR_MARKER not in str(exc).lower():
+                    raise
+                time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
 
     def _ensure_db_file_generation(self) -> None:
         """Mint a once-per-file generation stamp (state_meta + application_id). First opener wins (INSERT

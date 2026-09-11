@@ -30,9 +30,9 @@ For a managed source installation:
 hermes update
 ```
 
-The default source channel tracks `main`. A configured stable channel tracks
-final release tags. The update prepares dependencies through PM and reports
-configuration changes and process-restart results.
+The default source channel tracks `main`. Configured stable and canary channels
+track their published release commits. The update prepares dependencies through
+PM and reports configuration changes and process-restart results.
 
 ### Bundled desktop updates
 
@@ -52,12 +52,35 @@ unavailable update check must not be interpreted as "already up to date."
 The application and its bundled base runtime update together; user data stays
 outside the package. See [Desktop installation](../user-guide/desktop.md#install).
 
+Stable and canary desktop bundles are separate applications. Installing canary
+does not replace stable, including on Windows with MSIX. Each application keeps
+its own desktop state and updates within the channel baked into its build;
+changing channels means installing the other application, not changing a setting.
+The canary icon has a yellow background (dark yellow in dark mode), and its CLI
+command is `hermes-canary`.
+
+One-off commit bundles are separate from both release channels and from other
+commit bundles. Their red icons show the short build SHA, also used in the
+`hermes-<short-sha>` CLI command. They do not check for or install updates,
+including through `hermes update` or `hermes update --check`. They explain:
+
+> This build doesn't get updates. Ask the developer who gave it to you for a new build.
+
+Separate applications still share Hermes profiles, configuration, and sessions
+under the same Hermes home. Running different builds against one profile is not
+schema isolation: newer builds can change stored data that an older build cannot
+read. Back up shared data before testing. The `hermes://` URL scheme remains
+shared; the application that most recently registered it handles links.
+
 ### Source channels and install identity
 
 ```bash
 hermes update --install-id
 hermes update --set-channel stable
 hermes update --channel stable --check
+# Or track published canary commits in this source installation:
+hermes update --set-channel canary
+hermes update
 ```
 
 `--install-id` prints the installation identity and path. `--set-channel`
@@ -65,10 +88,12 @@ changes only that installation's configuration, then exits without applying an
 update. `--channel` is a one-run override. An explicit `--branch` takes precedence
 for a source checkout.
 
-Source `main` tracks the branch tip. Source `stable` tracks the newest final
-`vMAJOR.MINOR.PATCH` tag. Source `canary` normalizes to `main`; it does not
-install a desktop package. Per-install records live under `update.installs`
-in configuration, so one checkout's choice does not change another app's feed.
+Source `main` tracks the branch tip. Source `stable` and `canary` resolve the
+published release for that channel and update the checkout to its exact Git
+commit. Canary does not mean the current tip of `main`, and an unpublished tag
+is not a release. Switching a source channel does not install a desktop package.
+Per-install records live under `update.installs` in configuration, so one
+checkout's choice does not change another installation's channel.
 
 Packaged desktop feed channels derive from their build tag and package owner.
 Changing a source channel is not an MSIX or Store channel switch. Canary builds

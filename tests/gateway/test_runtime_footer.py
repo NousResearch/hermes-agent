@@ -133,6 +133,57 @@ def test_build_footer_per_platform_off_suppresses():
     assert out == ""
 
 
+def test_build_footer_appends_plugin_fragments_with_sanitized_payload(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    seen = {}
+
+    def quota_fragment(**kwargs):
+        seen.update(kwargs)
+        return "5h 15% (2h51m)"
+
+    def broken_fragment(**kwargs):
+        raise RuntimeError("cache unavailable")
+
+    manager._hooks.setdefault("append_runtime_footer", []).extend([
+        lambda **kwargs: None,
+        broken_fragment,
+        quota_fragment,
+        lambda **kwargs: "resets 2",
+    ])
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model"]}}},
+        platform_key="slack", model="openai-codex/gpt-5.6", provider="openai-codex",
+        context_tokens=16_000, context_length=100_000, cwd="/tmp", turn_seconds=12.0,
+    )
+
+    assert out == "gpt-5.6 · 5h 15% (2h51m) · resets 2"
+    assert seen == {
+        "footer": "gpt-5.6", "model": "openai-codex/gpt-5.6", "provider": "openai-codex",
+        "context_tokens": 16_000, "context_length": 100_000, "cwd": "/tmp",
+        "turn_seconds": 12.0, "platform": "slack",
+        "telemetry_schema_version": "hermes.observer.v1",
+    }
+
+
+def test_build_footer_does_not_call_plugin_when_footer_is_disabled(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manager._hooks.setdefault("append_runtime_footer", []).append(
+        lambda **kwargs: pytest.fail("disabled footer must not invoke plugins")
+    )
+
+    assert build_footer_line(
+        user_config={}, platform_key="slack", model="gpt-5.6", provider="openai-codex",
+        context_tokens=0, context_length=None,
+    ) == ""
+
 
 # ---------------------------------------------------------------------------
 # latency — opt-in wall-clock turn duration

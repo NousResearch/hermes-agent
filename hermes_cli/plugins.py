@@ -185,11 +185,21 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # append_runtime_footer: after an enabled gateway runtime footer has rendered. A plugin may
+    # return a non-empty display fragment; fragments are appended in registration order using the
+    # footer separator. The payload is intentionally sanitized: footer, model, provider,
+    # context_tokens, context_length, cwd, turn_seconds, platform. It never carries gateway config,
+    # adapter handles, session transcripts, or credentials. Fail-open: callback failures and empty
+    # values leave the completed footer unchanged. Concrete consumer: a standalone quota plugin
+    # can read its own local cache and append provider quota/reset state without hot-path network I/O.
+    "append_runtime_footer",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_api_error_classification", "append_runtime_footer",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

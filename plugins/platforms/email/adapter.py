@@ -328,6 +328,12 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    # Email has no practical body-length cap, so declare native long-message handling:
+    # the gateway hands us the full payload and send() delivers it in one message, instead
+    # of truncating oversized cron output at MAX_PLATFORM_OUTPUT (4000 chars) before we ever
+    # see it. Matches the 50_000 max_message_length advertised in register().
+    splits_long_messages = True
+
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.

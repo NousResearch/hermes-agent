@@ -331,6 +331,29 @@ async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypa
     assert saved_files[0].read_text() == long_content
 
 
+@pytest.mark.asyncio
+async def test_long_output_preserved_for_chunking_adapter(tmp_path, monkeypatch):
+    """Chunking adapters receive the full payload, never a truncated one.
+
+    Counterpart to the non-chunking case above: an adapter that advertises
+    ``splits_long_messages = True`` (email, Discord, Telegram, Slack, ...) handles
+    long bodies natively, so the gateway must pass the content through untouched.
+    Truncating here would silently drop the tail of a long cron report even though
+    the adapter could have delivered all of it.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = ChunkingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:123")
+
+    long_content = "y" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job1"})
+
+    delivered = adapter.calls[0]["content"]
+    assert delivered == long_content  # passed through untouched
+    assert "truncated" not in delivered.lower()
+
+
 def _simulate_windows_codepage_write(monkeypatch):
     """Make ``Path.write_text`` behave like a non-UTF-8 Windows console.
 

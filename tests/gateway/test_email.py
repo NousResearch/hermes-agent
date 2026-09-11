@@ -1123,5 +1123,21 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestLongMessageHandling(unittest.TestCase):
+    """EmailAdapter must advertise native long-message handling."""
+
+    def test_declares_splits_long_messages(self):
+        """Email has no practical body-length cap, so the adapter must opt in to
+        receiving the full payload.
+
+        Without this flag gateway/delivery.py::_cap_oversized_output truncates cron
+        output at MAX_PLATFORM_OUTPUT (4000 chars) before send() is called — which
+        silently cut the tail off long reports even though email could carry them.
+        """
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        self.assertIs(EmailAdapter.splits_long_messages, True)
+
+
 if __name__ == "__main__":
     unittest.main()

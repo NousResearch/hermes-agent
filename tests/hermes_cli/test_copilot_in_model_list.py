@@ -7,6 +7,7 @@ import pytest
 
 from hermes_cli.model_switch import list_authenticated_providers
 from hermes_cli import model_switch_providers
+from hermes_cli.models import provider_model_ids
 
 
 @patch.dict(os.environ, {"GH_TOKEN": "test-key"}, clear=False)
@@ -83,3 +84,55 @@ def test_copilot_acp_hidden_when_executable_missing(monkeypatch, _no_other_copil
 
     assert all(p["slug"] != "copilot-acp" for p in providers), \
         "copilot-acp must stay hidden when no executable resolves"
+
+
+def test_copilot_acp_catalog_comes_from_authenticated_session_without_token():
+    session_models = ["auto", "gpt-5.6-sol", "claude-sonnet-5"]
+    credentials = {
+        "api_key": "copilot-acp",
+        "base_url": "acp://copilot",
+        "command": "copilot",
+        "args": ["--acp", "--stdio"],
+    }
+
+    with patch(
+        "hermes_cli.auth.resolve_external_process_provider_credentials",
+        return_value=credentials,
+    ), patch(
+        "agent.copilot_acp_client.CopilotACPClient.list_models",
+        return_value=session_models,
+    ) as list_models, patch(
+        "hermes_cli.models._resolve_copilot_catalog_api_key",
+        return_value="",
+    ), patch(
+        "hermes_cli.models._fetch_github_models",
+        return_value=[],
+    ) as github_models:
+        assert provider_model_ids("copilot-acp", force_refresh=True) == session_models
+
+    list_models.assert_called_once_with()
+    github_models.assert_not_called()
+
+
+def test_copilot_acp_catalog_falls_back_when_session_probe_fails():
+    credentials = {
+        "api_key": "copilot-acp",
+        "base_url": "acp://copilot",
+        "command": "copilot",
+        "args": ["--acp", "--stdio"],
+    }
+
+    with patch(
+        "hermes_cli.auth.resolve_external_process_provider_credentials",
+        return_value=credentials,
+    ), patch(
+        "agent.copilot_acp_client.CopilotACPClient.list_models",
+        side_effect=TimeoutError("probe timeout"),
+    ), patch(
+        "hermes_cli.models._resolve_copilot_catalog_api_key",
+        return_value="catalog-token",
+    ), patch(
+        "hermes_cli.models._fetch_github_models",
+        return_value=["api-fallback-model"],
+    ):
+        assert provider_model_ids("copilot-acp", force_refresh=True) == ["api-fallback-model"]

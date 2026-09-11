@@ -5,6 +5,7 @@ import os
 import queue
 import socket
 import threading
+import time
 from contextlib import ExitStack, suppress
 
 import pytest
@@ -12,6 +13,52 @@ import pytest
 from tui_gateway import server
 from tui_gateway.transport import FanoutTransport, StdioTransport
 from tui_gateway.ws import WSTransport
+
+
+class RecordingTransport:
+    """In-process Transport: optional write gate lets one peer overflow without a kernel pipe."""
+
+    def __init__(self, *, delay=0.0):
+        self.frames, self.closed, self.write_delay = [], False, delay
+        self._released = threading.Event()
+
+    def write(self, obj):
+        if self.write_delay:
+            self._released.wait(timeout=self.write_delay)
+        self.frames.append(obj)
+        return True
+
+    def close(self):
+        self.closed = True
+        self._released.set()
+
+    def release(self):
+        self._released.set()
+
+
+def _is_overflow_signal(obj) -> bool:
+    blob = json.dumps(obj, ensure_ascii=False)
+    return any(token in blob for token in ("detach", "overflow", "resubscribe", "replay", "backlog"))
+
+
+def _await_frame_count(transport, count, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if len(transport.frames) >= count:
+            return
+        time.sleep(0.001)
+    raise AssertionError(f"expected {count} frames, got {len(transport.frames)}")
+
+
+def _overflow_slow_peer(fan, healthy, slow):
+    """Emit until the slow mailbox overflows; pace healthy one receipt per emit."""
+    for n in range(FanoutTransport._MAX_PENDING_FRAMES + 64):
+        frame = {"params": {"type": "message.delta", "n": n}}
+        assert fan.write(frame)
+        _await_frame_count(healthy, n + 1)
+        if not fan.contains(slow):
+            return n
+    raise AssertionError("slow peer never overflowed")
 
 
 class PipeClient:
@@ -239,3 +286,74 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
             fan.close()
         assert not worker.is_alive()
         assert not fan.write({"after": "close"})
+
+
+def test_overflow_signals_the_detached_subscriber():
+    healthy = RecordingTransport()
+    slow = RecordingTransport(delay=30.0)
+    fan = FanoutTransport(healthy, slow)
+    try:
+        _overflow_slow_peer(fan, healthy, slow)
+        assert not fan.contains(slow)
+        assert fan.contains(healthy)
+        assert slow.closed or any(_is_overflow_signal(frame) for frame in slow.frames)
+    finally:
+        slow.release()
+        fan.close()
+
+
+def test_fanout_close_does_not_close_peer_sockets():
+    peer = RecordingTransport()
+    fan = FanoutTransport(peer)
+    assert fan.contains(peer)
+    fan.close()
+    assert peer.closed is False
+    assert not fan.contains(peer)
+
+
+def test_fanout_detach_does_not_close_peer_sockets():
+    slow = RecordingTransport()
+    fan = FanoutTransport(slow)
+    assert fan.detach(slow)
+    assert slow.closed is False
+    assert not fan.contains(slow)
+
+
+def test_healthy_peer_receives_frames_after_slow_overflow():
+    healthy = RecordingTransport()
+    slow = RecordingTransport(delay=30.0)
+    fan = FanoutTransport(healthy, slow)
+    try:
+        last_n = _overflow_slow_peer(fan, healthy, slow)
+        assert not fan.contains(slow)
+        assert fan.contains(healthy)
+        after = {"params": {"type": "message.complete", "n": last_n + 1}}
+        assert fan.write(after)
+        _await_frame_count(healthy, last_n + 2)
+        assert healthy.frames[-1] == after
+        assert fan.contains(healthy)
+    finally:
+        slow.release()
+        fan.close()
+
+
+def test_overflow_close_error_does_not_fail_emit_or_other_peers():
+    class BoomTransport(RecordingTransport):
+        def close(self):
+            super().close()
+            raise RuntimeError("overflow close exploded")
+
+    healthy = RecordingTransport()
+    slow = BoomTransport(delay=30.0)
+    fan = FanoutTransport(healthy, slow)
+    try:
+        last_n = _overflow_slow_peer(fan, healthy, slow)
+        assert not fan.contains(slow)
+        assert fan.contains(healthy)
+        after = {"params": {"type": "message.complete", "n": last_n + 1}}
+        assert fan.write(after)
+        _await_frame_count(healthy, last_n + 2)
+        assert healthy.frames[-1] == after
+    finally:
+        slow.release()
+        fan.close()

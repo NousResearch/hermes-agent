@@ -1814,7 +1814,11 @@ def create_job(
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     job = next((j for j in load_jobs() if j["id"] == job_id), None)
-    return _normalize_job_record(job) if job is not None else None
+    if job is None:
+        return None
+    normalized = _normalize_job_record(job)
+    _stamp_running_job_ids([normalized])
+    return normalized
 
 
 class AmbiguousJobReference(LookupError):
@@ -1860,6 +1864,7 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
         latest = {}
     for job in jobs:
         job["latest_execution"] = latest.get(job.get("id", ""))
+    _stamp_running_job_ids(jobs)
     return jobs
 
 
@@ -1958,6 +1963,63 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
             f"Requested one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled.")
     updated["next_run_at"] = next_run
+
+
+
+def _stamp_running_job_ids(jobs: List[Dict[str, Any]]) -> None:
+    """Sink each job dict with an authoritative ``is_running`` boolean and, when
+    running, the authoritative run-start timestamp (``active_run_started_at``).
+
+    Drives the desktop sidebar's live running-dot AND its "X ago" elapsed
+    counter from the SAME source so they can never diverge (a dot that pulses
+    while the counter says "in 2 hr" is the exact bug this replaces). The
+    scheduler keeps a ``_running_job_ids`` set that is populated before a job
+    is dispatched and cleared only when the run completes (cron/scheduler.py).
+    That set is process-local, though — with several cron tickers alive (a
+    messaging gateway plus the desktop dashboard backend) a sibling process may
+    fire the job, so we union the in-memory set with the durable
+    executions-ledger view (cron/executions.active_execution_start_times),
+    which any process reads the same way. The persisted job ``state`` never
+    becomes "running" (states are scheduled/paused/completed/error only), so it
+    cannot drive the indicator on its own.
+    """
+    running: set = set()
+    start_times: Dict[str, str] = {}
+    try:
+        from cron.scheduler import get_running_job_ids
+        running |= set(get_running_job_ids())
+    except Exception:
+        pass
+    try:
+        from cron.executions import active_execution_start_times
+        start_times = active_execution_start_times()
+        running |= set(start_times.keys())
+    except Exception:
+        pass
+    for job in jobs:
+        job_id = str(job.get("id", ""))
+        is_running = job_id in running
+        job["is_running"] = is_running
+        job["active_run_started_at"] = start_times.get(job_id) if is_running else None
+        if not is_running and job.get("state") == "scheduled" and job.get("next_run_at"):
+            # Display guard: trigger_job persists next_run_at=now as the
+            # scheduler's "fire now" contract. Serving that transient value
+            # makes the sidebar sort the job to the top until the scheduler
+            # advances it to the real next slot. Never surface a past
+            # next_run_at for a scheduled-but-idle job — serve the computed
+            # next slot instead so the sort key stays stable.
+            try:
+                if datetime.fromisoformat(job["next_run_at"]) <= _hermes_now():
+                    schedule = job.get("schedule")
+                    recomputed = compute_next_run(schedule) if isinstance(schedule, dict) else None
+                    # Only substitute a genuinely future slot. One-shots
+                    # (stale/completed) return None or their original run_at
+                    # — leave those untouched so pending one-shots keep their
+                    # existing position and completed ones stay put.
+                    if recomputed and datetime.fromisoformat(recomputed) > _hermes_now():
+                        job["next_run_at"] = recomputed
+            except Exception:
+                pass
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:

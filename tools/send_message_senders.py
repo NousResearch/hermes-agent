@@ -614,47 +614,6 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via the QQ Bot Open Platform REST API (no WebSocket needed)."""
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-
-    # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
-    from gateway.config import _getenv
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or _getenv("QQ_APP_ID", "")
-    secret = pconfig.token or extra.get("client_secret") or _getenv("QQ_CLIENT_SECRET", "")
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            token_resp = await client.post("https://bots.qq.com/app/getAppAccessToken",
-                                           json={"appId": str(appid), "clientSecret": str(secret)})
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            access_token = token_resp.json().get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            # Separate endpoints for guild channels, C2C (private) and groups; first 2xx wins.
-            headers = {"Authorization": f"QQBot {access_token}", "Content-Type": "application/json"}
-            payload = {"content": message[:4000], "msg_type": 0}
-            endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages"),
-                         ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"),
-                         ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"))
-            statuses = []
-            for kind, url in endpoints:
-                resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code in {200, 201}:
-                    return _success("qqbot", chat_id, message_id=resp.json().get("id"))
-                statuses.append(f"{kind}={resp.status_code}")
-            return _error(f"QQBot send failed: {' '.join(statuses)}")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
-
-
 async def _send_yuanbao(chat_id, message, media_files=None):
     """Send via the running Yuanbao adapter's persistent WebSocket (no throwaway client possible)."""
     try:

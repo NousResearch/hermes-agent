@@ -16,7 +16,7 @@ from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _send_matrix_via_adapter, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -557,13 +557,25 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
     return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
 
 
+def _qqbot_route(p, pc, cid, chunk, media, tid, fd):
+    """QQBot's standalone sender is registered by the built-in platform package itself, and a
+    CLI/cron process reaches this router without ever importing it. Importing here binds the
+    PlatformEntry ``_send_via_adapter`` needs for out-of-process delivery (idempotent, cached
+    in ``sys.modules`` after the first send)."""
+    import gateway.platforms.qqbot  # noqa: F401
+    return _via_adapter_route(p, pc, cid, chunk, media, tid, fd)
+
+
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
 # chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
 # (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media needs the
 # running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
 # plugin's standalone sender. Names resolve at call time so tests can monkeypatch ``_send_signal``.
+# QQBot: ALL sends (text and media) go through the live adapter or the registered standalone
+# sender, so a single QQ outbound/upload implementation backs every send path.
 _CHUNKED_ROUTES = {
+    "qqbot": (False, [], _qqbot_route),
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
     "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd: _send_signal(
@@ -579,7 +591,6 @@ _TEXT_SENDERS = {
        for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom")},
     "signal": lambda pc, cid, chunk, tid: _send_signal(pc.extra, cid, chunk),
     "bluebubbles": lambda pc, cid, chunk, tid: _send_bluebubbles(pc.extra, cid, chunk),
-    "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"

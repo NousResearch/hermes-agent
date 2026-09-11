@@ -59,7 +59,7 @@ class QQCloseError(Exception):
 
 
 from gateway.platforms.qqbot.constants import (
-    API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
+    API_BASE, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
@@ -67,6 +67,7 @@ from gateway.platforms.qqbot.constants import (
 from gateway.platforms.qqbot.utils import coerce_list as _coerce_list, build_user_agent
 from gateway.platforms.qqbot.chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
+from gateway.platforms.qqbot.outbound import QQApiClient, _VOICE_EXTS, resolve_target
 from gateway.platforms.qqbot.keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
@@ -79,6 +80,10 @@ def check_qq_requirements() -> bool:
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
+# QQ's voice endpoint accepts only these formats (single source: outbound._VOICE_EXTS).
+# The generic send_message media router dispatches EVERY audio extension to send_voice,
+# so anything else is reclassified as a document instead of being rejected by the API.
+_VOICE_FORMAT_EXTS = frozenset(_VOICE_EXTS)
 _STT_PROVIDER_BASE_URLS = {
     "zai": "https://open.bigmodel.cn/api/coding/paas/v4",
     # Aliases that target direct REST APIs not modeled as first-class providers in PROVIDER_REGISTRY. Used
@@ -163,15 +168,35 @@ class QQAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
-        self._access_token: Optional[str] = None
-        self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        # Token lifecycle is owned exclusively by QQApiClient (see outbound.py); the
+        # _access_token / _token_expires_at compat properties below read through to it.
+        self._api: Optional[QQApiClient] = None
 
         # Inline-keyboard interaction routing: invoked for every INTERACTION_CREATE
         # after the adapter ACKed it. Defaults to the approval/update-prompt
         # dispatcher; override via set_interaction_callback() (None drops clicks).
         self._interaction_callback: Optional[Callable[[InteractionEvent], Awaitable[None]]] = (
             self._default_interaction_dispatch)
+
+    # ── Token compat properties (delegate to the shared QQApiClient) ──
+
+    @property
+    def _access_token(self) -> Optional[str]:
+        return self._api.access_token if self._api is not None else None
+
+    @_access_token.setter
+    def _access_token(self, value: Optional[str]) -> None:
+        if self._api is not None and value is not None:
+            self._api._access_token = value
+
+    @property
+    def _token_expires_at(self) -> float:
+        return self._api.token_expires_at if self._api is not None else 0.0
+
+    @_token_expires_at.setter
+    def _token_expires_at(self, value: float) -> None:
+        if self._api is not None:
+            self._api._token_expires_at = value
 
     # ── Properties ──
 
@@ -211,6 +236,11 @@ class QQAdapter(BasePlatformAdapter):
             self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0, follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
+
+            # Shared QQApiClient: one token / REST / upload implementation behind both
+            # this live adapter and the standalone (out-of-process) sender.
+            self._api = QQApiClient(self._app_id, self._client_secret, self._http_client,
+                                    log_tag=self._log_tag)
 
             await self._open_gateway_ws(log_url=True)
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -260,6 +290,7 @@ class QQAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+        self._api = None  # its httpx client is closed; connect() rebuilds both
         self._fail_pending("Disconnected")
 
     # ── Token management ──
@@ -273,27 +304,12 @@ class QQAdapter(BasePlatformAdapter):
         except Exception as exc:
             raise RuntimeError(f"Failed to get QQ Bot {what}: {exc}") from exc
 
-    def _token_fresh(self) -> bool:
-        return bool(self._access_token) and time.time() < self._token_expires_at - 60
-
     async def _ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (with singleflight)."""
-        if self._token_fresh():
-            return self._access_token
-        async with self._token_lock:
-            if self._token_fresh():  # double-check after acquiring lock
-                return self._access_token
-            data = await self._fetch_json("access token", lambda: self._http_client.post(
-                TOKEN_URL, json={"appId": self._app_id, "clientSecret": self._client_secret},
-                timeout=DEFAULT_API_TIMEOUT))
-            token = data.get("access_token")
-            if not token:
-                raise RuntimeError(f"QQ Bot token response missing access_token: {data}")
-            expires_in = int(data.get("expires_in", 7200))
-            self._access_token = token
-            self._token_expires_at = time.time() + expires_in
-            logger.info("[%s] Access token refreshed, expires in %ds", self._log_tag, expires_in)
-            return self._access_token
+        """Valid access token via the shared ``QQApiClient`` (caching + singleflight live there);
+        only callable after ``connect()`` wired ``_api``."""
+        if self._api is None:
+            raise RuntimeError("QQApiClient not initialised — not connected?")
+        return await self._api.ensure_token()
 
     async def _get_gateway_url(self) -> str:
         token = await self._ensure_token()
@@ -394,8 +410,8 @@ class QQAdapter(BasePlatformAdapter):
 
                 if code == 4004:
                     logger.info("[%s] Invalid token (4004), will refresh and reconnect", self._log_tag)
-                    self._access_token = None
-                    self._token_expires_at = 0.0
+                    if self._api is not None:
+                        self._api.invalidate_token()
 
                 if code in self._SESSION_INVALID_CLOSE_CODES:
                     logger.info("[%s] Session error (%d), clearing session for re-identify", self._log_tag, code)
@@ -1281,16 +1297,11 @@ class QQAdapter(BasePlatformAdapter):
     async def _api_request(
         self, method: str, path: str, body: Optional[Dict[str, Any]] = None, timeout: float = DEFAULT_API_TIMEOUT,
     ) -> Dict[str, Any]:
-        client = self._require_http_client()
-        headers = await self._auth_headers()
-        try:
-            resp = await client.request(method, f"{API_BASE}{path}", headers=headers, json=body, timeout=timeout)
-            data = resp.json()
-            if resp.status_code >= 400:
-                raise RuntimeError(f"QQ Bot API error [{resp.status_code}] {path}: {data.get('message', data)}")
-            return data
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
+        """Authenticated REST request through the shared ``QQApiClient``; raises ``QQApiError``
+        (carries ``status_code``) so callers keep a typed error to branch on."""
+        if self._api is None:
+            raise RuntimeError("QQApiClient not initialised — not connected?")
+        return await self._api.api_request(method, path, body, timeout)
 
     async def _auth_headers(self) -> Dict[str, str]:
         """JSON REST headers with a fresh bot token."""
@@ -1367,12 +1378,13 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
-        sender = self._text_sender(self._guess_chat_type(chat_id))
+        chat_type, target_id, _has_prefix = self.normalize_target(chat_id)
+        sender = self._text_sender(chat_type)
         if sender is None:
             return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
         for attempt in range(3):
             try:
-                return await sender(chat_id, content, reply_to)
+                return await sender(target_id, content, reply_to)
             except Exception as exc:
                 last_exc = exc
                 if any(k in str(exc).lower() for k in self._PERMANENT_SEND_ERRORS + ("bad request",)):
@@ -1526,6 +1538,14 @@ class QQAdapter(BasePlatformAdapter):
         return await self._send_media(chat_id, image_path, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
 
     async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+        """Voice send with a format guard: the generic media router hands every audio
+        extension to this method, so a format QQ's voice endpoint rejects (e.g. .m4a) is
+        sent as a document instead of failing the whole send."""
+        ext = os.path.splitext(audio_path)[1].lower()
+        if ext not in _VOICE_FORMAT_EXTS:
+            logger.warning("[%s] send_voice: %s is not a QQ voice format; sending as document",
+                           self._log_tag, ext or "<none>")
+            return await self.send_document(chat_id, audio_path, caption=caption, reply_to=reply_to)
         return await self._send_media(chat_id, audio_path, MEDIA_TYPE_VOICE, "voice", caption, reply_to)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
@@ -1545,7 +1565,7 @@ class QQAdapter(BasePlatformAdapter):
         (prepare / PUT parts / complete), up to the platform's ~100 MB per-file limit."""
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
-        chat_type = self._guess_chat_type(chat_id)
+        chat_type, target_id, _has_prefix = self.normalize_target(chat_id)
         if chat_type == "guild":
             return SendResult(success=False, error="Guild media send not supported via this path")
 
@@ -1553,10 +1573,10 @@ class QQAdapter(BasePlatformAdapter):
             if self._is_url(media_source):
                 resolved_name = file_name or Path(urlparse(media_source).path).name or "media"
                 upload = await self._upload_media(
-                    chat_type, chat_id, file_type, url=media_source, srv_send_msg=False,
+                    chat_type, target_id, file_type, url=media_source, srv_send_msg=False,
                     file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None)
             else:
-                upload = await self._upload_local_file(chat_type, chat_id, media_source, file_type, file_name)
+                upload = await self._upload_local_file(chat_type, target_id, media_source, file_type, file_name)
 
             file_info = upload.get("file_info") or (upload.get("data", {}) or {}).get("file_info")
             if not file_info:
@@ -1567,7 +1587,7 @@ class QQAdapter(BasePlatformAdapter):
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
             if reply_to:
                 body["msg_id"] = reply_to
-            return await self._post_message(self._messages_path(chat_type, chat_id), body)
+            return await self._post_message(self._messages_path(chat_type, target_id), body)
         except UploadDailyLimitExceededError as exc:
             # Non-retryable quota hit; give the model actionable text.
             logger.warning("[%s] Daily upload limit exceeded for %s (%s)", self._log_tag, exc.file_name, exc.file_size_human)
@@ -1645,6 +1665,18 @@ class QQAdapter(BasePlatformAdapter):
     def _guess_chat_type(self, chat_id: str) -> str:
         """Determine chat type from stored inbound metadata, fallback to 'c2c'."""
         return self._chat_type_map.get(chat_id, "c2c")
+
+    def normalize_target(self, chat_id: str) -> Tuple[str, str, bool]:
+        """``(chat_type, target_id, has_prefix)`` for an inbound or operator-supplied chat id.
+
+        ``c2c:``/``user:``/``group:``/``guild:`` prefixes are stripped so the REST path is
+        built from the bare OpenID; a bare id keeps its inbound-metadata hint. ``has_prefix``
+        is True for explicit targets, which must NOT fall back across chat types on 404.
+        """
+        chat_type, target_id, has_prefix = resolve_target(chat_id)
+        if has_prefix:
+            return chat_type, target_id, True
+        return self._guess_chat_type(chat_id), chat_id, False
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:

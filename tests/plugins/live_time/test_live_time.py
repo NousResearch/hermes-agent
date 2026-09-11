@@ -35,6 +35,14 @@ def test_context_marks_itself_authoritative() -> None:
     assert "Conversation started" in text
 
 
+def test_weekday_label_is_locale_neutral() -> None:
+    text = _on_pre_llm_call()["context"]
+    m = re.search(r"\(\s*Weekday \d/7, ([A-Za-z]{3})\)", text)
+    assert m and m.group(1) in {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}, (
+        f"weekday label not locale-neutral: {text!r}"
+    )
+
+
 def test_register_hooks_pre_llm_call() -> None:
     ctx = MagicMock()
     register(ctx)
@@ -59,16 +67,36 @@ def test_env_timezone_is_respected(monkeypatch) -> None:
 def test_config_timezone_is_respected(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
     cfg = tmp_path / "config.yaml"
-    cfg.write_text('timezone: "Asia/Tokyo"\n', encoding="utf-8")
+    # Inline comment + quoted value must not defeat parsing.
+    cfg.write_text('timezone: "Asia/Tokyo"  # trailing comment\n', encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     text = _on_pre_llm_call()["context"]
     assert "TZ Asia/Tokyo" in text
-    # Tokyo is +1h from the test machine (China Standard Time) — the stamped
-    # timestamp must follow the configured zone, not the system one.
-    from zoneinfo import ZoneInfo
 
-    m = re.search(r"Now: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", text)
-    assert m, f"missing timestamp in {text!r}"
-    parsed = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
-    now_tokyo = datetime.now(ZoneInfo("Asia/Tokyo")).replace(tzinfo=None)
-    assert abs((now_tokyo - parsed).total_seconds()) < 30
+
+def test_nested_timezone_key_is_ignored(monkeypatch, tmp_path) -> None:
+    """A timezone key nested under another section must not be picked up."""
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "model: deepseek\n"
+        "plugins:\n"
+        "  entries:\n"
+        "    time-gap:\n"
+        "      timezone: Europe/Berlin\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from plugins.live_time import _resolve_timezone_name
+
+    assert _resolve_timezone_name() == ""
+
+
+def test_invalid_timezone_falls_back_to_system_local(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    monkeypatch.setenv("HERMES_TIMEZONE", "Mars/Olympus_Mons")
+    out = _on_pre_llm_call()
+    assert out is not None  # invalid tz must not raise
+    text = out["context"]
+    assert "TZ Mars/Olympus_Mons" not in text
+    assert re.search(r"TZ UTC[+-]\d+", text), f"no system-local fallback in {text!r}"

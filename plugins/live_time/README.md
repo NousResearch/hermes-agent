@@ -17,7 +17,7 @@ On every LLM call the plugin injects a small context block on the
 user-message side of the request:
 
 ```
-[LIVE-TIME] Now: 2026-08-13 16:30:00 (Weekday 4/7, 四), TZ Asia/Shanghai.
+[LIVE-TIME] Now: 2026-08-13 16:30:00 (Weekday 4/7, Thu), TZ Asia/Shanghai.
 Injected by live-time plugin at THIS LLM call's moment. Use THIS as the
 authoritative current time for any today/now/elapsed/date judgment. ...
 ```
@@ -28,10 +28,20 @@ Design properties:
   the cached system prompt, so prompt caching is unaffected.
 - **Timezone aware** — resolves the timezone in this order:
   1. `HERMES_TIMEZONE` environment variable
-  2. `timezone` key in `<HERMES_HOME | ~/.hermes>/config.yaml`
+  2. top-level `timezone` key in `<HERMES_HOME | ~/.hermes>/config.yaml`
+     (parsed with `yaml.safe_load`, so inline comments and nested keys are
+     handled correctly)
   3. local system timezone (reported as `TZ UTC±H`)
-- **Zero dependencies** — stdlib only, no internal Hermes imports (so the
-  plugin survives upstream refactors).
+
+  Caveat: when `HERMES_HOME` is not set, the config path falls back to
+  `~/.hermes` — i.e. the **default profile's** config. Profile-specific
+  timezone config is only picked up when Hermes exports `HERMES_HOME` for
+  that profile (the normal startup path).
+- **Locale neutral** — weekday labels are English abbreviations (`Mon`,
+  `Tue`, …) so the injected block stays consistent in any locale.
+- **Zero dependencies beyond the Hermes runtime** — stdlib + PyYAML (which
+  Hermes already ships); no internal Hermes imports, so the plugin survives
+  upstream refactors.
 
 ## Install
 

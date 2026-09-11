@@ -6,10 +6,11 @@ conversations leave the model with no sense of "now". This plugin injects the
 real current time at every LLM call — ephemeral, on the user-message side,
 never touching the cached system prompt (prompt caching stays intact).
 
-Timezone resolution (stdlib only — no internal Hermes imports, so the plugin
-survives upstream refactors):
+Timezone resolution:
     1. ``HERMES_TIMEZONE`` environment variable
-    2. ``timezone`` key in ``<HERMES_HOME | ~/.hermes>/config.yaml``
+    2. top-level ``timezone`` key in ``<HERMES_HOME | ~/.hermes>/config.yaml``
+       (parsed with ``yaml.safe_load``; note this is the default-profile
+       config — see README for the profile caveat)
     3. local system timezone
 
 See https://github.com/NousResearch/hermes-agent/issues/10421
@@ -18,13 +19,11 @@ See https://github.com/NousResearch/hermes-agent/issues/10421
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-_WEEKDAYS = "一二三四五六日"
-_TZ_KEY_RE = re.compile(r'^\s*timezone\s*:\s*["\']?([^"\'\s#]+)', re.MULTILINE)
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 def _resolve_timezone_name() -> str:
@@ -36,11 +35,15 @@ def _resolve_timezone_name() -> str:
     cfg_path = Path(home) / "config.yaml"
     try:
         if cfg_path.exists():
-            m = _TZ_KEY_RE.search(cfg_path.read_text(encoding="utf-8"))
-            if m:
-                return m.group(1).strip()
-    except OSError:
-        pass
+            import yaml  # PyYAML ships with the Hermes runtime
+
+            loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                tz_cfg = loaded.get("timezone")
+                if isinstance(tz_cfg, str) and tz_cfg.strip():
+                    return tz_cfg.strip()
+    except (OSError, ImportError, ValueError):
+        pass  # unreadable/unparsable config — fall through to system local
     return ""
 
 
@@ -48,14 +51,16 @@ def _current_time() -> tuple[datetime, str]:
     """Now in the configured timezone; fall back to system-local time.
 
     Returns ``(now, tz_name)`` where ``tz_name`` is "" when system-local.
+    An unknown/invalid configured timezone falls back to system-local time
+    rather than raising.
     """
     tz_name = _resolve_timezone_name()
     if tz_name:
         try:
-            from zoneinfo import ZoneInfo
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
             return datetime.now(ZoneInfo(tz_name)), tz_name
-        except Exception:
+        except (ZoneInfoNotFoundError, ValueError):
             pass  # unknown/invalid tz — fall through to system local
     return datetime.now().astimezone(), ""
 

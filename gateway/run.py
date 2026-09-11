@@ -2678,8 +2678,9 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     Only explicit ``MEDIA:`` attachments are stripped; bare paths/URLs stay visible. No broad regex after
     ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
 
-    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in this path. Keep bare local paths
-    and ordinary image URLs visible because the post-stream uploader intentionally ignores them (#20834).
+    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in this path. Bare local paths stay
+    visible as text; explicit image tags (``http(s)://`` / ``file://``) in the response are delivered separately
+    by the post-stream uploader after the text is sent.
     """
     _, cleaned = adapter.extract_media(response)
     return cleaned.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()

@@ -2227,10 +2227,20 @@ class GatewayTurnMixin:
                 await adapter.send(
                     chat_id=source.chat_id, content=header + "(No response generated)", metadata=_thread_metadata,
                 )
-            for image_url, alt_text in (images or []):
+            # Extracted images ride one send_multiple_images batch so ``file://`` URIs
+            # reach ``send_image_file`` (decoded) instead of being handed to
+            # ``send_image`` as a literal pathname. Canonical dedup keys keep the
+            # media_files loop below from re-sending the same file.
+            _image_dedup_keys: set = set()
+            for _img_url, _img_alt in (images or []):
+                if _img_url.lower().startswith('file://'):
+                    _normed = BasePlatformAdapter._normalize_file_url(_img_url)
+                    if _normed:
+                        _image_dedup_keys.add(os.path.normcase(_normed))
+            if images:
                 with suppress(Exception):
-                    await adapter.send_image(
-                        chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
+                    await adapter.send_multiple_images(
+                        chat_id=source.chat_id, images=images, metadata=_thread_metadata,
                     )
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.
@@ -2245,6 +2255,8 @@ class GatewayTurnMixin:
                             is_voice=_is_voice,
                         )
                     else:
+                        if _ext in _IMAGE_EXTS and os.path.normcase(media_path) in _image_dedup_keys:
+                            continue  # already delivered by the image batch above
                         sender, key = (
                             (adapter.send_video, "video_path") if _ext in _VIDEO_EXTS
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS

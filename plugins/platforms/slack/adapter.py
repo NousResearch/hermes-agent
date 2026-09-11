@@ -10,6 +10,7 @@ import os
 import re
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
@@ -80,6 +81,34 @@ _MODEL_PICKER_ACTION_IDS = (
     _MODEL_PICKER_BACK_ACTION,
     _MODEL_PICKER_CANCEL_ACTION,
 )
+_SLACK_OAUTH_ENV = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+
+
+@contextmanager
+def _suppress_slack_oauth_env():
+    """Keep Slack Bolt in bot-token mode while constructing ``AsyncApp``.
+
+    Slack Bolt 1.30.0 enables its default OAuth flow when both variable names
+    exist in ``os.environ``. Hermes never runs an OAuth installation flow, so
+    that implicit mode would replace the bot token with an empty installation
+    store and drop every inbound event. The values are restored even when the
+    constructor raises; a partial environment does not activate Slack Bolt's
+    condition and is therefore left untouched.
+    """
+    if not all(key in os.environ for key in _SLACK_OAUTH_ENV):
+        yield
+        return
+
+    saved_env = {key: os.environ.pop(key) for key in _SLACK_OAUTH_ENV}
+    logger.info(
+        "[Slack] Suppressing %s during AsyncApp init to prevent "
+        "inadvertent multi-team OAuth activation",
+        ", ".join(_SLACK_OAUTH_ENV),
+    )
+    try:
+        yield
+    finally:
+        os.environ.update(saved_env)
 
 
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
@@ -1658,9 +1687,12 @@ class SlackAdapter(SlackWisdomMixin, BasePlatformAdapter):
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
-            self._app = AsyncApp(
-                token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
-                before_authorize=_slack_per_request_proxy_middleware(proxy_url))
+            # Slack Bolt sees both names as an implicit OAuth configuration;
+            # the guard keeps this bot-token-only adapter out of that mode.
+            with _suppress_slack_oauth_env():
+                self._app = AsyncApp(
+                    token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
+                    before_authorize=_slack_per_request_proxy_middleware(proxy_url))
             _apply_slack_proxy(self._app.client, proxy_url)
             for token in bot_tokens:
                 await self._authenticate_workspace(token, proxy_url)

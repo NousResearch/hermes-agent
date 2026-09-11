@@ -270,14 +270,49 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
+        # T3 PR97786 — optional authority forwarded from background-review fork (C17/C18).
+        # When None, the run_agent.py forwarder default-retention block produces a fresh
+        # SessionWritePolicy.default() and Decision; when provided, the parent agent's
+        # retained authority replaces the defaults.
+        session_write_policy=None,
+        self_improvement_decision=None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
-        init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+        init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay", "session_write_policy", "self_improvement_decision")}
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
+
+        # T3 PR97786 — retain SessionWritePolicy and self-improvement Decision on the
+        # agent immediately after init_agent completes. Both values are evaluated from
+        # the canonical initialization authority (NOT from the current environment at
+        # mutation time, C7) and are the SINGLE source of truth for downstream
+        # consumers (file_tools, terminal_tool, delegate_tool, cron/suggestions,
+        # background_review fork).
+        from agent.session_write_policy import SessionWritePolicy
+        from agent.self_improvement_policy import evaluate as _evaluate_decision
+        try:
+            from agent.self_improvement_policy import provenance_lookup as _provenance_lookup
+            _provenance_ok = bool(_provenance_lookup())
+        except Exception:
+            # C9: provenance lookup failure => fail closed.
+            _provenance_ok = False
+        # If the caller (background-review fork) forwarded an explicit retained authority,
+        # honor it. Otherwise derive a fresh normal/allow from initialization authority.
+        if session_write_policy is not None:
+            self.session_write_policy = session_write_policy
+        else:
+            self.session_write_policy = SessionWritePolicy.default()
+        if self_improvement_decision is not None:
+            self.self_improvement_decision = self_improvement_decision
+        else:
+            self.self_improvement_decision = _evaluate_decision(
+                policy_protected=False,
+                provenance_lookup_ok=_provenance_ok,
+                source="session_init",
+            )
 
     def _get_session_db_for_recall(self):
         """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the

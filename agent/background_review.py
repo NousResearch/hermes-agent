@@ -841,6 +841,16 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+    # T3 PR97786 — forward the parent's retained SessionWritePolicy and Decision so the
+    # background-review fork inherits the parent's authority (C17/C18) instead of
+    # reconstructing normal/allow from the mutation-time environment (which would
+    # broaden privilege if the parent was protected).
+    parent_policy = getattr(agent, "session_write_policy", None)
+    if parent_policy is not None:
+        kwargs["session_write_policy"] = parent_policy
+    parent_decision = getattr(agent, "self_improvement_decision", None)
+    if parent_decision is not None:
+        kwargs["self_improvement_decision"] = parent_decision
     return kwargs
 
 

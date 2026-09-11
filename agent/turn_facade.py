@@ -119,23 +119,44 @@ class TurnFacadeMixin:
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
             with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
-                try:
-                    if lease is not None:
-                        lease.start()
-                    result = run_conversation(
-                        self, user_message, system_message, conversation_history, effective_task_id,
-                        stream_callback, persist_user_message,
-                        persist_user_timestamp=persist_user_timestamp,
-                        persist_user_display_kind=persist_user_display_kind,
-                        persist_user_display_metadata=persist_user_display_metadata,
-                        persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
-                        turn_author=turn_author,
-                    )
-                finally:
-                    # Post-loop relay/task finalization must not receive a late refresh interrupt;
-                    # the interrupt clear itself waits for the thread join in the outer finally.
-                    if lease is not None:
-                        lease.stop_refresher()
+                # T3 PR97786 — bind the retained SessionWritePolicy and Decision as
+                # ContextVars around the actual conversation-loop execution seam.
+                # This is the ONLY authorized site for authority binding — never as a
+                # process-global monkeypatch on ``agent.conversation_loop.run_conversation``.
+                # The bracket is INSIDE the existing bind_subagent_parent / scoped_runtime_main /
+                # track_in_interrupt_scope brackets so that the broader scope semantics
+                # (turn admission, lifecycle ordering, cancellation cleanup) are preserved.
+                # Tokens are reset in the inner finally so success, exception, and
+                # cancellation paths all restore the prior ContextVar values (C11/C12/C13).
+                from agent.session_write_policy import (
+                    get_current_session_write_policy,
+                    session_write_policy_scope,
+                )
+                from agent.self_improvement_decision_context import (
+                    get_self_improvement_decision,
+                    self_improvement_decision_scope,
+                )
+                _turn_policy = getattr(self, "session_write_policy", None) or get_current_session_write_policy()
+                _turn_decision = getattr(self, "self_improvement_decision", None) or get_self_improvement_decision()
+                with session_write_policy_scope(_turn_policy), self_improvement_decision_scope(_turn_decision):
+                    try:
+                        if lease is not None:
+                            lease.start()
+                        result = run_conversation(
+                            self, user_message, system_message, conversation_history, effective_task_id,
+                            stream_callback, persist_user_message,
+                            persist_user_timestamp=persist_user_timestamp,
+                            persist_user_display_kind=persist_user_display_kind,
+                            persist_user_display_metadata=persist_user_display_metadata,
+                            persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
+                            turn_author=turn_author,
+                        )
+                    finally:
+                        # Post-loop relay/task finalization must not receive a late refresh interrupt;
+                        # the interrupt clear itself waits for the thread join in the outer finally.
+                        # The ContextVar scopes restore automatically via their own finally on exit.
+                        if lease is not None:
+                            lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True

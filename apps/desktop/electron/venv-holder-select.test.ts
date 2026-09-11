@@ -36,6 +36,16 @@ test('excludes external venv holders that are not the hindsight daemon', () => {
     isHermesOwnedVenvDaemon('C:\\Hermes\\venv\\Scripts\\python.exe', 'python C:\\tools\\import.py', SCRIPTS),
     false
   )
+  // a gateway running from the venv: the CLI updater's pause/restart machinery
+  // owns it, so the hand-off must not kill it here.
+  assert.equal(
+    isHermesOwnedVenvDaemon(
+      'C:\\Hermes\\venv\\Scripts\\python.exe',
+      'python.exe -m hermes_cli.main gateway run',
+      SCRIPTS
+    ),
+    false
+  )
 })
 
 test('excludes exes outside the venv even when the cmdline mentions hindsight', () => {

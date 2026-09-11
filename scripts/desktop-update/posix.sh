@@ -686,18 +686,91 @@ rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `hermes update` child adopts it via process ancestry).
-# The Desktop supplies one acquisition time for the whole ownership chain.
+#
+# The marker's second line is an IDENTITY TOKEN for the pid on its first line,
+# not a clock to compare against: every reader (update-marker.ts
+# probePidIdentity, hermes_mcp_update_gate.pid_identity_status,
+# hermes_cli/update_lock.py) calls the owner `matching` only when
+#
+#     kernel_creation_time(marker.pid) < marker.started_at + 1
+#
+# The Desktop stamps HERMES_UPDATE_STARTED_AT *before* it spawns us and floors
+# it to whole seconds, so it can only predate this process. Copying it through
+# makes our own live claim read `stale` as soon as the spawn crosses a second
+# boundary, and the marker is then reclaimed out from under a running update
+# (the 2026-09-06 Windows incident; windows.ps1 stamps its own creation time
+# for exactly this reason). So we stamp OUR creation time and keep the
+# Desktop's value for the log line only.
 NOW="$(date +%s)"
-STARTED_AT="${HERMES_UPDATE_STARTED_AT:-$NOW}"
-case "$STARTED_AT" in ''|*[!0-9]*) STARTED_AT="$NOW" ;; esac
-MIN_STARTED_AT=$((NOW - 1200))
-# Compare the validated decimal strings before doing arithmetic. Shell integer
-# expansion can wrap on an attacker-controlled value wider than signed 64-bit.
-if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
-    || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
-  STARTED_AT="$NOW"
+
+# Our own creation epoch, read from the kernel with tools guaranteed on Linux
+# and macOS. A non-zero return means "could not read it"; the caller then falls
+# back to the wall clock, which can only be LATER than our creation and so is
+# still safe for the check above -- it merely widens the window in which a
+# recycled pid could be mistaken for us.
+script_created_at() {
+  local stat_line after ticks btime hz raw epoch fmt
+  case "$(uname 2>/dev/null)" in
+    Linux)
+      # /proc/$$ and not /proc/self: command substitution forks, so `self`
+      # here would name the subshell rather than the pid in the marker.
+      stat_line="$(cat "/proc/$$/stat" 2>/dev/null)" || return 1
+      # comm (field 2) is parenthesised and may itself contain spaces and
+      # ')', so split after the LAST ')'.
+      after="${stat_line##*)}"
+      # shellcheck disable=SC2086
+      set -- $after  # $1 is field 3 (state), so field 22 (starttime) is $20
+      [ "$#" -ge 20 ] || return 1
+      ticks="${20}"
+      case "$ticks" in ''|*[!0-9]*) return 1 ;; esac
+      btime="$(awk '$1 == "btime" { print $2; exit }' /proc/stat 2>/dev/null)"
+      case "$btime" in ''|*[!0-9]*) return 1 ;; esac
+      hz="$(getconf CLK_TCK 2>/dev/null)"
+      # USER_HZ is 100 on every mainstream Linux ABI, which is what the
+      # readers assume; only fall back to it if getconf is unavailable.
+      case "$hz" in ''|*[!0-9]*|0) hz=100 ;; esac
+      [ "${#ticks}" -le 18 ] && [ "${#btime}" -le 11 ] || return 1
+      # Floor: the readers require creation < stamp + 1, and the true
+      # (fractional) creation time is under a second past this value.
+      echo "$((btime + ticks / hz))"
+      ;;
+    Darwin)
+      # `ps -o lstart=` is second-resolution local time, e.g.
+      # "Sun Sep  7 05:49:02 2026"; squeeze the day padding before parsing.
+      raw="$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+      [ -n "$raw" ] || return 1
+      for fmt in '%a %b %e %H:%M:%S %Y' '%a %b %d %H:%M:%S %Y'; do
+        epoch="$(date -j -f "$fmt" "$raw" +%s 2>/dev/null)" || epoch=""
+        case "$epoch" in ''|*[!0-9]*) continue ;; esac
+        echo "$epoch"
+        return 0
+      done
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+MARKER_STARTED_AT="$(script_created_at 2>/dev/null)" || MARKER_STARTED_AT=""
+# Validate as a string first: shell integer expansion wraps on a value wider
+# than signed 64-bit, and a truncated /proc read is data, not a number.
+case "$MARKER_STARTED_AT" in ''|*[!0-9]*) MARKER_STARTED_AT="" ;; esac
+if [ -z "$MARKER_STARTED_AT" ] || [ "${#MARKER_STARTED_AT}" -gt 11 ] \
+    || [ "$MARKER_STARTED_AT" -le 0 ] || [ "$MARKER_STARTED_AT" -gt "$((NOW + 5))" ]; then
+  log "WARNING: could not read this process's creation time; stamping the update marker with the wall clock instead"
+  MARKER_STARTED_AT="$NOW"
 fi
-printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+
+# Log only. The Desktop's pre-spawn acquisition time never reaches the marker
+# and is never compared as a number, so validate it purely as a string.
+DESKTOP_STARTED_AT="${HERMES_UPDATE_STARTED_AT:-}"
+case "$DESKTOP_STARTED_AT" in
+  ''|*[!0-9]*) DESKTOP_STARTED_AT="unknown" ;;
+  *) [ "${#DESKTOP_STARTED_AT}" -le 20 ] || DESKTOP_STARTED_AT="unknown" ;;
+esac
+
+printf '%s\n%s\n' "$$" "$MARKER_STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+log "claimed update marker (pid $$, created $MARKER_STARTED_AT; desktop hand-off started at $DESKTOP_STARTED_AT)"
 
 if [ "$SELF_TEST_MARKER" -eq 1 ]; then
   trap - EXIT

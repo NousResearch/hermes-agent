@@ -406,17 +406,34 @@ def _format_concurrent_instances_message(matches: list[tuple[int, str]], scripts
 
 
 def _classify_concurrent_instance(pid: int) -> str:
-    """Classify ``pid`` as "gateway" / "non-gateway" / "unknown" (psutil can't read it). Uses
-    ``_is_pausable_gateway`` (same matcher as the Desktop preflight and venv-holder guard) so
-    "gateway" is exactly what the pause/restart machinery stops; "unknown" gates as non-gateway."""
+    """Classify ``pid`` as "gateway" / "non-gateway" / "unknown" (psutil can't read it).
+
+    INVARIANT: this gate and ``_leftover_pausable_gateway_pids`` (update_cmd_windows) answer
+    the same question from two places — *will the updater's own pause machinery stop this
+    process, so the gate may proceed?* — and must therefore share one matcher. That matcher is
+    ``gateway.status.looks_like_gateway_runtime_command_line``, because it is exactly the set
+    ``_pause_windows_gateways_for_update`` stops: its discovery runs ``_scan_gateway_pids``
+    with ``include_restart_managers=True`` on Windows (no systemd), i.e. ``run`` OR
+    ``restart``. It also covers every launcher shape the pause path finds —
+    ``hermes-gateway.exe``, ``gateway/run.py``, bare ``hermes gateway`` — which a
+    ``hermes_cli.main``-tail parser does not. "unknown" is never exempt.
+
+    Do NOT narrow this to ``_scan_venv_blockers._is_pausable_gateway``: that is the venv-scan
+    exemption, and it is a strictly smaller set than the pause machinery reaches.
+
+    argv is joined with ``subprocess.list2cmdline`` (also at the Windows call site) so an
+    install path containing a space survives the matcher's quote-aware re-tokenization; a
+    plain ``" ".join`` splits it and shifts every following token.
+    """
     try:
         import psutil  # noqa: PLC0415
         cmdline_list = psutil.Process(int(pid)).cmdline()
     except Exception:
         return "unknown"
 
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway  # noqa: PLC0415
-    return "gateway" if _is_pausable_gateway(" ".join(cmdline_list or [])) else "non-gateway"
+    from gateway.status import looks_like_gateway_runtime_command_line  # noqa: PLC0415
+    command = subprocess.list2cmdline(cmdline_list or [])
+    return "gateway" if looks_like_gateway_runtime_command_line(command) else "non-gateway"
 
 
 def _filter_non_gateway_concurrent_instances(matches: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -443,12 +460,26 @@ def _log_only_write(text: str) -> None:
             log_file.flush()
 
 
+_LOGGED_SUBPROCESS_PROGRESS_SECONDS = 30.0
+
+
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Stream combined build output to update.log, retaining it for failure reporting."""
+    """Stream combined build output to update.log, retaining it for failure reporting.
+
+    The progress cadence is read from the module constant rather than taken as a
+    parameter: the only production caller is the desktop rebuild in
+    update_cmd_deps, which passes neither a label nor an interval, so a knob in
+    the signature existed for tests alone.
+
+    A silent stretch is never dressed up as output: the periodic line below only
+    reports how long the build has been running and how much has been captured,
+    and it is emitted from the reader loop, so it stops when the child stops.
+    """
     import codecs
     import io
     from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
 
+    progress_every = _LOGGED_SUBPROCESS_PROGRESS_SECONDS
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
     spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
@@ -459,14 +490,26 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     # and the universal-newline behavior callers previously got from text=True.
     decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder("utf-8")("replace"), True)
     output = []
+    started = _time.monotonic()
+    last_progress = started
+    line_count = 0
     try:
         while True:
             chunk = proc.stdout.read1(8192)
             text = decoder.decode(chunk, final=not chunk)
             output.append(text)
+            line_count += text.count("\n")
             _log_only_write(text)
             if not chunk:
                 break
+            now = _time.monotonic()
+            if progress_every > 0 and now - last_progress >= progress_every:
+                last_progress = now
+                print(
+                    f"  … desktop build running: {int(now - started)}s, "
+                    f"{line_count} lines captured (full output: logs/update.log)",
+                    flush=True,
+                )
         return subprocess.CompletedProcess(cmd, proc.wait(), stdout="".join(output))
     except BaseException:
         # Unlike Popen.__exit__, do not wait for a cancelled build to finish.

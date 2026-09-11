@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,15 @@ def _run_cwd_self_test(
     env = os.environ.copy()
     env["TEMP"] = str(temp_dir)
     env["TMP"] = str(temp_dir)
+    # The cwd probe follows the real hand-off claim, so provide the same
+    # marker identity and nonce that Desktop passes to the updater.
+    desktop_pid = os.getpid()
+    started_at = int(time.time())
+    install_root.parent.mkdir(parents=True, exist_ok=True)
+    (install_root.parent / ".hermes-update-in-progress").write_text(
+        f"{desktop_pid}\n{started_at}\n", encoding="utf-8", newline=""
+    )
+    env["HERMES_UPDATE_STARTED_AT"] = str(started_at)
     return subprocess.run(
         [
             powershell,
@@ -37,6 +47,10 @@ def _run_cwd_self_test(
             str(WINDOWS_UPDATE_PS1),
             "-InstallRoot",
             str(install_root),
+            "-DesktopPid",
+            str(desktop_pid),
+            "-HandoffNonce",
+            "c4" * 24,
             "-SelfTestWorkingDirectory",
             "-NoUi",
         ],

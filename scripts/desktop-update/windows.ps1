@@ -16,47 +16,110 @@
 # powershell dies before -File runs) and exits; only PowerShell itself -- an
 # OS component -- is "frozen".
 #
-# CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
-#     -File scripts\desktop-update\windows.ps1
-#     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
-#     -Branch <ref>         branch to update against
-#     -DesktopPid <pid>     the Electron main process to wait out
-#     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
-#     [-NoUi]               headless (tests); default shows a progress window
-#     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+# CONTRACT. The source of truth is apps/desktop/electron/updater-process.ts
+# (wrapHandoffForDetachedConsole + WINDOWS_HANDOFF_LAUNCHER); main.ts only
+# supplies the values. NOTHING passes this script a command line directly:
+#
+#   cmd /d /s /c start "" /min <powershell.exe> -NoProfile -NonInteractive
+#     -ExecutionPolicy Bypass -EncodedCommand <fixed launcher>
+#
+# The launcher payload is a compile-time constant with no interpolation. All
+# variable data reaches it through HERMES_UPDATE_HANDOFF_* process env vars,
+# which it validates and then splats onto this script's parameters:
+#
+#   HERMES_UPDATE_HANDOFF_SCRIPT            -> the path of THIS file (required)
+#   HERMES_UPDATE_HANDOFF_INSTALL_ROOT      -> -InstallRoot     (required)
+#   HERMES_UPDATE_HANDOFF_BRANCH            -> -Branch          (required)
+#   HERMES_UPDATE_HANDOFF_DESKTOP_PID       -> -DesktopPid      (required, > 0)
+#   HERMES_UPDATE_HANDOFF_RELAUNCH_EXE      -> -RelaunchExe     (required)
+#   HERMES_UPDATE_HANDOFF_NONCE             -> -HandoffNonce    (required)
+#   HERMES_UPDATE_HANDOFF_RELAUNCH_APP_PATH -> -RelaunchAppPath (optional)
+#   HERMES_UPDATE_STARTED_AT                -> read from env; the Desktop's
+#                                              exact marker claim timestamp
+#
+# That block is PRIVATE to this run, so the relaunch strips it: the nonce is
+# single-use and the rest describes a Desktop that no longer exists.
+#
+# -NoUi / -NoMarkerCleanup are for tests and are never set in production.
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
 # mutating the install -- a skipped update is recoverable, a half-updated
 # venv is not. Every exit path (success, abort, crash) writes
 # .hermes-update-result.json for the relaunched Desktop to surface, and
-# relaunches the Desktop so the user is never left stranded.
+# relaunches the Desktop so the user is never left stranded -- EXCEPT on the
+# aborts that fired because the Desktop we were handed is still running. There
+# a relaunch is not a rescue, it is a second Desktop over the same install.
 #
-# Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
-# step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
-# hermes_cli/update_lock.py's ancestry rule lets our
+# MARKER: step 0 adopts the Desktop's exact claim in
+# HERMES_HOME\.hermes-update-in-progress under one exclusive handle,
+# replacing it with OUR pid stamped with OUR kernel creation time as the
+# identity token. (The pid the Desktop saw is the cmd.exe wrapper's and is
+# useless -- it exits immediately.) The adopt writes before truncating, so a
+# crash mid-transaction can never leave the empty marker that used to block
+# every later launch. hermes_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
+#
+# ACK: the Desktop cannot tell our claim from any same-user process writing a
+# plausible marker body, so after adopting we write <marker>.ack containing
+# the handoff nonce, our pid and our creation time. Only a process that was
+# given the nonce in its private env block can produce it, which is what binds
+# the claim to the updater the Desktop actually spawned.
+#
+# A caller that sends NO nonce is a Desktop older than this protocol, and that
+# skew is reachable in the direction that matters: `git pull` lands, the
+# desktop rebuild fails, and the next Update click runs THIS checkout's script
+# from the stale asar. Refusing there would strand that bundle with no route
+# back through the UI, so a missing nonce logs one line and proceeds without an
+# ack -- the old Desktop authenticates the old way. A nonce that IS present
+# means a Desktop is waiting for the ack and will refuse the hand-off without
+# it, so failing to write one then is fatal (exit 9). The Desktop side is
+# always strict: the current authenticate requires the ack, so an old script
+# that writes none is refused while the Desktop stays alive -- the safe way to
+# be wrong.
+#
+# EXIT CODES. Each one has to name a single situation, or the result surfaced
+# to the user and the tests that assert on it stop meaning anything:
+#
+#   0   update complete
+#   3   the venv interpreter is missing; the install needs repair
+#   4   the Desktop did not exit within 30s (nothing was changed)
+#   5   the venv shim never unlocked (nothing was changed)
+#   6   code updated, Desktop REBUILD failed (running the previous build)
+#   7   updater processes could not be stopped; not restarted, marker kept
+#   8   the updated runtime/Desktop build failed verification
+#   9   step 0 could not claim or acknowledge the update marker
+#   124 a step stalled and was terminated
+#   other  propagated from `hermes update`
+#
+# 8 and 9 were both 8 until the ack protocol landed, which made "nothing was
+# changed" and "the install was rewritten and does not verify" -- opposite
+# situations for a user -- indistinguishable in the result file.
 
 param(
     [string]$InstallRoot,
     [string]$Branch = "main",
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
+    [string]$RelaunchAppPath = "",
+    [string]$HandoffNonce = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
+    [switch]$SelfTestLog,
+    [switch]$SelfTestRelaunchCommand,
+    [switch]$SelfTestRelaunchEnvironment,
+    [switch]$SelfTestDirectRelaunch,
     [switch]$SelfTestWorkingDirectory
 )
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLog -and -not $SelfTestRelaunchCommand -and -not $SelfTestRelaunchEnvironment -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
-    # switches can drive the UI / the pipe drain without a checkout.
+    # switches can drive the UI / the pipe drain / the log without a checkout.
     throw "-InstallRoot is required"
 }
 
@@ -66,11 +129,16 @@ $ErrorActionPreference = "Continue"
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
+#
+# MoveFileEx is here for the ack: Windows PowerShell 5.1 runs on .NET
+# Framework, which has no File.Move overwrite overload, and the Win32 call is
+# the only way to REPLACE a file in a single directory operation.
 try {
     Add-Type -Namespace HermesHandoff -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int dwProcessId);
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
@@ -83,16 +151,72 @@ try {
 $TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
 $HermesHome = if ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
 $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
+$AckPath = "$MarkerPath.ack"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$script:MarkerBody = $null
+
+$script:HandoffLogDrops = 0
+$script:HandoffLogUtf8 = [System.Text.UTF8Encoding]::new($false)
+$script:HandoffLogRetries = 6
+$script:HandoffLogRetryMs = 50
+
+function Add-HandoffLogLines([string[]]$Lines) {
+    # Append a batch of lines to the hand-off log through our own FileStream,
+    # never Add-Content. Two properties of Add-Content lost every line of the
+    # 2026-09-05 updates as soon as anything else looked at the log:
+    #
+    #  * It opens the file with FileShare.Write ONLY (measured: while its
+    #    provider writer is held, a Read-access open is refused). Every log
+    #    reader -- git-bash `tail -F` / `wc -l`, PowerShell Get-Content -Tail,
+    #    any .NET reader -- holds Read access, so the two handles are mutually
+    #    exclusive: while a reader has the file Add-Content's open fails with
+    #    a sharing violation, and while Add-Content has it the reader fails.
+    #    A `tail -F` held for minutes lost everything; a `wc -l` every 15 s
+    #    lost whatever coincided (70/500 under a tight polling loop).
+    #  * Its IOException is a NON-terminating error. Under this script's
+    #    $ErrorActionPreference = "Continue" it printed the red "being used by
+    #    another process" block and fell through to `return`, so the try/catch
+    #    retry never executed and the drop counter never moved.
+    #
+    # FileShare.ReadWrite | Delete lets every reader coexist (0/500 under the
+    # same poller, 0/300 against a Get-Content -Tail loop where Add-Content
+    # lost 287). A .NET constructor exception IS terminating, so the retry
+    # below really runs. The floor that remains -- a holder that opened the
+    # file with FileShare.Read, i.e. no write sharing at all -- is counted and
+    # announced by the next successful write, so the log says it has a gap
+    # instead of ending mid-update. Nothing here may throw into the update
+    # path: a lost log line is a WARNING, never a failed update.
+    if (-not $Lines -or $Lines.Count -eq 0) { return }
+    $payload = $Lines
+    if ($script:HandoffLogDrops -gt 0) {
+        $notice = "{0:yyyy-MM-ddTHH:mm:ssK} WARNING: {1} hand-off log line(s) could not be written while another process held this file; see the console output" -f (Get-Date), $script:HandoffLogDrops
+        $payload = @($notice) + $Lines
+    }
+    $bytes = $script:HandoffLogUtf8.GetBytes(($payload -join "`r`n") + "`r`n")
+    for ($attempt = 0; $attempt -lt $script:HandoffLogRetries; $attempt++) {
+        try {
+            $stream = [System.IO.FileStream]::new($LogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+            try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+            $script:HandoffLogDrops = 0
+            return
+        } catch {
+            # A sharing violation (IOException) is the retryable case. Anything
+            # else (log dir gone, permissions) will not improve in 50 ms, but
+            # one bounded pass costs nothing and keeps this path branch-free.
+            Start-Sleep -Milliseconds $script:HandoffLogRetryMs
+        }
+    }
+    $script:HandoffLogDrops += $Lines.Count
+}
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    Add-HandoffLogLines @($line)
     Write-Host $line
 }
 
@@ -205,8 +329,6 @@ function Start-UiServer([string]$HtmlPath) {
                     } elseif ($request -match "^POST /ack/([^ /?]+) HTTP/1\.[01]$") {
                         $receipt = $Matches[1]
                         if ($State.status -in @("done", "manual", "error") -and $State.receipt -and $receipt -ceq $State.receipt) {
-                            # Flush acceptance before waking the owner that will
-                            # close the listener. No request body is needed.
                             Send-Response $stream "204 No Content" "text/plain" ([byte[]]@())
                             $State.acknowledged_receipt = $receipt
                         } else {
@@ -297,8 +419,7 @@ function Stop-UiServer([switch]$LeaveWindow) {
 }
 
 function Publish-UiEvent([string]$Status, [string]$Message) {
-    # A background browser can miss a fixed 900ms delivery window. Retain the
-    # terminal event until the page acknowledges applying this exact receipt.
+    # Retain a terminal event until the page acknowledges this exact receipt.
     # Older/headless clients cannot acknowledge, so teardown remains bounded.
     $receipt = [Guid]::NewGuid().ToString('N')
     $script:UiState.receipt = $receipt
@@ -582,19 +703,199 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
     } catch {}
 }
 
+function Claim-UpdateMarker([string]$Body, [string]$ExpectedBody) {
+    # ONE path, taken identically by production and by -SelfTestMarker: adopt
+    # the Desktop's exact claim while holding a single exclusive handle, so the
+    # marker is never absent and a foreign owner is never touched. Nothing here
+    # branches on a test switch -- a create-only variant used to, which meant
+    # the switch could exercise a CAS the real update never runs.
+    $stream = $null
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+        if ([string]::IsNullOrEmpty($ExpectedBody)) { throw "no desktop claim to adopt" }
+        $stream = [System.IO.File]::Open(
+            $MarkerPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        $reader = New-Object System.IO.StreamReader(
+            $stream,
+            [System.Text.Encoding]::UTF8,
+            $true,
+            4096,
+            $true
+        )
+        $current = $reader.ReadToEnd()
+        $reader.Dispose()
+        if ($current -cne $ExpectedBody) { throw "marker owner claim changed" }
+        # Write BEFORE truncating. SetLength(0) first left a zero-length marker
+        # behind whenever this process died mid-transaction, and an empty
+        # marker blocked every later Desktop launch on "Hermes is still
+        # updating". Growing then shrinking never exposes an empty file.
+        $stream.Position = 0
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.SetLength($bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        return [System.IO.File]::ReadAllText($MarkerPath, [System.Text.Encoding]::UTF8) -eq $Body
+    } catch {
+        if ($stream) { try { $stream.Dispose() } catch {} }
+        Write-HandoffLog "update marker claim refused ($MarkerPath): $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Write-HandoffAck([int]$OwnerPid, [int64]$OwnerCreatedAt) {
+    # The Desktop otherwise cannot distinguish our claim from any same-user
+    # process writing a plausible <pid>\n<createdAt> body inside its wait
+    # window. Only a process handed the nonce in its private env block can
+    # write this file, so it is what actually authenticates the hand-off.
+    # Callers check for a legacy (nonce-less) launch first; this guard only
+    # keeps the function honest if that ever stops being true.
+    if ([string]::IsNullOrWhiteSpace($HandoffNonce)) { return $false }
+    try {
+        $body = "$HandoffNonce`n$OwnerPid`n$OwnerCreatedAt`n"
+        $temp = "$AckPath.tmp-$PID"
+        [System.IO.File]::WriteAllText($temp, $body, (New-Object System.Text.UTF8Encoding($false)))
+        # Publish by RENAME, not by copy. File.Copy(..., overwrite) truncates
+        # the destination and rewrites it in place, so a Desktop that opens the
+        # ack between those two steps reads an empty or partial file -- and the
+        # reader's rule is EXACTLY three lines, so a torn ack reads as "no ack"
+        # and the hand-off it was proving is refused. MoveFileEx with
+        # MOVEFILE_REPLACE_EXISTING (0x1) swaps the directory entry in one
+        # operation: a reader sees the whole old ack or the whole new one.
+        $published = $false
+        if ($script:Win32) {
+            $published = [HermesHandoff.Win32]::MoveFileEx($temp, $AckPath, 1)
+        }
+        if (-not $published) {
+            # No P/Invoke available. .NET Framework has no overwrite overload,
+            # so unlink first; still a rename, so no partial body is ever
+            # readable. NOT Move-Item -- given a destination that is a
+            # directory it moves the file INSIDE it and reports success, which
+            # would turn "the ack could not be published" into a silent pass.
+            if ([System.IO.File]::Exists($AckPath)) { [System.IO.File]::Delete($AckPath) }
+            [System.IO.File]::Move($temp, $AckPath)
+        }
+        # The whole point is that the Desktop can read this. Anything that
+        # left it unreadable is a failed ack, not a written one.
+        if (-not [System.IO.File]::Exists($AckPath)) { throw "the ack was not published to $AckPath" }
+        return $true
+    } catch {
+        if ($temp) { try { [System.IO.File]::Delete($temp) } catch {} }
+        Write-HandoffLog "could not write hand-off ack ($AckPath): $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Write-UpdateReceiptState([DateTime]$SinceUtc) {
+    # `hermes update` finalizes logs\update_receipts\latest.json at its
+    # command boundary. A run that leaves no receipt has lost its own
+    # post-mortem (every 2026-09-05 run did), so record which case this was
+    # in the log that survives the console.
+    try {
+        $latest = Join-Path (Join-Path $LogDir "update_receipts") "latest.json"
+        if (-not (Test-Path -LiteralPath $latest -PathType Leaf)) {
+            Write-HandoffLog "update receipt: none on disk ($latest)"
+            return
+        }
+        $fi = Get-Item -LiteralPath $latest
+        if ($fi.LastWriteTimeUtc -ge $SinceUtc.AddSeconds(-2)) {
+            Write-HandoffLog ("update receipt: written {0} ({1} bytes)" -f $latest, $fi.Length)
+        } else {
+            Write-HandoffLog ("update receipt: NOT written by this run; latest.json dates from {0:u}" -f $fi.LastWriteTimeUtc)
+        }
+    } catch {
+        Write-HandoffLog "update receipt: state unavailable ($($_.Exception.Message))"
+    }
+}
+
 function Remove-MarkerIfOwned {
     if ($NoMarkerCleanup) { return }
+    # The nonce is single-use, so a leftover ack can never authenticate a later
+    # hand-off -- but leave nothing behind for a reader to trip over either.
+    try { if (Test-Path -LiteralPath $AckPath) { [System.IO.File]::Delete($AckPath) } } catch {}
     try {
-        if (Test-Path -LiteralPath $MarkerPath) {
-            $firstLine = (Get-Content -LiteralPath $MarkerPath -TotalCount 1 -ErrorAction SilentlyContinue)
-            if ("$firstLine".Trim() -eq "$PID") {
-                Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
-                Write-HandoffLog "removed update marker (owned)"
-            } else {
-                Write-HandoffLog "leaving update marker: owned by pid '$firstLine', not us ($PID)"
-            }
+        if (-not $script:MarkerBody -or -not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) { return }
+        $tombstone = "$MarkerPath.cas-release-$PID-$([Guid]::NewGuid().ToString('N'))"
+        [System.IO.File]::Move($MarkerPath, $tombstone)
+        $raw = [System.IO.File]::ReadAllText($tombstone, [System.Text.Encoding]::UTF8)
+        if ($raw -eq $script:MarkerBody) {
+            [System.IO.File]::Delete($tombstone)
+            Write-HandoffLog "removed update marker (exact owner claim)"
+        } elseif (-not (Test-Path -LiteralPath $MarkerPath)) {
+            [System.IO.File]::Move($tombstone, $MarkerPath)
+            Write-HandoffLog "leaving update marker: claim changed during cleanup"
+        } else {
+            Write-HandoffLog "leaving update marker: a newer claim won cleanup"
         }
-    } catch {}
+    } catch {
+        try {
+            if ($tombstone -and (Test-Path -LiteralPath $tombstone) -and -not (Test-Path -LiteralPath $MarkerPath)) {
+                [System.IO.File]::Move($tombstone, $MarkerPath)
+            }
+        } catch {}
+    }
+}
+
+function Get-DesktopRelaunchInvocation {
+    $arguments = if ($RelaunchAppPath) { @($RelaunchAppPath) } else { @() }
+    $suffix = if ($RelaunchAppPath) { ' "{0}"' -f $RelaunchAppPath } else { "" }
+    return @{
+        Executable = $RelaunchExe
+        Arguments = $arguments
+        CommandLine = ('"{0}"{1}' -f $RelaunchExe, $suffix)
+    }
+}
+
+# The hand-off variables are a PRIVATE env block for THIS run, as the contract
+# at the top of this file says. The nonce authenticates exactly one hand-off and
+# the pid/script/root/started-at describe a Desktop that is gone by now. The
+# relaunch copied the whole environment forward, so the new Desktop -- and every
+# child it spawns for the rest of the session -- inherited a spent single-use
+# nonce and a stale identity. Drop them before any relaunch rung: WMI builds its
+# block from this process, the direct fallback inherits it, and the explorer
+# rung never carried it at all.
+function Remove-HandoffEnvironment {
+    foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+        if ($name -like 'HERMES_UPDATE_HANDOFF_*' -or $name -eq 'HERMES_UPDATE_STARTED_AT') {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
+    }
+}
+
+function Start-DetachedDesktopProcess($Invocation) {
+    Remove-HandoffEnvironment
+    # WMI launches through its service, not as our child, so it otherwise loses
+    # HERMES_HOME and the Desktop's custom user-data/source-root overrides.
+    $environment = [Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
+        ForEach-Object { "$($_.Key)=$($_.Value)" }
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
+        EnvironmentVariables = [string[]]$environment
+    }
+    return Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $Invocation.CommandLine
+        CurrentDirectory = (Split-Path -Parent $Invocation.Executable)
+        ProcessStartupInformation = $startup
+    } -ErrorAction Stop
+}
+
+function Start-DirectDesktopProcess($Invocation) {
+    Remove-HandoffEnvironment
+    $options = @{
+        FilePath = $Invocation.Executable
+        WorkingDirectory = (Split-Path -Parent $Invocation.Executable)
+        PassThru = $true
+    }
+    if ($Invocation.Arguments.Count -gt 0) {
+        # Start-Process joins ArgumentList without quoting its elements. There
+        # is exactly one app path here; an empty list must omit the parameter.
+        $options.ArgumentList = '"{0}"' -f @($Invocation.Arguments)[0]
+    }
+    return Start-Process @options
 }
 
 function Start-DesktopRelaunch {
@@ -603,6 +904,7 @@ function Start-DesktopRelaunch {
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
+    $relaunch = Get-DesktopRelaunchInvocation
     # electron-builder replaces win-unpacked in place. After a successful
     # update it can remove the old Hermes.exe before writing the replacement,
     # so a one-shot existence check races the rebuild and strands the user.
@@ -626,11 +928,7 @@ function Start-DesktopRelaunch {
     # attach -- same detachment explorer.exe gives a normal launch.
     $spawned = $false
     try {
-        $workDir = Split-Path -Parent $RelaunchExe
-        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine      = ('"{0}"' -f $RelaunchExe)
-            CurrentDirectory = $workDir
-        } -ErrorAction Stop
+        $r = Start-DetachedDesktopProcess $relaunch
         if ($r -and $r.ReturnValue -eq 0) {
             Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
             $spawned = $true
@@ -674,7 +972,9 @@ function Start-DesktopRelaunch {
     } catch {
         Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
     }
-    if (-not $spawned) {
+    # Explorer cannot carry the caller's environment. With an explicit home or
+    # source override, use the environment-preserving direct fallback instead.
+    if (-not $spawned -and -not $env:HERMES_HOME -and -not $env:HERMES_DESKTOP_USER_DATA_DIR -and -not $env:HERMES_DESKTOP_HERMES_ROOT) {
         # Middle rung: explorer.exe-mediated launch. On some machines
         # Win32_Process.Create fails outright (observed ReturnValue 8,
         # "unknown failure"), and the tethered fallback below re-attaches the
@@ -686,7 +986,15 @@ function Start-DesktopRelaunch {
         try {
             $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
             $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $RelaunchExe) | Out-Null
+            # Absolute path, never the bare name. This rung runs mid-update with
+            # the venv's Scripts directory -- user-writable and being rewritten
+            # right now -- prepended to PATH, so a bare 'explorer.exe' can
+            # resolve to something the shell would never have picked.
+            $explorerPath = Join-Path $env:SystemRoot 'explorer.exe'
+            if (-not (Test-Path -LiteralPath $explorerPath -PathType Leaf)) {
+                throw "explorer.exe not found at $explorerPath"
+            }
+            Start-Process -FilePath $explorerPath -ArgumentList $relaunch.CommandLine | Out-Null
             $explorerDeadline = (Get-Date).AddSeconds(15)
             while ((Get-Date) -lt $explorerDeadline) {
                 $fresh = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
@@ -731,7 +1039,7 @@ function Start-DesktopRelaunch {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
             # a tethered Desktop beats no Desktop.
-            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            $p = Start-DirectDesktopProcess $relaunch
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
             elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
@@ -781,6 +1089,21 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     }
 }
 
+# A quiet step is not a silent one to the person watching. `hermes update`
+# runs the desktop rebuild for minutes with nothing on its pipes (the build
+# streams to logs/update.log), and the hand-off window used to show only the
+# "running:" line for that whole stretch. Every StepHeartbeatSeconds of pipe
+# silence, Invoke-HermesStep writes one "still running" line with the elapsed
+# time and the update log's size, age and last line. 0 disables. Overridable
+# for the self-test; not documented as a user knob.
+$script:StepHeartbeatSeconds = 30
+if ($env:HERMES_UPDATE_STEP_HEARTBEAT_SECONDS) {
+    $parsedHeartbeat = -1
+    if ([int]::TryParse($env:HERMES_UPDATE_STEP_HEARTBEAT_SECONDS, [ref]$parsedHeartbeat) -and $parsedHeartbeat -ge 0) {
+        $script:StepHeartbeatSeconds = $parsedHeartbeat
+    }
+}
+
 # Silence on the pipes is NOT silence in the update. `hermes update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
 # stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
@@ -806,6 +1129,73 @@ function Get-StepProgressLogStamp {
     } catch {
         return $null
     }
+}
+
+function Get-FileTailLine([string]$Path, [int]$MaxChars = 160) {
+    # Last non-empty line of a file another process is appending to. Reads at
+    # most the final 4 KiB with FileShare.ReadWrite so the writer is never
+    # blocked; $null when the file is absent or unreadable.
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $take = [Math]::Min(4096, $fs.Length)
+            if ($take -le 0) { return $null }
+            $fs.Seek(-$take, [System.IO.SeekOrigin]::End) | Out-Null
+            $bytes = New-Object byte[] $take
+            $read = $fs.Read($bytes, 0, $take)
+            $text = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $read)
+        } finally { $fs.Dispose() }
+        $lines = @($text -split "`r?`n" | Where-Object { $_.Trim() })
+        if ($lines.Count -eq 0) { return $null }
+        $last = $lines[$lines.Count - 1].Trim()
+        if ($last.Length -gt $MaxChars) { $last = $last.Substring(0, $MaxChars) + "..." }
+        return $last
+    } catch {
+        return $null
+    }
+}
+
+function Write-StepLines($Sink, [int]$Flushed, [string]$Prefix, [switch]$Final) {
+    # Log every complete line that arrived in $Sink since index $Flushed and
+    # return the new index. A trailing partial line waits for its newline
+    # unless -Final. Lines are batched per call (one file append), so a chatty
+    # step costs one file append per drain pass, not one per line.
+    $length = $Sink.Length
+    if ($length -le $Flushed) { return $Flushed }
+    $text = $Sink.ToString($Flushed, $length - $Flushed)
+    $segment = $text
+    if (-not $Final) {
+        $end = $text.LastIndexOf("`n")
+        if ($end -lt 0) { return $Flushed }
+        $segment = $text.Substring(0, $end + 1)
+    }
+    $stamp = "{0:yyyy-MM-ddTHH:mm:ssK}" -f (Get-Date)
+    $lines = @()
+    foreach ($ln in ($segment -split "`r?`n")) {
+        if ($ln.Trim()) { $lines += ("{0} {1}{2}" -f $stamp, $Prefix, $ln) }
+    }
+    if ($lines.Count -gt 0) {
+        Add-HandoffLogLines $lines
+        foreach ($line in $lines) { Write-Host $line }
+    }
+    return $Flushed + $segment.Length
+}
+
+function Get-StepHeartbeatLine([string]$Tag, [int]$StepPid, [datetime]$StartedAt, [datetime]$LastProgressAt) {
+    $now = Get-Date
+    $elapsed = [int]($now - $StartedAt).TotalSeconds
+    $idle = [int]($now - $LastProgressAt).TotalSeconds
+    $logNote = "no update log yet"
+    try {
+        $fi = New-Object System.IO.FileInfo($script:StepProgressLogPath)
+        if ($fi.Exists) {
+            $age = [int]($now - $fi.LastWriteTime).TotalSeconds
+            $tail = Get-FileTailLine $fi.FullName
+            $logNote = "update.log {0} bytes, last written {1}s ago" -f $fi.Length, $age
+            if ($tail) { $logNote += (": " + $tail) }
+        }
+    } catch {}
+    return ("{0}| still running: {1}s elapsed, no pipe output for {2}s (pid {3}); {4}" -f $Tag, $elapsed, $idle, $StepPid, $logNote)
 }
 
 if (-not ("HermesUpdateJob" -as [type])) {
@@ -1032,12 +1422,15 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
 }
 
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
-    # The window does not stream child output, so no line-pump: both pipes
-    # drain asynchronously (no deadlock however chatty the child) while a small
-    # DoEvents loop keeps the marquee animating through long silent
-    # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
-    # children and froze it. Full output still lands in the hand-off log
-    # afterwards, where `hermes debug share` picks it up.
+    # Both pipes drain asynchronously (no deadlock however chatty the child)
+    # while a small DoEvents loop keeps the marquee animating through long
+    # silent stretches (pip installs) -- the old EndOfStream pump blocked on
+    # quiet children and froze it. Complete lines are written to the hand-off
+    # log as they arrive (Write-StepLines), so the console/window and
+    # `hermes debug share` see the step's progress live instead of a dump after
+    # it exits; a "still running" heartbeat covers pipe-silent stretches. The
+    # progress window's stage stays orchestrator-owned: child output is
+    # logged, never parsed into it.
     #
     # The drain is bounded once the step exits (#90455). Waiting for pipe EOF
     # is waiting on the step's whole surviving descendant tree, and this
@@ -1051,7 +1444,17 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     # CREATE_SUSPENDED closes the startup race: no updater instruction can run
     # before the process is assigned to its private job and resumed.
-    $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    # CommandLineToArgvW quoting. Backslashes are literal EXCEPT immediately
+    # before a quote, where each pair collapses to one and a lone one escapes
+    # the quote. Escaping only the embedded quotes left `--branch feature\`
+    # rendering as "feature\", whose closing quote is eaten: the branch name
+    # swallowed the next argument. Double every backslash run that precedes a
+    # quote we emit, including the terminating one.
+    $arguments = ($HermesArgs | ForEach-Object {
+        $escaped = [string]$_ -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"{0}"' -f $escaped
+    }) -join ' '
     # CreateProcess inherits this process's environment. Set Python's encoding
     # and buffering only for the atomic launch, then restore the hand-off host.
     $savedPythonIoEncoding = $env:PYTHONIOENCODING
@@ -1086,13 +1489,27 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $abandonAt = $null
     $abandoned = $false
     $lastProgressAt = Get-Date
+    $stepStartedAt = $lastProgressAt
+    $lastHeartbeatAt = $lastProgressAt
+    $outFlushed = 0
+    $errFlushed = 0
+    $outPrefix = "{0}| " -f $Tag
+    $errPrefix = "{0}!| " -f $Tag
     $progressLogStamp = Get-StepProgressLogStamp
     $stalled = $false
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
-        if ($moved) { $lastProgressAt = Get-Date }
+        if ($moved) {
+            $lastProgressAt = Get-Date
+            $lastHeartbeatAt = $lastProgressAt
+            $outFlushed = Write-StepLines $outSink $outFlushed $outPrefix
+            $errFlushed = Write-StepLines $errSink $errFlushed $errPrefix
+        } elseif ($script:StepHeartbeatSeconds -gt 0 -and -not $proc.HasExited -and ((Get-Date) - $lastHeartbeatAt).TotalSeconds -ge $script:StepHeartbeatSeconds) {
+            $lastHeartbeatAt = Get-Date
+            Write-HandoffLog (Get-StepHeartbeatLine $Tag $proc.Id $stepStartedAt $lastProgressAt)
+        }
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -1164,14 +1581,12 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     if ($abandoned) {
         Write-HandoffLog ("{0}!| pipe drain abandoned after {1}s: '{0}' exited but a surviving descendant still holds its stdout/stderr handles. Continuing the hand-off with the output captured so far (#90455)." -f $Tag, $script:StepDrainGraceSeconds)
     }
+    # Everything that arrived was logged live; only a trailing partial line
+    # (no newline before the pipe closed) is still pending.
+    [void](Write-StepLines $outSink $outFlushed $outPrefix -Final)
+    [void](Write-StepLines $errSink $errFlushed $errPrefix -Final)
     $outText = $outSink.ToString()
     $errText = $errSink.ToString()
-    foreach ($ln in ($outText -split "`r?`n")) {
-        if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
-    }
-    foreach ($ln in ($errText -split "`r?`n")) {
-        if ($ln.Trim()) { Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) }
-    }
     $all = $outText
     if ($errText) { $all += "`n" + $errText }
     $code = if ($stalled) { 124 } else { $proc.ExitCode }
@@ -1188,6 +1603,26 @@ function Set-InstallRootCurrentDirectory([string]$Root) {
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
+# Set only on the abort paths that PROVED the Desktop we were handed is still
+# running. Relaunching there does not rescue the user -- it puts a second
+# Desktop on top of the live one, both pointed at the same install.
+$script:DesktopStillRunning = $false
+
+if ($SelfTestRelaunchCommand) {
+    Get-DesktopRelaunchInvocation | ConvertTo-Json -Compress
+    exit 0
+}
+
+if ($SelfTestRelaunchEnvironment) {
+    if ($SelfTestDirectRelaunch) {
+        $child = Start-DirectDesktopProcess (Get-DesktopRelaunchInvocation)
+        @{ ReturnValue = 0; ProcessId = $child.Id } | ConvertTo-Json -Compress
+    } else {
+        Start-DetachedDesktopProcess (Get-DesktopRelaunchInvocation) |
+            Select-Object ReturnValue, ProcessId | ConvertTo-Json -Compress
+    }
+    exit 0
+}
 
 # ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
 # Manual QA for the Edge shell without a checkout or a real update. Exits
@@ -1244,6 +1679,11 @@ if ($SelfTestUi) {
 #            goes to logs/update.log, not stdout, for 40+ minutes). Guards the
 #            watchdog's other cliff: the idle ceiling must count update.log
 #            growth as progress and must NOT kill the healthy step.
+#   livelog -- a step whose first line must reach the hand-off log while the
+#            step is still running, and whose quiet stretch must produce a
+#            "still running" heartbeat. The child itself watches the log for
+#            its own first line and encodes the answer in its exit code, so
+#            the proof is not a timing coincidence.
 if ($SelfTestPipeDrain) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     $hold = 60
@@ -1261,6 +1701,7 @@ if ($SelfTestPipeDrain) {
     $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
     $logStallPs1 = Join-Path $TempDir "hermes-step-logstall-$stamp.ps1"
     $logStallProgress = Join-Path $TempDir "hermes-step-logstall-$stamp.update.log"
+    $liveLogPs1 = Join-Path $TempDir "hermes-step-livelog-$stamp.ps1"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -1281,7 +1722,7 @@ exit 7
     # Writes straight to the console stream, holding nothing: a step that is
     # merely loud. `hermes update` is this shape -- the Electron/vite build
     # alone is megabytes. Few large lines rather than many small ones on
-    # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
+    # purpose: Write-HandoffLog is one file append per line and runs inside the
     # measured window, so line-heavy output would time the logger instead of
     # the drain.
     $floodSource = @'
@@ -1316,10 +1757,46 @@ Write-Output "silent but logging"
 for ($i = 0; $i -lt $Hold; $i++) { Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i); Start-Sleep -Seconds 1 }
 exit 3
 '@
+    # Prints a line, then polls the hand-off log for that line while it is
+    # still alive: exit 9 = the line was streamed before the step exited,
+    # exit 10 = it was not (the pre-streaming behaviour: dump after exit).
+    #
+    # Every line of this child script is indented, including its closing
+    # braces. Indentation is meaningless to the child (it is written to a
+    # .ps1 and run), but a brace in COLUMN 0 anywhere inside a -SelfTest
+    # block ends that block early for the source-contract tests that strip
+    # the fixtures out of this file before asserting on the real hand-off.
+    # That is a file-shape rule for the whole block, not a reason to
+    # compress a loop onto one line.
+    $liveLogSource = @'
+    param([int]$WaitSeconds, [string]$HandoffLog)
+    Write-Output "live line one"
+    [Console]::Out.Flush()
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    $seenAt = $null
+    while ((Get-Date) -lt $deadline) {
+        if ($null -eq $seenAt) {
+            try {
+                $log = Get-Content -LiteralPath $HandoffLog -Raw -ErrorAction Stop
+                if ($log -match "livelog\| live line one") { $seenAt = Get-Date }
+            } catch {
+                # The hand-off log may not exist yet on the first passes.
+            }
+        } elseif (((Get-Date) - $seenAt).TotalSeconds -ge 5) {
+            # Seen, and held for 5s: the step is demonstrably still running.
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    Write-Output "live line two"
+    [Console]::Out.Flush()
+    if ($null -ne $seenAt) { exit 9 } else { exit 10 }
+'@
     [System.IO.File]::WriteAllText($childPs1, $childSource)
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
     [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     [System.IO.File]::WriteAllText($logStallPs1, $logStallSource)
+    [System.IO.File]::WriteAllText($liveLogPs1, $liveLogSource)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $res = Invoke-HermesStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
@@ -1385,7 +1862,35 @@ exit 3
     $logStallSw.Stop()
     $logStallElapsed = [Math]::Round($logStallSw.Elapsed.TotalSeconds, 2)
 
-    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
+    # livelog arm: a 2s heartbeat so the quiet stretch (the child only polls
+    # the log) is short; the child keeps waiting 5s after it sees its line so
+    # at least one heartbeat lands before it exits.
+    # The child is pipe-silent while it polls, which the idle watchdog (set to
+    # seconds by the pytest caller) would read as a stall: lift the ceiling
+    # for exactly this arm, the way logstall swaps in its own progress log.
+    $liveWait = 12
+    $savedHeartbeat = $script:StepHeartbeatSeconds
+    $savedIdle = $script:StepIdleTimeoutSeconds
+    $script:StepHeartbeatSeconds = 2
+    $script:StepIdleTimeoutSeconds = $liveWait + 30
+    $liveLogSw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $livelog = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $liveLogPs1,
+            "-WaitSeconds", [string]$liveWait, "-HandoffLog", $LogPath
+        ) "livelog"
+    } finally {
+        $script:StepHeartbeatSeconds = $savedHeartbeat
+        $script:StepIdleTimeoutSeconds = $savedIdle
+    }
+    $liveLogSw.Stop()
+    $liveLogElapsed = [Math]::Round($liveLogSw.Elapsed.TotalSeconds, 2)
+    $liveLogText = ""
+    try { $liveLogText = Get-Content -LiteralPath $LogPath -Raw -ErrorAction Stop } catch {}
+    $liveHeartbeatSeen = $liveLogText -match "livelog\| still running: "
+    $liveSecondLineLogged = $liveLogText -match "livelog\| live line two"
+
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $liveLogPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
 
     # The grandchild still being alive at return is what makes this a proof
     # rather than a timing coincidence: the pipe was demonstrably still open.
@@ -1413,13 +1918,103 @@ exit 3
     if ($logstall.Code -ne 3) { $problems += "logstall arm exit code $($logstall.Code), expected 3 -- the idle watchdog killed a pipe-silent step whose progress was visible as update.log growth (the shape of every real 40+ min build)" }
     if ($logstall.Output -notmatch "silent but logging") { $problems += "logstall arm step output was lost" }
     if ($logStallElapsed -ge $logStallBudget) { $problems += "logstall arm returned in ${logStallElapsed}s, over the ${logStallBudget}s budget" }
+    $liveLogBudget = $liveWait + 30
+    if ($livelog.Code -ne 9) { $problems += "livelog arm exit code $($livelog.Code), expected 9 -- the step's first line did not reach the hand-off log while the step was still running (output is being dumped after exit again)" }
+    if (-not $liveHeartbeatSeen) { $problems += "livelog arm produced no 'still running' heartbeat during its quiet stretch" }
+    if (-not $liveSecondLineLogged) { $problems += "livelog arm's final line was not logged" }
+    if ($livelog.Output -notmatch "live line one" -or $livelog.Output -notmatch "live line two") { $problems += "livelog arm step output was lost from the returned Output" }
+    if ($liveLogElapsed -ge $liveLogBudget) { $problems += "livelog arm returned in ${liveLogElapsed}s, over the ${liveLogBudget}s budget" }
 
-    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced) | logstall: elapsed=${logStallElapsed}s budget=${logStallBudget}s code=$($logstall.Code)"
+    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced) | logstall: elapsed=${logStallElapsed}s budget=${logStallBudget}s code=$($logstall.Code) | livelog: elapsed=${liveLogElapsed}s budget=${liveLogBudget}s code=$($livelog.Code) heartbeat=$liveHeartbeatSeen"
     if ($problems.Count -gt 0) {
         Write-Host "PIPE-DRAIN SELF-TEST: FAIL $detail -- $($problems -join '; ')"
         exit 1
     }
     Write-Host "PIPE-DRAIN SELF-TEST: PASS $detail"
+    exit 0
+}
+
+# -SelfTestLog: prove the hand-off log survives a concurrent reader ---------
+# The 2026-09-05 log loss needs no update to reproduce, only a second handle
+# on desktop-update-handoff.log. Two arms, both through the real
+# Write-HandoffLog / Add-HandoffLogLines:
+#
+#   shared  -- a reader holds the file for the whole arm with Read access and
+#              FileShare.ReadWrite, the handle every log viewer holds
+#              (git-bash tail -F / wc -l, Get-Content -Tail, .NET readers).
+#              Every line must land and the drop counter must stay 0. This is
+#              the arm Add-Content failed: its FileShare.Write open is refused
+#              while any Read-access handle exists.
+#   blocked -- a holder that shares only Read, so no writer can open the file
+#              at all: the floor. The lines must be COUNTED, nothing may throw
+#              out of the logging path, and the first write after the holder
+#              lets go must announce the gap with a WARNING line.
+# Exits before any marker/desktop machinery, same as -SelfTestUi; touches
+# nothing but the log under $TempDir (no -InstallRoot => $HermesHome = TEMP).
+if ($SelfTestLog) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $logExisted = Test-Path -LiteralPath $LogPath
+    $problems = @()
+    $sharedLines = 50
+    Write-HandoffLog "SELF-TEST: log sharing (no update will run)"
+
+    $reader = $null
+    try {
+        $reader = [System.IO.File]::Open($LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        for ($i = 1; $i -le $sharedLines; $i++) { Write-HandoffLog "SELF-TEST: shared-reader line $i" }
+        $stamp = "{0:yyyy-MM-ddTHH:mm:ssK}" -f (Get-Date)
+        Add-HandoffLogLines @("$stamp SELF-TEST: shared-reader batch a", "$stamp SELF-TEST: shared-reader batch b")
+    } catch {
+        $problems += "shared arm threw out of the logging path: $($_.Exception.Message)"
+    } finally {
+        if ($reader) { $reader.Dispose() }
+    }
+    $sharedDrops = $script:HandoffLogDrops
+
+    $blockedLines = 3
+    $holder = $null
+    try {
+        $holder = [System.IO.File]::Open($LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        for ($i = 1; $i -le $blockedLines; $i++) { Write-HandoffLog "SELF-TEST: blocked line $i" }
+    } catch {
+        $problems += "blocked arm threw out of the logging path: $($_.Exception.Message)"
+    } finally {
+        if ($holder) { $holder.Dispose() }
+    }
+    $blockedDrops = $script:HandoffLogDrops
+    Write-HandoffLog "SELF-TEST: after release"
+    $finalDrops = $script:HandoffLogDrops
+
+    $text = ""
+    try { $text = [System.IO.File]::ReadAllText($LogPath) } catch { $problems += "could not read the log back: $($_.Exception.Message)" }
+    $sharedSeen = ([regex]::Matches($text, "SELF-TEST: shared-reader line \d+\r\n")).Count
+    $batchSeen = ([regex]::Matches($text, "SELF-TEST: shared-reader batch [ab]\r\n")).Count
+    $blockedSeen = ([regex]::Matches($text, "SELF-TEST: blocked line \d+")).Count
+    $warningSeen = $text -match "WARNING: $blockedLines hand-off log line\(s\) could not be written"
+    $afterSeen = $text -match "SELF-TEST: after release"
+    $stampOk = $text -match "(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} SELF-TEST: shared-reader line 1\r$"
+    $bom = $false
+    if (-not $logExisted) {
+        try { $head = [System.IO.File]::ReadAllBytes($LogPath); $bom = ($head.Length -ge 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) } catch {}
+    }
+
+    if ($sharedSeen -ne $sharedLines) { $problems += "shared arm: $sharedSeen of $sharedLines lines reached the log while a Read/ReadWrite reader held it (an Add-Content FileShare.Write open loses all of them)" }
+    if ($batchSeen -ne 2) { $problems += "shared arm: batched Add-HandoffLogLines wrote $batchSeen of 2 lines" }
+    if ($sharedDrops -ne 0) { $problems += "shared arm: drop counter is $sharedDrops, expected 0" }
+    if (-not $stampOk) { $problems += "line format changed: expected '{yyyy-MM-ddTHH:mm:ssK} message' with CRLF" }
+    if ($blockedSeen -ne 0) { $problems += "blocked arm: $blockedSeen line(s) landed while a FileShare.Read holder had the file (the holder did not block writers; fixture invalid)" }
+    if ($blockedDrops -ne $blockedLines) { $problems += "blocked arm: drop counter is $blockedDrops, expected $blockedLines (drops are not being counted -- the retry catch is not running)" }
+    if (-not $warningSeen) { $problems += "blocked arm: the first write after release did not announce the $blockedLines dropped line(s) with a WARNING" }
+    if (-not $afterSeen) { $problems += "blocked arm: the write after release was lost" }
+    if ($finalDrops -ne 0) { $problems += "blocked arm: drop counter is $finalDrops after the announcing write, expected 0" }
+    if ($bom) { $problems += "a fresh log was created with a UTF-8 BOM" }
+
+    $detail = "shared: lines=$sharedSeen/$sharedLines batch=$batchSeen/2 drops=$sharedDrops | blocked: landed=$blockedSeen counted=$blockedDrops warning=$warningSeen afterRelease=$afterSeen finalDrops=$finalDrops | bom=$bom"
+    if ($problems.Count -gt 0) {
+        Write-Host "LOG SELF-TEST: FAIL $detail -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "LOG SELF-TEST: PASS $detail"
     exit 0
 }
 
@@ -1431,18 +2026,71 @@ try {
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
+        # The marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
+        # <ts> is an IDENTITY TOKEN, not a clock to compare: readers prove
+        # <pid> by fetching its kernel creation time and requiring it to be
+        # no later than <ts> (update-marker.ts probePidIdentity evaluates
+        # exactly the expression below for the pid it reads). Writing our own
+        # creation time makes that check exact for the life of this process
+        # and false for any later reuse of our pid. The Desktop's
+        # HERMES_UPDATE_STARTED_AT is stamped before it spawns us, so it can
+        # only predate our creation; on 2026-09-06 a spawn across a
+        # one-second boundary (release :06.977Z, process born in :07) made
+        # the Desktop judge its own updater's claim stale and abort with
+        # "did not acknowledge the protected handoff". Wall clock is only
+        # the fallback when the creation time cannot be read.
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $startedAt = 0L
-        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
-        if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
-            $startedAt = $epoch
+        try {
+            $startedAt = [int64][DateTimeOffset]::new((Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()).ToUnixTimeSeconds()
+        } catch {
+            $startedAt = 0L
         }
-        # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
-        # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
-        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$startedAt`n")
-        Write-HandoffLog "claimed update marker (pid $PID)"
+        if ($startedAt -le 0 -or $startedAt -gt ($epoch + 5)) { $startedAt = $epoch }
+        $desktopStartedAt = 0L
+        if (-not [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$desktopStartedAt) -or $desktopStartedAt -le 0) {
+            $desktopStartedAt = 0L
+        }
+        $markerBody = "$PID`n$startedAt`n"
+        $expectedMarkerBody = "$DesktopPid`n$desktopStartedAt`n"
+        if ($DesktopPid -le 0 -or $desktopStartedAt -le 0) {
+            throw "desktop marker identity is missing"
+        }
+        if (-not (Claim-UpdateMarker $markerBody $expectedMarkerBody)) {
+            throw "desktop update marker was absent, changed, or could not be adopted"
+        }
+        $script:MarkerBody = $markerBody
+        Write-HandoffLog "claimed update marker (pid $PID, created $startedAt; desktop hand-off started at $desktopStartedAt)"
+        if ([string]::IsNullOrWhiteSpace($HandoffNonce)) {
+            # Legacy caller (a Desktop predating the ack protocol). Reachable
+            # after a pull that lands but a rebuild that does not: the stale
+            # asar then drives this newer script. Aborting would leave that
+            # bundle unrecoverable through the UI, so proceed as before.
+            Write-HandoffLog "hand-off is unacknowledged: the caller sent no nonce (desktop predates the ack protocol); proceeding without $AckPath"
+        } elseif (Write-HandoffAck $PID $startedAt) {
+            # The Desktop's ack budget is a fixed 10s from its spawn. When a
+            # hand-off starts failing, the only question is whether we were slow
+            # to get here or never arrived -- so put the number in the log. The
+            # Desktop logs the same gap in ms from its side.
+            $ackLatency = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $desktopStartedAt
+            Write-HandoffLog "wrote hand-off ack $AckPath (${ackLatency}s after the desktop's claim)"
+        } else {
+            # A caller that DID send a nonce is waiting for this ack and will
+            # refuse the hand-off without it. Exiting while it stays alive and
+            # we mutate the install underneath it is the whole hazard.
+            throw "could not acknowledge the hand-off to the desktop"
+        }
     } catch {
-        Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+        # Same rule as the step-1 abort: a Desktop still waiting on our ack is
+        # a Desktop already on screen, so relaunching would double it.
+        if ($DesktopPid -gt 0 -and (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue)) {
+            $script:DesktopStillRunning = $true
+        }
+        # 9, not 8: 8 is upstream's "the updated runtime failed verification",
+        # which means the install WAS rewritten. This one changed nothing.
+        $finalCode = 9
+        $finalMsg = "Update aborted: could not claim the authenticated update marker ($MarkerPath). Nothing was changed."
+        Write-HandoffLog "$finalMsg $($_.Exception.Message)"
+        exit $finalCode
     }
 
     if ($SelfTestMarker) {
@@ -1503,7 +2151,10 @@ try {
         }
         if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
             # A live Desktop means a live backend re-locking the venv at any
-            # moment. Updating under it is how installs brick. Abort.
+            # moment. Updating under it is how installs brick. Abort -- and do
+            # not relaunch, because the Desktop we would "bring back" is the
+            # one we just proved is still on screen.
+            $script:DesktopStillRunning = $true
             $finalCode = 4
             $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
@@ -1601,6 +2252,7 @@ try {
     }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
+    $updateStepStartedUtc = [DateTime]::UtcNow
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
@@ -1627,6 +2279,7 @@ try {
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
+    Write-UpdateReceiptState $updateStepStartedUtc
 
     # -- 4. Truthful completion: don't trust exit 0 -------------------------
     # `hermes update` treats a Desktop GUI build failure as NON-fatal (prints
@@ -1690,7 +2343,13 @@ try {
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow
-            [void](Start-DesktopRelaunch)
+            if ($script:DesktopStillRunning) {
+                # The abort happened BECAUSE that Desktop is alive. A relaunch
+                # here is a second Desktop over the same install, not a rescue.
+                Write-HandoffLog "not relaunching: the desktop (pid $DesktopPid) is still running"
+            } else {
+                [void](Start-DesktopRelaunch)
+            }
         } else {
             Publish-UiProgress "Opening Hermes"
             $cameBack = Start-DesktopRelaunch

@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises'
+
 /**
  * backend-release-gate.ts
  *
@@ -27,7 +29,7 @@
 
 export interface ReleaseGateDeps {
   /** Probe the venv hermes.exe shim (real: O_RDWR open attempt). */
-  isShimLocked: () => boolean
+  isShimLocked: () => boolean | Promise<boolean>
   /** True while `pid` is still enumerable in the process table. */
   isPidAlive: (pid: number) => boolean
   /**
@@ -75,7 +77,7 @@ export async function waitForBackendRelease(
   while (deps.now() < deadline) {
     const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
-    if (!deps.isShimLocked() && lingering.length === 0) {
+    if (!(await deps.isShimLocked()) && lingering.length === 0) {
       deps.log(`[${tag}] venv shim unlocked and ${killedPids.size} signalled backend PID(s) exited; safe to proceed`)
 
       return { unlocked: true, lingeringPids: [] }
@@ -100,7 +102,7 @@ export async function waitForBackendRelease(
   // residue (and a REAL foreign holder still fails the shim probe).
   const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
-  if (!deps.isShimLocked()) {
+  if (!(await deps.isShimLocked())) {
     deps.log(
       `[${tag}] proceeding after deadline: venv shim unlocked, but ${lingering.length} signalled PID(s) still enumerable`
     )
@@ -109,6 +111,69 @@ export async function waitForBackendRelease(
   }
 
   return { unlocked: false, lingeringPids: lingering }
+}
+
+/** Restart Manager attribution budget for the gate; discovery keeps its own, larger one. */
+export const RELEASE_GATE_ATTRIBUTION_BUDGET_MS = 4_000
+
+export interface InstallLockGateProbeDeps {
+  /** Exclusive-open sweep over the mutation set, stopping after `limit` findings. */
+  probeLocks: (limit: number) => { definite: readonly string[]; shared: readonly string[] }
+  /** Per-process module attribution for uv-shared hard links; resolves to the holder count. */
+  countAttributedHolders: (budgetMs: number) => Promise<number>
+  now?: () => number
+  attributionBudgetMs?: number
+  /** Minimum interval between attributions; defaults to one per gate run. */
+  attributionCooldownMs?: number
+}
+
+/**
+ * The lock probe `waitForBackendRelease` polls, bounded so it can be asked
+ * every RELEASE_GATE_POLL_MS.
+ *
+ * Two costs had to come off the poll:
+ *
+ *  - the exclusive-open sweep, which visited the whole mutation set (~270
+ *    synchronous openSync calls on a real install: ~27 ms median on the main
+ *    thread, seconds when a filter driver is cold). One lock is a complete
+ *    answer for this question, so the sweep stops at the first one (~0.3 ms
+ *    while the install is held). If that first hit is a uv-shared hard link,
+ *    the attribution below re-probes the full set, so nothing is missed.
+ *  - the Restart Manager attribution, a PowerShell child with a 12 s budget,
+ *    which ran on EVERY poll that saw only uv-shared hard links: up to 50
+ *    spawns inside a 15 s gate, each able to outlive the gate itself. It now
+ *    runs at most once per cooldown, which defaults to the gate deadline, so
+ *    the polling loop attributes once and the post-deadline check may refresh.
+ *
+ * Until attribution has answered, a shared lock counts as locked (fail
+ * closed), and an attribution that throws leaves it locked.
+ */
+export function createInstallLockGateProbe(deps: InstallLockGateProbeDeps): () => Promise<boolean> {
+  const now = deps.now ?? Date.now
+  const budgetMs = deps.attributionBudgetMs ?? RELEASE_GATE_ATTRIBUTION_BUDGET_MS
+  const cooldownMs = deps.attributionCooldownMs ?? RELEASE_GATE_DEADLINE_MS
+  let attributedAt: number | null = null
+  let attributedLocked = true
+
+  return async () => {
+    const locks = deps.probeLocks(1)
+
+    if (locks.definite.length > 0) {return true}
+
+    if (locks.shared.length === 0) {return false}
+
+    if (attributedAt !== null && now() - attributedAt < cooldownMs) {return attributedLocked}
+
+    attributedAt = now()
+
+    try {
+      attributedLocked = (await deps.countAttributedHolders(budgetMs)) > 0
+    } catch {
+      attributedLocked = true
+    }
+
+    return attributedLocked
+  }
 }
 
 /**
@@ -124,4 +189,50 @@ export function isPidAliveWindows(pid: number): boolean {
   } catch (err: any) {
     return Boolean(err) && err.code === 'EPERM'
   }
+}
+
+
+export type InstallUnlockWaitResult = 'clear' | 'cancelled' | 'claim-lost' | 'probe-failed'
+
+/** Wait without terminating anything; a fresh preflight still authorizes the handoff. */
+export async function waitForInstallUnlock(deps: {
+  isLocked: () => Promise<boolean>
+  ownsClaim: () => boolean
+  signal: AbortSignal
+  pollMs?: number
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>
+}): Promise<InstallUnlockWaitResult> {
+  const sleep = deps.wait ?? (async (ms: number, signal: AbortSignal) => {
+    try {
+      await delay(ms, undefined, { signal })
+    } catch (error) {
+      if (!signal.aborted) { throw error }
+    }
+  })
+
+  const ownsClaim = () => {
+    try { return deps.ownsClaim() } catch { return false }
+  }
+
+  while (!deps.signal.aborted) {
+    if (!ownsClaim()) { return 'claim-lost' }
+
+    let locked: boolean
+
+    try {
+      locked = await deps.isLocked()
+    } catch {
+      return deps.signal.aborted ? 'cancelled' : 'probe-failed'
+    }
+
+    if (deps.signal.aborted) { return 'cancelled' }
+
+    if (!ownsClaim()) { return 'claim-lost' }
+
+    if (!locked) { return 'clear' }
+
+    await sleep(Math.max(1, deps.pollMs ?? 1_000), deps.signal)
+  }
+
+  return 'cancelled'
 }

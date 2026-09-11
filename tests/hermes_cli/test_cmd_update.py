@@ -13,6 +13,26 @@ from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
 
 
+def test_cmd_update_refuses_unreadable_marker_without_traceback(monkeypatch, capsys):
+    import hermes_cli.main as main
+    import hermes_cli.update_lock as update_lock
+
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda _args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "_finalize_update_output", lambda _state: None)
+    monkeypatch.setattr(
+        update_lock.UpdateLock,
+        "acquire",
+        lambda _self: (_ for _ in ()).throw(update_lock.UpdateMarkerError("marker unreadable")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_update(SimpleNamespace(gateway=False))
+
+    assert exc.value.code == update_lock.UPDATE_EXIT_CONCURRENT
+    assert "marker unreadable" in capsys.readouterr().out
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 

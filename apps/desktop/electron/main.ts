@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -71,7 +71,7 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
-import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { isPidAliveWindows, waitForBackendRelease, waitForInstallUnlock } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -166,6 +166,12 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import {
+  recordStoppedDesktopPluginHost,
+  relaunchDesktopPluginHost,
+  restoreStoppedDesktopPluginHosts,
+  stopAndRecordPluginHost
+} from './desktop-plugin-host-restore'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -240,6 +246,12 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import {
+  attributedInstallHolders,
+  createInstallLockGateProbeForRoot,
+  isAnyInstallResourceLocked,
+  venvHermesShimPath
+} from './install-lock-probe'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -396,26 +408,46 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
-import { waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { isValidUpdateBranchRef, updateBranchRefPattern } from './update-branch-ref'
+import { waitForLocalBackendClearance } from './update-gate'
+import {
+  acquireUpdateMarker,
+  markerPath,
+  readLiveUpdateMarker,
+  releaseUpdateMarkerIfOwnedBy,
+  updateHandoffConflict,
+  type UpdateMarkerClaim,
+  writeUpdateMarker
+} from './update-marker'
+import { runWindowsUpdatePreflight, type UpdatePreflightOutcome } from './update-preflight'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
+  captureSpawnedUpdaterCreatedAt,
   collectRelaunchArgs,
+  createUpdateHandoffNonce,
+  formatPowerShellArgvForDisplay,
+  isSpawnedUpdaterGenerationActive,
+  launchWindowsUpdateTransport,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
-  resolveUpdateScriptHandoff,
+  resolveWindowsDevRelaunchAppPath,
+  resolveWindowsUpdateTransport,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker,
+  terminateSpawnedUpdaterIfExact,
+  WINDOWS_HANDOFF_ENV,
   windowsUpdatePrerequisiteError,
-  wrapHandoffForDetachedConsole
+  type WindowsUpdateTransport
 } from './updater-process'
 import {
-  formatBlockerMessage,
+  type DesktopPluginServiceProcess,
   formatProbeFailedMessage,
+  resolveVenvPython,
   scanVenvBlockers,
-  stopSafeVenvBlockers
+  stopSafeVenvBlockers,
+  terminateDesktopPluginServiceDetailed,
+  terminateMcpBridge
 } from './venv-blocker-scan'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
@@ -444,6 +476,8 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import { queryWindowsProcessCreatedAt } from './windows-process-identity'
+import { createWindowsHolderTerminator } from './windows-process-terminate'
 import {
   connectWindowsRemote,
   detectRemotePlatform,
@@ -451,6 +485,7 @@ import {
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
+import { RESTART_MANAGER_DEFAULT_TIMEOUT_MS } from './windows-restart-manager'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -466,6 +501,19 @@ import {
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
+import {
+  applyWindowsUpdate,
+  cancelWindowsUpdateWait,
+  discardUpdateHandoffAck,
+  runRecoveryUpdaterHandoff,
+  waitForAcknowledgedUpdaterClaim,
+  windowsUpdateBlocksBackendStart,
+  windowsUpdateIsBusy,
+  type WindowsUpdateState
+} from './windows-update-apply'
+import { type ForceReleaseHolder, formatHolderLine, runWindowsUpdateForceRelease } from './windows-update-force-release'
+import { forceReleaseHoldersFromScan } from './windows-update-holder-policy'
+import { requireUpdaterHandoff } from './windows-update-orchestration'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -2341,7 +2389,7 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 
 // Gate deps shared by the primary-window boot path and the pool-backend
 // spawn path. Consulting BOTH the on-disk marker and the in-process
-// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
+// The updating phase is load-bearing (#73822): applyUpdates kills its own
 // backend BEFORE the Windows venv-blocker scan but only writes the marker
 // AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
 // a backend inside the update's own critical section — which the scan then
@@ -2349,7 +2397,7 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight
+    isUpdateInFlight: () => windowsUpdateBlocksBackendStart(updateState)
   }
 }
 
@@ -2412,7 +2460,7 @@ function relaunchIntoSwappedBundle() {
 async function waitForUpdateToFinish() {
   let announced = false
 
-  const outcome = await waitForUpdateClearance(updateGateDeps(), {
+  const outcome = await waitForLocalBackendClearance(updateGateDeps(), {
     onWaitTick: async reason => {
       if (!announced) {
         announced = true
@@ -2453,21 +2501,30 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
-      dialog.showErrorBox(
-        'Hermes update did not finish',
-        `${result.message}\n\nDetails: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
-      )
+      void dialog.showMessageBox({
+        type: 'error',
+        title: 'Hermes update did not finish',
+        message: result.message,
+        detail: `Details: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
+      })
     }
   } catch (err) {
     rememberLog(`[updates] could not read hand-off result: ${err.message}`)
   }
 
   if (outcome === 'clear') {
+    await relaunchStoppedDesktopPluginHosts('desktop startup')
+
     return false
   }
 
   if (outcome === 'timeout') {
-    rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
+    // Always name the file. Recovery is deleting one marker, and users sat in
+    // this loop for whole sessions because no message ever said which (#B2).
+    throw new Error(
+      'Hermes is still updating. Wait for the updater to finish, then reopen Hermes. ' +
+      `If no update is running, delete this file and reopen Hermes: ${markerPath(HERMES_HOME)}`
+    )
   } else if (relaunchIntoSwappedBundle()) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
@@ -2479,6 +2536,8 @@ async function waitForUpdateToFinish() {
   } else {
     rememberLog('[updates] update finished; proceeding with backend start')
   }
+
+  await relaunchStoppedDesktopPluginHosts('completed update')
 
   return true
 }
@@ -3150,9 +3209,21 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
+  // A stored branch that predates validation (or a hand-edited config) can
+  // still start with `-`, which git reads as an option. Fail the heal probe
+  // rather than run it, and pass the fully qualified ref as the pattern.
+  if (!isValidUpdateBranchRef(branch)) {
+    rememberLog(`[updates] refusing to probe an invalid update branch: ${branch}`)
+
+    return branch
+  }
+
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
+
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, updateBranchRefPattern(branch)], {
+    cwd: updateRoot
+  })
 
   if (probe.code !== 2) {
     return branch
@@ -3190,6 +3261,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
       branch
     }
   }
+
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
@@ -3401,7 +3473,8 @@ function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
   })
 }
 
-let updateInFlight = false
+const updateState: WindowsUpdateState = { phase: 'idle' }
+type SpawnedWindowsUpdateLaunch = Extract<ReturnType<typeof launchWindowsUpdateTransport>, { kind: 'spawned' }>
 
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
@@ -3454,45 +3527,6 @@ function repairMacUpdaterHelper(updater) {
     rememberLog('[updates] repaired macOS updater helper signature')
   } catch (err) {
     rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
-  }
-}
-
-// Path to the venv shim whose lock decides whether `hermes update` can write
-// fresh entry points. On Windows this is the file the running backend
-// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
-function venvHermesShimPath(updateRoot) {
-  return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
-}
-
-// Best-effort lock probe mirroring the Rust updater's is_locked(): a running
-// .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
-// this practically always succeeds (no mandatory locking), so it returns false
-// — correct, since the shim-contention brick is Windows-only.
-function isShimLocked(shimPath) {
-  if (!IS_WINDOWS) {
-    return false
-  }
-
-  let fd
-
-  try {
-    fd = fs.openSync(shimPath, 'r+')
-
-    return false
-  } catch (err) {
-    // ENOENT ⇒ not there ⇒ nothing locking it. Anything else (EBUSY/EPERM/
-    // EACCES) on Windows means a live handle holds it.
-    return err && err.code !== 'ENOENT'
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        void 0
-      }
-    }
   }
 }
 
@@ -3873,7 +3907,7 @@ async function releaseBackendLockForUpdate(updateRoot) {
 //
 // `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
 // locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
-async function releaseBackendLock(updateRoot, tag) {
+async function releaseBackendLock(updateRoot, tag): Promise<{ unlocked: boolean; holders?: ForceReleaseHolder[] }> {
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -3926,10 +3960,18 @@ async function releaseBackendLock(updateRoot, tag) {
 
   const shim = venvHermesShimPath(updateRoot)
 
+  // Bounded for a 300 ms poll: stop at the first definite lock, and run the
+  // Restart Manager attribution at most once per gate run.
+  const gateLockProbe = createInstallLockGateProbeForRoot(updateRoot)
+
   const gate = await waitForBackendRelease(
     initialPids,
     {
-      isShimLocked: () => Boolean(isShimLocked(shim)),
+      // Prove the whole mutation set, not just the shim: a holder that maps a
+      // site-packages .pyd without touching hermes.exe used to pass this gate
+      // and break the venv sync later inside the detached updater. Bounded per
+      // poll; see createInstallLockGateProbe.
+      isShimLocked: gateLockProbe,
       isPidAlive: isPidAliveWindows,
       collectStragglerPids: () => {
         const stragglers = []
@@ -3967,11 +4009,21 @@ async function releaseBackendLock(updateRoot, tag) {
   // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
   // the update loudly and keeping the app running is strictly better than a
   // bricked install that needs manual venv surgery.
+  let holders: ForceReleaseHolder[] = []
+
+  try {
+    holders = await attributedInstallHolders(updateRoot)
+  } catch {
+    holders = []
+  }
+
   rememberLog(
-    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+    `[${tag}] install files still locked after 15s; aborting hand-off. Holders: ${
+      holders.map(holder => `PID ${holder.pid} ${holder.name} (${path.relative(updateRoot, holder.resource)})`).join('; ') || 'none attributable'
+    }`
   )
 
-  return { unlocked: false }
+  return { unlocked: false, holders }
 }
 
 // applyUpdates — hand off to the installer's --update flow, then exit.
@@ -3984,361 +4036,248 @@ async function releaseBackendLock(updateRoot, tag) {
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
-  if (updateInFlight) {
-    throw new Error('An update is already in progress.')
-  }
+// Measured on the 2026-09-04 host: mutation-set probe 0.5 s, scanner 1.2 s,
+// Restart Manager 8.1 s, one exact termination 7.5 s (PowerShell boundary
+// with Add-Type compile). Two holders need about 30 s; the previous 20 s
+// budget ended every attempt as "timeout" with the holders still alive.
+const FORCE_RELEASE_DEADLINE_MS = 60_000
 
-  updateInFlight = true
+async function forceReleaseInstallHoldersForUpdate(updateRoot: string) {
+  const exclude = new Set<number>([process.pid].filter(pid => Number.isInteger(pid) && pid > 0))
+
+  return runWindowsUpdateForceRelease({
+    deadlineMs: FORCE_RELEASE_DEADLINE_MS,
+    settleMs: 150,
+    excludePids: exclude,
+    isResourceLocked: async () => isAnyInstallResourceLocked(updateRoot),
+    listScannerHolders: async budgetMs => {
+      // The normal scanner has a 60s watchdog. Force release passes its
+      // remaining absolute-deadline budget so discovery cannot consume the
+      // mutation window and then race a stale result.
+      const outcome = await scanVenvBlockers(updateRoot, undefined, undefined, undefined, budgetMs)
+
+      if (outcome.kind !== 'blocked') {return []}
+
+      return forceReleaseHoldersFromScan(outcome.result)
+    },
+    listRestartManagerHolders: async budgetMs => {
+      const timeoutMs = Math.max(0, Math.min(RESTART_MANAGER_DEFAULT_TIMEOUT_MS, Math.trunc(budgetMs)))
+
+      if (timeoutMs <= 0) {return []}
+
+      return attributedInstallHolders(updateRoot, timeoutMs)
+    },
+    onDiscovery: info => {
+      rememberLog(
+        `[updates] force-release discovery pass ${info.pass}: scanner=${info.scanner} restart-manager=${info.restartManager} (${info.elapsedMs}ms)`
+      )
+    },
+    onHolderOutcome: (holder, result, elapsedMs) => {
+      const detail = 'detail' in result && result.detail ? ` ${String(result.detail).split(/\r?\n/)[0]}` : ''
+
+      rememberLog(`[updates] force-release ${formatHolderLine(holder)} -> ${result.kind}${detail} (${elapsedMs}ms)`)
+    },
+    terminateHolder: createWindowsHolderTerminator(updateRoot, service =>
+      stopDesktopPluginServiceUnit(updateRoot, service)
+    )
+  })
+}
+
+// Stop one Desktop plugin service unit (Windows Script Host supervisor, venv
+// wrapper, managed-runtime workers) through the scanner and remember the
+// supervisor so it is relaunched when the update finishes or aborts.
+async function stopDesktopPluginServiceUnit(updateRoot: string, service: DesktopPluginServiceProcess): Promise<boolean> {
+  return stopAndRecordPluginHost({
+    terminate: () => terminateDesktopPluginServiceDetailed(updateRoot, service),
+    record: host => recordStoppedDesktopPluginHost(HERMES_HOME, host, { log: rememberLog }),
+    compensate: host => relaunchDesktopPluginHost(HERMES_HOME, host, { log: rememberLog }),
+    onRecoveryFailure: () => {
+      rememberLog('[updates] plugin supervisor stopped but recovery record and restart both failed')
+    }
+  })
+}
+
+async function relaunchStoppedDesktopPluginHosts(reason: string) {
+  if (!IS_WINDOWS) {return}
 
   try {
-    const updater = resolveUpdaterBinary()
+    const restored = await restoreStoppedDesktopPluginHosts(HERMES_HOME, { log: rememberLog })
 
-    if (!updater && !IS_WINDOWS) {
-      // macOS/Linux: hand off to the repo-owned posix script — same shape as
-      // Windows (quit → detached orchestrator → `hermes update` → relaunch),
-      // minus the venv-lock gauntlet POSIX doesn't need. The old in-app
-      // updater (applyUpdatesPosixInApp) is gone with everything it dragged
-      // in: the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance (#37532),
-      // the in-window rebuild retry, and the relaunch-outcome matrix — the
-      // script owns swap/relaunch, and the app is DEAD during the update so
-      // there is nothing to reap around. Checkouts that predate the script
-      // get the manual `hermes update` card once; their next update pulls it.
-      return await applyUpdatesPosixHandoff(opts)
-    }
-
-    if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
-      // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). On Windows the repo hand-off
-      // script serves them just as well as installer users — it only needs
-      // PowerShell and the checkout — so fall through to the normal hand-off
-      // when the script exists. Only when the checkout predates the script do
-      // we surface the manual one-liner.
-      const updateRoot = resolveUpdateRoot()
-
-      if (!resolveUpdateScriptHandoff(updateRoot)) {
-        // They DO have a working `hermes` on PATH / in the venv, so the
-        // correct path is the one-liner in their native medium. We show the
-        // EXACT command, branch-pinned to the checkout they're on — bare
-        // `hermes update` defaults to main and would silently switch a
-        // bb/gui (or any non-main) install off-branch. Mirror the GUI
-        // button's contract: append --branch <current> for non-main
-        // checkouts, keep it bare for main so the card stays clean.
-        let command = 'hermes update'
-
-        try {
-          const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-          const current = (head.stdout || '').trim()
-
-          if (head.code === 0 && current && current !== 'HEAD') {
-            const branch = await resolveHealedBranch(updateRoot, current)
-
-            if (branch !== 'main') {
-              command = `hermes update --branch ${branch}`
-            }
-          }
-        } catch {
-          // Best-effort: fall back to bare `hermes update` if branch detection fails.
-        }
-
-        rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
-        emitUpdateProgress({ stage: 'manual', message: command, percent: null })
-
-        return { ok: true, manual: true, command, hermesRoot: updateRoot }
-      }
-
-      rememberLog('[updates] no staged updater; using repo hand-off script for CLI install')
-    }
-
-    const handoffConflict = updateHandoffConflict(HERMES_HOME)
-
-    if (handoffConflict) {
-      // A different updater already owns the marker — most often a previous
-      // "Update" click whose updater is still alive and parked mid-run.
-      // Spawning another here would overwrite its claim and let two updaters
-      // mutate the checkout at once (#75778); refuse instead.
-      rememberLog(`[updates] refusing hand-off: ${handoffConflict.message}`)
-      emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
-
-      return { ok: false, error: 'update-already-running', message: handoffConflict.message }
-    }
-
-    emitUpdateProgress({
-      stage: 'restart',
-      message:
-        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-      percent: 100
-    })
-    repairMacUpdaterHelper(updater)
-
-    const updateRoot = resolveUpdateRoot()
-    const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
-    const targetApp = IS_MAC ? runningAppBundle() : null
-
-    if (targetApp) {
-      updaterArgs.push('--target-app', targetApp)
-    }
-
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-
-    // ── Pre-flight state.db integrity guard (#68474) ─────────────────
-    // Emergency backup and header verification before the update touches
-    // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
-
-    if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
-      const message = windowsUpdatePrerequisiteError(updateRoot)
-
-      if (message) {
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-
-        return { ok: false, error: message }
-      }
-    }
-
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    const lock = await releaseBackendLockForUpdate(updateRoot)
-
-    if (!lock.unlocked) {
-      // Something OUTSIDE this app holds the venv (a second window, a user
-      // terminal running hermes, an unkillable child). Handing off anyway
-      // guarantees a half-updated venv — abort loudly instead and let the
-      // user close the holder and retry. Restart our own backend so the app
-      // keeps working after the failed attempt.
-      const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
-
-      emitUpdateProgress({ stage: 'error', message, percent: null })
-      startHermes().catch(() => {})
-
-      if (IS_WINDOWS) {
-        // The pre-gate `gateway stop --all` (#70337) took every profile's
-        // gateway down for an update that never happened — bring them back.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-      }
-
-      return { ok: false, error: message }
-    }
-
-    // Preflight: after releasing our own backends, check for remaining
-    // Hermes processes running from this venv.  The updater normally refuses
-    // when it detects a holder, but because the updater is spawned detached
-    // with stdio:ignore, the user never sees that refusal and the update
-    // silently fails.  This preflight detects holders early and gives the
-    // user an actionable error.  Windows-only; the .pyd lock hazard is a
-    // Windows phenomenon.  ALL failures (blocked, missing python, timeout,
-    // malformed output, missing psutil) abort the handoff — never proceed
-    // to the detached updater when the venv state is unknown.
-    if (IS_WINDOWS) {
-      let scanOutcome = await scanVenvBlockers(updateRoot)
-
-      if (scanOutcome.kind === 'blocked' && opts.stopSafeBlockers) {
-        const stopResult = await stopSafeVenvBlockers(updateRoot, scanOutcome.result)
-        rememberLog(
-          `[updates] user-approved blocker cleanup: stopped=${stopResult.stopped.join(',') || 'none'} failed=${stopResult.failed.join(',') || 'none'}`
-        )
-        // Let verified process-tree termination finish unwinding wrapper shells,
-        // then make the scanner — not the stale renderer payload — authoritative.
-        await new Promise(resolve => setTimeout(resolve, 300))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      // Re-scan before aborting on 'blocked' (#74805). Process-table teardown
-      // is asynchronous on Windows: even after releaseBackendLock's PID-exit
-      // wait, a grandchild the desktop never tracked (or a process an AV /
-      // NTFS filter driver is holding in teardown) can stay enumerable for a
-      // few more seconds and read as a holder. Each scan already costs
-      // seconds (spawns a venv python + psutil sweep), so two retries with a
-      // short dwell give the table time to settle without meaningfully
-      // delaying the abort path when a REAL holder (a user terminal, second
-      // window) is present — that holder is still there on the third scan.
-      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
-        rememberLog(
-          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning after settle (attempt ${attempt + 2}/3)`
-        )
-        await new Promise(resolve => setTimeout(resolve, 1500))
-        scanOutcome = await scanVenvBlockers(updateRoot)
-      }
-
-      if (scanOutcome.kind === 'blocked') {
-        const message = formatBlockerMessage(scanOutcome.result)
-
-        rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-        startHermes().catch(() => {})
-        // Restore the gateways the pre-gate stop took down (#70337 drain
-        // semantics): the update aborted, so nothing else will relaunch them.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
-      }
-
-      if (scanOutcome.kind === 'probe-failure') {
-        const message = formatProbeFailedMessage(scanOutcome.error)
-
-        rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
-        emitUpdateProgress({ stage: 'error', message, percent: null })
-        startHermes().catch(() => {})
-        // Same drain-semantics restore as the venv-blocked abort above.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-
-        return { ok: false, error: 'venv-probe-failed', message }
-      }
-    }
-
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
-    //
-    // Prefer the repo-owned hand-off script over the staged Tauri binary.
-    // The staged binary is frozen (no self-update path) and historically runs
-    // months-stale updater logic — pre-#67369 cache resolver, pre-#74782
-    // marker adoption — producing failures that were fixed on main long ago
-    // (2026-08-09 incident). scripts/desktop-update/windows.ps1 ships WITH the
-    // checkout, so each `hermes update` refreshes the code that drives the
-    // next one. Checkouts that predate the script fall back to the binary
-    // path unchanged.
-    const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
-    let child
-
-    if (scriptHandoff) {
-      const updateStartedAt = Math.floor(Date.now() / 1000)
-
-      // A bare detached+hidden powershell spawn silently dies before -File
-      // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
-      // pid — the script claims the update marker itself with its own $PID
-      // as its first action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
-        '-InstallRoot',
-        updateRoot,
-        '-Branch',
-        branch,
-        '-DesktopPid',
-        String(process.pid),
-        '-RelaunchExe',
-        process.execPath
-      ])
-
-      child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
-        cwd: HERMES_HOME,
-        env: {
-          ...process.env,
-          HERMES_HOME,
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-          PATH: pathWithHermesManagedNode(venvBin)
-        },
-        detached: true,
-        stdio: 'ignore'
-      })
-
-      // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
-      // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
-      // the first moments of the hand-off — the script's step 0 overwrites it
-      // with its own live $PID, and if the script never starts the wrapper's
-      // dead pid makes the marker read as stale and self-delete (no wedge).
-      // The `hermes update` child adopts the SCRIPT's claim via
-      // update_lock.py's process-ancestry rule; no mtime heuristics needed.
-      if (Number.isInteger(child.pid)) {
-        writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
-      }
-
+    if (restored.relaunched.length > 0 || restored.skipped.length > 0) {
       rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
-      )
-    } else {
-      child = spawnUpdaterProcess(updater, updaterArgs, {
-        cwd: HERMES_HOME,
-        env: {
-          ...process.env,
-          HERMES_HOME,
-          PATH: pathWithHermesManagedNode(venvBin)
-        },
-        detached: true,
-        stdio: 'ignore'
-      })
-
-      // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
-      // quit dwell. The Tauri updater won't write its own marker for several
-      // seconds (window init + manifest), and during that gap our renderer
-      // can reconnect and spawn a fresh backend that re-locks .pyd files in
-      // the venv. By writing the marker ourselves the renderer's
-      // waitForUpdateToFinish() gate sees a live update and parks instead.
-      // The updater overwrites this with its own PID later; same format.
-      //
-      // SKIPPED for pre-#74782 staged updaters: those have no self-PID
-      // exclusion, so they read this very marker as a foreign live owner and
-      // abort with "Another Hermes update is already running (PID <itself>)" —
-      // an unbreakable loop, because the update that would replace the stale
-      // binary is the one being refused. Losing the anti-respawn hardening is
-      // strictly better than never updating again, and the updater still writes
-      // its own marker moments later.
-      if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-        writeUpdateMarker(HERMES_HOME, child.pid)
-      } else if (Number.isInteger(child.pid)) {
-        rememberLog(
-          `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
-        )
-      }
-
-      rememberLog(
-        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
+        `[updates] plugin service hosts after ${reason}: relaunched=${restored.relaunched.length} skipped=${restored.skipped.length}`
       )
     }
-
-    // Linger on the "updating — don't reopen" overlay long enough for the user
-    // to actually read it (and to bridge the gap until the updater's own window
-    // appears), THEN quit to release the venv shim. The updater rebuilds and
-    // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
-    // and lured users into the #50238 relaunch loop.)
-    //
-    // The dwell doubles as the hand-off settle window (#66753): watch the
-    // detached child for an async spawn `error` (ENOENT/EACCES) or an early
-    // non-zero/signal exit. On failure, DON'T quit — the user would be left
-    // with no app, no updater, and no evidence. Restart our backend and
-    // surface the error instead. The pre-written marker names the dead child
-    // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
-    const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
-
-    if (!handoffOutcome.ok) {
-      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
-
-      rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-      emitUpdateProgress({ stage: 'error', message, percent: null })
-      startHermes().catch(() => {})
-
-      if (IS_WINDOWS) {
-        // Same drain-semantics restore as the earlier abort paths (#70337).
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
-      }
-
-      return { ok: false, error: 'updater-spawn-failed', message }
-    }
-
-    isQuittingForHandoff = true
-    setTimeout(
-      () => {
-        app.quit()
-      },
-      Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
-    )
-
-    return { ok: true, handedOff: true, updater }
-  } finally {
-    updateInFlight = false
+  } catch (error) {
+    rememberLog(`[updates] could not relaunch plugin service hosts after ${reason}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
+
+function ownsDesktopUpdateClaim(claim: UpdateMarkerClaim): boolean {
+  const owner = readLiveUpdateMarker(HERMES_HOME)
+
+  return owner?.kind === 'live' && owner.pid === claim.pid && owner.startedAt === claim.startedAt
+}
+
+async function runWindowsHandoffPreflight(
+  updateRoot: string,
+  claim: UpdateMarkerClaim
+): Promise<UpdatePreflightOutcome> {
+  const observed = await scanVenvBlockers(updateRoot)
+
+  if (observed.kind === 'probe-failure') {
+    // Pass the observed failure through: a scanner that could not load its own
+    // dependency names the exact repair, and "retry" is useless advice for it.
+    return { kind: 'probe-failure', error: observed.error, message: formatProbeFailedMessage(observed) }
+  }
+
+  return runWindowsUpdatePreflight({
+    claim,
+    ownsUpdateMarker: ownsDesktopUpdateClaim,
+    releaseTrackedBackendTrees: () => releaseBackendLockForUpdate(updateRoot),
+    forceReleaseInstallHolders: () => forceReleaseInstallHoldersForUpdate(updateRoot),
+    scan: () => scanVenvBlockers(updateRoot),
+    terminateDesktopPluginService: service => stopDesktopPluginServiceUnit(updateRoot, service),
+    terminateMcpBridge: bridge => terminateMcpBridge(updateRoot, bridge)
+  })
+}
+
+async function restoreAbortedUpdateBackends(): Promise<void> {
+  startGatewaysAfterUpdateAbort(venvHermesShimPath(resolveUpdateRoot()))
+  await relaunchStoppedDesktopPluginHosts('aborted update')
+
+  try {
+    await startHermes()
+  } catch (error) {
+    rememberLog(`[updates] backend restoration after aborted update failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+  if (!IS_WINDOWS) {
+    if (windowsUpdateIsBusy(updateState)) {throw new Error('An update is already in progress.')}
+    updateState.phase = 'updating'
+
+    try {
+      return await applyUpdatesPosixHandoff(opts)
+    } finally {
+      updateState.phase = 'idle'
+    }
+  }
+
+  // File prerequisites for the script hand-off, checked BEFORE anything stops a
+  // backend or claims the marker: a tree missing venv\Scripts\python.exe or
+  // scripts\desktop-update\windows.ps1 (antivirus quarantine, half-finished
+  // copy) would otherwise be discovered only after the app has already torn
+  // down its own runtime, leaving no Hermes and no updater.
+  const prerequisiteRoot = resolveUpdateRoot()
+
+  if (resolveWindowsUpdateTransport(prerequisiteRoot).kind === 'script') {
+    const prerequisiteError = windowsUpdatePrerequisiteError(prerequisiteRoot)
+
+    if (prerequisiteError) {
+      emitUpdateProgress({ stage: 'error', message: prerequisiteError, percent: null })
+
+      return { ok: false, error: 'update-prerequisite-missing', message: prerequisiteError }
+    }
+  }
+
+  // One secret per handoff, handed only to the updater we are about to spawn.
+  // It comes back in the ack sidecar and is what makes the marker claim
+  // attributable to that child rather than to any same-user process (#B4).
+  const handoffNonce = createUpdateHandoffNonce()
+
+  discardUpdateHandoffAck(HERMES_HOME)
+
+  return applyWindowsUpdate<WindowsUpdateTransport, SpawnedWindowsUpdateLaunch>(opts, {
+    state: updateState,
+    hermesHome: HERMES_HOME,
+    prepare: async () => {
+      const updateRoot = resolveUpdateRoot()
+      const transport = resolveWindowsUpdateTransport(updateRoot)
+      const branch = await resolveHealedBranch(updateRoot, readDesktopUpdateConfig().branch || DEFAULT_UPDATE_BRANCH)
+
+      if (transport.kind === 'manual') {
+        return {
+          kind: 'manual' as const,
+          command: formatPowerShellArgvForDisplay(['hermes', 'update', ...(branch === 'main' ? [] : ['--branch', branch])]),
+          hermesRoot: updateRoot
+        }
+      }
+
+      return { kind: 'handoff' as const, transport, updateRoot, branch }
+    },
+    emitProgress: emitUpdateProgress,
+    preflightStateDb: () => preflightStateDb(HERMES_HOME, rememberLog),
+    runPreflight: (prepared, claim) => runWindowsHandoffPreflight(prepared.updateRoot, claim),
+    waitForBlockers: (updateRoot, claim, signal) => waitForInstallUnlock({
+      isLocked: createInstallLockGateProbeForRoot(updateRoot),
+      ownsClaim: () => ownsDesktopUpdateClaim(claim),
+      signal
+    }),
+    stopSafeBlockers: (updateRoot, blockers) => stopSafeVenvBlockers(updateRoot, blockers),
+    launch: (_permit, prepared, claim) => {
+      const launch = launchWindowsUpdateTransport(
+        prepared.transport,
+        {
+          branch: prepared.branch,
+          desktopPid: process.pid,
+          installRoot: prepared.updateRoot,
+          nonce: handoffNonce,
+          relaunchAppPath: resolveWindowsDevRelaunchAppPath(process.defaultApp, app.getAppPath()),
+          relaunchExe: process.execPath
+        },
+        {
+          cwd: HERMES_HOME,
+          env: {
+            ...process.env,
+            HERMES_HOME,
+            HERMES_UPDATE_STARTED_AT: String(claim.startedAt),
+            PATH: pathWithHermesManagedNode(path.join(prepared.updateRoot, 'venv', 'Scripts'))
+          },
+          detached: true,
+          stdio: 'ignore'
+        }
+      )
+
+      if (launch.kind !== 'spawned') {throw new Error('Update transport changed during preflight.')}
+
+      return { launch, updater: launch.handoff.scriptPath }
+    },
+    observe: launch => observeUpdaterHandoff(launch.child, UPDATE_HANDOFF_DWELL_MS),
+    authenticate: (launch, claim) => waitForAcknowledgedUpdaterClaim({
+      hermesHome: HERMES_HOME,
+      nonce: handoffNonce,
+      excludedPids: [claim.pid, ...(launch.child.pid ? [launch.child.pid] : [])],
+      startedAfter: claim.startedAt
+    }),
+    commit: launched => {
+      isQuittingForHandoff = true
+      rememberLog(`[updates] script adopted update marker (${launched.updater}); exiting desktop`)
+      setTimeout(() => app.quit(), 0)
+    },
+    waitForMarkerClearance: () => waitForLocalBackendClearance({
+      hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+      isUpdateInFlight: () => false
+    }, { pollMs: UPDATE_WAIT_POLL_MS, timeoutMs: UPDATE_WAIT_TIMEOUT_MS }),
+    restoreBackends: restoreAbortedUpdateBackends,
+    log: rememberLog
+  })
+}
+
 async function handOffWindowsBootstrapRecovery(reason) {
+  if (windowsUpdateIsBusy(updateState)) {throw new Error('An update is already in progress.')}
+  updateState.phase = 'updating'
+
+  try {
+    return await handOffWindowsBootstrapRecoveryTransaction(reason)
+  } finally {
+    updateState.phase = 'idle'
+  }
+}
+
+async function handOffWindowsBootstrapRecoveryTransaction(reason) {
   if (!IS_WINDOWS || !IS_PACKAGED) {
     return false
   }
@@ -4354,17 +4293,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
   if (handoffConflict) {
     // Same hazard as applyUpdates (#75778): a live foreign updater already
     // owns the marker. Spawning another here would overwrite its claim and
-    // race a second updater over the same install tree. The live updater
-    // is already working on this exact install and will restart us when
-    // it finishes, so treat this the same as a successful hand-off instead
-    // of clobbering it with our own.
+    // race a second updater over the same install tree. A foreign updater
+    // makes no promise to relaunch this desktop.
     rememberLog(`[bootstrap] refusing recovery hand-off: ${handoffConflict.message}`)
-    isQuittingForHandoff = true
-    setTimeout(() => {
-      app.quit()
-    }, UPDATE_HANDOFF_DWELL_MS)
-
-    return true
+    throw new Error(`Hermes recovery is waiting because ${handoffConflict.message}`)
   }
 
   const updateRoot = resolveUpdateRoot()
@@ -4393,59 +4325,109 @@ async function handOffWindowsBootstrapRecovery(reason) {
     branch
   )
 
-  await releaseBackendLockForUpdate(updateRoot)
+  const fullRepair = updaterArgs.includes('--repair')
+  let repairClaim: UpdateMarkerClaim | undefined
 
-  const child = spawnUpdaterProcess(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
+  if (fullRepair) {
+    const acquired = acquireUpdateMarker(HERMES_HOME)
+
+    if (acquired.acquired === false) {
+      throw new Error(`Hermes recovery is waiting because ${acquired.message}`)
+    }
+
+    repairClaim = acquired.owner
+  }
+
+  let clearance
+
+  try {
+    clearance = await releaseBackendLockForUpdate(updateRoot)
+  } catch (error) {
+    if (repairClaim) {
+      releaseUpdateMarkerIfOwnedBy(HERMES_HOME, repairClaim.pid, repairClaim.startedAt)
+    }
+
+    throw error
+  }
+
+  if (!clearance.unlocked) {
+    if (repairClaim) {
+      releaseUpdateMarkerIfOwnedBy(HERMES_HOME, repairClaim.pid, repairClaim.startedAt)
+    }
+
+    throw new Error('Hermes recovery cannot continue while this installation is still in use.')
+  }
+
+  const updaterStartedAfter = Math.floor(Date.now() / 1000)
+  const dwellStartedAt = Date.now()
+  const recoveryNonce = createUpdateHandoffNonce()
+
+  discardUpdateHandoffAck(HERMES_HOME)
+
+  const handoff = await runRecoveryUpdaterHandoff({
+    hermesHome: HERMES_HOME,
+    nonce: recoveryNonce,
+    startedAfter: updaterStartedAfter,
+    // Present only on the full-repair path, where the Desktop holds the marker
+    // for gate continuity and hands it to the child after authentication.
+    repairClaim: fullRepair ? repairClaim ?? null : null,
+    spawn: () => spawnUpdaterProcess(updater, updaterArgs, {
+      cwd: HERMES_HOME,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        [WINDOWS_HANDOFF_ENV.nonce]: recoveryNonce,
+        PATH: pathWithHermesManagedNode(venvBin)
+      },
+      detached: true,
+      stdio: 'ignore'
+    }),
+    observe: child => observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS),
+    childPid: child => (Number.isInteger(child.pid) ? Number(child.pid) : null),
+    captureCreatedAt: async (child, pid) =>
+      isSpawnedUpdaterGenerationActive(child) ? captureSpawnedUpdaterCreatedAt(pid) : null,
+    isChildGenerationActive: child => isSpawnedUpdaterGenerationActive(child),
+    commit: () => {
+      rememberLog(
+        `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
+      )
+      isQuittingForHandoff = true
+      setTimeout(
+        () => app.quit(),
+        Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
+      )
+
+      return true
     },
-    detached: true,
-    stdio: 'ignore'
+    restore: async ({ child, createdAt, markerTransferred }) => {
+      if (child && createdAt !== null) {
+        await terminateSpawnedUpdaterIfExact(child, createdAt)
+      }
+
+      if (repairClaim) {
+        if (markerTransferred && child && Number.isInteger(child.pid)) {
+          const liveCreatedAt = await queryWindowsProcessCreatedAt(Number(child.pid))
+          const childExited = typeof child.exitCode === 'number' || typeof child.signalCode === 'string'
+
+          const pidWasReused = typeof liveCreatedAt === 'number' && Number.isFinite(liveCreatedAt) && liveCreatedAt > 0 &&
+            liveCreatedAt !== createdAt
+
+          if (childExited || pidWasReused) {
+            releaseUpdateMarkerIfOwnedBy(HERMES_HOME, Number(child.pid), createdAt)
+          }
+        } else {
+          releaseUpdateMarkerIfOwnedBy(HERMES_HOME, repairClaim.pid, repairClaim.startedAt)
+        }
+      }
+    },
+    authenticationError: 'The recovery updater did not acknowledge startup. Close Hermes before retrying recovery.'
   })
 
-  // Same marker pre-write as applyUpdates — see comment there. The recovery
-  // hand-off has the same window where the renderer can respawn a backend
-  // before the updater writes its own marker, and the same stale-updater
-  // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
-  // strand the very recovery meant to heal the install.
-  if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-    writeUpdateMarker(HERMES_HOME, child.pid)
-  } else if (Number.isInteger(child.pid)) {
-    rememberLog(
-      `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
-    )
+  if (handoff.ok === false) {
+    rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoff.message}`)
   }
 
-  rememberLog(
-    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
-  )
-  // Same dwell as the in-app update hand-off (#50419): give the updater's
-  // window time to appear before we vanish, so the recovery doesn't look like
-  // a crash and provoke a mid-recovery relaunch. The dwell doubles as the
-  // hand-off settle window (#66753): a spawn error or early updater death
-  // returns false so the caller falls through to its next recovery path
-  // instead of quitting into nothing.
-  const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
-
-  if (!handoffOutcome.ok) {
-    rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoffOutcome.message}`)
-
-    return false
-  }
-
-  isQuittingForHandoff = true
-  setTimeout(
-    () => {
-      app.quit()
-    },
-    Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
-  )
-
-  return true
+  return requireUpdaterHandoff(handoff)
 }
 
 // The running app's .app bundle (packaged macOS): execPath is
@@ -12713,7 +12695,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   {
     let poolAnnounced = false
 
-    await waitForUpdateClearance(updateGateDeps(), {
+    const clearance = await waitForLocalBackendClearance(updateGateDeps(), {
       onWaitTick: reason => {
         if (!poolAnnounced) {
           poolAnnounced = true
@@ -12723,6 +12705,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
       pollMs: UPDATE_WAIT_POLL_MS,
       timeoutMs: UPDATE_WAIT_TIMEOUT_MS
     })
+
+    if (clearance === 'timeout') {
+      throw new Error('Hermes is still updating; the background backend remains stopped.')
+    }
   }
 
   profileDeletionGate.assertCanStart(profile)
@@ -17693,10 +17679,27 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   }))
 )
 
+ipcMain.handle('hermes:updates:cancel-wait', () => cancelWindowsUpdateWait(updateState))
+
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+
+  // The persisted branch reaches `git ls-remote` as a pattern and the Windows
+  // updater as an argv element. Reject anything that is not a git branch name
+  // here, at the boundary, instead of relying on every later quoting site.
+  if (!isValidUpdateBranchRef(branch)) {
+    const current = readDesktopUpdateConfig()
+
+    return {
+      ok: false,
+      error: 'invalid-branch',
+      message: `"${branch}" isn't a valid git branch name, so the update branch was left on ${current.branch}.`,
+      branch: current.branch
+    }
+  }
+
   writeDesktopUpdateConfig({ branch })
 
   return { branch }
@@ -17737,7 +17740,30 @@ function resolveHermesVersion() {
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
 async function detectRendererSkew() {
-  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
+  const probe = IS_PACKAGED && !windowsUpdateIsBusy(updateState) ? probeDesktopBuildNeeded : undefined
+
+  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot(), probe)
+}
+
+async function probeDesktopBuildNeeded(): Promise<boolean | null> {
+  const root = resolveUpdateRoot()
+  const python = resolveVenvPython(root)
+
+  if (!python) { return null }
+
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(python, ['-m', 'hermes_cli.main', 'desktop', '--build-needed'],
+        { cwd: root, encoding: 'utf8', timeout: 20_000, windowsHide: true },
+        (error, out) => error ? reject(error) : resolve(String(out ?? '')))
+    })
+
+    const parsed = JSON.parse(stdout.trim().split(/\r?\n/).pop() ?? '')
+
+    return typeof parsed?.build_needed === 'boolean' ? parsed.build_needed : null
+  } catch {
+    return null
+  }
 }
 
 // Re-resolve the live Hermes version and push it into the native About panel

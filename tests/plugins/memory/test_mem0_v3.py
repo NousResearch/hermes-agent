@@ -16,6 +16,7 @@ class FakeBackend:
         self._search_results = search_results or []
         self._all_results = all_results or {"results": [], "count": 0}
         self.captured = []
+        self.closed = False
 
     def search(self, query, *, filters, top_k=10, rerank=True):
         self.captured.append(("search", query, {"filters": filters, "top_k": top_k, "rerank": rerank}))
@@ -40,6 +41,11 @@ class FakeBackend:
     def delete(self, memory_id):
         self.captured.append(("delete", memory_id))
         return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def close(self):
+        # Must not raise: _shutdown_backend only nulls _backend after close() succeeds.
+        self.captured.append(("close",))
+        self.closed = True
 
 
 class TestMem0V3Tools:
@@ -453,5 +459,76 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
+
+
+class _AliveThread:
+    """join() returns immediately; is_alive() stays True (in-flight sync)."""
+
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        return
+
+
+class _DeadThread:
+    def is_alive(self):
+        return False
+
+    def join(self, timeout=None):
+        return
+
+
+class TestMem0ShutdownKeepsBackendDuringSync:
+    """shutdown() must not close the backend while sync_turn extraction is in flight.
+
+    Regression for #107517: the previous 5s join then unconditional close left
+    daemon add() hitting a closed LLM client, silently dropping that turn.
+    """
+
+    def _make_provider(self, monkeypatch, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def test_shutdown_keeps_backend_when_sync_still_alive(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._sync_thread = _AliveThread()
+        provider.shutdown()
+        assert ("close",) not in backend.captured
+        assert backend.closed is False
+        assert provider._backend is backend
+
+    def test_shutdown_closes_backend_when_sync_absent(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._sync_thread = None
+        provider.shutdown()
+        assert ("close",) in backend.captured
+        assert backend.closed is True
+        assert provider._backend is None
+
+    def test_shutdown_closes_backend_when_sync_finished(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._sync_thread = _DeadThread()
+        provider.shutdown()
+        assert ("close",) in backend.captured
+        assert backend.closed is True
+        assert provider._backend is None
+
+    def test_shutdown_closes_backend_when_only_prefetch_alive(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._prefetch_thread = _AliveThread()
+        provider._sync_thread = None
+        provider.shutdown()
+        assert ("close",) in backend.captured
+        assert backend.closed is True
+        assert provider._backend is None
 
 

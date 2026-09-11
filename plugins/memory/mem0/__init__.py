@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Circuit breaker: after _BREAKER_THRESHOLD consecutive failures, pause API
 # calls for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD, _BREAKER_COOLDOWN_SECS, _PREFETCH_WAIT_SECS = 5, 120, 3
+_SHUTDOWN_JOIN_SECS = 30.0
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
@@ -372,7 +373,10 @@ class Mem0MemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                t.join(timeout=_SHUTDOWN_JOIN_SECS)
+        if self._sync_thread and self._sync_thread.is_alive():
+            logger.info("Mem0 sync thread still extracting; deferring backend close")
+            return
         self._shutdown_backend()
 
 

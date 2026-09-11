@@ -100,7 +100,7 @@ class TestGatewayPinningFailsClosed:
 
 
     @pytest.mark.asyncio
-    async def test_live_spawning_session_rebinds_from_different_route(self):
+    async def test_live_spawning_session_retargets_to_current_session(self):
         current = self._entry("sess_current")
         pinned = self._entry("sess_live")
         runner = self._make_runner(
@@ -112,10 +112,8 @@ class TestGatewayPinningFailsClosed:
             current, "sess_live"
         )
 
-        assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once_with(
-            current.session_key, "sess_live"
-        )
+        assert resolved is current
+        getattr(runner.session_store, "switch_session").assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):

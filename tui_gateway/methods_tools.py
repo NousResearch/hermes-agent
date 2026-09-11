@@ -181,6 +181,15 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _cli_exec_output(r, limit: int = 48_000) -> dict[str, str]:
+    """Structured cli.exec streams; ``output`` matches the legacy joined bound."""
+    return {
+        "output": (_joined_output(r) or "(no output)")[:limit],
+        "stdout": (r.stdout or "")[:limit],
+        "stderr": (r.stderr or "")[:limit],
+    }
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
@@ -442,7 +451,7 @@ def _(rid, params: dict) -> dict:
     return _captured_exec(
         rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
-            "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
+            "blocked": False, "code": r.returncode, **_cli_exec_output(r)}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
         env=hermes_subprocess_env(inherit_credentials=True))
 

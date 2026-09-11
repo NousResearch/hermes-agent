@@ -453,6 +453,56 @@ class TestMattermostFileUpload:
         assert result.success is True
         assert result.message_id == "post_with_file"
 
+    @pytest.mark.asyncio
+    async def test_send_voice_transcodes_ogg_to_temporary_mp3(self, tmp_path):
+        source = tmp_path / "voice.ogg"
+        source.write_bytes(b"ogg audio")
+        converted = tmp_path / "converted.mp3"
+        converted.write_bytes(b"mp3 audio")
+        self.adapter._transcode_voice_to_mp3 = AsyncMock(return_value=converted)
+        self.adapter._upload_file = AsyncMock(return_value="file_audio")
+        self.adapter._post_with_file = AsyncMock(return_value=MagicMock(success=True))
+
+        result = await self.adapter.send_voice(
+            "channel_1", str(source), caption="Voice", reply_to="root", is_voice=True,
+        )
+
+        assert result.success is True
+        self.adapter._upload_file.assert_awaited_once_with(
+            "channel_1", b"mp3 audio", "converted.mp3", "audio/mpeg",
+        )
+        self.adapter._post_with_file.assert_awaited_once_with(
+            "channel_1", "file_audio", "Voice", "root", None,
+        )
+        assert not converted.exists()
+
+    @pytest.mark.asyncio
+    async def test_voice_transcoder_produces_mp3_with_ffmpeg(self, tmp_path, monkeypatch):
+        from plugins.platforms.mattermost import adapter as mattermost
+
+        source = tmp_path / "voice.opus"
+        source.write_bytes(b"opus audio")
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append((command, kwargs))
+            with open(command[-1], "wb") as output:
+                output.write(b"mp3 audio")
+            return mattermost.subprocess.CompletedProcess(command, 0, stderr=b"")
+
+        monkeypatch.setattr(mattermost.shutil, "which", lambda _name: "ffmpeg")
+        monkeypatch.setattr(mattermost.subprocess, "run", fake_run)
+
+        output = await self.adapter._transcode_voice_to_mp3(source)
+
+        assert output is not None and output.suffix == ".mp3"
+        command, kwargs = commands[0]
+        assert command[0] == "ffmpeg"
+        assert str(source) in command
+        assert command[command.index("-codec:a") + 1] == "libmp3lame"
+        assert kwargs["stdin"] is mattermost.subprocess.DEVNULL
+        output.unlink()
+
 
 # ---------------------------------------------------------------------------
 # Dedup cache

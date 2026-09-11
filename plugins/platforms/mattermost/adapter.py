@@ -16,6 +16,9 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -122,6 +125,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        self._warned_no_ffmpeg = False
 
     # --- HTTP helpers ---
 
@@ -312,9 +316,57 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
         return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name, metadata)
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+    async def send_voice(
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any,
+    ) -> SendResult:
+        """Upload Apple-incompatible OGG/Opus audio as an MP3 attachment when ffmpeg is available."""
+        source = Path(audio_path)
+        if source.suffix.lower() in {".ogg", ".opus"} and source.exists():
+            converted = await self._transcode_voice_to_mp3(source)
+            if converted is not None:
+                try:
+                    return await self._send_local_file(
+                        chat_id, str(converted), caption, reply_to, metadata=metadata)
+                finally:
+                    with contextlib.suppress(OSError):
+                        converted.unlink()
         return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
+
+    async def _transcode_voice_to_mp3(self, source: Path) -> Optional[Path]:
+        """Return a temporary MP3 for Mattermost's generic attachment clients, or None on failure."""
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            if not self._warned_no_ffmpeg:
+                self._warned_no_ffmpeg = True
+                logger.warning("Mattermost: ffmpeg not found; uploading OGG/Opus audio unchanged")
+            return None
+
+        with tempfile.NamedTemporaryFile(prefix="hermes-mattermost-", suffix=".mp3", delete=False) as tmp:
+            output = Path(tmp.name)
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        def run_ffmpeg() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", str(source), "-vn", "-codec:a", "libmp3lame",
+                 "-q:a", "4", str(output)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                timeout=60, check=False, creationflags=windows_hide_flags(),
+            )
+
+        try:
+            result = await asyncio.to_thread(run_ffmpeg)
+            if result.returncode == 0 and output.stat().st_size > 0:
+                return output
+            logger.warning(
+                "Mattermost: ffmpeg MP3 conversion failed (returncode=%s): %s",
+                result.returncode, result.stderr.decode("utf-8", errors="replace")[:300],
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Mattermost: ffmpeg MP3 conversion failed: %s", exc)
+        with contextlib.suppress(OSError):
+            output.unlink()
+        return None
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:

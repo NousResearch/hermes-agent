@@ -40,13 +40,13 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
-  it('shows a dismissible shared-profile warning on the existing status refresh', async () => {
-    const warning = 'Another installation is using this profile.'
-    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+  it('shows a dismissible shared-profile warning on the existing status refresh', async (): Promise<void> => {
+    const warning: string = 'Another installation is using this profile.'
+    const requestGateway: GatewayRequester = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
 
     render(createElement(NotificationStack))
 
-    const { rerender } = renderHook(({ scope }) => useStatusSnapshot('open', requestGateway, scope), {
+    const { rerender }: { rerender: (props: { scope: string }) => void } = renderHook(({ scope }: { scope: string }): ReturnType<typeof useStatusSnapshot> => useStatusSnapshot('open', requestGateway, scope), {
       initialProps: { scope: 'local-default' }
     })
 

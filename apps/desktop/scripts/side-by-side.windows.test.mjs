@@ -114,17 +114,24 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
       import config from ${JSON.stringify(moduleUrl('apps/desktop/electron-builder.config.cjs'))};
       import { appIdentity } from ${JSON.stringify(moduleUrl('scripts/msix-shared.mjs'))};
       import { stageDesktopLaunchers } from ${JSON.stringify(moduleUrl('apps/desktop/scripts/write-build-stamp.mjs'))};
+      import { AppInfo } from ${JSON.stringify(moduleUrl('node_modules/app-builder-lib/dist/appInfo.js'))};
+      import fs from 'node:fs';
+      const metadata = { ...JSON.parse(fs.readFileSync(${JSON.stringify(path.join(desktop, 'package.json'))}, 'utf8')), ...config.extraMetadata };
+      const executable = new AppInfo({ config, metadata }, null, config.win).productFilename + '.exe';
       const payload = stageDesktopLaunchers(${JSON.stringify(manifestDir)});
       await beforeBuild();
-      console.log(JSON.stringify({identity, config, payload, app: appIdentity(${JSON.stringify(desktop)})}));
+      console.log(JSON.stringify({identity, config, payload, executable, app: appIdentity(${JSON.stringify(desktop)})}));
     `, path.join(root, 'native-probe.mjs')]))
     const xml = node([path.join(desktop, 'scripts/gen-msix-manifest.mjs'), 'bundled', process.arch])
     fs.writeFileSync(path.join(packageDir, 'AppxManifest.xml'), xml)
     fs.cpSync(path.join(desktop, 'build/appx'), path.join(packageDir, 'assets'), { recursive: true })
     fs.mkdirSync(path.join(packageDir, 'Public'))
     fs.cpSync(manifestDir, path.join(packageDir, 'app/resources/agent-payload'), { recursive: true })
+    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(packageDir, 'app', facts.executable))
     const expectedExecutable = path.win32.join('app/resources/agent-payload', facts.payload.runtime.commands.hermes)
-    check(attribute(xml, 'Application', 'Executable') === expectedExecutable, `${label}: application uses the wrong launcher`)
+    check(attribute(xml, 'Application', 'Executable') === path.win32.join('app', facts.executable), `${label}: application does not launch its GUI executable`)
+    const aliasExtension = /<uap5:Extension\b[^>]*Category="windows.appExecutionAlias"[^>]*>/.exec(xml)?.[0]
+    check(aliasExtension && attribute(aliasExtension, 'uap5:Extension', 'Executable') === expectedExecutable, `${label}: CLI alias does not launch its payload executable`)
     for (const executable of new Set([...xml.matchAll(/\bExecutable="([^"]+)"/g)].map(match => match[1]))) {
       assert.ok(fs.existsSync(path.join(packageDir, executable)), `${label}: generated executable ${executable} is absent after launcher staging`)
     }

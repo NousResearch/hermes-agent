@@ -528,6 +528,62 @@ def test_hatch_pet_retries_row_whose_frames_collapse_to_slivers(monkeypatch, tmp
     assert "sliver" in (atlas_mod.row_frames_collapsed(slivers, atlas_mod.silhouette_box(base)) or "")
 
 
+def test_row_frames_collapsed_without_reference_and_when_empty():
+    """The gate must abstain when it has no reference to judge against, and say
+    so when a row produced no art at all — neither case may silently pass as
+    'collapsed' or crash the hatch."""
+    from agent.pet.generate import atlas as atlas_mod
+
+    whole = atlas_mod.extract_strip_frames(_strip(6), 6, fit=False)
+    assert atlas_mod.row_frames_collapsed(whole, None) is None  # no reference → no verdict
+    empty = [atlas_mod._blank() for _ in range(6)]
+    assert "no visible frames" in (atlas_mod.row_frames_collapsed(empty, (100, 100)) or "")
+
+
+def test_collapsed_row_keeps_the_normal_retry_ladder(monkeypatch, tmp_path):
+    """A collapse is NOT an unsegmentable strip: the strip sliced fine, so a
+    fresh roll deserves the normal strict retry. Pins the policy that a
+    collapsed row does not take the skip-strict shortcut."""
+    from agent.pet.generate import atlas as atlas_mod
+    from agent.pet.generate import imagegen, orchestrate
+
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
+
+    attempts: dict[str, int] = {}
+    idle_methods: list[str] = []
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        attempts[prefix] = attempts.get(prefix, 0) + 1
+        state = prefix.replace("pet_row_", "")
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
+        path = tmp_path / f"{prefix}_{attempts[prefix]}.png"
+        _strip(count).save(path)
+        return [path]
+
+    real_extract = atlas_mod.extract_strip_frames
+
+    def collapse_once(strip, count, *args, method="auto", **kwargs):
+        frames = real_extract(strip, count, *args, method=method, **kwargs)
+        name = Path(strip).name if isinstance(strip, (str, Path)) else ""
+        if name.startswith("pet_row_idle"):
+            idle_methods.append(method)
+            if len(idle_methods) == 1:
+                return [f.crop((0, 0, f.width // 4, f.height)) for f in frames]
+        return frames
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+    monkeypatch.setattr(atlas_mod, "extract_strip_frames", collapse_once)
+
+    result = orchestrate.hatch_pet(base_image=base, slug="collapse-policy", concept="a fox")
+
+    # Two paid calls, both strict — the collapse did not skip to lenient.
+    assert attempts["pet_row_idle"] == 2
+    assert idle_methods == ["components", "components"]
+    assert "idle" in result.states
+
+
 
 
 

@@ -485,7 +485,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 if piece is not None:
                     output.append(msl.feed(decoder.decode(piece) if isinstance(piece, bytes) else str(piece)))
         elif os.name == "nt":
-_drain_fd_windows(proc, fd, output, decoder, stop, msl)
+            _drain_fd_windows(proc, fd, output, decoder, stop, msl)
         else:
             _drain_fd_select(proc, fd, output, decoder, stop, msl)
     except Exception:

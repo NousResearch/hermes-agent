@@ -182,3 +182,36 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /kanban notify-subscribe — an explicitly empty --chat-id must be rejected
+# up front (issue #103569)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_subscribe_rejects_empty_chat_id(kanban_home):
+    """--chat-id is argparse-required, but an explicit empty value (an unset shell
+    variable expanding to "") passes argparse and can never deliver: the notifier
+    retries the deterministic adapter failure and then silently drops the
+    subscription. It must be rejected at subscribe time."""
+    import re
+    from hermes_cli import kanban_db_notify as kbn
+
+    out = kc.run_slash("create 'notify target task'")
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m
+    tid = m.group(1)
+
+    out = kc.run_slash(f"notify-subscribe {tid} --platform feishu --chat-id ''")
+    assert "non-empty" in out, out
+    out = kc.run_slash(f'notify-subscribe {tid} --platform feishu --chat-id "  "')
+    assert "non-empty" in out, out
+
+    # Nothing was stored for the rejected subscriptions.
+    with kbc.connect_closing() as conn:
+        assert kbn.list_notify_subs(conn, tid) == []
+
+    # A real chat id still subscribes.
+    out = kc.run_slash(f"notify-subscribe {tid} --platform feishu --chat-id oc_123")
+    assert "Subscribed feishu:oc_123" in out, out
+
+

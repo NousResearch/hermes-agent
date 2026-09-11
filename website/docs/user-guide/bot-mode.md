@@ -105,6 +105,10 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 
+### Relaying into a group from another session (`hermes group`)
+
+Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Pax via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. See [`hermes group`](../reference/cli-commands.md#hermes-group).
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

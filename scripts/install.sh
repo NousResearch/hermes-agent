@@ -329,9 +329,13 @@ stage_venv() {
 bootstrap_python() {
     ensure_uv
     local _py
-    _py="$(awk '/^    "python": \{/ { in_py = 1 }
-        in_py && /^      "version":/ { gsub(/.*: "|"$|",$/, ""); print; exit }' \
-        "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
+    # Read packages.python.version by following object names and braces, not
+    # indentation — same pre-Python reader contract as setup-hermes.sh's pin().
+    _py="$(awk -F '"' '
+        /^[[:space:]]*("[^"]+"[[:space:]]*:[[:space:]]*)?\{/ { path[++depth] = $2; next }
+        /^[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/ { delete path[depth--]; next }
+        path[2] == "packages" && path[3] == "python" && $2 == "version" && depth == 3 { print $4; exit }
+    ' "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
     "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
     boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"

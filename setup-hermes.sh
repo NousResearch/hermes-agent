@@ -51,9 +51,10 @@ echo -e "${CYAN}→${NC} Checking for uv..."
 lock="$SCRIPT_DIR/pm/lock.json"
 [ -f "$lock" ] || { echo -e "${RED}✗${NC} pm/lock.json not found" >&2; exit 1; }
 
-# Read the shared mirror location before Python is available.
-mirror_origin="$(awk -F '"' '/^  "origin"/ { print $4; exit }' "$SCRIPT_DIR/pm/artifact-mirror.json")"
-mirror_prefix="$(awk -F '"' '/^  "prefix"/ { print $4; exit }' "$SCRIPT_DIR/pm/artifact-mirror.json")"
+# Read the shared mirror location before Python is available. Match object
+# keys, not indentation — same rule as pin() below.
+mirror_origin="$(awk -F '"' '$2 == "origin" { print $4; exit }' "$SCRIPT_DIR/pm/artifact-mirror.json")"
+mirror_prefix="$(awk -F '"' '$2 == "prefix" { print $4; exit }' "$SCRIPT_DIR/pm/artifact-mirror.json")"
 mirror_url_for() { # $1 = lowercase sha256
   [ -n "$mirror_origin" ] && [ -n "$mirror_prefix" ] || return 1
   printf '%s/%s%s' "$mirror_origin" "$mirror_prefix" "$1"

@@ -253,6 +253,7 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         # Load-bearing for restart drain-window recovery dedup.
         "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
         "observed": bool(msg.get("observed")),
+        "_interrupted_tool_tail": bool(msg.get("_interrupted_tool_tail")),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
@@ -332,6 +333,19 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
         if msg.get(_DB_PERSISTED_MARKER):
             if uid is not None:
                 store_uids.add(uid)
+            # Already-durable tool rows marked interrupted at finalize time still need
+            # the durable provenance column stamped — they were flushed before the
+            # marker existed (#63292).
+            if (
+                msg.get("role") == "tool"
+                and msg.get("_interrupted_tool_tail") is True
+                and not msg.get("_db_interrupted_tail_stamped")
+            ):
+                agent._session_db.mark_tool_tail_interrupted(
+                    agent.session_id,
+                    msg.get("tool_call_id"),
+                )
+                msg["_db_interrupted_tail_stamped"] = True
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
         is_history = id(msg) in history_ids

@@ -249,9 +249,10 @@ def test_invalid_tool_exhaustion_closes_tool_tail(agent_env):
     """Invalid-tool 3-strike partial must not leave a durable tool→user tail (#48879 class).
 
     Retries <3 append assistant+error tool rows, so the transcript already ends
-    on ``tool`` before the exhaustion early-return. That return must close the
-    sequence (same contract as interrupt aborts) so the next user turn is not
-    ``tool → user`` for strict providers.
+    on ``tool`` before the exhaustion early-return. That return must stamp
+    interruption provenance on the tool tail (same contract as interrupt aborts,
+    #63292) so the next user turn's API copy — not the durable transcript —
+    carries the synthetic closure for strict providers.
     """
     agent, handler = agent_env
     for _ in range(3):
@@ -262,6 +263,6 @@ def test_invalid_tool_exhaustion_closes_tool_tail(agent_env):
     assert result.get("partial", False)
     msgs = result.get("messages") or []
     assert msgs, "expected persisted conversation messages"
-    assert msgs[-1].get("role") == "assistant"
-    assert "invalid tool call" in (msgs[-1].get("content") or "").lower()
+    assert msgs[-1].get("role") == "tool", "interrupted tool tail is kept, not closed in-place"
+    assert msgs[-1].get("_interrupted_tool_tail") is True, "provenance marker must be stamped on the tool tail"
 

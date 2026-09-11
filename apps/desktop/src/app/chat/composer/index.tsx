@@ -95,7 +95,7 @@ export function ChatBar({
   disabled,
   focusKey,
   gateway,
-  maxRecordingSeconds = 120,
+  maxRecordingSeconds,
   queueSessionKey,
   sessionId,
   state,

@@ -115,7 +115,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   maxVoiceRecordingSeconds
 }: {
   actions: WiringActions
-  maxVoiceRecordingSeconds?: number
+  maxVoiceRecordingSeconds?: number | null
 }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)

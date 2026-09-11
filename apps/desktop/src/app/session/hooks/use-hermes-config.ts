@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
@@ -22,11 +22,17 @@ import {
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 
-const DEFAULT_VOICE_SECONDS = 120
+const CONFIG_REFRESH_RETRY_MS = 2_000
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
 
 function recordingLimit(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined
+  }
+
+  // Match the backend's contract: an explicit non-positive value disables the
+  // automatic cap. `undefined` means the config is not available yet.
+  return value > 0 ? value : null
 }
 
 /** config.yaml hands back whatever the user wrote — `reasoning_effort: false`
@@ -51,9 +57,22 @@ interface HermesConfigOptions {
 }
 
 export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
-  const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
+  const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState<number | null | undefined>(undefined)
   const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
+  const configRetryTimerRef = useRef<number | null>(null)
+  const refreshHermesConfigRef = useRef<(() => Promise<void>) | null>(null)
+
+  const scheduleConfigRetry = useCallback(() => {
+    if (configRetryTimerRef.current !== null) {
+      return
+    }
+
+    configRetryTimerRef.current = window.setTimeout(() => {
+      configRetryTimerRef.current = null
+      void refreshHermesConfigRef.current?.()
+    }, CONFIG_REFRESH_RETRY_MS)
+  }, [])
 
   const refreshHermesConfig = useCallback(
     async (force = false, shouldPublish: () => boolean = () => true) => {
@@ -66,6 +85,11 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
       try {
         const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
+
+        if (configRetryTimerRef.current !== null) {
+          window.clearTimeout(configRetryTimerRef.current)
+          configRetryTimerRef.current = null
+        }
 
         const canPublish = () => profileRefreshEpochRef.current === profileRefreshEpoch && shouldPublish()
 
@@ -148,11 +172,25 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)
       } catch {
-        // Config is nice-to-have; chat still works without it.
+        // Chat remains usable, but voice must not silently record with an
+        // unrelated default limit. Retry after transient startup failures.
+        scheduleConfigRetry()
       }
     },
-    [activeSessionIdRef]
+    [activeSessionIdRef, scheduleConfigRetry]
   )
+
+  useEffect(() => {
+    refreshHermesConfigRef.current = refreshHermesConfig
+
+    return () => {
+      refreshHermesConfigRef.current = null
+      if (configRetryTimerRef.current !== null) {
+        window.clearTimeout(configRetryTimerRef.current)
+        configRetryTimerRef.current = null
+      }
+    }
+  }, [refreshHermesConfig])
 
   return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
 }

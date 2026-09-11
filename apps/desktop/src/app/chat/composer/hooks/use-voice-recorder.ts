@@ -8,7 +8,8 @@ import type { VoiceActivityState, VoiceStatus } from '../types'
 import { useMicRecorder } from './use-mic-recorder'
 
 interface VoiceRecorderOptions {
-  maxRecordingSeconds: number
+  /** `undefined` means the shared config has not loaded yet; `null` is uncapped. */
+  maxRecordingSeconds?: number | null
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   focusInput: () => void
   onTranscript: (text: string) => void
@@ -78,6 +79,12 @@ export function useVoiceRecorder({
   }
 
   const start = async () => {
+    if (maxRecordingSeconds === undefined) {
+      notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+
+      return
+    }
+
     if (!onTranscribeAudio) {
       notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
 
@@ -90,8 +97,10 @@ export function useVoiceRecorder({
       setElapsedSeconds(0)
       setVoiceStatus('recording')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
-      const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
-      timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
+      if (maxRecordingSeconds !== null) {
+        const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
+        timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
+      }
     } catch (error) {
       setVoiceStatus('idle')
       notifyError(error, voiceCopy.recordingFailed)

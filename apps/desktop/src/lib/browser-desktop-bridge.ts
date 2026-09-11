@@ -992,6 +992,11 @@ export function installBrowserDesktopBridge(): boolean {
       nodeVersion: '',
       platform: 'browser'
     }),
+    // Browser pages have no native window compositor. Keep these explicit so
+    // capability consumers do not fall back to the host OS (for example,
+    // Windows) before the browser-host marker is available.
+    glassSupported: false,
+    translucencySupported: false,
     git,
     getPathForFile: () => '',
     stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, browserProfile()),

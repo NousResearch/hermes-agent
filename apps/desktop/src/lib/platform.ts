@@ -23,5 +23,18 @@ export const isLinuxPlatform = (): boolean =>
 
 /** Renderer host, independent of the OS or the gateway's connection mode. */
 export function isBrowserHostedDesktop() {
-  return typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  // The bridge writes the marker once it installs. During static module
+  // evaluation, use the browser bootstrap globals too; otherwise an OS check
+  // can classify a browser page as native before the marker is written.
+  const win = window as Window & {
+    __HERMES_AUTH_REQUIRED__?: boolean
+    __HERMES_SESSION_TOKEN__?: string
+  }
+
+  return document.documentElement.dataset.hermesDesktopHost === 'browser' ||
+    (!window.hermesDesktop && (win.__HERMES_AUTH_REQUIRED__ === true || Boolean(win.__HERMES_SESSION_TOKEN__)))
 }

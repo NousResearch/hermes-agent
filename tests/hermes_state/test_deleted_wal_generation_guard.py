@@ -142,8 +142,8 @@ def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypa
     `` (deleted)`` suffix (dentry unhashed, nlink still 1) even though nothing
     was actually unlinked. The scan must not treat that as an orphaned WAL."""
     path = tmp_path / "state.db"
-    db = _make_db(path, "s", "held")
-    wal = _require_wal(db)
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
     real_readlink = os.readlink
 
     def fake_readlink(fd_path, *args, **kwargs):
@@ -168,8 +168,8 @@ def test_write_path_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypatc
     """Same OpenZFS artifact as above, but on the sticky in-process write-path
     probe (_wal_generation_was_lost), which the open-path fix alone does not cover."""
     path = tmp_path / "state.db"
-    db = _make_db(path, "s", "held")
-    _require_wal(db)
+    db = make_db(path, "s", "held")
+    require_wal(db)
     # Mimic the post-close-race state that forces the /proc probe path.
     db._db_sidecar_identity = {}
     real_readlink = os.readlink
@@ -201,12 +201,12 @@ def test_iter_holders_flags_orphan_kept_alive_by_hardlink(tmp_path, force_wal):
     must still flag it by comparing the fd's identity against the CURRENT watched path,
     not by trusting the link count."""
     path = tmp_path / "state.db"
-    db = _make_db(path, "s", "held")
-    wal = _require_wal(db)
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
     backup = tmp_path / "backup-wal"
     os.link(wal, backup)  # keeps the old inode's nlink >= 1 after the unlink below
     try:
-        _unlink_sidecars(path)
+        lose_sidecars(path, rename=False)
         wal.write_bytes(b"new-generation")  # watched path recreated on a different inode
         assert backup.stat().st_nlink >= 1
         holders = iter_deleted_sqlite_sidecar_holders(path)

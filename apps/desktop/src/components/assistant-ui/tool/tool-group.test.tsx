@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
+import { $expandFileEditsByDefault } from '@/store/file-edit-expansion'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
@@ -429,8 +430,18 @@ describe('settled tool run', () => {
 
 // A diff is what the user reviews, so it is never what gets summarized away.
 // It stays on screen at the point in the turn where it happened, with the
-// activity either side of it collapsing around it.
+// activity either side of it collapsing around it. How much of it shows at
+// mount is the Appearance preference (#74302): folded until opened unless the
+// user opted into expanding file edits by default.
 describe('a file edit among ordinary activity', () => {
+  beforeEach(() => {
+    $expandFileEditsByDefault.set(false)
+  })
+
+  afterEach(() => {
+    $expandFileEditsByDefault.set(false)
+  })
+
   it('stays visible between the two runs it interrupted', async () => {
     const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
 
@@ -443,12 +454,37 @@ describe('a file edit among ordinary activity', () => {
     expect(shape).toEqual(['summary', 'row', 'summary'])
   })
 
-  it('keeps the diff itself on screen rather than behind the summary', async () => {
+  it('starts its diff folded behind the summary and expands on click', async () => {
+    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
+
+    const row = await waitFor(() => {
+      const candidate = container.querySelector('[data-tool-row]')
+
+      expect(candidate).not.toBeNull()
+
+      return candidate as HTMLElement
+    })
+
+    expect(row.hasAttribute('data-file-edit')).toBe(false)
+    expect(row.hasAttribute('data-tool-open')).toBe(false)
+    expect(container.querySelector('[data-slot="file-diff-panel"]')).toBeNull()
+
+    fireEvent.click(row.querySelector('button[aria-expanded]') as HTMLButtonElement)
+
+    expect(row.hasAttribute('data-file-edit')).toBe(true)
+    expect(row.hasAttribute('data-tool-open')).toBe(true)
+    expect(container.querySelector('[data-slot="file-diff-panel"]')).not.toBeNull()
+  })
+
+  it('mounts with the diff expanded when expanding file edits is enabled', async () => {
+    $expandFileEditsByDefault.set(true)
+
     const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
 
     await waitFor(() => {
       expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
     })
+    expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull()
   })
 })
 

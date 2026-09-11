@@ -48,6 +48,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $expandFileEditsByDefault } from '@/store/file-edit-expansion'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
@@ -376,7 +377,14 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
+  // File-edit diffs follow the Appearance preference (#74302): users review
+  // edits differently — some want diffs visible as they land, others prefer
+  // a compact transcript — so a diff mounts expanded only for tools outside
+  // the file-edit family, or when the user opted in. Clicking still expands
+  // a folded row, and a manual toggle persists over either default
+  // ($toolDisclosureOpen wins whenever the row has been touched before).
+  const expandFileEdits = useStore($expandFileEditsByDefault)
+  const defaultOpen = Boolean(inlineDiff) && (!isFileEdit || expandFileEdits)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively

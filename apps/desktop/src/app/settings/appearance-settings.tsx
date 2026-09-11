@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $expandFileEditsByDefault, setExpandFileEditsByDefault } from '@/store/file-edit-expansion'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -394,6 +395,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const expandFileEditsByDefault = useStore($expandFileEditsByDefault)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
@@ -930,6 +932,28 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          {/* Same disclosure family as the thinking toggle: it sets what NEW
+              rows do at mount (#74302). A row the user already toggled keeps
+              its own choice — $toolDisclosureOpen outranks this default. */}
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setExpandFileEditsByDefault(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={expandFileEditsByDefault ? 'on' : 'off'}
+              />
+            }
+            description={a.expandFileEditsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.fileEdits)}
+            title={a.expandFileEditsTitle}
           />
 
           <ListRow

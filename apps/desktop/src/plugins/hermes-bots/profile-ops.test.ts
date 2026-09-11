@@ -15,8 +15,9 @@ import { $botMeta } from './data'
 import { duplicateBot } from './profile-ops'
 import type { RosterRow } from './types'
 
-const { ensureBotMetadataMock, hostMock, storageMock } = vi.hoisted(() => ({
+const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
   ensureBotMetadataMock: vi.fn(),
+  faceOnlyMock: vi.fn((_data: string) => false),
   hostMock: {
     request: vi.fn(),
     requestProfile: vi.fn(),
@@ -39,13 +40,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 
 vi.mock('./shared', () => ({ getPluginCtx: () => ({ storage: storageMock }), ID: 'hermes-bots' }))
-vi.mock('./avatar-image', () => ({ isBackfilledFacePng: () => false }))
+vi.mock('./avatar-image', () => ({ isBackfilledFacePng: (data: string) => faceOnlyMock(data) }))
 vi.mock('./canonical-chat', () => ({ ensureBotMetadata: ensureBotMetadataMock }))
 
 const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
 beforeEach(() => {
   vi.clearAllMocks()
+  faceOnlyMock.mockReturnValue(false)
   calls.length = 0
   $botMeta.set({})
   storageMock.set.mockResolvedValue(undefined)
@@ -208,5 +210,31 @@ describe('roster avatar sync (#102978)', () => {
 
     expect(hostMock.requestProfile).not.toHaveBeenCalled()
     expect(hostMock.request).toHaveBeenCalledWith('profiles.get_asset', { asset: 'avatar', name: 'default' })
+  })
+
+  it('does not re-fetch a face-only raster on the next roster tick (#99336)', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    faceOnlyMock.mockReturnValue(true)
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,AAAA', found: true })
+
+    const row = {
+      connectionId: 'local',
+      has_avatar: true,
+      name: 'secretary',
+      route: { connectionId: 'local', mode: 'local', profile: 'secretary', targetProfile: 'secretary' },
+      sourceScoped: true
+    } as RosterRow
+
+    pullServerAvatars([row])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(1))
+    // Let the first fetch settle (its in-flight guard clears in a finally) so
+    // the second tick is decided by the memo, not by that guard.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    pullServerAvatars([row])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+    // The raster is a notice-only copy of the live face, never parked on the roster.
+    expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
 })

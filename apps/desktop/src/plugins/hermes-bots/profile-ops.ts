@@ -39,8 +39,11 @@ import type { RosterRow } from './types'
 
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
+// Rows whose server avatar is only the plugin's own face raster: nothing to
+// paint, so the roster must not re-fetch it on every tick.
+const avatarFaceOnly = new Set<string>()
 
-/** Asset RPC for a row of the ACTIVE source's roster (#102978). These rows
+/** Asset RPC for a row of the ACTIVE source's roster (#102978, #99336, #102913). These rows
  *  came back from the active gateway's own `profiles.list`, which reads every
  *  local profile's directory — `profiles.get_asset` / `set_asset` are the
  *  same directory reads, so the active gateway answers them with the row's
@@ -167,7 +170,7 @@ export function pullServerAvatars(roster: RosterRow[]) {
   for (const bot of roster) {
     const key = botMetaKey(bot)
 
-    if (!bot.has_avatar || avatarFetchInflight.has(key)) {
+    if (!bot.has_avatar || avatarFetchInflight.has(key) || avatarFaceOnly.has(key)) {
       continue
     }
 
@@ -189,8 +192,12 @@ export function pullServerAvatars(roster: RosterRow[]) {
           const mine = current[key] || {}
 
           // A 160px raster of the vector face is only for inter-agent
-          // notices. Do not park it on the roster or the live face dies.
+          // notices. Do not park it on the roster or the live face dies —
+          // and remember the answer, or the empty image slot re-fetches the
+          // same raster on every roster tick.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
+            avatarFaceOnly.add(key)
+
             return
           }
 
@@ -429,6 +436,7 @@ export async function deleteBot(bot: RosterRow) {
   forgetSessionUnread([bot.canonical_session?.id, bot.canonical_session?.resolved_id], bot.name)
   rosterWatermarks.delete(botSelectionKey(bot))
   avatarFetchInflight.delete(botMetaKey(bot))
+  avatarFaceOnly.delete(botMetaKey(bot))
   avatarPushInflight.delete(botMetaKey(bot))
 
   if ($selectedBot.get() === botSelectionKey(bot)) {

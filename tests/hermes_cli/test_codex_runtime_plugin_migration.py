@@ -380,6 +380,134 @@ class TestStripUnmanagedPluginTables:
         tomllib.loads(new_text)
 
 
+# ---- Issue #92282: HERMES_KANBAN_* forwarding to the hermes-tools MCP subprocess ----
+
+
+class TestHermesToolsEnvForwarding:
+    """Regression tests for issue #92282.
+
+    Codex spawns the hermes-tools MCP subprocess from the migrated
+    ``[mcp_servers.hermes-tools]`` entry, giving the child only the static
+    ``env`` table plus the vars *named* in ``env_vars`` (values copied from
+    codex's own process env at spawn time). That env_vars contract is
+    codex's documented MCP config behavior and was verified manually by
+    the issue reporter against a live codex install (adding the list made
+    codex discover ``kanban_show`` immediately) — the tests below emulate
+    the same construction without requiring a codex binary.
+
+    The kanban dispatcher stamps ``HERMES_KANBAN_*`` onto workers only at
+    dispatch time — after migration wrote config.toml — so without an
+    ``env_vars`` list those vars never reach the MCP subprocess,
+    ``_check_kanban_mode()`` fails there, and the worker's codex turn sees
+    none of the ``kanban_*`` lifecycle tools.
+    """
+
+    @staticmethod
+    def _codex_spawn_env(entry, parent_env):
+        """Emulate codex's stdio MCP spawn env construction."""
+        child_env = dict(entry.get("env") or {})
+        for name in entry.get("env_vars") or []:
+            if name in parent_env:
+                child_env[name] = parent_env[name]
+        return child_env
+
+    def test_kanban_env_reaches_mcp_subprocess(self, tmp_path, monkeypatch):
+        """End-to-end through the migrated config: the dispatcher-stamped
+        worker env must reach a subprocess spawned the way codex spawns the
+        hermes-tools MCP server."""
+        import json
+        import subprocess
+        import sys
+        import tomllib
+
+        # Migration runs once at runtime-switch time — no worker env yet.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        report = migrate(
+            {}, codex_home=tmp_path, discover_plugins=False,
+            default_permission_profile=None, expose_hermes_tools=True,
+        )
+        assert report.written
+        cfg = tomllib.loads((tmp_path / "config.toml").read_text())
+        entry = cfg["mcp_servers"]["hermes-tools"]
+        assert entry.get("env_vars"), (
+            "hermes-tools entry must declare env_vars so codex forwards "
+            "dispatcher-stamped vars into the MCP subprocess (#92282)"
+        )
+
+        # The worker's dispatcher-stamped env (materializes at dispatch time,
+        # after migration; reaches codex via hermes_subprocess_env).
+        worker_env = {
+            "HERMES_KANBAN_TASK": "t_92282",
+            "HERMES_KANBAN_BOARD": "default",
+            "HERMES_KANBAN_DB": str(tmp_path / "kanban.db"),
+            "HERMES_KANBAN_CLAIM_LOCK": "lock-1",
+        }
+        child_env = self._codex_spawn_env(entry, worker_env)
+
+        # Fake stdio subprocess asserting the env reaches the child.
+        code = (
+            "import json, os;"
+            "print(json.dumps({k: os.environ.get(k) for k in %r}))"
+        ) % (sorted(worker_env),)
+        proc = subprocess.run(
+            [sys.executable, "-c", code], env=child_env,
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        seen = json.loads(proc.stdout)
+        for name, value in worker_env.items():
+            assert seen[name] == value, (
+                f"{name} did not reach the hermes-tools MCP child env"
+            )
+
+    def test_env_vars_includes_dispatcher_kanban_names_without_env(self, monkeypatch):
+        """The dispatcher-owned kanban var names are forwarded by name even
+        when none of them are set at migration time."""
+        import os
+
+        from agent.delegation_context import KANBAN_ENV_KEYS
+
+        for name in list(os.environ):
+            if name.startswith("HERMES_"):
+                monkeypatch.delenv(name)
+        entry = _build_hermes_tools_mcp_entry()
+        env_vars = entry.get("env_vars") or []
+        for name in KANBAN_ENV_KEYS:
+            assert name in env_vars, f"{name} missing from env_vars"
+        # Deterministic output: rebuilding the entry yields the same list
+        # (no set-iteration-order drift between migration runs).
+        assert _build_hermes_tools_mcp_entry()["env_vars"] == env_vars
+
+    def test_env_vars_forwards_runtime_hermes_vars(self, monkeypatch):
+        """Non-secret HERMES_* vars already present at migration time
+        (launcher-injected session/tenant context, etc.) are forwarded too,
+        so the list doesn't need a code change per variable. HERMES_SESSION_ID
+        is covered by the static set; HERMES_TENANT exercises the runtime
+        snapshot."""
+        monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")
+        monkeypatch.setenv("HERMES_TENANT", "acme")
+        entry = _build_hermes_tools_mcp_entry()
+        env_vars = entry.get("env_vars") or []
+        assert "HERMES_SESSION_ID" in env_vars
+        assert "HERMES_TENANT" in env_vars
+
+    def test_env_vars_snapshot_excludes_secret_like_names(self, monkeypatch):
+        """The runtime HERMES_* snapshot must honor the repo's strip-by-
+        default spawn hygiene: integration-credential names (~/.hermes/.env
+        values injected via reload_env) are never forwarded into the MCP
+        subprocess env."""
+        monkeypatch.setenv("HERMES_CUSTOM_ACME_API_KEY", "sk-secret")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "lfk-secret")
+        monkeypatch.setenv("HERMES_GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("HERMES_SESSION_ID", "sess-1")  # not secret
+        entry = _build_hermes_tools_mcp_entry()
+        env_vars = entry.get("env_vars") or []
+        assert "HERMES_CUSTOM_ACME_API_KEY" not in env_vars
+        assert "HERMES_LANGFUSE_SECRET_KEY" not in env_vars
+        assert "HERMES_GATEWAY_RELAY_SECRET" not in env_vars
+        assert "HERMES_SESSION_ID" in env_vars
+
+
 # ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----
 
 

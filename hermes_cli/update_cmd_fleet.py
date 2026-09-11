@@ -551,7 +551,9 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label, previous_pid=previous_pid):
+    if wait_for_launchd_gateway_supervision(
+        label=current_label, previous_pid=previous_pid, timeout=90.0
+    ):
         return [current_label], []
     print(
         f"  ✗ {current_label} restarted but launchd is not supervising it.\n"

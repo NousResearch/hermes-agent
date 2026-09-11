@@ -197,7 +197,13 @@ def _patch_launchd_env(
     )
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 101)
 
-    calls = {"restart": 0, "verify": 0, "label": None, "previous_pid": None}
+    calls = {
+        "restart": 0,
+        "verify": 0,
+        "label": None,
+        "previous_pid": None,
+        "timeout": None,
+    }
 
     def _restart():
         calls["restart"] += 1
@@ -206,10 +212,11 @@ def _patch_launchd_env(
 
     monkeypatch.setattr(gateway_cli, "launchd_restart", _restart)
 
-    def _verify(*, label=None, previous_pid=None, **_kw):
+    def _verify(*, label=None, previous_pid=None, timeout=None, **_kw):
         calls["verify"] += 1
         calls["label"] = label
         calls["previous_pid"] = previous_pid
+        calls["timeout"] = timeout
         return supervised
 
     monkeypatch.setattr(
@@ -244,6 +251,7 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert calls["verify"] == 1
         assert calls["label"] == LABEL
         assert calls["previous_pid"] == 101
+        assert calls["timeout"] == 90.0
 
     def test_unverified_restart_is_not_reported_as_restarted(
         self, monkeypatch, capsys

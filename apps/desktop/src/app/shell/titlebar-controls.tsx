@@ -268,7 +268,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   return (
     <>
-      <div aria-label={t.shell.windowControls} className={leftClusterClass}>
+      <div aria-label={t.shell.windowControls} className={leftClusterClass} data-titlebar-cluster="left">
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
@@ -278,6 +278,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+        data-titlebar-cluster="right"
       >
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />

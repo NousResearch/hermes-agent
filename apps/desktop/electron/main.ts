@@ -397,6 +397,7 @@ import {
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { resolveHealedBranch as resolveHealedBranchImpl } from './branch-healer'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -3173,26 +3174,19 @@ function emitUpdateProgress(payload) {
 // "ref absent" (exit 2), never on a transient network error, so a flaky
 // connection can't strand a user on the wrong branch.
 async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main') {
-    return branch || 'main'
-  }
-
-  const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
-
-  if (probe.code !== 2) {
-    return branch
-  }
-
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
-  const config = readDesktopUpdateConfig()
-
-  if (config.branch !== 'main') {
-    writeDesktopUpdateConfig({ ...config, branch: 'main' })
-  }
-
-  return 'main'
+  return resolveHealedBranchImpl(
+    {
+      runGit,
+      getOriginUrl,
+      isOfficialSshRemote,
+      officialRepoHttpsUrl: OFFICIAL_REPO_HTTPS_URL,
+      rememberLog,
+      readDesktopUpdateConfig,
+      writeDesktopUpdateConfig
+    },
+    updateRoot,
+    branch
+  )
 }
 
 // Passive checks never touch git's network side. Every client used to `git

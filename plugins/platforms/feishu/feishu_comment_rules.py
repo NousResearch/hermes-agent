@@ -12,14 +12,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 logger = logging.getLogger(__name__)
 
-# Resolved at import time: this module is lazy-imported by the comment event handler,
-# long after profile/HERMES_HOME overrides have been applied, so freezing is safe.
-RULES_FILE = get_hermes_home() / "feishu_comment_rules.json"
-PAIRING_FILE = get_hermes_home() / "feishu_comment_pairing.json"
+
+def _rules_file() -> Path:
+    return get_hermes_home() / "feishu_comment_rules.json"
+
+
+def _pairing_file() -> Path:
+    return get_hermes_home() / "feishu_comment_pairing.json"
+
 
 _VALID_POLICIES = ("allowlist", "pairing")
 
@@ -74,8 +78,31 @@ class _MtimeCache:
         return self._data
 
 
-_rules_cache = _MtimeCache(RULES_FILE)
-_pairing_cache = _MtimeCache(PAIRING_FILE)
+# Per-profile: this module is lazy-imported (by the comment event handler) once for the
+# process's lifetime, so a single module-level cache would freeze onto whichever profile's
+# HERMES_HOME happened to trigger that first import -- every other multiplexed profile's
+# comment rules / pairing store would then be silently read from and written to that
+# profile's files instead of its own. Keyed by hermes_home_key() (#63962/#107620 leaves this
+# half of the leak open; #107620 only made handle_drive_comment_event's own agent-execution
+# context profile-scoped, not this adjacent access-control gate).
+_rules_caches: Dict[str, _MtimeCache] = {}
+_pairing_caches: Dict[str, _MtimeCache] = {}
+
+
+def _rules_cache() -> _MtimeCache:
+    key = hermes_home_key()
+    cache = _rules_caches.get(key)
+    if cache is None:
+        cache = _rules_caches[key] = _MtimeCache(_rules_file())
+    return cache
+
+
+def _pairing_cache() -> _MtimeCache:
+    key = hermes_home_key()
+    cache = _pairing_caches.get(key)
+    if cache is None:
+        cache = _pairing_caches[key] = _MtimeCache(_pairing_file())
+    return cache
 
 
 def _parse_frozenset(raw: Any) -> Optional[frozenset]:
@@ -95,8 +122,8 @@ def _parse_document_rule(raw: dict) -> CommentDocumentRule:
 
 
 def load_config() -> CommentsConfig:
-    """Load comment rules from disk (mtime-cached)."""
-    raw = _rules_cache.load()
+    """Load comment rules from disk (mtime-cached, per profile)."""
+    raw = _rules_cache().load()
     if not raw:
         return CommentsConfig()
     raw_docs = raw.get("documents", {})
@@ -131,22 +158,24 @@ def resolve_rule(cfg: CommentsConfig, file_type: str, file_token: str, wiki_toke
 
 
 def _load_pairing_approved() -> set:
-    """Return set of approved user open_ids (mtime-cached)."""
-    approved = _pairing_cache.load().get("approved", {})
+    """Return set of approved user open_ids (mtime-cached, per profile)."""
+    approved = _pairing_cache().load().get("approved", {})
     return set(approved.keys()) if isinstance(approved, dict) else ({str(u) for u in approved if u} if isinstance(approved, list) else set())
 
 
 def _save_pairing(data: dict) -> None:
-    PAIRING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PAIRING_FILE.with_suffix(".tmp"), "w", encoding="utf-8") as f:
+    path = _pairing_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".tmp"), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    PAIRING_FILE.with_suffix(".tmp").replace(PAIRING_FILE)
-    _pairing_cache._mtime, _pairing_cache._data = 0.0, None  # invalidate so the next load re-reads
+    path.with_suffix(".tmp").replace(path)
+    cache = _pairing_cache()
+    cache._mtime, cache._data = 0.0, None  # invalidate so the next load re-reads
 
 
 def _mutate_pairing(user_open_id: str, add: bool) -> bool:
     """Add/remove *user_open_id* in the approved dict; True when the store actually changed."""
-    data = _pairing_cache.load()
+    data = _pairing_cache().load()
     approved = data.get("approved", {}) if isinstance(data.get("approved"), dict) else {}
     if (user_open_id in approved) == add:
         return False
@@ -171,7 +200,7 @@ def pairing_remove(user_open_id: str) -> bool:
 
 def pairing_list() -> Dict[str, Any]:
     """Return the approved dict  {user_open_id: {approved_at: ...}}."""
-    approved = _pairing_cache.load().get("approved", {})
+    approved = _pairing_cache().load().get("approved", {})
     return dict(approved) if isinstance(approved, dict) else {}
 
 
@@ -186,7 +215,8 @@ def _fmt_allow(allow_from) -> str:
 
 def _print_status() -> None:
     cfg = load_config()
-    print(f"Rules file: {RULES_FILE}\n  exists: {RULES_FILE.exists()}\nPairing file: {PAIRING_FILE}\n  exists: {PAIRING_FILE.exists()}\n")
+    rules_file, pairing_file = _rules_file(), _pairing_file()
+    print(f"Rules file: {rules_file}\n  exists: {rules_file.exists()}\nPairing file: {pairing_file}\n  exists: {pairing_file.exists()}\n")
     print(f"Top-level:\n  enabled:    {cfg.enabled}\n  policy:     {cfg.policy}\n  allow_from: {_fmt_allow(cfg.allow_from)}\n")
     print(f"Document rules ({len(cfg.documents)}):" if cfg.documents else "Document rules: (none)")
     for key, rule in sorted(cfg.documents.items()):
@@ -242,7 +272,7 @@ Commands:
   pairing remove <user_open_id>        Remove user from pairing-approved list
   pairing list                         List pairing-approved users
 
-Rules config file: {RULES_FILE}
+Rules config file: {_rules_file()}
   Edit this JSON file directly to configure policies and document rules.
   Changes take effect on the next comment event (no restart needed).
 """

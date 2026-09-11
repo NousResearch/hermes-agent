@@ -1993,6 +1993,107 @@ class TestTryMainAgentModelFallback:
         assert model == "anthropic/claude-sonnet-4"
         assert label == "main-agent(openrouter)"
 
+    def test_vision_fallback_refuses_proven_text_only_main_model(self):
+        """#108349: a transient upstream 429 on the pinned vision lane must never route the
+        IMAGE to a main model that provably rejects image content (zai glm-5.3 answers the
+        call with 400/1210 instead). Known-text-only → refuse the fallback so the original
+        retryable error surfaces."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="zai"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "glm-5.3")), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=False):
+            client, model, label = _try_main_agent_model_fallback("nous", task="vision", reason="rate limit")
+        assert client is None and model is None and label == ""
+
+    def test_vision_screen_does_not_affect_non_vision_tasks(self):
+        """Same text-only main model is a perfectly good compression/vision-free fallback."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="zai"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "glm-5.3")), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=False):
+            client, model, label = _try_main_agent_model_fallback("nous", task="compression")
+        assert client is fake_client
+        assert label == "main-agent(zai)"
+
+    def test_vision_fallback_allows_unknown_capability(self):
+        """Fail-open on unknown: an unrecognised/custom model may accept images — attempt the
+        call rather than stranding vision when capability data is missing."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mystery-model"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "mystery-model")), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=True):
+            client, model, label = _try_main_agent_model_fallback("nous", task="vision")
+        assert client is fake_client
+
+
+class TestUpstreamCapacityPoolGuard:
+    """#108349 part 2: a Nous upstream-capacity 429 must not mark the pool identity exhausted.
+
+    The error body explicitly says "not your API key's rate limit" — the credential is
+    healthy, and rotating starves every lane sharing the single-identity pool.
+    """
+
+    _UPSTREAM_MSG = ("Error code: 429 - {'status': 429, 'message': 'The requested model is "
+                     "temporarily at capacity upstream. This is not your API key's rate limit "
+                     "— please retry shortly.'}")
+
+    def _pool_double(self):
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.mark_exhausted_and_rotate.return_value = SimpleNamespace(id="cred-b")
+        return pool
+
+    def test_upstream_capacity_429_does_not_rotate(self):
+        from agent.auxiliary_client import _recover_provider_pool
+        exc = Exception(self._UPSTREAM_MSG)
+        exc.status_code = 429
+        pool = self._pool_double()
+        with patch("agent.auxiliary_client.load_pool", return_value=pool), \
+             patch("agent.auxiliary_client._normalize_aux_provider", return_value="nous"), \
+             patch("agent.auxiliary_client._evict_cached_clients"):
+            recovered = _recover_provider_pool("nous", exc)
+        assert recovered is False
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_genuine_rate_limit_429_still_rotates(self):
+        from agent.auxiliary_client import _recover_provider_pool
+        exc = Exception("Error code: 429 - rate limit exceeded, resets in 30s")
+        exc.status_code = 429
+        pool = self._pool_double()
+        with patch("agent.auxiliary_client.load_pool", return_value=pool), \
+             patch("agent.auxiliary_client._normalize_aux_provider", return_value="nous"), \
+             patch("agent.auxiliary_client._evict_cached_clients"):
+            recovered = _recover_provider_pool("nous", exc)
+        assert recovered is True
+        pool.mark_exhausted_and_rotate.assert_called_once()
+
+    def test_capacity_classifier_needs_429_shape(self):
+        from agent.auxiliary_client import _is_upstream_capacity_error
+        upstream = Exception(self._UPSTREAM_MSG)
+        upstream.status_code = 429
+        assert _is_upstream_capacity_error(upstream) is True
+        # Same body text but NOT a 429/RateLimitError → not a capacity signal
+        other = Exception(self._UPSTREAM_MSG)
+        other.status_code = 400
+        assert _is_upstream_capacity_error(other) is False
+        # RateLimitError class without status_code (OpenAI shape) still classifies
+        class RateLimitError(Exception):
+            pass
+        rle = RateLimitError(self._UPSTREAM_MSG)
+        assert _is_upstream_capacity_error(rle) is True
+
 
 
 

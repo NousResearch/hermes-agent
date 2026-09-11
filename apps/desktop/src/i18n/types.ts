@@ -7,7 +7,7 @@
 
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'pt-br'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -2140,6 +2140,7 @@ export interface Translations {
       scheduled: string
       loading: string
       failedLoad: string
+      catalog?: Partial<Record<string, { title: string; description: string }>>
       emptyTitle: string
       emptyDesc: string
     }

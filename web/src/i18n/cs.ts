@@ -380,6 +380,20 @@ export const cs = defineLocale({
   },
 
   pluginsPage: {
+    catalogHeading: "Katalog pluginů",
+    catalogHint:
+      "Kurátorované pluginy prověřené Nous, připnuté na konkrétní commity. Instalujte odsud, pokud chcete verze bezpečné z hlediska dodavatelského řetězce.",
+    catalogSearchPlaceholder: "Hledat v katalogu…",
+    catalogEmpty: "Katalogu neodpovídají žádné položky.",
+    catalogEmptyDocsLink: "Zjistěte více o pluginech Hermes",
+    catalogInstallBtn: "Instalovat",
+    catalogInstalledBadge: "Nainstalováno ✓",
+    catalogUpdateBtn: "Dostupná aktualizace",
+    catalogRemovedBadge: "Odstraněno",
+    catalogConfirmTitle: "Nainstalovat tento plugin?",
+    catalogConfirmInstallNote:
+      "Instalace pluginů je zakázaná; po instalaci ji povolte, aby se plugin aktivoval.",
+    catalogRequiresEnv: "Vyžaduje env",
     contextEngineLabel: "Kontextový engine",
     dashboardSlots: "Sloty na palubní desce",
     disableRuntime: "Zakázat",
@@ -406,6 +420,7 @@ export const cs = defineLocale({
     refreshDashboard: "Znovu naskenujte rozšíření řídicího panelu",
     removeConfirm: "Odebrat tento plugin z ~/.hermes/plugins/?",
     removeHint: "Odstranit lze pouze uživatelsky nainstalované pluginy pod ~/.hermes/plugins.",
+    removedFromCatalog: "Odstraněno z katalogu",
     rescanHeading: "Registr zásuvných modulů SPA",
     rescanHint: "Po přidání souborů na disk znovu prohledejte, aby postranní panel řídicího panelu získal nové manifesty.",
     runtimeHeading: "Runtime brány (pluginy YAML)",
@@ -531,6 +546,8 @@ export const cs = defineLocale({
     copyCliCommand: "Kopírovat příkaz CLI (pro externí / záložní)",
     connect: "Připojte se",
     sessionExpires: "Relace vyprší v {time}",
+    sessionExpiredNoError:
+      "Platnost přihlášení vypršela, aniž by se dostalo k poskytovateli. Obvykle to znamená, že se přihlašovací stránka v otevřené kartě zasekla (problém na straně serveru) — dokončete přihlášení tam a potom klikněte na „Zkusit znovu“. Pokud to stále selhává, použijte místo toho klíč API nebo záložní cestu přes CLI.",
     initiatingLogin: "Spouštění přihlašovacího procesu…",
     exchangingCode: "Výměna kódu za tokeny…",
     connectedClosing: "Připojeno! Zavírání…",

@@ -149,10 +149,6 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_env):
     """Stale empty profile Codex state must not block the global credential pool."""
     from hermes_cli.auth import resolve_codex_runtime_credentials
@@ -182,6 +178,31 @@ def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_
 
     assert creds["source"] == "credential_pool"
     assert creds["api_key"] == "global-codex-access-token"
+
+    # Profile rows shadow the root the moment they exist (read_credential_pool precedence).
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{"id": "prof", "auth_type": "oauth", "priority": 0,
+                          "access_token": "profile-codex-access-token", "refresh_token": "r"}],
+    }))
+    assert resolve_codex_runtime_credentials(refresh_if_expiring=False)["api_key"] == "profile-codex-access-token"
+
+
+def test_codex_cooldown_clear_writes_to_the_store_that_owns_the_borrowed_pool(profile_env):
+    """A restored quota must unfreeze the ROOT row a profile borrows; clearing the (empty)
+    profile store would leave every later resolve stuck on the stale cooldown."""
+    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{"id": "glob", "auth_type": "oauth", "priority": 0,
+                          "access_token": "global-codex-access-token", "refresh_token": "r",
+                          "last_status": "exhausted", "last_error_reason": "rate_limit",
+                          "last_error_reset_at": 4_102_444_800}],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={"openai-codex": []}))
+
+    assert clear_codex_pool_quota_cooldowns() == 1
+    root_rows = json.loads((profile_env["global"] / "auth.json").read_text())["credential_pool"]["openai-codex"]
+    assert root_rows[0].get("last_error_reset_at") is None
 
 
 # ---------------------------------------------------------------------------

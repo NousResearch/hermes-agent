@@ -162,6 +162,8 @@ def _session_count(state_db_path: Path):
 
 
 # Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
+# ``structural`` has no in-place repair: an FTS rebuild cannot fix a canonical b-tree, and the
+# ``.malformed-backup`` the repair path would leave beside state.db is a copy of the same damage (#88587).
 _STATE_DB_REPAIRS = {
     "fts": ("Repaired state.db FTS write health",
             "state.db FTS write-health repair did not recover automatically",
@@ -172,10 +174,21 @@ _STATE_DB_REPAIRS = {
                "state.db schema malformed and auto-repair failed — restore from the backup copy beside state.db",
                "state.db schema malformed — run 'hermes doctor --fix' (or 'hermes sessions repair') to recover hidden sessions"),
 }
+_STATE_DB_STRUCTURAL_ISSUE = (
+    "state.db structural corruption (canonical tables/indexes damaged, not the FTS index) — an FTS rebuild "
+    "cannot repair it. Stop the gateway, then run 'hermes {profile_arg}sessions recover --source {db_path} "
+    "--inspect-only' and, if it reports recoverable, 'hermes {profile_arg}sessions recover --source {db_path} "
+    "--output recovered-state.db'. Do NOT restore a .malformed-backup copy beside state.db: it is a snapshot "
+    "of the same corrupt file."
+)
 
 
 def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: str) -> None:
     """Shared --fix path for both state.db corruption classes (FTS write health, malformed schema)."""
+    if kind == "structural":
+        from hermes_constants import profile_cli_selector
+        return f.manual_issues.append(_STATE_DB_STRUCTURAL_ISSUE.format(
+            profile_arg=profile_cli_selector(), db_path=state_db_path))
     ok_label, not_fixed_label, failed_issue, fix_hint = _STATE_DB_REPAIRS[kind]
     if not should_fix:
         return f.issues.append(fix_hint)
@@ -200,11 +213,15 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
         # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers;
         # _db_opens_cleanly drives a rolled-back write to surface that.
-        from hermes_state_repair import _db_opens_cleanly
+        from hermes_state_repair import _db_opens_cleanly, state_db_has_structural_damage
         # `_db_opens_cleanly` now drives a rolled-back write so this otherwise-silent corruption class is
         # surfaced (and repaired in place with --fix). See #50502.
         _write_reason = _db_opens_cleanly(state_db_path)
         if _write_reason is not None:
+            if state_db_has_structural_damage(state_db_path):
+                check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
+                           "not the FTS index)", f"({_write_reason})")
+                return _repair_state_db(f, should_fix, state_db_path, "structural")
             check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
             _repair_state_db(f, should_fix, state_db_path, "fts")
     except Exception as e:

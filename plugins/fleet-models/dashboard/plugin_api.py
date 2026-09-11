@@ -147,7 +147,8 @@ def usage(days: int = 7) -> dict:
             q = ("SELECT model, COALESCE(provider_name,''), COALESCE(billing_base_url,''), COALESCE(task,''), "
                  "SUM(COALESCE(api_call_count,0)), SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0)), "
                  "SUM(COALESCE(cache_read_tokens,0)), SUM(COALESCE(cache_write_tokens,0)), "
-                 "SUM(CASE WHEN COALESCE(actual_cost_usd,0) > 0 THEN actual_cost_usd ELSE COALESCE(estimated_cost_usd,0) END), "
+                 "SUM(CASE WHEN COALESCE(actual_cost_usd,0) > 0 THEN actual_cost_usd WHEN COALESCE(total_cost,0) > 0 THEN total_cost "
+                 "ELSE COALESCE(estimated_cost_usd,0) END), "
                  "COALESCE(cost_source,''), CAST(last_seen/86400 AS INT) "
                  "FROM session_model_usage WHERE last_seen >= ? GROUP BY 1,2,3,4,11,12")
             for (model, host, base, task, n, inp, out, cr, cw, cost, src, day) in c.execute(q, (since,)):
@@ -314,7 +315,11 @@ def post_probe(pb: Probe):
                 "cost_usd": u.get("cost"), "routable": bool(served)}
     except urllib.error.HTTPError as e:
         msg = e.read().decode(errors="replace")[:300]
-        return {"ok": False, "host": pb.host, "routable": False, "status": e.code, "error": msg,
+        # 429 = the pin MATCHED a host that is busy right now (OpenRouter moves on to the next pinned host);
+        # 404 "no endpoints" = the pin matches nothing and would be dropped SILENTLY in a real request.
+        busy = e.code == 429
+        return {"ok": False, "host": pb.host, "routable": busy, "rate_limited": busy, "status": e.code,
+                "error": "busy right now — the pin matches; requests move on to the next host" if busy else msg,
                 "latency_ms": int((time.time() - t0) * 1000)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "host": pb.host, "routable": False, "error": str(exc)[:300]}

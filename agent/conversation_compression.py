@@ -37,6 +37,122 @@ from agent.usage_anchor import set_usage_anchor
 logger = logging.getLogger(__name__)
 
 
+def _runtime_compressor_max_tokens(agent: Any) -> int:
+    """Return the active runtime's output reservation (zero clears an old one)."""
+    configured = getattr(agent, "max_tokens", None)
+    if configured is not None:
+        return configured
+    try:
+        from agent.gemini_native_adapter import (
+            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url,
+        )
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider in {"gemini", "google", "google-gemini", "google-ai-studio"} or is_native_gemini_base_url(
+            getattr(agent, "base_url", "")
+        ):
+            return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    except Exception:
+        pass
+    return 0
+
+
+def update_runtime_context_compressor(
+    agent: Any, context_length: int, *, reason: str, **runtime: Any,
+) -> None:
+    """Update a runtime compressor before sharing its resulting budget with an opt-in engine."""
+    from agent.context_compressor import ContextCompressor
+
+    compressor = agent.context_compressor
+    if isinstance(compressor, ContextCompressor):
+        max_tokens = _runtime_compressor_max_tokens(agent)
+        compressor.update_model(context_length=context_length, max_tokens=max_tokens, **runtime)
+        agent._compression_max_tokens = compressor.max_tokens
+    else:
+        compressor.update_model(context_length=context_length, **runtime)
+    apply_context_engine_compression_budget(agent, context_length, reason=reason)
+
+
+def _set_context_engine_compression_budget(
+    compressor: Any,
+    context_capacity: int,
+    trigger_tokens: int,
+    *,
+    reason: str,
+) -> bool:
+    """Apply a host budget only when an engine explicitly accepts it."""
+    setter = getattr(compressor, "set_compression_budget", None)
+    if not callable(setter):
+        return False
+    try:
+        return setter(context_capacity, trigger_tokens, reason=reason) is True
+    except Exception:
+        logger.warning("Context engine rejected host compression budget", exc_info=True)
+        return False
+
+
+def _canonical_context_engine_compression_budget(
+    agent: Any, compressor: Any, context_length: int, threshold_percent: float | None = None,
+) -> tuple[int, int]:
+    """Read the configured compressor policy through its canonical calculation."""
+    from agent.context_compressor import ContextCompressor, resolve_model_threshold
+
+    if isinstance(compressor, ContextCompressor):
+        return ContextCompressor.compression_budget(
+            context_length, compressor.threshold_percent, compressor.max_tokens,
+            compressor.threshold_tokens_cap,
+        )
+
+    configured_threshold = threshold_percent
+    if configured_threshold is None:
+        configured_threshold = getattr(agent, "_compression_threshold_percent", None)
+    if not isinstance(configured_threshold, (int, float)):
+        configured_threshold = getattr(compressor, "threshold_percent", None)
+    if not isinstance(configured_threshold, (int, float)):
+        return context_length, getattr(compressor, "threshold_tokens", context_length)
+    model_thresholds = getattr(agent, "_compression_model_thresholds", None)
+    if not isinstance(model_thresholds, dict):
+        model_thresholds = getattr(compressor, "model_thresholds", None)
+    threshold_percent = resolve_model_threshold(
+        str(getattr(agent, "model", "")), model_thresholds, float(configured_threshold)
+    )
+    max_tokens = getattr(agent, "max_tokens", None)
+    if max_tokens is None:
+        try:
+            from agent.gemini_native_adapter import (
+                GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url,
+            )
+            provider = str(getattr(agent, "provider", "") or "").strip().lower()
+            if provider in {"gemini", "google", "google-gemini", "google-ai-studio"} or is_native_gemini_base_url(
+                getattr(agent, "base_url", "")
+            ):
+                max_tokens = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        except Exception:
+            pass
+    return ContextCompressor.compression_budget(
+        context_length, threshold_percent, max_tokens,
+        getattr(agent, "_compression_threshold_tokens_cap", None),
+    )
+
+
+def apply_context_engine_compression_budget(
+    agent: Any,
+    context_length: int,
+    *,
+    threshold_percent: float | None = None,
+    reason: str,
+) -> bool:
+    """Deliver Hermes' runtime budget to an opt-in external context engine."""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None or not isinstance(context_length, int) or context_length <= 0:
+        return False
+    context_capacity, trigger_tokens = _canonical_context_engine_compression_budget(
+        agent, compressor, context_length, threshold_percent
+    )
+    return _set_context_engine_compression_budget(
+        compressor, context_capacity, trigger_tokens, reason=reason
+    )
+
+
 @contextlib.contextmanager
 def _swallow(message: str, *, exc_info: bool = False):
     """Run a best-effort block; on Exception log ``message`` at DEBUG and continue."""

@@ -1162,10 +1162,13 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
         _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+        from agent.conversation_compression import update_runtime_context_compressor
+
+        update_runtime_context_compressor(
+            agent, rt["compressor_context_length"], reason="primary_runtime_restore",
+            model=rt["compressor_model"], base_url=rt["compressor_base_url"],
+            api_key=rt["compressor_api_key"], provider=rt["compressor_provider"],
+            api_mode=rt.get("compressor_api_mode", ""),
         )
         _rebind_primary_credential_pool(
             agent, primary_provider, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
@@ -2051,13 +2054,12 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
-            base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
-            api_mode=agent.api_mode,
+        from agent.conversation_compression import update_runtime_context_compressor
+
+        update_runtime_context_compressor(
+            agent, new_context_length, reason="model_switch", model=agent.model,
+            base_url=agent.base_url, api_key=agent.api_key,
+            provider=agent.provider, api_mode=agent.api_mode,
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)

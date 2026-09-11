@@ -933,7 +933,13 @@ def _cold_start_windows_gateway_after_update() -> bool:
         pid = gateway_windows._spawn_detached()
     if not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
-    ready_pids = gateway_windows._wait_for_gateway_ready()
+    # Updating can leave the fresh process with a cold import/plugin cache, so
+    # use the same fleet-wide startup budget as the post-update relaunch path.
+    # The detached launcher PID is not necessarily the eventual gateway PID;
+    # canonical process discovery is the readiness authority.
+    ready_pids = gateway_windows._wait_for_gateway_ready(
+        timeout_s=30.0, all_profiles=True
+    )
     if not ready_pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
     print(f"\n✓ Gateway started via cold-start after update (PID: {', '.join(map(str, ready_pids))})")

@@ -52,3 +52,34 @@ def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):
     out = _run_cold_start(monkeypatch, capsys, surviving_pids=[4242])
 
     assert "✓ Gateway started via cold-start after update" in out
+
+
+def test_cold_start_waits_for_the_live_gateway_fleet(monkeypatch, capsys):
+    """The detached launcher PID need not be the eventual gateway PID.
+
+    Cold startup after an update may also take longer than the interactive
+    gateway-start budget while fresh modules and plugins are imported.  The
+    updater must therefore use its fleet-wide 30-second verification budget
+    and report the PID that canonical gateway discovery actually observed.
+    """
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
+    )
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 21416)
+
+    wait_calls = []
+
+    def _wait_for_gateway_ready(*, timeout_s, all_profiles):
+        wait_calls.append((timeout_s, all_profiles))
+        return [44852]
+
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", _wait_for_gateway_ready
+    )
+
+    update_cmd._cold_start_windows_gateway_after_update()
+
+    assert wait_calls == [(30.0, True)]
+    assert "PID: 44852" in capsys.readouterr().out

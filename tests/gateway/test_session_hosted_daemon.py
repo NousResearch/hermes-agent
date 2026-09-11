@@ -49,7 +49,8 @@ def test_native_room_service_local_member_and_restart(tmp_path):
     base = f'http://127.0.0.1:{model.server_port}/v1'
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'hosted_rooms': {'profiles': {'two': str(target)}},
-        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base},
+        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base, 'supports_vision': True},
+        'agent': {'image_input_mode': 'native'},
         'platform_toolsets': {'gui': [], 'bot_room': []},
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},
@@ -93,6 +94,7 @@ def test_native_room_service_local_member_and_restart(tmp_path):
             downloaded = await rpc(ws, 'groups.attachment.download', room_id='owned',
                 event_id=sent['result']['event']['event_id'], attachment_id=saved['manifest'][0]['attachment_id'])
             assert base64.b64decode(downloaded['result']['data_base64']) == image
+            (tmp_path / 'wire.json').write_text(json.dumps(model.requests), encoding='utf-8')
             for request in model.requests:
                 images = [b for m in request['messages'] if isinstance(m.get('content'), list)
                           for b in m['content'] if b.get('type') == 'image_url']
@@ -120,7 +122,8 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
     base = f'http://127.0.0.1:{model.server_port}/v1'
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'hosted_rooms': {'profiles': {'two': str(target)}},
-        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base},
+        'model': {'provider': 'custom', 'default': 'gpt-4o', 'base_url': base, 'supports_vision': True},
+        'agent': {'image_input_mode': 'native'},
         'platform_toolsets': {'gui': [], 'bot_room': []},
         'auxiliary': {'title_generation': {'enabled': False}},
         'terminal': {'cwd': str(home)},

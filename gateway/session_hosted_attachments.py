@@ -101,16 +101,38 @@ def submission_payload(rpc, prompt, attachments=None):
         references.append(reference)
     paths = restore_native_media(references)
     from gateway.session_ingress_media import _ATTACHMENT_MIMES
-    image_paths = [path for path, item in zip(paths, manifest)
-                   if item['mime'] in _ATTACHMENT_MIMES]
-    if image_paths:
-        # Keep the canonical admission shape; the authority captures these
-        # already-authorized cache paths and the normal runner restores them into
-        # native image_url parts.
-        return {'text': prompt, 'attachments': [
-            {'path': path, 'mime': item['mime']}
-            for path, item in zip(paths, manifest)
-            if item['mime'] in _ATTACHMENT_MIMES
-        ]}
-    return {'text': prompt + ''.join('\n[Shared attachment] file: ' + path + '\n'
-               for path in paths)}
+    from gateway.platforms.base import get_image_cache_dir
+    import hashlib
+    images, documents = [], []
+    for path, item in zip(paths, manifest):
+        if item['mime'] not in _ATTACHMENT_MIMES:
+            documents.append(path)
+            continue
+        # Public admission accepts only owner-local staging paths. Retained
+        # room bytes are copied under a deterministic name for exact retries.
+        data = Path(path).read_bytes()
+        staging = get_image_cache_dir().resolve()
+        staging.mkdir(parents=True, exist_ok=True)
+        target = staging / (hashlib.sha256(data).hexdigest() + Path(item['name']).suffix)
+        if target.exists():
+            if target.is_symlink() or target.read_bytes() != data:
+                raise RuntimeStoreError('storage_unavailable')
+        else:
+            fd, temporary = tempfile.mkstemp(dir=staging)
+            try:
+                with os.fdopen(fd, 'wb') as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, target)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        images.append({'path': str(target), 'mime': item['mime']})
+    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
+    return {'text': text, **({'attachments': images} if images else {})}
+
+
+def committed_submission_payload(rpc, prompt, attachments=None):
+    from gateway.session_ingress_media import admit_attachments
+    payload = submission_payload(rpc, prompt, attachments)
+    return {'text': payload['text'], **admit_attachments(payload.get('attachments'))}

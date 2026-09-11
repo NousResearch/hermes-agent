@@ -128,10 +128,8 @@ class HostedRoomAuthorityRPC:
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
         from gateway.session_hosted_attachments import submission_payload
-        import faulthandler
-        faulthandler.dump_traceback_later(8)
-        payload = submission_payload(self, params['prompt'], params.get('attachments'))
-        faulthandler.cancel_dump_traceback_later()
+        payload = await asyncio.to_thread(
+            submission_payload, self, params['prompt'], params.get('attachments'))
         receipt = await self.authority.submit(self.principal, Submission(
             request_id, self.ref, payload, 'queue'))
         self.callbacks[receipt.admission_id] = params['on_terminal']

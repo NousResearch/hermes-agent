@@ -1,5 +1,6 @@
 """Tests for the central command registry and autocomplete."""
 
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -7,6 +8,12 @@ from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 from hermes_cli.commands import SUBCOMMAND_DESCRIPTIONS, WISDOM_SUBCOMMAND_HELP
+
+
+@pytest.fixture(autouse=True)
+def _wisdom_entitled_by_default(monkeypatch):
+    """Registry tests exercise the eligible view unless a test overrides it."""
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -157,6 +164,17 @@ class TestGatewayKnownCommands:
 
 
 class TestGatewayHelpLines:
+
+    def test_wisdom_visibility_follows_local_entitlement(self, monkeypatch):
+        monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
+        assert not any("/wisdom" in line for line in gateway_help_lines())
+        assert "wisdom" not in {name for name, _description in telegram_bot_commands()}
+        assert "wisdom" not in {name for name, _description, _hint in slack_native_slashes()}
+
+        monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
+        assert any("/wisdom" in line for line in gateway_help_lines())
+        assert "wisdom" in {name for name, _description in telegram_bot_commands()}
+        assert "wisdom" in {name for name, _description, _hint in slack_native_slashes()}
 
     def test_excludes_cli_only_commands_without_config_gate(self):
         import re

@@ -17,6 +17,7 @@ from tools.skill_usage import _find_skill_dir, is_bundled, is_hub_installed
 
 from .contract import sha256_address
 from .editorial import ensure_skill_editorial_metadata
+from .entitlement import local_work_allowed
 from .store import WisdomStore
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,8 @@ def _emit_candidate(
     session_id: str | None,
     task_id: str | None,
 ) -> str | None:
+    if not local_work_allowed(store):
+        return None
     local = store.local_skill(skill_id)
     source = Path(str(local["canonical_path"])) if local else None
     editorial = (
@@ -246,7 +249,7 @@ def process_due_stability_jobs(
     """Evaluate all due jobs without requiring another use of the same skill."""
 
     state = store or WisdomStore()
-    if state.active_org_id() is None:
+    if not local_work_allowed(state):
         return []
     current = _now(at)
     profile_timezone, timezone_name = _profile_timezone()
@@ -319,11 +322,11 @@ def record_successful_use(
     at: datetime | None = None,
     store: WisdomStore | None = None,
 ) -> str | None:
+    state = store or WisdomStore()
+    if not local_work_allowed(state):
+        return None
     path = _eligible_path(skill_name)
     if path is None:
-        return None
-    state = store or WisdomStore()
-    if state.active_org_id() is None:
         return None
     current = _now(at)
     profile_timezone, timezone_name = _profile_timezone()
@@ -376,11 +379,11 @@ def record_mutation(
     at: datetime | None = None,
     store: WisdomStore | None = None,
 ) -> None:
+    state = store or WisdomStore()
+    if not local_work_allowed(state):
+        return
     path = _eligible_path(skill_name)
     if path is None:
-        return
-    state = store or WisdomStore()
-    if state.active_org_id() is None:
         return
     content_hash, tree = snapshot_tree(path)
     snapshot_text = _frontmatter_free_text(path)
@@ -425,6 +428,9 @@ def record_mutation_async(
 ) -> None:
     """Keep classification off the synchronous skill mutation/tool path."""
 
+    if not local_work_allowed(WisdomStore()):
+        return
+
     def run() -> None:
         try:
             record_mutation(skill_name, task_id=task_id, session_id=session_id)
@@ -440,6 +446,9 @@ def record_successful_use_async(
     skill_name: str, *, task_id: str | None = None, session_id: str | None = None
 ) -> None:
     """Keep qualification and legacy metadata enrichment off the active turn."""
+
+    if not local_work_allowed(WisdomStore()):
+        return
 
     def run() -> None:
         try:

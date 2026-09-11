@@ -378,6 +378,25 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
+def command_available(command: CommandDef | str) -> bool:
+    """Return whether a registry command may be presented or dispatched locally.
+
+    The registry and lookup tables deliberately remain static.  Availability is a
+    fresh, refresh-free projection so login/logout and token replacement take effect
+    without mutating command state held by a running conversation.
+    """
+    cmd = command if isinstance(command, CommandDef) else resolve_command(command)
+    if cmd is None:
+        return False
+    if cmd.name != "wisdom":
+        return True
+    try:
+        from hermes_wisdom.entitlement import is_entitled
+        return bool(is_entitled())
+    except Exception:
+        return False
+
+
 def _build_description(cmd: CommandDef) -> str:
     """CLI-facing description including the usage hint."""
     if not cmd.args_hint:
@@ -480,7 +499,10 @@ def _resolve_config_gates() -> set[str]:
 
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
     """Not ``cli_only``, or its config gate is truthy (*config_overrides* from
-    ``_resolve_config_gates()`` avoids re-reading config per command)."""
+    ``_resolve_config_gates()`` avoids re-reading config per command), and passes
+    any refresh-free account entitlement gate."""
+    if not command_available(cmd):
+        return False
     if not cmd.cli_only:
         return True
     if not cmd.gateway_config_gate:

@@ -68,7 +68,9 @@ async def _run_wisdom(profile: Optional[str], fn, *, require_setup: bool = True)
     def run():
         with _profile_scope(profile):
             from hermes_wisdom.service import WisdomService
+            from hermes_wisdom.entitlement import require_entitlement
 
+            require_entitlement()
             service = WisdomService()
             if require_setup:
                 service.require_setup()
@@ -93,6 +95,34 @@ def _schedule_wisdom_professionalism_reviews(profile: Optional[str]) -> None:
             _log.debug("Collective Wisdom professionalism worker failed", exc_info=True)
 
     asyncio.create_task(run())
+
+
+
+
+@router.get("/api/wisdom/entitlement")
+async def get_wisdom_entitlement(profile: Optional[str] = None):
+    """Expose refresh-free local JWT entitlement metadata for UI gating."""
+    def run():
+        with _profile_scope(profile):
+            from hermes_wisdom.entitlement import current_entitlement
+
+            # Derive the boolean and metadata from one auth/token snapshot so a
+            # concurrent token replacement cannot produce a mismatched response.
+            metadata = current_entitlement()
+            scopes = tuple(metadata.get("scopes", ()))
+            return {
+                "entitled": "wisdom:read" in scopes,
+                "org_id": metadata.get("org_id"),
+                "scopes": list(scopes),
+                "expires_at": metadata.get("expires_at"),
+            }
+
+    try:
+        return await asyncio.to_thread(run)
+    except Exception:
+        # This presentation gate must fail closed and must never trigger auth refresh.
+        _log.debug("Collective Wisdom entitlement probe failed", exc_info=True)
+        return {"entitled": False, "org_id": None, "scopes": [], "expires_at": None}
 
 
 @router.get("/api/wisdom/status")

@@ -22,6 +22,13 @@ from tests.wisdom.test_agent_led import _package_json
 
 @pytest.fixture
 def staged(tmp_path, monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org")
+    save_config(
+        {"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}}
+    )
     source = tmp_path / "skills" / "notes"
     source.mkdir(parents=True)
     (source / "SKILL.md").write_text(
@@ -37,6 +44,7 @@ def staged(tmp_path, monkeypatch):
     )
     fake = FakeClient()
     service = WisdomService(store=WisdomStore(tmp_path / "state"), client=fake)
+    service.store.activate_installation_identity("installation", "org")
     monkeypatch.setattr(service, "_eligible_paths", lambda: [source])
     monkeypatch.setattr(service, "_enqueue_professionalism_review", Mock())
     monkeypatch.setattr(

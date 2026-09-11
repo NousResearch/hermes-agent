@@ -23,6 +23,11 @@ from tests.wisdom.test_agent_led import NOW, _store, _skill, _make_eligible, _us
 
 @pytest.fixture
 def weekly(tmp_path, monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1")
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
     root = tmp_path / "skills"
     _make_eligible(monkeypatch, root)
     store = _store(tmp_path)
@@ -38,6 +43,7 @@ def weekly(tmp_path, monkeypatch):
     service = Mock(store=store, client=client)
     now = [NOW.timestamp()]
     mediation = WisdomMediation(service, clock=lambda: now[0])
+
     actor = ConsentActor("session", "local", "owner", "local:session")
     return service, mediation, actor, root, now
 
@@ -478,11 +484,14 @@ def test_server_cap_cannot_be_exceeded_by_model(weekly, monkeypatch):
     assert len(mediation.queue.assessments("org-1")) == 1
 
 
-def test_new_org_has_its_own_weekly_identity_and_old_owner_cannot_commit(weekly):
+def test_new_org_has_its_own_weekly_identity_and_old_owner_cannot_commit(weekly, monkeypatch):
+    from tests.wisdom.local_auth import authorize_local
+
     service, mediation, _, root, _ = weekly
     result, job = claim(weekly)
     service.store.verify_installation_identity("org-2")
     service.client.display_org_id = "org-2"
+    authorize_local(monkeypatch, "org-2")
     other = enqueue_weekly_review(service, now=NOW, skills_root=root)
     assert result["assessment_id"] != other["assessment_id"]
     with pytest.raises(ValueError):
@@ -553,8 +562,10 @@ def test_signed_out_profile_cannot_queue_usage_for_later_replay(weekly):
     service, _, _, root, _ = weekly
     with service.store.transaction() as db:
         db.execute("UPDATE installation_identity SET verified_org_id=NULL")
-    with pytest.raises(ValueError):
-        enqueue_weekly_review(service, now=NOW, skills_root=root)
+    assert enqueue_weekly_review(service, now=NOW, skills_root=root) == {
+        "queued": False,
+        "skipped_reason": "not_entitled",
+    }
     with service.store.transaction() as db:
         assert db.execute("SELECT COUNT(*) FROM wisdom_assessment").fetchone()[0] == 0
 
@@ -570,3 +581,34 @@ def test_malformed_model_output_never_creates_native_candidates(weekly, monkeypa
         process_weekly_review(mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[])
     assert len(mediation.queue.assessments("org-1")) == 1
     assert not mediation.service.store.local_events(kind="wisdom.candidate")
+
+
+def test_weekly_producer_skips_without_entitlement(weekly, monkeypatch):
+    service, mediation, _, root, _ = weekly
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1", expires_in=-1)
+
+    assert enqueue_weekly_review(service, now=NOW, skills_root=root) == {
+        "queued": False,
+        "skipped_reason": "not_entitled",
+    }
+    assert mediation.queue.assessments("org-1") == []
+
+
+def test_queued_weekly_review_is_released_before_model_work_on_logout(weekly, monkeypatch):
+    _, mediation, _, _, _ = weekly
+    _, job = claim(weekly)
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1", scopes=[])
+    review = Mock(side_effect=AssertionError("must not invoke model"))
+
+    process_weekly_review(
+        mediation, "org-1", job,
+        runtime={"model": "test", "provider": "test"}, history=[], reviewer=review,
+    )
+
+    row = mediation.queue.assessments("org-1")[0]
+    assert row["state"] == "pending"
+    assert row["attempts"] == 0

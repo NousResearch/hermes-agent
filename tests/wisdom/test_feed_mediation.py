@@ -12,6 +12,11 @@ from hermes_wisdom.store import WisdomStore
 
 @pytest.fixture
 def mediation(tmp_path, monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org")
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")
     service = Mock(store=store)
@@ -636,3 +641,17 @@ def test_policy_uses_active_installation_not_a_retired_ledger_entry(
     )
     result = WisdomMediation._eligible_jobs(instance, "org", [item["assessment"]])
     assert bool(result) is not active
+
+
+def test_prepare_does_not_claim_queued_work_without_current_entitlement(mediation, monkeypatch):
+    instance, actor, _, _ = mediation
+    instance.service.notifications.return_value = {"events": [event()]}
+    instance.ingest()
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org", scopes=[])
+
+    assert instance.prepare(
+        "org", actor, runtime={"model": "test", "provider": "test"}, history=[]
+    ) == []
+    assert instance.queue.assessments("org")[0]["state"] == "pending"

@@ -1,11 +1,13 @@
 import argparse
+from unittest.mock import patch
 
 from hermes_cli.subcommands.wisdom import build_wisdom_parser
 
 
 def parser():
     value = argparse.ArgumentParser()
-    build_wisdom_parser(value.add_subparsers(dest="command"))
+    with patch("hermes_wisdom.entitlement.is_entitled", return_value=True):
+        build_wisdom_parser(value.add_subparsers(dest="command"))
     return value
 
 
@@ -17,12 +19,20 @@ def test_real_cli_parser_registers_wisdom_without_plugin_discovery(monkeypatch):
         raise AssertionError("A built-in Wisdom command must not discover plugins")
 
     monkeypatch.setattr(main.sys, "argv", ["hermes", "wisdom", "sync", "--json"])
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
     monkeypatch.setattr(plugins, "discover_plugins", unexpected_discovery)
     value, _subparsers = main._build_cli_parser()
     args = value.parse_args(main.sys.argv[1:])
     assert args.func is cmd_wisdom
     assert args.wisdom_command == "sync"
     assert args.action == "status"
+
+
+def test_unentitled_parser_help_omits_wisdom(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
+    value = argparse.ArgumentParser()
+    build_wisdom_parser(value.add_subparsers(dest="command"))
+    assert "wisdom" not in value.format_help().lower()
 
 
 def test_all_foundation_commands_are_registered():
@@ -80,6 +90,7 @@ def test_sync_defaults_to_read_only_and_requires_explicit_retry(monkeypatch):
     service.sync_status.return_value = {'can_retry': True}
     service.retry_sync.return_value = {'can_retry': False}
     monkeypatch.setattr(module, 'WisdomService', lambda: service)
+    monkeypatch.setattr('hermes_wisdom.entitlement.require_entitlement', lambda: None)
     args = parser().parse_args(['wisdom', 'sync', '--json'])
     assert args.action == 'status'
     assert cmd_wisdom(args) == 0
@@ -87,6 +98,22 @@ def test_sync_defaults_to_read_only_and_requires_explicit_retry(monkeypatch):
     service.retry_sync.assert_not_called()
     assert cmd_wisdom(parser().parse_args(['wisdom', 'sync', 'retry', '--json'])) == 0
     service.retry_sync.assert_called_once()
+
+
+def test_cli_subcommand_denies_before_service_construction(monkeypatch, capsys):
+    from hermes_cli.subcommands.wisdom import cmd_wisdom
+    from hermes_wisdom.package import PackagePolicyError
+
+    def denied():
+        raise PackagePolicyError("Collective Wisdom unavailable")
+
+    monkeypatch.setattr("hermes_wisdom.entitlement.require_entitlement", denied)
+    monkeypatch.setattr(
+        "hermes_wisdom.service.WisdomService",
+        lambda: (_ for _ in ()).throw(AssertionError("service constructed")),
+    )
+    assert cmd_wisdom(parser().parse_args(["wisdom", "status", "--json"])) == 6
+    assert "Collective Wisdom unavailable" in capsys.readouterr().out
 
 
 def test_setup_requires_an_explicit_disclosure_switch_for_automation():

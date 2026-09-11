@@ -96,9 +96,11 @@ def test_legacy_install_requires_current_native_consent(tmp_path):
     assert ledger.resolve_action(target, at=NOW)["ok"]
 
 
-def test_cli_parser_has_agent_led_verbs_with_json():
+def test_cli_parser_has_agent_led_verbs_with_json(monkeypatch):
     from hermes_cli.subcommands.wisdom import build_wisdom_parser
+    from tests.wisdom.local_auth import authorize_local
 
+    authorize_local(monkeypatch, "org")
     parser = argparse.ArgumentParser()
     build_wisdom_parser(parser.add_subparsers(dest="command"))
     for argv in (

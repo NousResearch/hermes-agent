@@ -653,6 +653,8 @@ export const api = {
   // any profile's skills/toolsets — not just the one the dashboard process
   // runs under. Omitted/empty profile = the dashboard's own profile.
   getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  getWisdomEntitlement: (profile?: string) =>
+    fetchJSON<WisdomEntitlement>(`/api/wisdom/entitlement${profileQuery(profile)}`),
   getWisdomStatus: (profile?: string) => fetchJSON<WisdomStatus>(`/api/wisdom/status${profileQuery(profile)}`),
   getWisdomMute: (profile?: string) => fetchJSON<WisdomMuteSnapshot>(`/api/wisdom/mute${profileQuery(profile)}`),
   getWisdomSync: (profile?: string) => fetchJSON<WisdomSyncSnapshot>(`/api/wisdom/sync${profileQuery(profile)}`),
@@ -1857,6 +1859,13 @@ export interface PlatformStatus {
   error_message?: string
   state: string
   updated_at: string
+}
+
+export interface WisdomEntitlement {
+  entitled: boolean
+  org_id: null | string
+  scopes: string[]
+  expires_at: null | number
 }
 
 export interface StatusResponse {

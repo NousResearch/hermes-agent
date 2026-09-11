@@ -22,12 +22,14 @@ def _emit(value: Any, *, as_json: bool) -> None:
 
 def cmd_wisdom(args: argparse.Namespace) -> int:
     from hermes_wisdom.client import WisdomError
+    from hermes_wisdom.entitlement import require_entitlement
     from hermes_wisdom.package import PackagePolicyError
     from hermes_wisdom.service import WisdomService
 
-    service = WisdomService()
     command = getattr(args, "wisdom_command", None)
     try:
+        require_entitlement()
+        service = WisdomService()
         if command not in {"setup", "status", None}:
             service.require_setup()
         if command == "setup":
@@ -270,6 +272,10 @@ def cmd_wisdom(args: argparse.Namespace) -> int:
 
 
 def build_wisdom_parser(subparsers) -> None:
+    from hermes_wisdom.entitlement import is_entitled
+
+    if not is_entitled():
+        return
     parser = subparsers.add_parser(
         "wisdom",
         help="Collective Wisdom — review, share, and install team skills",

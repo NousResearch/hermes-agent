@@ -28,6 +28,15 @@ from hermes_wisdom.agent_led.schemas import (
 )
 from hermes_wisdom.agent_led.share_flow import ShareFlow, scan_credentials
 from hermes_wisdom.qualification import record_successful_use
+
+
+@pytest.fixture(autouse=True)
+def _authorize_qualification_work(monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1")
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
 from hermes_wisdom.store import WisdomStore
 
 NOW = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)

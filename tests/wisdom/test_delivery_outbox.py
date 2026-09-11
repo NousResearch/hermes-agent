@@ -17,7 +17,14 @@ from hermes_wisdom.store import WisdomStore
 
 
 @pytest.fixture
-def delivery(tmp_path):
+def delivery(tmp_path, monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org")
+    save_config(
+        {"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}}
+    )
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")
     now = [1000.0]

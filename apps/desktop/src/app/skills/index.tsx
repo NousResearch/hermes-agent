@@ -21,6 +21,7 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
+  getWisdomEntitlement,
   previewSkillHub,
   type ProfileScope,
   profileScopeKey,
@@ -307,6 +308,67 @@ export function SkillsView({
   // tab's live-reload RPC rides the active gateway socket, which would reload
   // the wrong machine — withhold it for cross-backend scopes.
   const crossBackendScope = scopeConnectionId !== null && scopeConnectionId !== (activeGatewayConnectionId() ?? 'local')
+
+  // Poll the refresh-free local claim probe so an open page cannot retain a
+  // positive gate indefinitely. A profile change is fail-closed even if React
+  // Query has cached that profile from an earlier visit.
+  const wisdomEntitlement = useQuery({
+    queryKey: ['wisdom-entitlement', scopeKey],
+    queryFn: () => getWisdomEntitlement(scopeProfile),
+    staleTime: 0,
+    refetchInterval: 15_000,
+    retry: false
+  })
+  // Identity changes on every scope visit, including A -> B -> A.
+  const wisdomScope = useMemo(() => ({ key: scopeKey }), [scopeKey])
+  const [acceptedWisdomResult, setAcceptedWisdomResult] = useState<null | {
+    scope: typeof wisdomScope
+    updatedAt: number
+  }>(null)
+
+  const [entitlementClock, setEntitlementClock] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (wisdomEntitlement.isSuccess && wisdomEntitlement.fetchStatus === 'idle') {
+      setAcceptedWisdomResult({ scope: wisdomScope, updatedAt: wisdomEntitlement.dataUpdatedAt })
+    }
+  }, [wisdomScope, wisdomEntitlement.dataUpdatedAt, wisdomEntitlement.fetchStatus, wisdomEntitlement.isSuccess])
+
+  const entitlementExpiresAt = wisdomEntitlement.data?.expires_at
+  useEffect(() => {
+    if (typeof entitlementExpiresAt !== 'number') {
+      return
+    }
+
+    const remaining = entitlementExpiresAt * 1000 - Date.now()
+
+    if (remaining <= 0) {
+      setEntitlementClock(Date.now())
+
+      return
+    }
+
+    const timeout = window.setTimeout(() => setEntitlementClock(Date.now()), Math.min(remaining, 2_147_483_647))
+
+    return () => window.clearTimeout(timeout)
+  }, [entitlementExpiresAt])
+
+  const freshWisdomEntitlement =
+    wisdomEntitlement.data?.entitled === true &&
+    typeof entitlementExpiresAt === 'number' &&
+    entitlementExpiresAt * 1000 > entitlementClock
+  const wisdomEntitled =
+    acceptedWisdomResult?.scope === wisdomScope &&
+    acceptedWisdomResult.updatedAt === wisdomEntitlement.dataUpdatedAt &&
+    !wisdomEntitlement.isError &&
+    freshWisdomEntitlement
+  const wisdomDenied = wisdomEntitlement.isError || (wisdomEntitlement.isSuccess && !freshWisdomEntitlement)
+
+  useEffect(() => {
+    if (mode === 'collective' && wisdomDenied && !wisdomEntitlement.isFetching) {
+      setMode('skills')
+    }
+  }, [mode, setMode, wisdomDenied, wisdomEntitlement.isFetching])
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
@@ -887,7 +949,7 @@ export function SkillsView({
       searchPlaceholder={
         mode === 'skills'
           ? t.skills.searchSkills
-          : mode === 'collective'
+          : mode === 'collective' && wisdomEntitled
             ? t.skills.searchCollective
             : t.skills.searchToolsets
       }
@@ -897,7 +959,7 @@ export function SkillsView({
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'mcp', label: t.skills.tabMcp },
         { id: 'plugins', label: t.skills.tabPlugins },
-        { id: 'collective', label: t.skills.tabCollective }
+        ...(wisdomEntitled ? [{ id: 'collective', label: t.skills.tabCollective }] : [])
       ]}
     >
       {/* One shared column: the scope selector sits above whichever tab is
@@ -910,7 +972,7 @@ export function SkillsView({
         {mode !== 'plugins' && profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={cn(mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1', 'relative')}>
-            {mode === 'collective' ? (
+            {mode === 'collective' && wisdomEntitled ? (
               <CollectiveTab profile={scopeProfile} query={query} />
             ) : mode === 'plugins' ? (
               // Agent plugins for the scoped profile (selector in the section

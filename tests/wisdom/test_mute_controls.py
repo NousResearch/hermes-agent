@@ -12,7 +12,10 @@ from tests.wisdom.test_preferences import preferences  # noqa: F401
 
 
 @pytest.fixture
-def controls(preferences):
+def controls(preferences, monkeypatch):
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org")
     p, service, now = preferences
     service.require_setup = Mock()
     service.client.recommendation_mute.return_value = WisdomMuteResponse(

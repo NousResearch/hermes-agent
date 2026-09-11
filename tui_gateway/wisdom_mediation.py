@@ -12,11 +12,14 @@ from hermes_wisdom.mediation_view import advice_view
 
 
 def note_activity(session: dict, *, profile_scope) -> None:
+    from hermes_wisdom.entitlement import local_work_allowed
     from hermes_wisdom.store import WisdomStore
     from hermes_wisdom.mediation_store import MediationStore
 
     with profile_scope(session):
         store = WisdomStore()
+        if not local_work_allowed(store):
+            return
         org = store.active_org_id()
         key = str(session.get("session_key") or "")
         if not org or not key:

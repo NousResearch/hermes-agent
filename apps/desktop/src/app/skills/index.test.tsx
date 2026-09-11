@@ -19,6 +19,7 @@ const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
 const getOfficialSkills = vi.fn()
+const getWisdomEntitlement = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -36,7 +37,8 @@ vi.mock('@/hermes', async importOriginal => ({
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles(),
   getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile),
-  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile)
+  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile),
+  getWisdomEntitlement: (profile?: null | string) => getWisdomEntitlement(profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -46,6 +48,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 // Tab contents have their own suites; this suite owns route-to-panel selection.
+vi.mock('@/components/chat/code-editor', () => ({ CodeEditor: () => null }))
 vi.mock('./collective-tab', () => ({
   CollectiveTab: () => <section aria-label="Collective workspace" />
 }))
@@ -96,6 +99,9 @@ async function renderSkills(tab = 'toolsets') {
       </QueryClientProvider>
     )
   })
+  if (vi.isFakeTimers()) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+  }
 
   return result!
 }
@@ -107,6 +113,12 @@ beforeEach(() => {
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
   getOfficialSkills.mockResolvedValue({ skills: [] })
+  getWisdomEntitlement.mockResolvedValue({
+    entitled: true,
+    org_id: 'org-1',
+    scopes: ['wisdom:read'],
+    expires_at: Date.now() / 1000 + 60
+  })
   getSkillContent.mockResolvedValue({
     name: 'web-research',
     path: '/skills/web-research/SKILL.md',
@@ -119,6 +131,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.clearAllMocks()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
@@ -138,12 +151,107 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     expect(await screen.findByRole('region', { name: selected })).toBeTruthy()
     expect(screen.queryByRole('region', { name: other })).toBeNull()
+    expect(navigateSpy).not.toHaveBeenCalledWith(
+      { pathname: '/skills', search: '', hash: '' },
+      { replace: true }
+    )
     const otherTab = other.replace(' workspace', '')
     fireEvent.click(screen.getByRole('button', { name: otherTab }))
     expect(navigateSpy).toHaveBeenCalledWith(
       { pathname: '/skills', search: `?tab=${otherTab.toLowerCase()}`, hash: '' },
       { replace: true }
     )
+  })
+
+  it('hides Collective Wisdom and redirects its deep link when local entitlement is absent', async () => {
+    getWisdomEntitlement.mockResolvedValue({ entitled: false, org_id: null, scopes: [], expires_at: null })
+    await renderSkills('collective')
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+    await waitFor(() =>
+      expect(navigateSpy).toHaveBeenCalledWith(
+        { pathname: '/skills', search: '', hash: '' },
+        { replace: true }
+      )
+    )
+  })
+
+  it('fails closed when an entitlement response is already expired', async () => {
+    getWisdomEntitlement.mockResolvedValue({
+      entitled: true,
+      org_id: 'org-1',
+      scopes: ['wisdom:read'],
+      expires_at: Date.now() / 1000 - 1
+    })
+
+    await renderSkills('collective')
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+  })
+
+  it('rechecks entitlement after switching away and back while probes are pending', async () => {
+    const { SkillsView } = await import('./index')
+    const page = (profile: string) => (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SkillsView fixedProfile={profile} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const result = render(page('eligible'))
+    expect(await screen.findByRole('button', { name: 'Collective' })).toBeTruthy()
+
+    getWisdomEntitlement.mockImplementation(() => new Promise(() => {}))
+    result.rerender(page('other'))
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    result.rerender(page('eligible'))
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+  })
+
+  it('hides Collective when its positive JWT reaches expires_at', async () => {
+    vi.useFakeTimers()
+    const expiresAt = Date.now() / 1000 + 1
+    getWisdomEntitlement.mockResolvedValue({
+      entitled: true,
+      org_id: 'org-1',
+      scopes: ['wisdom:read'],
+      expires_at: expiresAt
+    })
+
+    await renderSkills('collective')
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).not.toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_001)
+    })
+
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
+  })
+
+  it('fails closed when a recheck errors after a positive result', async () => {
+    vi.useFakeTimers()
+    getWisdomEntitlement
+      .mockResolvedValueOnce({
+        entitled: true,
+        org_id: 'org-1',
+        scopes: ['wisdom:read'],
+        expires_at: Date.now() / 1000 + 60
+      })
+      .mockRejectedValue(new Error('probe failed'))
+
+    await renderSkills('collective')
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).not.toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+    })
+
+    expect(getWisdomEntitlement).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('button', { name: 'Collective' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Collective workspace' })).toBeNull()
   })
 
   it('renders a switch for each toolset and toggles it off', async () => {

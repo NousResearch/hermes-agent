@@ -9205,7 +9205,9 @@ def test_complete_slash_returns_plain_string_fields():
         assert isinstance(item["meta"], str), item
 
 
-def test_complete_slash_returns_documented_wisdom_subcommands():
+def test_complete_slash_returns_documented_wisdom_subcommands(monkeypatch):
+    from tests.wisdom.local_auth import authorize_local
+    authorize_local(monkeypatch)
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/wisdom "}}
     )
@@ -11504,7 +11506,8 @@ def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
     )
 
 
-def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
+def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}
     )
@@ -11536,7 +11539,8 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/set-home" not in canon
 
 
-def test_commands_catalog_includes_desktop_meta_without_skills():
+def test_commands_catalog_includes_desktop_meta_without_skills(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}
     )
@@ -11551,6 +11555,20 @@ def test_commands_catalog_includes_desktop_meta_without_skills():
     for skill in resp["result"]["skills"]:
         assert skill not in commands
 
+
+def test_commands_catalog_hides_wisdom_without_local_entitlement(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    result = resp["result"]
+    assert "/wisdom" not in dict(result["pairs"])
+    assert "/wisdom" not in result["commands"]
+    assert "/wisdom" not in result["canon"]
+    assert "/collective-wisdom-install" not in result["canon"]
+    assert "/wisdom" not in result["sub"]
 
 def test_commands_catalog_includes_plugin_commands(monkeypatch):
     monkeypatch.setattr(
@@ -18401,9 +18419,19 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
 def test_wisdom_activity_notice_is_profile_throttled_and_session_scoped(
     monkeypatch, tmp_path
 ):
+    from tests.wisdom.local_auth import authorize_local
+    from hermes_wisdom.store import WisdomStore
+
+    authorize_local(monkeypatch, "org")
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
+        "enabled": True, "disclosure_acknowledged_at": "fixture",
+    })
+    state = WisdomStore(tmp_path / "wisdom")
+    state.activate_installation_identity("installation", "org")
     checks = []
 
     class _Wisdom:
+        store = state
         def check(self, *, apply_automatic):
             checks.append(apply_automatic)
 
@@ -19102,6 +19130,8 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
 
 
 def test_slash_exec_wisdom_uses_native_profile_scoped_controller(monkeypatch, tmp_path):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
+    monkeypatch.setattr("gateway.wisdom_command.require_entitlement", lambda _org_id=None: None)
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):
             raise AssertionError("native /wisdom must not spawn the CLI worker")
@@ -19132,6 +19162,77 @@ def test_slash_exec_wisdom_uses_native_profile_scoped_controller(monkeypatch, tm
     assert "Collective Wisdom commands" in resp["result"]["output"]
     assert "/wisdom browse" in resp["result"]["output"]
     assert session["slash_worker"] is None
+
+
+def test_command_dispatch_wisdom_alias_denied_without_entitlement(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
+
+    resp = server.handle_request({
+        "id": "wisdom-denied",
+        "method": "command.dispatch",
+        "params": {
+            "name": "collective-wisdom-install",
+            "arg": "skill-1",
+            "session_id": "missing",
+        },
+    })
+
+    assert resp["error"]["code"] == 4030
+    assert "unavailable" in resp["error"]["message"]
+
+
+@pytest.mark.parametrize("method, command", [
+    ("slash.exec", {"command": "wisdom help"}),
+    ("command.dispatch", {"name": "wisdom"}),
+])
+@pytest.mark.parametrize("session_entitled", [True, False])
+def test_wisdom_dispatch_checks_session_not_launch_profile(monkeypatch, tmp_path, method, command, session_entitled):
+    from hermes_constants import get_hermes_home
+
+    profile_home = tmp_path / "session-profile"
+    profile_home.mkdir()
+    session = _session(profile_home=str(profile_home), slash_worker=None)
+    monkeypatch.setitem(server._sessions, "wisdom-profile", session)
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: (
+        session_entitled if get_hermes_home() == profile_home else not session_entitled
+    ))
+    monkeypatch.setattr(server, "_live_slash_command_output", lambda *args: "allowed")
+    monkeypatch.setattr(server, "_dispatch_quick", lambda rid, *args: server._ok(rid, {"output": "allowed"}))
+
+    response = server.handle_request({
+        "id": "profile-gate", "method": method,
+        "params": {**command, "session_id": "wisdom-profile"},
+    })
+
+    if session_entitled:
+        assert response["result"]["output"] == "allowed"
+    else:
+        assert response["error"]["code"] == 4030
+
+
+@pytest.mark.parametrize("entitled", [True, False])
+def test_wisdom_discovery_checks_requested_profile(monkeypatch, tmp_path, entitled):
+    from hermes_constants import get_hermes_home
+
+    profile_home = tmp_path / "requested-profile"
+    profile_home.mkdir()
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home)
+    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: (
+        entitled if get_hermes_home() == profile_home else not entitled
+    ))
+
+    def request(method, **params):
+        return server.handle_request({
+            "id": "profile-discovery", "method": method,
+            "params": {"profile": "requested-profile", **params},
+        })
+
+    catalog = request("commands.catalog")["result"]
+    assert ("/wisdom" in catalog["canon"]) is entitled
+    assert ("result" in request("command.resolve", name="wisdom")) is entitled
+    completions = request("complete.slash", text="/wisdom")["result"]["items"]
+    assert any(item["display"] == "/wisdom" for item in completions) is entitled, completions
 
 
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):

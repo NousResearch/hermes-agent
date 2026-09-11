@@ -14,6 +14,7 @@ from typing import Any
 
 from .agent_led.evidence import build_evidence
 from .agent_led.policy import load_policy
+from .entitlement import local_work_allowed
 from .mediation_store import MediationStore
 from .preferences import WisdomPreferences, suppression_key
 
@@ -73,6 +74,8 @@ def enqueue_weekly_review(
     A manual run does not bypass the weekly cap or policy. Dry runs are local
     evidence previews and never create a queue item or call a model.
     """
+    if not local_work_allowed(service.store):
+        return {"queued": False, "skipped_reason": "not_entitled"}
     policy = load_policy(client=service.client)
     if (
         not policy.enabled
@@ -184,6 +187,9 @@ def process_weekly_review(
     from .qualification import snapshot_tree
 
     service, queue = mediation.service, mediation.queue
+    if not local_work_allowed(service.store):
+        queue.defer_for_preferences(org, job, 0)
+        return
     policy = load_policy(client=service.client)
     if (
         not policy.enabled
@@ -251,6 +257,9 @@ def process_weekly_review(
         "excluded": job["reference"]["excluded"],
     }
     if available:
+        if not local_work_allowed(service.store):
+            queue.defer_for_preferences(org, job, 0)
+            return
         organization_name = service.organization_display_name()
         result = (reviewer or review_candidates)(
             {
@@ -334,6 +343,9 @@ def _commit_selection(
     mediation, org: str, job: dict, selected: list[dict], report: dict
 ) -> None:
     service, queue = mediation.service, mediation.queue
+    if not local_work_allowed(service.store):
+        queue.defer_for_preferences(org, job, 0)
+        return
     now = queue.clock()
     user = WisdomPreferences(service).identity(org)
     with service.store.transaction() as db:

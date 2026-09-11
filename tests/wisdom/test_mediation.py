@@ -20,7 +20,12 @@ from hermes_wisdom.delivery import DeliveryReceipt
 
 
 @pytest.fixture
-def consent(tmp_path, request):
+def consent(tmp_path, request, monkeypatch):
+    from tests.wisdom.local_auth import authorize_local
+    from hermes_cli.config import save_config
+
+    authorize_local(monkeypatch, "org")
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")
     now = [1000.0]
@@ -123,7 +128,7 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
         "HERMES_SESSION_SCOPE_ID": actor.scope_id,
     }
     monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
-        "enabled": True, "notifications": {"delivery_mode": copy_mode},
+        "enabled": True, "disclosure_acknowledged_at": "fixture", "notifications": {"delivery_mode": copy_mode},
     })
     assert wisdom_tool.available()
     monkeypatch.setattr(
@@ -192,6 +197,8 @@ def request_tool(consent, monkeypatch, tmp_path):
 
     instance, actor, _, _ = consent
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.config import save_config
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
     env = {
         "HERMES_SESSION_PLATFORM": actor.platform,
         "HERMES_SESSION_KEY": actor.session_key,
@@ -227,7 +234,7 @@ def test_background_consent_cannot_borrow_parent_session(consent, monkeypatch, p
     from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
 
     instance, actor, _, _ = consent
-    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"enabled": True})
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"enabled": True, "disclosure_acknowledged_at": "fixture"})
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: instance.service)
     tokens = set_session_vars(
         platform=platform, session_key=actor.session_key, session_id="parent-id",

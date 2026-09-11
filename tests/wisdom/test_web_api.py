@@ -450,6 +450,8 @@ def test_wisdom_error_mapping_is_opaque_and_bounded() -> None:
 
 
 def test_profile_bff_requires_setup_before_running_an_operation(monkeypatch) -> None:
+    from tests.wisdom.local_auth import authorize_local
+    authorize_local(monkeypatch)
     calls: list[str] = []
 
     class Service:

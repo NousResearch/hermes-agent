@@ -17,12 +17,14 @@ from hermes_wisdom.package import PackagePolicyError
 from hermes_wisdom.service import WisdomService
 from hermes_wisdom.store import WisdomStore
 from tests.wisdom.test_service import InstallClient, _install_service
+from tests.wisdom.entitlement_fixtures import authorized_wisdom_token_fixture
 from tools import wisdom_tool
 from tools.registry import registry
 
 
 @pytest.fixture
 def installed(tmp_path, monkeypatch):
+    authorized_wisdom_token_fixture(monkeypatch)
     client = InstallClient()
     service = _install_service(monkeypatch, tmp_path, client=client)
     monkeypatch.setattr("hermes_wisdom.consumption.get_skills_dir", lambda: tmp_path / "skills")

@@ -32,10 +32,13 @@ def _collect_wisdom_activity_notice(session: dict) -> tuple[bool, str | None]:
         return False, None
 
     try:
+        from hermes_wisdom.entitlement import local_work_allowed
         from hermes_wisdom.service import WisdomService
 
         with _session_profile_runtime_scope(session):
             service = WisdomService()
+            if not local_work_allowed(service.store):
+                return True, None
             profile_key = _wisdom_profile_key(session)
             now = time.monotonic()
             with _wisdom_poll_lock:

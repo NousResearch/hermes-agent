@@ -360,6 +360,9 @@ class TestTelegramApprovalCallback:
     ):
         from hermes_wisdom.store import WisdomStore
 
+        monkeypatch.setattr(
+            "hermes_wisdom.entitlement.local_work_allowed", lambda _store: True
+        )
         monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
         store = WisdomStore(tmp_path / "wisdom")
         store.installation_identity()

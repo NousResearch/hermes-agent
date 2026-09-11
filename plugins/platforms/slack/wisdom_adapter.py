@@ -286,6 +286,7 @@ class SlackWisdomMixin:
     ) -> int:
         """DM newly qualified local skills after their originating Slack turn."""
         from gateway.wisdom_command import WisdomAction
+        from hermes_wisdom.entitlement import local_work_allowed
         from hermes_wisdom.notice import qualification_notice
         from hermes_wisdom.professionalism import review_text
         from hermes_wisdom.service import WisdomService
@@ -316,6 +317,10 @@ class SlackWisdomMixin:
 
         sent = 0
         for event in events:
+            if not await self._run_wisdom_profile_operation(
+                lambda: local_work_allowed(WisdomStore()), profile=profile
+            ):
+                break
             event_id = str(event["id"])
             payload = event.get("payload")
             payload = payload if isinstance(payload, dict) else {}
@@ -337,6 +342,10 @@ class SlackWisdomMixin:
                 ),
                 profile=profile,
             )
+            if not await self._run_wisdom_profile_operation(
+                lambda: local_work_allowed(WisdomStore()), profile=profile
+            ):
+                break
             notice = qualification_notice(event)
             view = self._wisdom_candidate_view(
                 skill_name=skill_name,

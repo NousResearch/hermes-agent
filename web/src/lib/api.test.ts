@@ -71,6 +71,15 @@ describe("fetchJSON", () => {
     expect(fetchMock.mock.calls[2][1]?.method).toBe("POST");
   });
 
+  it("uses the dedicated profile-scoped local Wisdom entitlement endpoint", async () => {
+    const fetchMock = jsonFetchMock({ entitled: false, scopes: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getWisdomEntitlement("worker");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/wisdom/entitlement?profile=worker");
+  });
+
   it("tries the one-shot reload path for loopback 401s", async () => {
     vi.stubGlobal(
       "fetch",

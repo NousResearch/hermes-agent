@@ -24,6 +24,9 @@ def runtime(tmp_path, monkeypatch, request):
         "interrupt": None,
         "fail": None,
     }
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, lambda: state["org"])
     identities = {}
     monkeypatch.setattr(
         "hermes_wisdom.client.resolve_identity",

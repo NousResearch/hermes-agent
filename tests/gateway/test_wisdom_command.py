@@ -290,6 +290,21 @@ class _Service:
 @pytest.fixture(autouse=True)
 def _fresh_callback_store(monkeypatch):
     monkeypatch.setattr(command_module, "CALLBACK_TOKENS", _CallbackTokens())
+    monkeypatch.setattr(command_module, "require_entitlement", lambda _org_id=None: None)
+
+
+def test_controller_checks_entitlement_for_commands_and_callbacks(monkeypatch):
+    checked = []
+    monkeypatch.setattr(command_module, "require_entitlement", lambda org=None: checked.append(org))
+    controller = WisdomCommandController()
+    context = _context()
+
+    view = bind_view_callbacks(controller.execute("browse", _Service(), context), context)
+    token = view.items[0].actions[0].callback_data.removeprefix("wi:cmd:")
+    controller.execute_token(token, _Service(), context)
+
+    assert len(checked) >= 2
+    assert set(checked) == {None, "org-1"}
 
 
 def test_parse_supports_quoted_search_and_cli_aliases():

@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .contract import author_description_hash
+from .entitlement import local_work_allowed
 from .package import MAX_FILES, MAX_FILE_BYTES, MAX_TREE_BYTES, PackagePolicyError
 from .store import WisdomStore
 
@@ -288,6 +289,9 @@ def process_pending_reviews(
 ) -> list[dict[str, Any]]:
     """Process bounded queue work; provider failures retry, then become unavailable."""
 
+    if not local_work_allowed(store):
+        return []
+
     worker_id = f"wisdom-review:{uuid.uuid4().hex}"
     completed: list[dict[str, Any]] = []
     for _ in range(max(0, max_jobs)):
@@ -296,6 +300,18 @@ def process_pending_reviews(
             review_id=review_id,
         )
         if job is None:
+            break
+        # A queued review is not permission to spend model work after logout,
+        # token expiry, scope removal, or an organization switch.
+        if not local_work_allowed(store):
+            store.retry_professionalism_review(
+                str(job["id"]),
+                worker_id=worker_id,
+                error="Wisdom entitlement unavailable",
+                unavailable_result=unavailable_review(job),
+                max_attempts=int(job.get("attempts") or 1) + 1,
+                retry_delay_seconds=max(60, retry_delay_seconds),
+            )
             break
         try:
             result = run_review(job)

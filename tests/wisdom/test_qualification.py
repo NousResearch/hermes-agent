@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from hermes_wisdom.qualification import (
     HIGH_USAGE_CONSECUTIVE_BUSINESS_DAYS,
     RETENTION_DAYS,
@@ -16,6 +18,15 @@ from hermes_wisdom.qualification import (
     snapshot_tree,
 )
 from hermes_wisdom.store import WisdomStore
+
+
+@pytest.fixture(autouse=True)
+def _authorize_qualification_work(monkeypatch):
+    from hermes_cli.config import save_config
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1")
+    save_config({"wisdom": {"enabled": True, "disclosure_acknowledged_at": "fixture"}})
 
 
 def _configured_store(tmp_path: Path) -> WisdomStore:
@@ -444,3 +455,33 @@ def test_dismissal_suppresses_exact_content_but_stronger_path_can_resuggest(
         session_id=None,
         task_id=None,
     )
+
+
+def test_qualification_entry_points_do_no_local_work_without_entitlement(monkeypatch, tmp_path: Path):
+    skill = _skill(tmp_path)
+    _eligible(monkeypatch, skill)
+    store = _configured_store(tmp_path)
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1", expires_in=-1)
+
+    assert record_successful_use("learned-skill", store=store) is None
+    record_mutation("learned-skill", store=store)
+
+    with store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM local_skill").fetchone()[0] == 0
+
+
+def test_async_qualification_does_not_spawn_threads_without_entitlement(monkeypatch):
+    from hermes_wisdom import qualification
+    from tests.wisdom.local_auth import authorize_local
+
+    authorize_local(monkeypatch, "org-1", scopes=[])
+    monkeypatch.setattr(
+        qualification.threading,
+        "Thread",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+
+    qualification.record_successful_use_async("skill")
+    qualification.record_mutation_async("skill")

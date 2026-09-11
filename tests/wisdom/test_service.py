@@ -27,6 +27,7 @@ from hermes_wisdom.package import (
 from hermes_wisdom.notice import qualification_notice
 from hermes_wisdom.service import WisdomService
 from hermes_wisdom.store import WisdomStore
+from tests.wisdom.entitlement_fixtures import authorized_wisdom_token_fixture
 
 
 class FakeClient:
@@ -269,6 +270,11 @@ def _review_service(tmp_path: Path, *, client: ReviewClient):
         "manifest_hash": draft.packageManifestHash or "",
     })
     return WisdomService(store=store, client=client)
+
+
+@pytest.fixture
+def authorized_wisdom_token(monkeypatch):
+    return authorized_wisdom_token_fixture(monkeypatch)
 
 
 @pytest.fixture
@@ -530,8 +536,12 @@ def _install_service(monkeypatch, tmp_path: Path, *, client: InstallClient):
 
 
 def test_prepare_requires_local_owner_edit_before_any_network(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    monkeypatch.setattr(WisdomService, "_require_professionalism_review", lambda self, **kwargs: {"status": "pass", "checks": []})
+    monkeypatch.setattr(
+        "hermes_wisdom.professionalism.local_work_allowed", lambda _store: True
+    )
     skill = tmp_path / "skills" / "my-skill"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
@@ -643,7 +653,7 @@ def test_prepare_requires_local_owner_edit_before_any_network(
 
 
 def test_local_candidate_decline_suppresses_exact_content_without_network(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skill = tmp_path / "skills" / "declined-skill"
     skill.mkdir(parents=True)
@@ -672,7 +682,7 @@ def test_local_candidate_decline_suppresses_exact_content_without_network(
 
 
 def test_candidate_scan_hides_an_exact_contributed_version_until_content_changes(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skills = tmp_path / "skills"
     skill = skills / "incident-handoff"
@@ -721,7 +731,7 @@ def test_candidate_scan_hides_an_exact_contributed_version_until_content_changes
 
 
 def test_suggest_uses_candidate_identity_and_rejects_a_stale_duplicate_action(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skills = tmp_path / "skills"
     local = skills / "deployment-checklist"
@@ -781,8 +791,9 @@ def _qualified_candidate_event(
 
 
 def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified_org_name(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"enabled": True, "disclosure_acknowledged_at": "test"})
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
@@ -835,7 +846,8 @@ def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified
     )
 
 
-def test_defer_candidate_prompt_hides_only_the_selected_surface(tmp_path: Path, monkeypatch):
+def test_defer_candidate_prompt_hides_only_the_selected_surface(authorized_wisdom_token, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"enabled": True, "disclosure_acknowledged_at": "test"})
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
@@ -880,7 +892,7 @@ def test_defer_candidate_prompt_hides_only_the_selected_surface(tmp_path: Path, 
 
 
 def test_organization_name_mismatch_and_failure_are_negative_cached(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
@@ -917,8 +929,9 @@ def test_organization_name_mismatch_and_failure_are_negative_cached(
 
 
 def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    authorized_wisdom_token("nas_organisation:wisdom-local")
     skills = tmp_path / "skills"
     skill = skills / "telegram-skill"
     skill.mkdir(parents=True)
@@ -1012,7 +1025,7 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
 
 
 def test_telegram_candidate_publish_uses_normal_review_and_approval(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     service = WisdomService(store=WisdomStore(tmp_path / "state"), client=FakeClient())
     monkeypatch.setattr(
@@ -1048,8 +1061,9 @@ def test_telegram_candidate_publish_uses_normal_review_and_approval(
 
 
 def test_telegram_candidate_reconciles_portal_submission_without_duplicate_publish(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    authorized_wisdom_token("nas_organisation:wisdom-local")
     skill = tmp_path / "skills" / "portal-approved-skill"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
@@ -1093,8 +1107,9 @@ def test_telegram_candidate_reconciles_portal_submission_without_duplicate_publi
 
 
 def test_telegram_candidate_reports_portal_publication_even_if_local_source_changed(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    authorized_wisdom_token("nas_organisation:wisdom-local")
     skill = tmp_path / "skills" / "published-elsewhere"
     skill.mkdir(parents=True)
     source = skill / "SKILL.md"
@@ -1137,7 +1152,8 @@ def test_telegram_candidate_reports_portal_publication_even_if_local_source_chan
     assert len(fake.submissions) == 1
 
 
-def test_telegram_decline_withdraws_portal_submission(monkeypatch, tmp_path: Path):
+def test_telegram_decline_withdraws_portal_submission(authorized_wisdom_token, monkeypatch, tmp_path: Path):
+    authorized_wisdom_token("nas_organisation:wisdom-local")
     skill = tmp_path / "skills" / "withdraw-from-telegram"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
@@ -1180,7 +1196,7 @@ def test_telegram_decline_withdraws_portal_submission(monkeypatch, tmp_path: Pat
 
 
 def test_telegram_candidate_rejects_changed_source_before_any_upload(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skill = tmp_path / "skills" / "changing-skill"
     skill.mkdir(parents=True)
@@ -1199,7 +1215,7 @@ def test_telegram_candidate_rejects_changed_source_before_any_upload(
 
 
 def test_telegram_candidate_decline_suppresses_only_the_qualified_bytes(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skill = tmp_path / "skills" / "decline-from-telegram"
     skill.mkdir(parents=True)
@@ -1216,7 +1232,7 @@ def test_telegram_candidate_decline_suppresses_only_the_qualified_bytes(
 
 
 def test_setup_persists_explicit_disclosure_and_enables_the_profile(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     skills = tmp_path / "skills"
     monkeypatch.setattr("hermes_wisdom.service.get_skills_dir", lambda: skills)
@@ -1245,17 +1261,19 @@ def test_setup_persists_explicit_disclosure_and_enables_the_profile(
     assert second["installation_id"] == first["installation_id"]
 
     service._client = SetupClient("org-2")
+    authorized_wisdom_token("org-2")
     third = service.setup(disclosure_accepted=True)
     assert third["installation_id"] != first["installation_id"]
     assert service.store.active_org_id() == "org-2"
 
 
 def test_setup_accepts_opaque_nas_org_id_with_portable_managed_path(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
     from hermes_wisdom.contract import org_directory_name
 
     org_id = "nas_organisation:wisdom-local"
+    authorized_wisdom_token(org_id)
     skills = tmp_path / "skills"
     monkeypatch.setattr("hermes_wisdom.service.get_skills_dir", lambda: skills)
     config = {"wisdom": {"enabled": False}}
@@ -1289,7 +1307,8 @@ def test_status_does_not_enroll_an_unconfigured_profile(monkeypatch, tmp_path: P
         service.require_setup()
 
 
-def test_setup_guard_rejects_a_changed_authenticated_org(monkeypatch, tmp_path: Path):
+def test_setup_guard_rejects_a_changed_authenticated_org(authorized_wisdom_token, monkeypatch, tmp_path: Path):
+    authorized_wisdom_token("org-2")
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
     store.verify_installation_identity("org-1")
@@ -1313,8 +1332,10 @@ def test_setup_guard_rejects_a_changed_authenticated_org(monkeypatch, tmp_path: 
 
 
 def test_org_change_does_not_rotate_identity_before_gateway_accepts(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    authorized_wisdom_token("org-2")
+
     class RejectingSetupClient(SetupClient):
         def register_identity(self, installation_id):
             raise RuntimeError("gateway rejected identity")
@@ -1333,7 +1354,8 @@ def test_org_change_does_not_rotate_identity_before_gateway_accepts(
     assert store.active_org_id() == "org-1"
 
 
-def test_org_change_switches_marker_before_local_ledger(monkeypatch, tmp_path: Path):
+def test_org_change_switches_marker_before_local_ledger(authorized_wisdom_token, monkeypatch, tmp_path: Path):
+    authorized_wisdom_token("org-2")
     skills = tmp_path / "skills"
     monkeypatch.setattr("hermes_wisdom.service.get_skills_dir", lambda: skills)
     store = WisdomStore(tmp_path / "state")
@@ -1363,8 +1385,9 @@ def test_approval_requires_a_complete_review_receipt(tmp_path: Path):
 
 
 def test_edit_creates_a_rescanned_successor_and_invalidates_old_receipt(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    monkeypatch.setattr(WisdomService, "_require_professionalism_review", lambda self, **kwargs: {"status": "pass", "checks": []})
     client = ReviewClient()
     service = _review_service(tmp_path, client=client)
     reviewed = service.review("draft-review", acknowledge=True)
@@ -1434,8 +1457,9 @@ def test_edit_rejects_stale_hashes_and_incomplete_package(tmp_path: Path):
 
 
 def test_edit_never_uses_the_browser_draft_id_as_a_filesystem_segment(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    monkeypatch.setattr(WisdomService, "_require_professionalism_review", lambda self, **kwargs: {"status": "pass", "checks": []})
     client = ReviewClient()
     store = WisdomStore(tmp_path / "state")
     service = WisdomService(store=store, client=client)
@@ -1544,8 +1568,9 @@ def test_successful_approval_consumes_receipt_and_replay_is_denied(tmp_path: Pat
 
 
 def test_setup_rejects_an_unsafe_org_path_before_writing_marker(
-    monkeypatch, tmp_path: Path
+    authorized_wisdom_token, monkeypatch, tmp_path: Path
 ):
+    authorized_wisdom_token("../other-org")
     skills = tmp_path / "skills"
     monkeypatch.setattr("hermes_wisdom.service.get_skills_dir", lambda: skills)
     service = WisdomService(
@@ -1665,7 +1690,7 @@ def test_command_home_does_not_read_remote_collections_when_status_is_degraded(
 
 
 def test_status_distinguishes_authentication_failure_from_plane_unavailability(
-    tmp_path: Path,
+    authorized_wisdom_token, tmp_path: Path,
 ):
     class AuthenticationFailureClient:
         def capability(self):

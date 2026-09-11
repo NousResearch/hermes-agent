@@ -143,6 +143,13 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  // Keep the response profile-keyed so a profile switch fails closed before
+  // its first request settles. Positive responses are also bounded by exp.
+  const [wisdomEntitlement, setWisdomEntitlement] = useState<{
+    scope: { profile: string };
+    entitled: boolean;
+    expiresAt: number | null;
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"skills" | "toolsets" | "hub" | "collective">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
@@ -165,6 +172,8 @@ export default function SkillsPage() {
   const {
     profile: selectedProfile,
   } = useProfileScope();
+  // A return visit must not reuse the previous visit's successful probe.
+  const wisdomScope = useMemo(() => ({ profile: selectedProfile }), [selectedProfile]);
 
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
@@ -186,6 +195,51 @@ export default function SkillsPage() {
       cancelled = true;
     };
   }, [selectedProfile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const schedulePoll = () => {
+      pollTimer = setTimeout(probe, 15_000);
+    };
+    const probe = () => {
+      api
+        .getWisdomEntitlement(selectedProfile || undefined)
+        .then((result) => {
+          if (cancelled) return;
+          clearTimeout(expiryTimer);
+          const expiresAt = typeof result.expires_at === "number" ? result.expires_at : null;
+          const entitled =
+            result.entitled === true && expiresAt !== null && expiresAt * 1000 > Date.now();
+          setWisdomEntitlement({ scope: wisdomScope, entitled, expiresAt });
+          if (entitled) {
+            expiryTimer = setTimeout(
+              () =>
+                !cancelled &&
+                setWisdomEntitlement({ scope: wisdomScope, entitled: false, expiresAt }),
+              Math.min(expiresAt * 1000 - Date.now(), 2_147_483_647),
+            );
+          }
+        })
+        // A failed recheck replaces, rather than preserves, prior positive data.
+        .catch(() =>
+          !cancelled &&
+          setWisdomEntitlement({ scope: wisdomScope, entitled: false, expiresAt: null }),
+        )
+        .finally(() => !cancelled && schedulePoll());
+    };
+
+    probe();
+    return () => {
+      cancelled = true;
+      clearTimeout(pollTimer);
+      clearTimeout(expiryTimer);
+    };
+  }, [selectedProfile, wisdomScope]);
+  const wisdomEntitled =
+    wisdomEntitlement?.scope === wisdomScope && wisdomEntitlement.entitled === true;
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -442,15 +496,17 @@ export default function SkillsPage() {
                     setSearch("");
                   }}
                 />
-                <PanelItem
-                  icon={Sparkles}
-                  label={t.skills.wisdom.tab}
-                  active={view === "collective"}
-                  onClick={() => {
-                    setView("collective");
-                    setSearch("");
-                  }}
-                />
+                {wisdomEntitled && (
+                  <PanelItem
+                    icon={Sparkles}
+                    label={t.skills.wisdom.tab}
+                    active={view === "collective"}
+                    onClick={() => {
+                      setView("collective");
+                      setSearch("");
+                    }}
+                  />
+                )}
               </div>
 
               {view === "skills" &&
@@ -595,7 +651,7 @@ export default function SkillsPage() {
                 )}
               </CardContent>
             </Card>
-          ) : view === "collective" ? (
+          ) : view === "collective" && wisdomEntitled ? (
             <CollectiveWisdomPanel profile={selectedProfile || undefined} />
           ) : view === "toolsets" ? (
             /* Toolsets grid */

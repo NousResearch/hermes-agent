@@ -50,8 +50,12 @@ async def schedule(
     from hermes_wisdom.service import WisdomService
 
     def register():
+        from hermes_wisdom.entitlement import local_work_allowed
+
         service = WisdomService()
         service.require_setup()
+        if not local_work_allowed(service.store):
+            raise PackagePolicyError("Wisdom entitlement unavailable")
         org = service.store.active_org_id()
         mediation = WisdomMediation(service)
         mediation.queue.register_session(
@@ -98,9 +102,13 @@ async def schedule(
             history = list(getattr(agent, "_session_messages", None) or [])
 
         def prepare():
+            from hermes_wisdom.entitlement import local_work_allowed
+
             service = WisdomService()
             mediation = WisdomMediation(service)
             org = service.store.active_org_id()
+            if not local_work_allowed(service.store):
+                return org, []
             mediation.queue.register_session(
                 org,
                 session_key=key,

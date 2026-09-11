@@ -22,6 +22,7 @@ import {
   getSession,
   getSessionMessages,
   getStatus,
+  getWisdomEntitlement,
   getWisdomMute,
   LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
@@ -99,6 +100,16 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenNthCalledWith(3, expect.objectContaining({
       path: '/api/wisdom/mute/choose', method: 'POST', body: { control_id: controlId, duration: null }
     }))
+  })
+
+  it('reads Wisdom entitlement from the dedicated scoped endpoint', async () => {
+    const scope = { connectionId: 'source-a', profile: 'worker' }
+
+    await getWisdomEntitlement(scope)
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ ...scope, path: '/api/wisdom/entitlement' })
+    )
   })
 
   it('uses a longer timeout for the all-profile session list', async () => {

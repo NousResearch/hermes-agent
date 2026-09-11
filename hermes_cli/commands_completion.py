@@ -281,6 +281,11 @@ class SlashCommandCompleter(Completer):
         self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
+        from hermes_cli.commands import command_available, resolve_command
+
+        command = resolve_command(slash_command)
+        if command is not None and not command_available(command):
+            return False
         try:
             return self._command_filter is None or bool(self._command_filter(slash_command))
         except Exception:

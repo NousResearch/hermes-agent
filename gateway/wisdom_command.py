@@ -22,6 +22,7 @@ from hermes_wisdom.client import (
     WisdomValidationError,
 )
 from hermes_wisdom.package import PackagePolicyError
+from hermes_wisdom.entitlement import require_entitlement
 from hermes_wisdom.consent import public_plan
 from hermes_wisdom.review_presentation import (
     aggregate_review_text,
@@ -362,6 +363,9 @@ class WisdomCommandController:
         _navigation_history: tuple[_NavigationTarget, ...] = (),
     ) -> WisdomView:
         keyword, args = self.parse(raw_args)
+        # Setup must be reachable after switching to another entitled team;
+        # its service operation replaces the previous verified installation.
+        require_entitlement(None if keyword in {"setup", "status", "home", "help"} else context.organization_id)
         target = _NavigationTarget("command", {"raw_args": raw_args.strip()})
         if keyword == "action":
             if len(args) != 1:
@@ -533,8 +537,11 @@ class WisdomCommandController:
         service: WisdomService,
         context: WisdomCommandContext,
     ) -> WisdomView:
+        require_entitlement()
         value = CALLBACK_TOKENS.resolve(token, context, consume=False)
         operation, args = value.operation, value.arguments
+        if operation not in {"setup", "setup_confirm", "status", "home", "help"}:
+            require_entitlement(context.organization_id)
         if operation in {"install_apply", "update_apply"} and (
             args.get("review_deadline", 0) <= time.monotonic()
         ):
@@ -833,7 +840,6 @@ class WisdomCommandController:
         if (
             not status.get("capability_advertised", True)
             or not status.get("entitled", True)
-            or status.get("dogfood_admin_claim") is False
         ):
             return WisdomView(
                 "Collective Wisdom access is not enabled",

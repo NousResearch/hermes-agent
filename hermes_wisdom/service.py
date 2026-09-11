@@ -397,6 +397,10 @@ class WisdomService:
     def local_candidate_events(
         self, *, session_id: str | None = None
     ) -> list[dict[str, Any]]:
+        from .entitlement import local_work_allowed
+
+        if not local_work_allowed(self.store):
+            return []
         self.store.reconcile_candidate_events()
         events = self.store.local_events(kind="wisdom.candidate", session_id=session_id)
         organization_name = self.organization_display_name()
@@ -409,8 +413,9 @@ class WisdomService:
         self, *, session_id: str, surface: str
     ) -> list[dict[str, Any]]:
         from .mediation import delivery_mode
+        from .entitlement import local_work_allowed
 
-        if delivery_mode() == "agent":
+        if not local_work_allowed(self.store) or delivery_mode() == "agent":
             return []
         self.store.reconcile_candidate_events()
         events = self.store.pending_surface_events(
@@ -550,28 +555,27 @@ class WisdomService:
             raise PackagePolicyError(
                 "Collective Wisdom is not set up for this profile; run `hermes wisdom setup` first"
             )
-        try:
-            token_org_id = self.client.display_org_id
-        except Exception:
-            # Resolving credentials above may just have persisted revocation.
-            # Do not turn that terminal result into permission to work offline.
-            reject_revoked_account(self.store)
-            # The last server-verified org remains usable offline. Gateway is
-            # authoritative whenever a network operation is attempted.
-            return
+        from .entitlement import current_entitlement, require_entitlement
+
+        token_org_id = current_entitlement().get("org_id")
         if token_org_id and token_org_id != active_org_id:
             raise PackagePolicyError(
                 "the authenticated organization changed; rerun `hermes wisdom setup` before using Collective Wisdom"
             )
+        require_entitlement(active_org_id)
 
     def setup(self, *, disclosure_accepted: bool = False) -> dict[str, Any]:
         if not disclosure_accepted:
             raise PackagePolicyError(
                 "setup requires explicit acceptance of the local telemetry and private-draft disclosure"
             )
+        from .entitlement import require_entitlement
+
+        require_entitlement()
         checkpoint = self.store.feed_checkpoint()
         capability = self.client.capability()
         org_id = self.client.display_org_id
+        require_entitlement(org_id)
         if not org_id:
             raise WisdomValidationError(
                 "team organization identity is missing from the current token"
@@ -731,7 +735,11 @@ class WisdomService:
         return recovered
 
     def status(self) -> dict[str, Any]:
+        from .entitlement import current_entitlement, require_entitlement
+
+        entitlement = current_entitlement()
         try:
+            require_entitlement()
             client = self.client
             live = True
             error_kind = None
@@ -785,7 +793,7 @@ class WisdomService:
             "error": None if live else error,
             "error_kind": error_kind,
             "capability_advertised": "wisdom" in (capability.get("features") or []),
-            "entitled": "wisdom:read" in scopes,
+            "entitled": "wisdom:read" in entitlement.get("scopes", ()),
             "display_scopes": scopes,
             "dogfood_admin_claim": admin_gate,
             "installation_id": installation_id,
@@ -862,6 +870,9 @@ class WisdomService:
         return {"editorial_name": None, "editorial_description": None}
 
     def scan_candidates(self) -> list[dict[str, Any]]:
+        from .entitlement import require_entitlement
+
+        require_entitlement(self.store.active_org_id())
         candidates: list[dict[str, Any]] = []
         qualified = {
             (str(event["skill_id"]), str(event["content_hash"])): event
@@ -2290,7 +2301,6 @@ class WisdomService:
             or not status["gateway_available"]
             or not status["capability_advertised"]
             or not status["entitled"]
-            or not status["dogfood_admin_claim"]
         ):
             return {"status": status}
         self.require_setup()

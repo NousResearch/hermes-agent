@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .consent import ConsentActor, WisdomConsent
 from .contract import author_description_hash
+from .entitlement import local_work_allowed
 from .client import WisdomNotFound
 from .mediation_store import MediationStore
 from .preferences import WisdomPreferences, suppression_key
@@ -220,6 +221,8 @@ class WisdomMediation:
         # Consent can enqueue a preference after its assessment was delivered.
         # Reconcile it even when no new recommendation needs assessment.
         WisdomPreferences(self.service, clock=self.queue.clock).flush(org)
+        if not local_work_allowed(self.service.store):
+            return org
         from .weekly_queue import enqueue_weekly_review
 
         enqueue_weekly_review(self.service)
@@ -534,6 +537,10 @@ class WisdomMediation:
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
         jobs = [item["assessment"] for item in items]
+        if not local_work_allowed(self.service.store):
+            for job in jobs:
+                self.queue.defer_for_preferences(org, job, 0)
+            return []
         if delivery_mode() != "agent":
             for job in jobs:
                 if job["reference"].get("user_requested") is not True:
@@ -588,6 +595,8 @@ class WisdomMediation:
         from .setup_queue import setup_notice_current
 
         self.service.require_setup()
+        if not local_work_allowed(self.service.store):
+            return False
         if delivery_mode() != "agent" and any(
             item["assessment"]["reference"].get("user_requested") is not True
             for item in items
@@ -627,6 +636,8 @@ class WisdomMediation:
 
     def qualification_advice(self, org: str, job: dict[str, Any]) -> dict[str, Any]:
         """Review a local contribution, never its usefulness as an installation."""
+        if not local_work_allowed(self.service.store):
+            raise PermissionError("Wisdom entitlement unavailable")
         reference = job["reference"]
         event, skill_id, content_hash, name = self.service._candidate_event_context(
             reference["event_id"]
@@ -645,6 +656,8 @@ class WisdomMediation:
                 skill_id=skill_id, content_hash=content_hash
             )
             result = review.result()
+        if not local_work_allowed(self.service.store):
+            raise PermissionError("Wisdom entitlement changed during review")
         if not isinstance(result, dict) or result.get("status") not in {
             "pass", "advisory", "unavailable"
         }:
@@ -680,6 +693,8 @@ class WisdomMediation:
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
         self.flush_delivery(org)
+        if not local_work_allowed(self.service.store):
+            return []
         claimed = self.queue.claim(
             org, actor.session_key, requested_only=delivery_mode() != "agent",
             allow_model_work=bool(runtime.get("model") and runtime.get("provider")),
@@ -810,7 +825,7 @@ class WisdomMediation:
     def activity(self) -> dict[str, Any]:
         org = self.service.store.active_org_id()
         mode = delivery_mode()
-        if not org:
+        if not org or not local_work_allowed(self.service.store):
             return {"mode": "fixed", "assessments": [], "interactions": []}
         assessments = [
             row for row in self.queue.assessments(org)

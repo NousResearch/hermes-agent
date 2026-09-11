@@ -27,6 +27,9 @@ async def test_idle_workers_respect_copy_and_model_availability(tmp_path, monkey
     from hermes_wisdom.mediation_store import MediationStore
     from hermes_wisdom.store import WisdomStore
 
+    monkeypatch.setattr("hermes_wisdom.entitlement.local_work_allowed", lambda _store: True)
+    monkeypatch.setattr("hermes_wisdom.mediation.local_work_allowed", lambda _store: True)
+
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")
     actor = ConsentActor("session", surface, "local-user" if surface == "local" else "user",
@@ -549,6 +552,8 @@ async def test_scheduler_commits_receipt_or_uncertainty_to_real_ledger(
     from hermes_wisdom.delivery_outbox import DeliveryOutbox
     from hermes_wisdom.mediation_store import MediationStore
     from hermes_wisdom.store import WisdomStore
+
+    monkeypatch.setattr("hermes_wisdom.entitlement.local_work_allowed", lambda _store: True)
 
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")

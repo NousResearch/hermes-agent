@@ -23,6 +23,13 @@ export interface WisdomReviewCheck {
   provenance?: { kind: 'agent_assessed'; model: null | string; provider: null | string }
 }
 
+export interface WisdomEntitlement {
+  entitled: boolean
+  org_id: null | string
+  scopes: string[]
+  expires_at: null | number
+}
+
 export interface WisdomStatus {
   configured: boolean
   setup_required_reason?: 'not_configured' | 'organization_changed' | null
@@ -353,6 +360,9 @@ const request = <T>(
   })
 
 export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> => request('/api/wisdom/status', profile)
+export const getWisdomEntitlement = (profile?: ProfileScope): Promise<WisdomEntitlement> =>
+  request('/api/wisdom/entitlement', profile)
+
 
 export const getWisdomSync = (profile?: ProfileScope): Promise<WisdomSyncSnapshot> =>
   request('/api/wisdom/sync', profile)

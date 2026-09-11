@@ -10,6 +10,7 @@ class CLIWisdomMixin:
             render_local_view,
         )
         from hermes_constants import get_hermes_home
+        from hermes_wisdom.entitlement import require_entitlement
         from hermes_wisdom.service import WisdomService
 
         parts = cmd_original.split(None, 1)
@@ -19,6 +20,7 @@ class CLIWisdomMixin:
             raw_args = f"install {raw_args}".strip()
 
         try:
+            require_entitlement()
             service = WisdomService()
             context = WisdomCommandContext(
                 user_id="local-user",

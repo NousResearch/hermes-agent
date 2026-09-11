@@ -20,12 +20,14 @@ from hermes_wisdom.mediation_view import advice_view, interaction_view, resolve_
 from hermes_wisdom.service import WisdomService
 from hermes_wisdom.store import WisdomStore
 from tests.wisdom.test_service import InstallClient, _install_service
+from tests.wisdom.entitlement_fixtures import authorized_wisdom_token_fixture
 from tools import wisdom_tool  # noqa: F401 - real tool registration
 from tools.registry import registry
 
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch, request):
+    authorized_wisdom_token_fixture(monkeypatch)
     import hermes_cli.config as config
     from tools.approval import register_gateway_notify, resolve_gateway_approval, unregister_gateway_notify
 

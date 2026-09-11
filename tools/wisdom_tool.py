@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.registry import registry
+from tools.registry import no_cache_check_fn, registry
 from hermes_wisdom.setup_execution import SetupStep
 
 
@@ -28,11 +28,13 @@ class Presentation(Target):
     explanation: str = Field(min_length=1, max_length=600)
 
 
+@no_cache_check_fn
 def available() -> bool:
     from hermes_wisdom.service import _config
+    from hermes_wisdom.entitlement import is_entitled
 
     config = _config()
-    return config.get("enabled") is True
+    return config.get("enabled") is True and is_entitled()
 
 
 def _reference(service, target: Target) -> dict:

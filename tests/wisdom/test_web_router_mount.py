@@ -25,6 +25,7 @@ def client(monkeypatch):
 
 @pytest.mark.parametrize("method,path", [
     ("GET", "/api/wisdom/status"),
+    ("GET", "/api/wisdom/entitlement"),
     ("GET", "/api/wisdom/sync"),
     ("POST", "/api/wisdom/sync/retry"),
     ("GET", "/api/wisdom/candidates"),
@@ -42,6 +43,68 @@ def test_wisdom_routes_require_dashboard_auth(client, monkeypatch, method, path)
 
     monkeypatch.setattr(wisdom_routes, "_run_wisdom", forbidden)
     assert client.request(method, path).status_code == 401
+
+
+
+def test_entitlement_probe_is_local_profile_scoped_and_does_not_construct_service(
+    client, monkeypatch, tmp_path
+):
+    home = tmp_path / "research"
+    home.mkdir()
+    seen = []
+
+    monkeypatch.setattr(web_server_profiles, "_resolve_profile_dir", lambda _: home)
+    monkeypatch.setattr(
+        "hermes_wisdom.entitlement.current_entitlement",
+        lambda: seen.append(str(get_hermes_home())) or {
+            "org_id": "org-1",
+            "scopes": ("wisdom:read",),
+            "expires_at": 4_000_000_000,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_wisdom.service.WisdomService",
+        lambda: pytest.fail("entitlement probe constructed WisdomService"),
+    )
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+    response = client.get("/api/wisdom/entitlement", params={"profile": "research"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "entitled": True,
+        "org_id": "org-1",
+        "scopes": ["wisdom:read"],
+        "expires_at": 4_000_000_000,
+    }
+    assert seen == [str(home)]
+
+def test_entitlement_probe_derives_denial_and_metadata_from_one_snapshot(
+    client, monkeypatch
+):
+    calls = 0
+
+    def snapshot():
+        nonlocal calls
+        calls += 1
+        return {
+            "org_id": "org-1",
+            "scopes": ("other:scope",),
+            "expires_at": 4_000_000_000,
+        }
+
+    monkeypatch.setattr("hermes_wisdom.entitlement.current_entitlement", snapshot)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+    response = client.get("/api/wisdom/entitlement")
+
+    assert response.json() == {
+        "entitled": False,
+        "org_id": "org-1",
+        "scopes": ["other:scope"],
+        "expires_at": 4_000_000_000,
+    }
+    assert calls == 1
 
 
 def test_mounted_review_and_final_confirmation_preserve_package_and_policy(client, monkeypatch):
@@ -88,6 +151,8 @@ def test_mounted_review_and_final_confirmation_preserve_package_and_policy(clien
 
 
 def test_profile_scope_is_preserved_through_real_worker_dispatch(client, monkeypatch, tmp_path):
+    from tests.wisdom.local_auth import authorize_local
+    authorize_local(monkeypatch)
     homes = {name: tmp_path / name for name in ("research", "personal")}
     for home in homes.values():
         home.mkdir()

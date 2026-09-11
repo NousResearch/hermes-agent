@@ -146,6 +146,7 @@ def _custom_provider_ssl_context(base_url: str):
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_catalog_cache_source_mtime = 0.0
 
 # The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
 # picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
@@ -164,6 +165,31 @@ def _openrouter_catalog_disk_path() -> Path:
     from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
+
+
+def _model_catalog_disk_mtime() -> float:
+    """Return the manifest-cache mtime used to invalidate derived picker data."""
+    try:
+        from hermes_cli.model_catalog import _cache_path
+        return _cache_path().stat().st_mtime
+    except (OSError, AttributeError, ImportError):
+        return 0.0
+
+
+def invalidate_openrouter_catalog_cache(*, remove_disk: bool = False) -> None:
+    """Drop the derived OpenRouter picker cache after the source manifest changes.
+
+    ``hermes update`` seeds ``model_catalog.json`` from the checkout. Without clearing this
+    second-level cache, a running process can keep serving the pre-update model list indefinitely.
+    """
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_source_mtime
+    _openrouter_catalog_cache = None
+    _openrouter_catalog_cache_source_mtime = 0.0
+    if remove_disk:
+        try:
+            _openrouter_catalog_disk_path().unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("openrouter curated catalog invalidation failed: %s", exc)
 
 
 def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
@@ -190,6 +216,32 @@ def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
             {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
+
+
+def _openrouter_fallback_catalog() -> list[tuple[str, str]]:
+    """Current curated floor used when OpenRouter's catalog request is unavailable."""
+    try:
+        from hermes_cli.model_catalog import get_curated_openrouter_models
+        remote = get_curated_openrouter_models()
+    except Exception:
+        remote = None
+    return list(remote) if remote else list(OPENROUTER_MODELS)
+
+
+def _merge_openrouter_catalog_entries(
+    primary: list[tuple[str, str]], secondary: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Merge catalog rows by model id, preserving the primary row's label and order."""
+    merged = list(primary)
+    seen = {str(model).lower() for model, _ in merged}
+    for model, label in secondary:
+        key = str(model).lower()
+        if key not in seen:
+            seen.add(key)
+            merged.append((model, label))
+    return merged
+
+
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -543,31 +595,43 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_source_mtime
 
+    source_mtime = _model_catalog_disk_mtime()
+    fallback = _openrouter_fallback_catalog()
     if _openrouter_catalog_cache is not None and not force_refresh:
-        return list(_openrouter_catalog_cache)
+        if source_mtime == 0.0 or source_mtime == _openrouter_catalog_cache_source_mtime:
+            # A refreshed manifest may contain a newly launched model while this process's
+            # filtered live catalog is still older. Curated rows are the safe floor; stale live
+            # rows are retained only as extras.
+            return _merge_openrouter_catalog_entries(_openrouter_catalog_cache, fallback)
+        # The checkout/update seeded a newer manifest while this process was alive.
+        invalidate_openrouter_catalog_cache()
 
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
     if not force_refresh:
         disk = _read_openrouter_catalog_disk()
-        if disk:
-            _openrouter_catalog_cache = disk
-            return list(disk)
+        disk_path = _openrouter_catalog_disk_path()
+        try:
+            disk_is_newer_than_manifest = disk_path.stat().st_mtime >= source_mtime
+        except OSError:
+            disk_is_newer_than_manifest = False
+        if disk and disk_is_newer_than_manifest:
+            merged = _merge_openrouter_catalog_entries(disk, fallback)
+            _openrouter_catalog_cache = merged
+            _openrouter_catalog_cache_source_mtime = source_mtime
+            return list(merged)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
-    try:
-        from hermes_cli.model_catalog import get_curated_openrouter_models
-        remote = get_curated_openrouter_models()
-    except Exception:
-        remote = None
-    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(_openrouter_catalog_cache or fallback)
+        # A rate-limited or unreachable OpenRouter catalog is not permission to resurrect a
+        # partial process/disk cache. The current curated floor contains newly launched models;
+        # keep older live-only rows as extras without letting them suppress that floor.
+        return _merge_openrouter_catalog_entries(_openrouter_catalog_cache or [], fallback)
     live_items, live_by_id = live
 
     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
@@ -593,10 +657,11 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        return list(_openrouter_catalog_cache or fallback)
+        return _merge_openrouter_catalog_entries(_openrouter_catalog_cache or [], fallback)
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     _openrouter_catalog_cache = curated
+    _openrouter_catalog_cache_source_mtime = _model_catalog_disk_mtime()
     _write_openrouter_catalog_disk(curated)
     return list(curated)
 
@@ -1668,8 +1733,20 @@ def cached_provider_model_ids(
             return list(entry["models"])
         # Empty native catalogs are authoritative only for the short native TTL — never served
         # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
-        # opens never block on serial /v1/models round-trips.
+        # opens never block on serial /v1/models round-trips. OpenRouter is the exception: its
+        # catalog is the user's primary cross-provider picker, and a stale row can omit a newly
+        # launched model while a transient upstream 429 leaves the background refresh unable to
+        # repair it. Do one bounded authoritative refresh in the caller for that provider; the
+        # OpenRouter resolver itself falls back to the curated catalog when /v1/models is rate-limited.
         if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            if normalized == "openrouter":
+                try:
+                    live = provider_model_ids(normalized, force_refresh=True)
+                except Exception:
+                    live = []
+                if live:
+                    _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+                    return list(live)
             _spawn_swr_refresh(normalized)
             return list(entry["models"])
 

@@ -20,7 +20,11 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool):
     import hermes_constants
     import gateway.status as status
 
-    (tmp_path / "profiles" / "beta").mkdir(parents=True)
+    profile_dir = tmp_path / "profiles" / "beta"
+    profile_dir.mkdir(parents=True)
+    # A named profile has its own configuration.  The empty directory used by
+    # this fixture is infrastructure-shaped and must not appear in the roster.
+    (profile_dir / "config.yaml").write_text("{}\n")
     (tmp_path / "config.yaml").write_text(
         f"gateway:\n  multiplex_profiles: {'true' if multiplex else 'false'}\n"
     )

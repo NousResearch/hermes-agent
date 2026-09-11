@@ -190,9 +190,39 @@ def _load_hermes_env() -> None:
             os.environ[key] = str(val)
 
 
+def _send_material_review_card(args: argparse.Namespace) -> int:
+    """Send one native card to the fixed review lane without starting a gateway."""
+    if any(getattr(args, key, None) is not None for key in ("message", "file", "subject")) or args.list_targets:
+        return _emit_result(json.dumps({"error": "--material-review-card cannot be mixed with text or --list"}),
+                            json_mode=args.json, quiet=args.quiet)
+    try:
+        import asyncio
+        from gateway.config import Platform, load_gateway_config
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from telegram import Bot
+        config = load_gateway_config().platforms.get(Platform.TELEGRAM)
+        if config is None or not config.enabled or not config.token:
+            raise ValueError
+        adapter = TelegramAdapter(config)
+        payload = json.loads(Path(args.material_review_card).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError
+        async def send():
+            async with Bot(token=config.token) as bot:
+                adapter._bot = bot
+                result = await adapter.send_material_review_card(payload)
+                return {"success": result.success, "message_id": result.message_id, "error": result.error}
+        result = asyncio.run(send())
+    except Exception:
+        result = {"error": "Material review card delivery failed"}
+    return _emit_result(json.dumps(result), json_mode=args.json, quiet=args.quiet)
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
+    if getattr(args, "material_review_card", None) is not None:
+        sys.exit(_send_material_review_card(args))
     if getattr(args, "list_targets", False):  # --list short-circuits everything else
         # `hermes send --list telegram` lands "telegram" in the `message` positional.
         exit_code = _list_targets(getattr(args, "message", None), json_mode=getattr(args, "json", False))
@@ -239,6 +269,8 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--material-review-card",), dict(metavar="FILE", default=None,
+                                         help="Send a material-review JSON card to the configured Telegram review lane.")),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),

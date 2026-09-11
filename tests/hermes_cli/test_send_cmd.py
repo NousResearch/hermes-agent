@@ -15,6 +15,80 @@ import pytest
 from hermes_cli import send_cmd
 
 
+def test_material_review_card_cli_uses_native_adapter_without_connecting(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from gateway.config import Platform, PlatformConfig
+    import telegram
+    import gateway.config
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    payload = {
+        "profile": "max", "title": "Unit 3", "filename": "unit.jpg",
+        "confidence": 0.94, "summary": "候選單字（1）", "candidate_count": 1,
+        "candidates": [{"term": "arrive", "definition": "抵達"}],
+        "approve_action_id": "opaque_a1", "reject_action_id": "opaque_r1",
+    }
+    config = PlatformConfig(enabled=True, token="fake-token", extra={
+        "material_review": {"reviewer_id": 12345, "chat_id": -10099, "thread_id": 37},
+    })
+    monkeypatch.setattr(gateway.config, "load_gateway_config", lambda: SimpleNamespace(
+        platforms={Platform.TELEGRAM: config},
+    ))
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    bot = AsyncMock()
+    bot.__aenter__.return_value = bot
+    bot.send_message.return_value = SimpleNamespace(message_id=42)
+    monkeypatch.setattr(telegram, "Bot", lambda **kwargs: bot)
+    connect = AsyncMock(side_effect=AssertionError("sender must not start a poller"))
+    monkeypatch.setattr(TelegramAdapter, "connect", connect)
+    card = tmp_path / "card.json"
+    card.write_text(json.dumps(payload), encoding="utf-8")
+    args = _parse(["--to", "telegram:-10099:37", "--material-review-card", str(card), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert json.loads(capsys.readouterr().out)["message_id"] == "42"
+    assert bot.send_message.call_args.kwargs["reply_markup"] is not None
+    assert bot.send_message.call_args.kwargs["message_thread_id"] == 37
+    assert connect.await_count == 0
+
+
+@pytest.mark.parametrize("extra", [["message"], ["--file", "text.txt"], ["--subject", "subject"], ["--list"]])
+def test_material_review_card_rejects_mixed_text_options(extra, monkeypatch):
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    args = _parse(["--to", "telegram", "--material-review-card", "card.json", *extra])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("target", ["telegram", "telegram:-10099", "telegram:-10088:37",
+                                    "telegram:-10099:38", "discord:-10099:37"])
+def test_material_review_card_rejects_other_targets_before_opening_bot(target, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from gateway.config import Platform, PlatformConfig
+    import gateway.config
+    import telegram
+
+    config = PlatformConfig(enabled=True, token="fake-token", extra={
+        "material_review": {"reviewer_id": 12345, "chat_id": -10099, "thread_id": 37},
+    })
+    monkeypatch.setattr(gateway.config, "load_gateway_config", lambda: SimpleNamespace(
+        platforms={Platform.TELEGRAM: config},
+    ))
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    def unexpected_bot(**kwargs):
+        pytest.fail("Mismatched review targets must not open a bot")
+    monkeypatch.setattr(telegram, "Bot", unexpected_bot)
+    card = tmp_path / "card.json"
+    card.write_text("{}")
+    args = _parse(["--to", target, "--material-review-card", str(card), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 2
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

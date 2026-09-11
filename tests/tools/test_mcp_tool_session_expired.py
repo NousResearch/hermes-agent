@@ -413,3 +413,33 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
     finally:
         mcp_tool._servers.pop(f"srv-{op_label}", None)
         mcp_tool._server_error_counts.pop(f"srv-{op_label}", None)
+
+
+@pytest.mark.parametrize('error_kind', ['closed', 'broken', 'eof', 'stale-pipe'])
+@pytest.mark.parametrize('wrapper', ['plain', 'group', 'cause', 'context'])
+def test_session_expiry_recognizes_wrapped_transport_failures(error_kind, wrapper):
+    from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    error = {'closed': ClosedResourceError, 'broken': BrokenResourceError,
+             'eof': EndOfStream, 'stale-pipe': lambda: RuntimeError('broken pipe')}[error_kind]()
+    if wrapper == 'group':
+        error = ExceptionGroup('request failed', [ValueError('other'), error])
+    elif wrapper in ('cause', 'context'):
+        outer = RuntimeError('MCP request failed')
+        setattr(outer, '__cause__' if wrapper == 'cause' else '__context__', error)
+        error = outer
+    assert _is_session_expired_error(error) is True
+
+
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_session_expiry_cycles_terminate_and_cancellation_wins(interrupted):
+    from anyio import ClosedResourceError
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    outer = RuntimeError('request failed')
+    transport = ClosedResourceError()
+    outer.__cause__ = transport
+    transport.__context__ = outer
+    error = ExceptionGroup('batch', [outer, InterruptedError('user cancelled')]) if interrupted else outer
+    assert _is_session_expired_error(error) is (not interrupted)

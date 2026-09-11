@@ -636,34 +636,6 @@ describe('attached shared-remote group turns (#96493)', () => {
     expect(primary.request).not.toHaveBeenCalled()
   })
 
-  it('never collapses a local registry profile onto the primary, even when the probe fails (#101422)', async () => {
-    const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'orchestrator')
-    setPrimaryGatewayConnection({ connectionId: 'local' })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-      getConnection: vi.fn(async (profile: null | string) =>
-        profile === 'orchestrator'
-          ? { port: 4242, profile: 'orchestrator', token: 'primary-token' }
-          : { port: 5151, profile, token: 'secondary-token' }
-      ),
-      getConnectionFor: vi.fn(async () => {
-        throw new Error('Timed out connecting to profile "default"')
-      }),
-      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-        ok: true as const,
-        wsUrl: `ws://${connectionId}/${profile}`
-      })),
-      touchBackend: vi.fn(async () => undefined)
-    }
-    await ensureGatewayForProfile('orchestrator')
-
-    await expect(requestGatewayForAgent('local', 'default', 'session.create', { title: 'Bot Chat' })).rejects.toThrow(
-      /Timed out connecting/
-    )
-
-    expect(primary.request).not.toHaveBeenCalled()
-  })
-
   it('reuses the primary when the shared-remote probe fails instead of dialing a ghost secondary', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
@@ -706,3 +678,46 @@ describe('attached shared-remote group turns (#96493)', () => {
     expect(secondaryGateways).toHaveLength(0)
   })
 })
+
+describe('local profile connection failures', () => {
+  it.each(['request', 'retain', 'open', 'ensure'] as const)(
+    '%s does not reuse a foreign primary when the local profile cannot be resolved',
+    async operation => {
+      const primary = makePrimary()
+
+      setPrimaryGateway(primary as never, 'secondary-profile')
+      setPrimaryGatewayConnection({ connectionId: 'local' })
+      const failure = new Error('Timed out connecting to profile "default"')
+
+      const getConnectionFor = vi.fn(async () => {
+        throw failure
+      })
+
+      ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+        getConnection: vi.fn(async () => ({ connectionId: 'local', port: 4242, profile: 'secondary-profile' })),
+        getConnectionFor,
+        touchBackend: vi.fn(async () => undefined)
+      }
+      await ensureGatewayForProfile('secondary-profile')
+
+      if (operation === 'ensure') {
+        expect(await ensureGatewayForAgent('local', 'default')).toBe(false)
+      } else {
+        const pending =
+          operation === 'request'
+            ? requestGatewayForAgent('local', 'default', 'session.create', { title: 'local-only' })
+            : operation === 'retain'
+              ? retainGatewayForAgent('local', 'default')
+              : openGatewayForAgent('local', 'default')
+
+        await expect(pending).rejects.toBe(failure)
+      }
+
+      expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'default' })
+      expect(primary.request).not.toHaveBeenCalled()
+      expect(secondaryGateways.every(gateway => gateway.request.mock.calls.length === 0)).toBe(true)
+      expect($gateway.get()).toBe(primary)
+    }
+  )
+})
+

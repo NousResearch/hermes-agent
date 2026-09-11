@@ -274,7 +274,9 @@ jobs:
           print(f'needs-json={json.dumps(compact)}')
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          # 'cancelled' counts as failed: cancel-in-progress concurrency cancels superseded runs, and
+# a cancelled required job must not produce a green gate (the ❌ icon already hinted at this).
+failed = [name for name, info in needs.items() if info['result'] in ('failure', 'cancelled')]
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'

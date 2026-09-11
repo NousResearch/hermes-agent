@@ -94,7 +94,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
   const untargetedStatus =
     props.toolName === 'manage_connections' &&
-    input.action === 'status' &&
+    (input.action ?? 'status') === 'status' &&
     !(Array.isArray(input.connectors) && input.connectors.length > 0)
 
   // Neither kind of part owns the live offer, so neither resolves an owner or

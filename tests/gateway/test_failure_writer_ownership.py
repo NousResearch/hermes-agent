@@ -115,3 +115,32 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
         db.close()
 
     asyncio.run(check())
+
+
+def test_context_overflow_error_reply_carries_no_partial_effect_notice():
+    """Overflow is a deterministic rejection (#107567); the reply must stay the /compact
+    guidance alone rather than inherit the indeterminate "actions may have run" warning."""
+    import asyncio
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    runner = object.__new__(GatewayRunner)
+
+    async def stop_typing(event, source):
+        return None
+
+    runner._hmwa_stop_typing_for_turn = stop_typing
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+    prepared = runner._PreparedTurn([{"role": "user", "content": "x"}] * 51, "", None, None, None, None)
+    err = RuntimeError("payload too large")
+    err.status_code = 400
+
+    reply = asyncio.run(runner._hmwa_agent_error_reply(
+        err, MessageEvent(text="x", source=source), source, None, "k", prepared,
+    ))
+
+    assert reply.startswith("⚠️ Session too large for the model's context window.")
+    assert reply.endswith("or /reset to start fresh.")
+    assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply

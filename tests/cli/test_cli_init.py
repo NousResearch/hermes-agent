@@ -86,12 +86,29 @@ class TestMaxTurnsResolution:
         cli = _make_cli(max_turns=25)
         assert cli.max_turns == 25
 
-
-
-
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
         assert cli_obj.max_turns == 77
+
+
+class TestStartupModelRouting:
+    def test_named_provider_keeps_its_declared_slash_model(self):
+        cli = _make_cli(config_overrides={
+            "model": {
+                "default": "deepseek/deepseek-v4-flash",
+                "provider": "custom:commandcode",
+            },
+            "providers": {
+                "deepseek": {"base_url": "https://api.deepseek.com/v1"},
+                "commandcode": {
+                    "base_url": "https://api.commandcode.ai/provider/v1",
+                    "models": {"deepseek/deepseek-v4-flash": {}},
+                },
+            },
+        })
+
+        assert cli.model == "deepseek/deepseek-v4-flash"
+        assert cli.requested_provider == "custom:commandcode"
 
 
 

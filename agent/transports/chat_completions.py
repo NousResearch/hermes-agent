@@ -8,6 +8,7 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
+from agent.gemini_schema import sanitize_gemini_tools
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
@@ -217,6 +218,20 @@ def _attr_or_model_extra(obj: Any, name: str) -> Any:
     return value
 
 
+def _is_gemini_chat_completions_model(model: str) -> bool:
+    """True for Gemini models reaching the chat-completions transport.
+
+    Applies to direct endpoints (Copilot, Google AI Studio /openai) and
+    aggregators (OpenRouter, Nous) that forward the model name unchanged.
+    The sanitizer only drops schema constructs Gemini rejects — it is safe
+    to apply even on tolerant aggregators that would accept the richer form.
+    """
+    m = (model or "").strip().lower()
+    if m.startswith("google/"):
+        m = m[7:]
+    return m.startswith("gemini-")
+
+
 def _dump_extra_content(extra: Any) -> Any:
     """Plain-dict form of a pydantic ``extra_content``; older pydantic lacks ``warnings=``, so retry without it."""
     if hasattr(extra, "model_dump"):
@@ -279,8 +294,13 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
     if params.get("timeout") is not None:
         api_kwargs["timeout"] = params["timeout"]
     if tools:
-        # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.
-        api_kwargs["tools"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools
+        # Moonshot/Kimi and Gemini each need a stricter JSON Schema flavor; rewriting here also
+        # covers aggregator routes (Nous, OpenRouter) that forward the model name unchanged.
+        if is_moonshot_model(model):
+            tools = sanitize_moonshot_tools(tools)
+        elif _is_gemini_chat_completions_model(model):
+            tools = sanitize_gemini_tools(tools)
+        api_kwargs["tools"] = tools
     return api_kwargs
 
 

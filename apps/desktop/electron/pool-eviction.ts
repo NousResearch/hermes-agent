@@ -15,6 +15,8 @@
 // subject to the idle reaper, just not to the process cap.
 
 export interface PoolEvictionEntry {
+  /** True while a renderer-owned prompt turn still holds this backend. */
+  activeTurn?: boolean
   lastActiveAt?: null | number
   process?: unknown
 }
@@ -55,4 +57,19 @@ export function selectPoolEvictions<K>(
   }
 
   return evictions
+}
+
+/**
+ * Pick one resident backend that a foreground dial may reclaim immediately.
+ *
+ * Keepalive freshness only says that a renderer socket is still interested in
+ * the backend; it does not say that the backend is doing work. Foreground
+ * opens need a way to rotate through warm, idle residents without killing a
+ * backend whose prompt turn is still leased. Unknown activity is protected:
+ * callers must publish `activeTurn: false` before an entry becomes eligible.
+ */
+export function selectForegroundPoolEviction<K>(entries: Iterable<[K, PoolEvictionEntry]>): K | undefined {
+  return [...entries]
+    .filter(([, entry]) => Boolean(entry.process) && entry.activeTurn === false)
+    .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))[0]?.[0]
 }

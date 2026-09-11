@@ -25,7 +25,8 @@ logger = logging.getLogger("agent.conversation_loop")
 @dataclass
 class ResponseUsageOutcome:
     """``compression_attempts`` is the (possibly rearmed-to-zero) budget counter;
-    ``rearmed`` tells the loop to also clear its preflight-block latch."""
+    ``rearmed`` tells the loop to clear its preflight-block latch, even when
+    the budget was already zero."""
 
     compression_attempts: int
     rearmed: bool = False
@@ -72,6 +73,14 @@ def record_response_usage(
     consume a pending compaction verdict. Returns the loop-visible outcome."""
     rearmed = False
     compressor = agent.context_compressor
+    # Consume exactly one successful response, even if usage is absent or unusable.
+    # Legacy engines retain their existing model-latch contract.
+    _completed_compaction_pending = bool(getattr(
+        compressor, "_pending_history_compaction_verdict",
+        getattr(compressor, "_verify_compaction_cleared_threshold", False),
+    ))
+    if hasattr(compressor, "_pending_history_compaction_verdict"):
+        compressor._pending_history_compaction_verdict = False
     # Count every completed provider attempt, including providers that omit usage.
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
@@ -110,11 +119,6 @@ def record_response_usage(
         "cache_write_tokens": canonical_usage.cache_write_tokens,
         "reasoning_tokens": canonical_usage.reasoning_tokens,
     }
-    # Capture the boundary latch before update_from_response() consumes it: only the real
-    # prompt count right after a compaction rearms the budget.
-    _completed_compaction_pending = bool(
-        getattr(compressor, "_verify_compaction_cleared_threshold", False)
-    )
     compressor.update_from_response(usage_dict)
     # Usage-anchored accounting: snapshot exact provider usage against the durable
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
@@ -142,9 +146,12 @@ def record_response_usage(
             max_compression_attempts,
         )
         compression_attempts = 0
-        # Confirmed recovery also clears the loop's stale insufficient-progress verdict
-        # (``_preflight_compression_blocked``), else a later pressure spike grows unchecked.
-        rearmed = True
+    # Recovery clears the preflight block even if fallback reset the attempts,
+    # or the only compaction was in the prologue (outside the loop budget).
+    rearmed = _loop_mod()._provider_confirms_completed_compaction(
+        completed_compaction_pending=_completed_compaction_pending,
+        prompt_tokens=prompt_tokens, threshold_tokens=_compression_threshold,
+    )
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)

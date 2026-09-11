@@ -418,8 +418,35 @@ def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adop
 
 
 
+def session_row_model_config(agent) -> dict:
+    """Resume-safe live metadata for first creation and compression children, retaining delegation flags."""
+    from agent.voice_turn_route import session_runtime_view
+    from tools.approval_yolo import with_session_yolo
+
+    agent = session_runtime_view(agent)
+    config = dict(getattr(agent, "_session_init_model_config", None) or {})
+    # Never project credentials or arbitrary request payloads into the session row.
+    for key in ("model", "provider", "reasoning_config", "max_iterations", "max_tokens"):
+        if hasattr(agent, key):
+            config[key] = getattr(agent, key)
+    if config.get("provider") == "custom":
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        config["provider"] = session_provider_identity(
+            config["provider"], getattr(agent, "requested_provider", None),
+            getattr(agent, "base_url", None), getattr(agent, "model", None),
+        )
+    if hasattr(agent, "service_tier"):
+        # None is an observed normal setting, not an unknown / inherited setting.
+        config["service_tier"] = agent.service_tier or "normal"
+    else:
+        config.pop("service_tier", None)
+    return with_session_yolo(config, agent.session_id)
+
+
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
+
+    _session_row_model_config = _forward("agent.session_persistence", "session_row_model_config")
 
     def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not

@@ -70,12 +70,8 @@ def _agent(context_length: int, *, caching: bool):
         tool_result_projection="auto",
         tool_result_projection_min_tokens=0,
         tool_result_projection_min_result_chars=4000,
-        tool_result_projection_min_reclaim_tokens=8192,
         tool_result_projection_tail_ratio=0.025,
-        tool_result_projection_tail_min_tokens=12000,
-        tool_result_projection_tail_max_tokens=32000,
-        tool_result_projection_tail_messages=8,
-        tool_result_projection_tail_max_messages=60,
+        protect_last_n=20,          # drives the tail's message floor/cap
     )
     agent = SimpleNamespace(context_compressor=compressor, _use_prompt_caching=caching)
     agent._tool_result_projection_state = ProjectionState()

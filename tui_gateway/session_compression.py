@@ -66,11 +66,6 @@ _COMPRESSION_INT_KEYS = (
     ("proactive_prune_min_reclaim_tokens", 4096, 0),
     ("tool_result_projection_min_tokens", 0, 0),
     ("tool_result_projection_min_result_chars", 4000, 0),
-    ("tool_result_projection_min_reclaim_tokens", 8192, 0),
-    ("tool_result_projection_tail_min_tokens", 12000, 0),
-    ("tool_result_projection_tail_max_tokens", 32000, 0),
-    ("tool_result_projection_tail_messages", 8, 0),
-    ("tool_result_projection_tail_max_messages", 60, 0),
     ("protect_last_n", 20, 0),
     ("min_tail_user_messages", 1, 1),
 )
@@ -111,8 +106,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
     cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
-    # tool_result_projection: absence restores the ctor default ("auto"); "off" is the kill switch.
-    default_projection = str(_compressor_ctor_default("tool_result_projection", "auto"))
+    # tool_result_projection: absence restores the ctor default ("off" — opt-in by design).
+    default_projection = str(_compressor_ctor_default("tool_result_projection", "off"))
     projection_mode = str(compression.get("tool_result_projection", default_projection) or default_projection).strip().lower()
     cc.tool_result_projection = projection_mode or default_projection
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:

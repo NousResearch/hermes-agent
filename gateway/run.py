@@ -4228,12 +4228,7 @@ class GatewayRunner(
         ("compression", "tool_result_projection"),
         ("compression", "tool_result_projection_min_tokens"),
         ("compression", "tool_result_projection_min_result_chars"),
-        ("compression", "tool_result_projection_min_reclaim_tokens"),
         ("compression", "tool_result_projection_tail_ratio"),
-        ("compression", "tool_result_projection_tail_min_tokens"),
-        ("compression", "tool_result_projection_tail_max_tokens"),
-        ("compression", "tool_result_projection_tail_messages"),
-        ("compression", "tool_result_projection_tail_max_messages"),
         ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))

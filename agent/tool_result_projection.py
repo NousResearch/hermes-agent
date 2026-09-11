@@ -22,32 +22,36 @@ without the loss:
 
 Invariants (each one has a test in ``tests/agent/test_tool_result_projection.py``):
 
-1. The canonical transcript is never modified. Only ``content`` of ``tool`` rows in the
+1. **The canonical transcript is never modified.** Only ``content`` of ``tool`` rows in the
    API copy changes; roles, order and ``tool_call_id`` are untouched.
-2. The full result is persisted to ``$HERMES_HOME/cache/spillover`` BEFORE the row is
-   projected, and a row whose write failed is left intact. A stub that points at nothing
-   is worse than the bytes it replaced.
-3. The newest messages keep their full results: a protected tail by token budget with a
-   message-count floor, so the working set is always in context.
-4. Errors, multimodal results, small results and results that declare
-   ``projection_safe: false`` are never projected.
-5. Projection is monotone and sticky: a row projected once stays projected for the rest
-   of the session, and its stub is a pure function of the row's own bytes. The wire
-   prefix is therefore byte-stable between passes — only committing a pass costs one
-   prompt-cache break.
-6. A pass commits only when it is worth the break, and the gates are measured on the rows
-   that are NEWLY eligible (``fresh``), not on the whole stale pile. A pile already
-   projected contributes nothing new, so charging it to the budget would let the frontier
-   advancing by one message authorize a cache break every single request. Fresh reclaim
-   must clear the trigger and ``min_reclaim_tokens`` and, on a caching route, cover the
-   region the rewrite invalidates — so each break has to be paid for by stale bytes that
-   arrived since the last one.
+2. **Recovery is confirmed, or the row keeps its bytes.** The full result is persisted to the
+   canonical spillover store first and the returned path is verified readable *by the agent* —
+   a host path on a host-side backend, a sandbox-visible path on a remote one. A row that
+   already carries a ``<persisted-output>`` block is projected only when its existing file
+   still verifies (the cache is pruned on a 24h schedule); otherwise its preview stays.
+3. **A protected verbatim tail** keeps the working set live: ``tail_ratio`` of the window
+   (floored), plus a message floor and cap derived from the existing ``protect_last_n`` knob.
+4. **Errors, multimodal results, small results, and structured results declaring
+   ``projection_safe: false`` are never projected.**
+5. **Monotone and sticky.** A row projected once stays projected and its stub is a pure
+   function of the row's own bytes, so the wire prefix is byte-stable between passes: only
+   committing a pass costs a prompt-cache break.
+6. **Two phases, and the commit cannot fail halfway.** Phase 1 discovers candidates and decides
+   on estimates without touching disk; phase 2 persists, verifies, and re-checks the economics
+   on what actually survived; then a single in-memory loop rewrites the wire. A declined pass
+   writes nothing, and an unexpected error leaves the request as the assembly produced it.
 
-Everything here is fail-open: any unexpected error leaves the request exactly as the rest
-of the assembly produced it.
+Row identity is ``(tool_call_id, content digest)`` — the same key for the dump file and for the
+stickiness set, because a bare ``tool_call_id`` is not unique (imported/merged history carries
+duplicates, and rows can have none at all).
 
-Not in scope: the iteration-summary path (``agent.chat_completion_helpers``) hand-builds its
-own already-compacted input and is intentionally untouched.
+The stub tells the model to read the archived file and deliberately does NOT suggest re-running
+the tool: the projection cannot know whether a call is idempotent, and
+``terminal("terraform apply")`` / ``git push`` / a payment POST must never be invited to replay
+because a result was archived.
+
+Not in scope: the iteration-summary path (``agent.chat_completion_helpers``) hand-builds its own
+already-compacted input and is intentionally untouched.
 """
 
 from __future__ import annotations
@@ -65,26 +69,21 @@ logger = logging.getLogger(__name__)
 # ``<persisted-output>``) so every pass that already understands those keeps working.
 PROJECTION_MARKER = "[tool-result archived]"
 
-# Defaults for a policy the caller did not configure (fresh compressor, bare agent in a
-# test, agent built before the config keys existed).
 DEFAULT_MIN_RESULT_CHARS = 4000
-DEFAULT_MIN_RECLAIM_TOKENS = 8192
-# Protected tail: the same shape as the compressor's "lean" tail (a clamped fraction of the
-# window), because protecting less than the working set is what makes a stub dangerous.
 DEFAULT_TAIL_RATIO = 0.025
-DEFAULT_TAIL_MIN_TOKENS = 12000
-DEFAULT_TAIL_MAX_TOKENS = 32000
-# Message-count floor (never protect fewer than this) and cap (never walk further, so a
-# session of tiny messages cannot turn the whole history into the tail).
-DEFAULT_TAIL_MESSAGES = 8
-DEFAULT_TAIL_MAX_MESSAGES = 60
-# Stale-payload trigger when ``min_tokens`` is left at 0 (auto). This is hysteresis against
-# churn, not the profitability test — that is the cache-break gate in ``_project``, which
-# compares the reclaim against the region the rewrite invalidates. So these are absolute
-# floors: a route with prompt caching pays for every pass with a cache break and needs a
-# bigger pile of stale bytes; a route without caching pays nothing extra and reclaims
-# eagerly. The floor is capped at a quarter of the window so it can never be unreachable
-# on a small-window model.
+DEFAULT_TAIL_FLOOR_TOKENS = 12_000
+# Message bounds for the tail. Deliberately NOT derived from ``compression.protect_last_n``:
+# that knob governs what a compaction summary keeps, and reusing its default (20) would put
+# most of a tool-heavy session inside the tail, leaving the pass nothing to reclaim. The floor
+# keeps the newest exchange verbatim; the cap only bounds the tiny-message case.
+DEFAULT_TAIL_FLOOR_MESSAGES = 8
+DEFAULT_TAIL_MESSAGE_CAP = 60
+
+# Stale-payload trigger when ``min_tokens`` is left at 0 (auto). It is both the hysteresis floor
+# against churn and the pass's minimum reclaim: a route with prompt caching pays for every pass
+# with a cache break, so it needs a bigger pile of stale bytes, while a route without caching
+# pays nothing extra and can reclaim eagerly. Capped at a quarter of the window so it is
+# reachable on a small-window model.
 _AUTO_MIN_TOKENS_UNCACHED = 16_384
 _AUTO_MIN_TOKENS_CACHED = 32_768
 _AUTO_MIN_TOKENS_FLOOR = 2_048
@@ -92,42 +91,50 @@ _AUTO_MIN_TOKENS_FLOOR = 2_048
 _ARGS_IN_STUB_MAX = 160
 _MAX_STATE_ROWS = 4096
 
-_MODES_OFF = {"off", "false", "disabled", "no", "0", "none"}
 _MODES_AUTO = {"auto", "on", "true", "enabled", "yes", "1"}
 
-# Result-text shapes that must keep their bytes: a bounded error body is cheap to re-send
-# and is exactly the kind of row a later turn reasons about.
-_ERROR_PREFIXES = ("error:", "[error]", "[tool error]", "traceback (most recent call last)")
+# Result shapes that must keep their bytes: a bounded error body is cheap to re-send and is
+# exactly the kind of row a later turn reasons about.
+_ERROR_PREFIXES = ("error:", "[error]", "[tool error]", "traceback (most recent call last):")
+
+
+@dataclass(frozen=True)
+class ProjectionKey:
+    """Identity of a projectable row: the call it belongs to AND the bytes it holds."""
+
+    tool_call_id: str
+    content_digest: str
+
+    def token(self) -> str:
+        return f"{self.tool_call_id or '-'}:{self.content_digest[:16]}"
+
+    def storage_key(self) -> str:
+        return f"{self.tool_call_id or 'tool_result'}_{self.content_digest[:16]}"
 
 
 @dataclass
 class ProjectionPolicy:
-    """Resolved knobs for one agent. ``min_tokens == 0`` means "derive from the window"."""
+    """Resolved knobs for one agent."""
 
-    enabled: bool = True
+    enabled: bool = False
     min_tokens: int = 0
     min_result_chars: int = DEFAULT_MIN_RESULT_CHARS
-    min_reclaim_tokens: int = DEFAULT_MIN_RECLAIM_TOKENS
     tail_ratio: float = DEFAULT_TAIL_RATIO
-    tail_min_tokens: int = DEFAULT_TAIL_MIN_TOKENS
-    tail_max_tokens: int = DEFAULT_TAIL_MAX_TOKENS
-    tail_messages: int = DEFAULT_TAIL_MESSAGES
-    tail_max_messages: int = DEFAULT_TAIL_MAX_MESSAGES
 
 
 @dataclass
 class ProjectionState:
-    """Per-agent sticky memory: the rows already projected (so a re-applied pass cannot
-    rewrite a prefix the provider has already cached)."""
+    """Per-agent sticky memory: rows already projected, so a re-applied pass cannot rewrite a
+    prefix the provider has already cached."""
 
     projected: Set[str] = field(default_factory=set)
     order: List[str] = field(default_factory=list)
 
-    def remember(self, tool_call_id: str) -> None:
-        if not tool_call_id or tool_call_id in self.projected:
+    def remember(self, token: str) -> None:
+        if not token or token in self.projected:
             return
-        self.projected.add(tool_call_id)
-        self.order.append(tool_call_id)
+        self.projected.add(token)
+        self.order.append(token)
         while len(self.order) > _MAX_STATE_ROWS:
             self.projected.discard(self.order.pop(0))
 
@@ -173,33 +180,20 @@ def _cfg_float(cc: Any, name: str, fallback: float) -> float:
 def resolve_policy(agent: Any) -> ProjectionPolicy:
     """Read the policy off the agent's compressor (the context-reclamation owner).
 
-    Absent attributes fall back to the module defaults, so an agent built before these
-    keys existed — or a bare test double — behaves like an unconfigured install instead
-    of blowing up the request.
+    Absent attributes fall back to the module defaults, so an agent built before these keys
+    existed — or a bare test double — behaves like an unconfigured install instead of blowing up
+    the request. The default is OFF: archiving old tool output is a semantic change to what the
+    model sees, so it ships opt-in until task-success parity is measured on real sessions.
     """
     cc = getattr(agent, "context_compressor", None)
-    mode = str(getattr(cc, "tool_result_projection", "auto") or "auto").strip().lower()
-    enabled = mode not in _MODES_OFF and mode in _MODES_AUTO
+    mode = str(getattr(cc, "tool_result_projection", "off") or "off").strip().lower()
     return ProjectionPolicy(
-        enabled=enabled,
+        enabled=mode in _MODES_AUTO,
         min_tokens=max(0, _cfg_int(cc, "tool_result_projection_min_tokens", 0)),
         min_result_chars=max(
             0, _cfg_int(cc, "tool_result_projection_min_result_chars", DEFAULT_MIN_RESULT_CHARS)
         ),
-        min_reclaim_tokens=max(
-            0, _cfg_int(cc, "tool_result_projection_min_reclaim_tokens", DEFAULT_MIN_RECLAIM_TOKENS)
-        ),
         tail_ratio=max(0.0, _cfg_float(cc, "tool_result_projection_tail_ratio", DEFAULT_TAIL_RATIO)),
-        tail_min_tokens=max(
-            0, _cfg_int(cc, "tool_result_projection_tail_min_tokens", DEFAULT_TAIL_MIN_TOKENS)
-        ),
-        tail_max_tokens=max(
-            0, _cfg_int(cc, "tool_result_projection_tail_max_tokens", DEFAULT_TAIL_MAX_TOKENS)
-        ),
-        tail_messages=max(0, _cfg_int(cc, "tool_result_projection_tail_messages", DEFAULT_TAIL_MESSAGES)),
-        tail_max_messages=max(
-            0, _cfg_int(cc, "tool_result_projection_tail_max_messages", DEFAULT_TAIL_MAX_MESSAGES)
-        ),
     )
 
 
@@ -214,6 +208,21 @@ def context_window_for(agent: Any, cc: Any = None) -> Optional[int]:
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
     return None
+
+
+def tail_bounds(
+    policy: ProjectionPolicy, window: Optional[int],
+) -> Tuple[int, int, int]:
+    """``(token_budget, message_floor, message_cap)`` for the protected verbatim tail.
+
+    Tokens: ``tail_ratio`` of the window, floored at ``DEFAULT_TAIL_FLOOR_TOKENS`` — the same
+    shape as the "lean" compaction tail, because protecting less than the working set is what
+    makes a stub dangerous. Messages: a small constant floor (the newest exchange stays
+    verbatim) and a cap, so a session of tiny messages cannot spend the whole history on the
+    walk.
+    """
+    window_tokens = int(policy.tail_ratio * window) if window else 0
+    return (max(DEFAULT_TAIL_FLOOR_TOKENS, window_tokens), DEFAULT_TAIL_FLOOR_MESSAGES, DEFAULT_TAIL_MESSAGE_CAP)
 
 
 def trigger_tokens(policy: ProjectionPolicy, window: Optional[int], cache_capable: bool) -> int:
@@ -232,9 +241,22 @@ def _estimate_tokens(messages: Sequence[Dict[str, Any]]) -> int:
     return estimate_messages_tokens_rough(list(messages))
 
 
-def tool_call_index(messages: Sequence[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
-    """``tool_call_id -> (tool name, raw arguments)`` from the assistant rows."""
-    index: Dict[str, Tuple[str, str]] = {}
+def content_digest(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+
+def key_for(msg: Dict[str, Any], content: str) -> ProjectionKey:
+    return ProjectionKey(str(msg.get("tool_call_id") or ""), content_digest(content))
+
+
+def tool_call_index(messages: Sequence[Dict[str, Any]]) -> Dict[str, List[Tuple[str, str]]]:
+    """``tool_call_id -> [(tool name, raw arguments), ...]`` in message order.
+
+    A list, not a single entry: two assistant calls can share an id, and a plain dict would let
+    the later one overwrite the earlier one's name/args so a stub could describe the wrong call.
+    Callers consume occurrences with :func:`take_call`.
+    """
+    index: Dict[str, List[Tuple[str, str]]] = {}
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
@@ -245,8 +267,16 @@ def tool_call_index(messages: Sequence[Dict[str, Any]]) -> Dict[str, Tuple[str, 
             if not call_id:
                 continue
             fn = call.get("function") or {}
-            index[call_id] = (str(fn.get("name") or "unknown"), str(fn.get("arguments") or ""))
+            index.setdefault(call_id, []).append(
+                (str(fn.get("name") or "unknown"), str(fn.get("arguments") or ""))
+            )
     return index
+
+
+def take_call(index: Dict[str, List[Tuple[str, str]]], msg: Dict[str, Any]) -> Tuple[str, str]:
+    """Consume the next recorded call for this row's id (occurrence order)."""
+    queue = index.get(str(msg.get("tool_call_id") or ""))
+    return queue.pop(0) if queue else ("unknown", "")
 
 
 def protected_tail_start(
@@ -254,21 +284,12 @@ def protected_tail_start(
 ) -> int:
     """Index of the first message inside the protected verbatim tail.
 
-    Walked from the end, bounded on BOTH sides so the boundary is predictable: at least
-    ``tail_messages`` newest messages and at most ``tail_max_messages`` are protected, and
-    the walk stops as soon as the token budget (``tail_ratio`` of the window, clamped to
-    ``tail_min_tokens``/``tail_max_tokens``) is spent. The cap is what keeps a session of
-    tiny messages from swallowing the whole history into the tail.
+    Walked from the end, bounded on both sides: at least the message floor and at most the
+    message cap are protected, and the walk stops as soon as the token budget is spent.
     """
     if not messages:
         return 0
-    budget = policy.tail_min_tokens
-    if window:
-        budget = max(budget, int(window * policy.tail_ratio))
-    # Cap only when it does not contradict a larger explicit floor (min > max keeps the min:
-    # protecting MORE than the cap is the safe side of this boundary).
-    if policy.tail_max_tokens and policy.tail_max_tokens >= policy.tail_min_tokens:
-        budget = min(budget, policy.tail_max_tokens)
+    budget, floor_messages, cap_messages = tail_bounds(policy, window)
     used = 0
     kept = 0
     start = len(messages)
@@ -276,9 +297,7 @@ def protected_tail_start(
         used += _estimate_tokens([messages[idx]])
         kept += 1
         start = idx
-        if kept >= policy.tail_messages and (
-            used >= budget or kept >= policy.tail_max_messages
-        ):
+        if kept >= floor_messages and (used >= budget or kept >= cap_messages):
             break
     return start
 
@@ -287,8 +306,6 @@ def _looks_like_error(content: str) -> bool:
     """Conservative error detector: JSON error envelopes, ``success: false``, text prefixes."""
     stripped = content.lstrip()
     if stripped[:1] in ("{", "["):
-        # Cheap key guard first, then a real parse: keeping a large error body verbatim
-        # costs little next to stubbing one the next turn needs back.
         if '"error"' in stripped or '"success"' in stripped:
             try:
                 parsed = json.loads(stripped)
@@ -320,58 +337,25 @@ def _is_multimodal(content: Any) -> bool:
 
 
 def build_stub(
-    *, tool_name: str, tool_args: str, content_len: int, line_count: int,
-    digest: str, recovery_path: str, already_persisted: bool,
+    *, tool_name: str, tool_args: str, content_len: int, line_count: int, digest: str,
+    recovery_path: str,
 ) -> str:
-    """The replacement row. A pure function of the row it replaces — byte-stable, so a
-    re-projection across turns cannot move the wire prefix."""
+    """The replacement row. A pure function of the row it replaces — byte-stable, so
+    re-projecting across turns cannot move the wire prefix.
+
+    The recovery instruction covers reading the archived file only. It must not invite a
+    replay: the projection cannot know whether a call is idempotent, and ``terraform apply``,
+    ``git push`` or a payment POST must never be suggested for re-execution because a result
+    was archived.
+    """
     args = tool_args if len(tool_args) <= _ARGS_IN_STUB_MAX else tool_args[:_ARGS_IN_STUB_MAX] + "…"
-    kind = "full output" if already_persisted else "full output kept on disk"
     return (
         f"{PROJECTION_MARKER} tool={tool_name} bytes={content_len} lines={line_count} sha256={digest}\n"
         f"args={args}\n"
-        f"{kind}: {recovery_path}\n"
-        "Read that file with read_file (offset/limit) — or re-run the tool — if this result is "
-        "needed again; its content is no longer in the conversation."
+        f"full output archived at: {recovery_path}\n"
+        "This result is no longer in the conversation. Read the archived file with read_file "
+        "(offset/limit) if its content is needed again."
     )
-
-
-def _recovery_path(content: str, tool_call_id: str) -> Optional[str]:
-    """Persist the row's bytes to the canonical spillover store; path, or None on failure."""
-    from tools.tool_result_storage import extract_persisted_path, store_spillover_content
-
-    existing = extract_persisted_path(content)
-    if existing:
-        # Already spilled once: the file is the canonical home, keep pointing at it.
-        return existing
-    return store_spillover_content(content, tool_call_id)
-
-
-def _stub_for(msg: Dict[str, Any], tool_name: str, tool_args: str) -> Optional[str]:
-    """Build the stub for one row, or None when it must keep its bytes (fail-closed)."""
-    content = msg.get("content")
-    if not isinstance(content, str) or not content or _is_multimodal(content):
-        return None
-    digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
-    # The store's filename is derived from the key and an existing file is reused, so the key
-    # must identify the BYTES and not just the call: a row without a tool_call_id, or two rows
-    # sharing one (imported/merged history), would otherwise point a stub at another row's
-    # content. Keying on the content digest makes a collision mean "same bytes".
-    store_key = f"{str(msg.get('tool_call_id') or '') or 'tool_result'}_{digest[:16]}"
-    path = _recovery_path(content, store_key)
-    if not path:
-        # Invariant 2: no recoverable home, no projection.
-        return None
-    stub = build_stub(
-        tool_name=tool_name,
-        tool_args=tool_args,
-        content_len=len(content),
-        line_count=content.count("\n") + 1,
-        digest=digest[:16],
-        recovery_path=path,
-        already_persisted="<persisted-output>" in content,
-    )
-    return stub if len(stub) < len(content) else None
 
 
 def is_candidate(msg: Any, policy: ProjectionPolicy) -> bool:
@@ -388,16 +372,55 @@ def is_candidate(msg: Any, policy: ProjectionPolicy) -> bool:
     return True
 
 
+# ── backend / env resolution ─────────────────────────────────────────────────
+
+
+def _backend_is_remote() -> bool:
+    """Whether the configured terminal backend runs the tools somewhere else (fail-soft)."""
+    try:
+        from tools.env_probe import (
+            _REMOTE_BACKENDS, _plugin_backend_is_remote, _resolve_terminal_backend,
+        )
+
+        backend = _resolve_terminal_backend()
+        return backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend)
+    except Exception:
+        logger.debug("Terminal backend resolution failed; assuming host-side", exc_info=True)
+        return False
+
+
+def _resolve_active_env(agent: Any):
+    """Best-effort live terminal env for this agent, or None."""
+    task_id = (
+        getattr(agent, "task_id", None) or getattr(agent, "_task_id", None)
+        or getattr(agent, "session_id", None)
+    )
+    if not task_id:
+        return None
+    try:
+        from tools.terminal_tool_lifecycle import get_active_env
+
+        return get_active_env(str(task_id))
+    except Exception:
+        logger.debug("Could not resolve an active terminal env", exc_info=True)
+        return None
+
+
+# ── the pass ─────────────────────────────────────────────────────────────────
+
+
 def project_stale_tool_results(
-    agent: Any, api_messages: List[Dict[str, Any]],
+    agent: Any, api_messages: List[Dict[str, Any]], *, env: Any = "auto",
 ) -> int:
     """Replace stale, large, recoverable tool results on the API copy with stubs.
 
-    Mutates ``api_messages`` in place (never the canonical transcript) and returns the
-    number of rows projected. Fail-open: any error leaves the request as it was.
+    Mutates ``api_messages`` in place (never the canonical transcript) and returns the number of
+    rows projected. ``env="auto"`` resolves the session's live terminal env; pass an explicit env
+    (or ``None``) to drive the remote-backend ladder directly. Fail-open: any unexpected error
+    leaves the request as the rest of the assembly produced it.
     """
     try:
-        return _project(agent, api_messages)
+        return _project(agent, api_messages, env)
     except Exception:
         logger.warning(
             "Tool-result projection failed; sending the unprojected transcript", exc_info=True,
@@ -405,7 +428,7 @@ def project_stale_tool_results(
         return 0
 
 
-def _project(agent: Any, api_messages: List[Dict[str, Any]]) -> int:
+def _project(agent: Any, api_messages: List[Dict[str, Any]], env: Any) -> int:
     if not api_messages:
         return 0
     policy = resolve_policy(agent)
@@ -414,98 +437,165 @@ def _project(agent: Any, api_messages: List[Dict[str, Any]]) -> int:
     cc = getattr(agent, "context_compressor", None)
     window = context_window_for(agent, cc)
     cache_capable = bool(getattr(agent, "_use_prompt_caching", False))
-    state = projection_state_for(agent)
+    if env == "auto":
+        env = _resolve_active_env(agent)
+    if _backend_is_remote() and env is None:
+        # A host path is no proof of readability inside Docker/SSH/Modal, and with no sandbox
+        # there is nothing to probe or copy into. Unconfirmed recovery = no projection.
+        logger.debug("Tool-result projection skipped: remote backend with no live env to verify against")
+        return 0
 
-    before_tokens = _estimate_tokens(api_messages)
+    state = projection_state_for(agent)
     tail_start = protected_tail_start(api_messages, policy, window)
     index = tool_call_index(api_messages)
 
-    # Dry run: pick the rows and build the stubs (which persists their bytes) before anything
-    # on the wire changes, so a gate that declines leaves the request untouched.
-    fresh: List[Tuple[int, str, int, int]] = []    # (idx, stub, old_tokens, new_tokens)
-    sticky: List[Tuple[int, str]] = []             # rows already projected: (idx, stub)
+    # ── phase 1: discovery + economics on estimates, no disk writes ───────────
+    planned: List[Dict[str, Any]] = []
+    sticky_plan: List[Dict[str, Any]] = []
     fresh_reclaim = 0
     for idx, msg in enumerate(api_messages):
-        already = isinstance(msg, dict) and str(msg.get("tool_call_id") or "") in state.projected
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, str) or not content:
+            continue
+        key = key_for(msg, content)
+        already = key.token() in state.projected
         if idx >= tail_start and not already:
-            # Inside the protected tail: only a row already projected there (invariant 5)
-            # may be touched.
+            # Inside the protected tail: only a row already projected there (invariant 5) may
+            # be touched.
             continue
         if not is_candidate(msg, policy):
             continue
-        tool_name, tool_args = index.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
-        stub = _stub_for(msg, tool_name, tool_args)
-        if stub is None:
-            continue
-        if already:
-            sticky.append((idx, stub))
+        tool_name, tool_args = take_call(index, msg)
+        estimate = build_stub(
+            tool_name=tool_name, tool_args=tool_args, content_len=len(content),
+            line_count=content.count("\n") + 1, digest=key.content_digest[:16],
+            recovery_path="/" + "x" * 48,
+        )
+        if len(estimate) >= len(content):
             continue
         old_tokens = _estimate_tokens([msg])
-        new_tokens = _estimate_tokens([{**msg, "content": stub}])
-        fresh.append((idx, stub, old_tokens, new_tokens))
-        fresh_reclaim += max(0, old_tokens - new_tokens)
-
-    # Stability first, unconditionally: a row already projected stays projected (invariant 5).
-    # Re-stubbing it restores the exact bytes the previous request sent, so it is never a new
-    # cache break, and deferring it would let a sliding tail un-stub a cached prefix.
-    for idx, stub in sticky:
-        api_messages[idx] = {**api_messages[idx], "content": stub}
-    replayed = len(sticky)
+        entry = {
+            "idx": idx, "msg": msg, "content": content, "key": key,
+            "tool_name": tool_name, "tool_args": tool_args,
+            "line_count": content.count("\n") + 1, "old_tokens": old_tokens, "estimate": estimate,
+        }
+        if already:
+            sticky_plan.append(entry)
+        else:
+            planned.append(entry)
+            fresh_reclaim += max(0, old_tokens - _estimate_tokens([{**msg, "content": estimate}]))
 
     trigger = trigger_tokens(policy, window, cache_capable)
-    if fresh_reclaim < trigger:
-        logger.debug(
-            "Tool-result projection idle: %s newly stale tokens below the %s trigger",
-            f"{fresh_reclaim:,}", f"{trigger:,}",
-        )
-        return replayed
-
-    if fresh_reclaim < policy.min_reclaim_tokens:
-        # Below the hysteresis floor: wait for a bigger pile rather than fragmenting the
-        # cache prefix for a marginal win.
-        logger.debug(
-            "Tool-result projection declined: reclaim %s below the %s minimum",
-            f"{fresh_reclaim:,}", f"{policy.min_reclaim_tokens:,}",
-        )
-        return replayed
-
-    first_index = fresh[0][0]
-    after_tokens = before_tokens - fresh_reclaim
-    if cache_capable:
-        # The rewrite invalidates the cached prefix from the first stub onward, and that
-        # region is re-prefilled once. Require the reclaim to cover it: a pass that cannot
-        # pay for its own cache break is not committed.
-        break_cost = _estimate_stub_region_tokens(api_messages, fresh, first_index)
-        if fresh_reclaim < break_cost:
+    approved = fresh_reclaim >= trigger
+    if approved and cache_capable:
+        # The rewrite invalidates the cached prefix from the first stub onward, and that region
+        # is re-prefilled once. Require the reclaim to cover it.
+        break_cost = _estimate_region_tokens(api_messages, planned)
+        approved = fresh_reclaim >= break_cost
+        if not approved:
             logger.debug(
                 "Tool-result projection declined: reclaim %s below the cache-break cost %s",
                 f"{fresh_reclaim:,}", f"{break_cost:,}",
             )
-            return replayed
+    if not approved:
+        logger.debug(
+            "Tool-result projection idle: %s newly stale tokens below the %s trigger",
+            f"{fresh_reclaim:,}", f"{trigger:,}",
+        )
+        # Sticky rows are re-applied regardless: un-stubbing a cached prefix is the one thing
+        # this layer must never do.
+        return _commit(api_messages, _verified_stubs(sticky_plan, env, fresh=False), state)
 
-    for idx, stub, _, _ in fresh:
-        api_messages[idx] = {**api_messages[idx], "content": stub}
-        state.remember(str(api_messages[idx].get("tool_call_id") or ""))
-
-    logger.info(
-        "Tool-result projection: %d stale result(s) archived, ~%s tokens reclaimed per request "
-        "(%s -> %s message tokens); %d row(s) kept projected",
-        len(fresh), f"{fresh_reclaim:,}", f"{before_tokens:,}", f"{after_tokens:,}",
-        replayed,
+    # ── phase 2: persist + verify, only for an approved pass ─────────────────
+    fresh_stubs = _verified_stubs(planned, env, fresh=True)
+    real_reclaim = sum(
+        max(0, entry["old_tokens"] - _estimate_tokens([{**entry["msg"], "content": entry["stub"]}]))
+        for entry in fresh_stubs
     )
-    return len(fresh) + replayed
+    # Verification can drop rows (a dead persisted path, a sandbox copy that failed), so the
+    # economics are re-checked on what actually survived before the wire is touched.
+    if real_reclaim < trigger:
+        logger.debug(
+            "Tool-result projection declined after verification: %s reclaimed of %s estimated",
+            f"{real_reclaim:,}", f"{fresh_reclaim:,}",
+        )
+        fresh_stubs = []
+    stubs = fresh_stubs + _verified_stubs(sticky_plan, env, fresh=False)
+    return _commit(api_messages, stubs, state, reclaimed=real_reclaim)
 
 
-def _estimate_stub_region_tokens(
-    api_messages: List[Dict[str, Any]],
-    candidates: List[Tuple[int, str, int, int]],
-    first_index: int,
-) -> int:
-    """Tokens the provider re-prefills because of the rewrite: everything from the first
-    stub onward, at its post-projection size."""
-    new_content = {idx: stub for idx, stub, _, _ in candidates}
+def _verified_stubs(entries: List[Dict[str, Any]], env: Any, *, fresh: bool) -> List[Dict[str, Any]]:
+    """Persist/verify each row's recovery target; drop the ones that cannot be confirmed."""
+    out: List[Dict[str, Any]] = []
+    for entry in entries:
+        stub = _confirmed_stub(entry, env)
+        if stub is not None:
+            out.append({**entry, "stub": stub, "fresh": fresh})
+    return out
+
+
+def _confirmed_stub(entry: Dict[str, Any], env: Any) -> Optional[str]:
+    """Return this row's stub, or None to leave the row exactly as it is.
+
+    A row already carrying a ``<persisted-output>`` block keeps its preview unless the file that
+    block points at still verifies readable — replacing a live preview with a dead pointer would
+    make the model strictly worse off.
+    """
+    from tools.tool_result_storage import (
+        extract_persisted_path, spillover_path_is_readable, store_spillover_content,
+    )
+
+    key: ProjectionKey = entry["key"]
+    content: str = entry["content"]
+    existing = extract_persisted_path(content)
+    if existing:
+        if not spillover_path_is_readable(existing, env):
+            logger.debug("Keeping a tool result: its archived file is unreadable (%s)", existing)
+            return None
+        path = existing
+    else:
+        path = store_spillover_content(content, key.storage_key(), env=env)
+        if not path:
+            # Invariant 2: no confirmed recovery target, no projection.
+            return None
+    return build_stub(
+        tool_name=entry["tool_name"], tool_args=entry["tool_args"], content_len=len(content),
+        line_count=entry["line_count"], digest=key.content_digest[:16], recovery_path=path,
+    )
+
+
+def _estimate_region_tokens(api_messages: List[Dict[str, Any]], planned: List[Dict[str, Any]]) -> int:
+    """Tokens the provider re-prefills after the rewrite: everything from the first planned stub
+    onward, measured at its POST-projection size — that region is what gets re-processed. Using
+    the pre-projection bytes here overstates the break cost by roughly the whole request and
+    silently disables the pass on every cached route."""
+    if not planned:
+        return 0
+    first_index = min(entry["idx"] for entry in planned)
+    stubs = {entry["idx"]: entry["estimate"] for entry in planned}
     region = [
-        {**msg, "content": new_content[idx]} if idx in new_content else msg
+        {**msg, "content": stubs[idx]} if idx in stubs else msg
         for idx, msg in enumerate(api_messages[first_index:], start=first_index)
     ]
     return _estimate_tokens(region)
+
+
+def _commit(
+    api_messages: List[Dict[str, Any]], stubs: List[Dict[str, Any]], state: ProjectionState,
+    reclaimed: int = 0,
+) -> int:
+    """Apply the stubs and record stickiness — in-memory only, so it cannot fail halfway."""
+    if not stubs:
+        return 0
+    for entry in stubs:
+        api_messages[entry["idx"]] = {**api_messages[entry["idx"]], "content": entry["stub"]}
+        state.remember(entry["key"].token())
+    fresh = [entry for entry in stubs if entry["fresh"]]
+    if fresh:
+        logger.info(
+            "Tool-result projection: %d stale result(s) archived, ~%s tokens reclaimed per "
+            "request (%s message tokens now)%s",
+            len(fresh), f"{reclaimed:,}", f"{_estimate_tokens(api_messages):,}",
+            f"; {len(stubs) - len(fresh)} row(s) kept projected" if len(stubs) > len(fresh) else "",
+        )
+    return len(stubs)

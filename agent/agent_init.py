@@ -1487,32 +1487,18 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
             0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
         ),
         # Wire-only tool-result projection (agent/tool_result_projection.py): keeps stale tool
-        # payloads out of the request without rewriting the transcript. "auto" = on, "off" = kill
-        # switch; 0 on a *_tokens key means "derive from the context window".
-        tool_result_projection=str(cfg.get("tool_result_projection", "auto") or "auto").strip().lower() or "auto",
+        # payloads out of the request without rewriting the transcript. Default "off" — it
+        # changes what the model sees, so it ships opt-in. 0 on min_tokens means "derive from
+        # the route and the context window".
+        tool_result_projection=str(cfg.get("tool_result_projection", "off") or "off").strip().lower() or "off",
         tool_result_projection_min_tokens=max(
             0, _parse_config_int(cfg.get("tool_result_projection_min_tokens", 0), 0)
         ),
         tool_result_projection_min_result_chars=max(
             0, _parse_config_int(cfg.get("tool_result_projection_min_result_chars", 4000), 4000)
         ),
-        tool_result_projection_min_reclaim_tokens=max(
-            0, _parse_config_int(cfg.get("tool_result_projection_min_reclaim_tokens", 8192), 8192)
-        ),
         tool_result_projection_tail_ratio=_parse_config_ratio(
             cfg.get("tool_result_projection_tail_ratio", 0.025), 0.025
-        ),
-        tool_result_projection_tail_min_tokens=max(
-            0, _parse_config_int(cfg.get("tool_result_projection_tail_min_tokens", 12000), 12000)
-        ),
-        tool_result_projection_tail_max_tokens=max(
-            0, _parse_config_int(cfg.get("tool_result_projection_tail_max_tokens", 32000), 32000)
-        ),
-        tool_result_projection_tail_messages=max(
-            0, _parse_config_int(cfg.get("tool_result_projection_tail_messages", 8), 8)
-        ),
-        tool_result_projection_tail_max_messages=max(
-            0, _parse_config_int(cfg.get("tool_result_projection_tail_max_messages", 60), 60)
         ),
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
@@ -1892,12 +1878,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             tool_result_projection=cs.tool_result_projection,
             tool_result_projection_min_tokens=cs.tool_result_projection_min_tokens,
             tool_result_projection_min_result_chars=cs.tool_result_projection_min_result_chars,
-            tool_result_projection_min_reclaim_tokens=cs.tool_result_projection_min_reclaim_tokens,
             tool_result_projection_tail_ratio=cs.tool_result_projection_tail_ratio,
-            tool_result_projection_tail_min_tokens=cs.tool_result_projection_tail_min_tokens,
-            tool_result_projection_tail_max_tokens=cs.tool_result_projection_tail_max_tokens,
-            tool_result_projection_tail_messages=cs.tool_result_projection_tail_messages,
-            tool_result_projection_tail_max_messages=cs.tool_result_projection_tail_max_messages,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )

@@ -1,5 +1,7 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import contextlib
+import re
 import sqlite3
 import time
 import json
@@ -619,6 +621,56 @@ class TestMessageStorage:
         assert messages[1]["role"] == "assistant"
 
 
+
+    def test_settled_open_issues_no_main_db_writes(self, tmp_path, monkeypatch):
+        """Opening a database that needs no repair must not execute any write statement.
+
+        A write statement takes the write lock even when it changes nothing, so an
+        unconditional INSERT OR IGNORE / UPDATE / marker stamp blocks every open behind
+        a sibling process's transaction. The FTS5 capability probe on ``temp`` is exempt.
+        """
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()  # mints stamp + FTS layout marker
+        SessionDB(db_path=db_path).close()
+
+        writes = []
+        real_connect = sqlite3.connect
+
+        def tracing_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(
+                lambda stmt: writes.append(stmt)
+                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP\s+TRIGGER)\b", stmt, re.I) and "temp." not in stmt
+                else None
+            )
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", tracing_connect)
+        SessionDB(db_path=db_path).close()
+        assert writes == []
+
+    def test_open_completes_while_sibling_holds_write_lock(self, tmp_path):
+        """A settled read-write open must not wait on another connection's write transaction."""
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()
+        SessionDB(db_path=db_path).close()
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        release = threading.Timer(4.0, holder.rollback)
+        release.start()
+        try:
+            started = time.perf_counter()
+            SessionDB(db_path=db_path).close()
+            elapsed = time.perf_counter() - started
+        finally:
+            release.cancel()
+            with contextlib.suppress(sqlite3.Error):
+                holder.rollback()
+            holder.close()
+        # Pre-fix this waited for the whole 4 s hold (retry loop around the busy timeout).
+        assert elapsed < 2.0, f"open blocked on the write lock for {elapsed:.3f}s"
 
     def test_startup_heals_null_active_rows(self, tmp_path):
         """Rows written as active=NULL before the fix are un-hidden on startup.

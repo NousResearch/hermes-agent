@@ -283,6 +283,41 @@ class SessionSchemaMixin:
         cursor.execute(_STATE_META_UPSERT_SQL, (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)))
 
     @staticmethod
+    def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
+        """Run *ddl* statement by statement, skipping each ``DROP TRIGGER IF EXISTS x`` /
+        ``CREATE TRIGGER IF NOT EXISTS x …`` pair whose trigger already exists with the same body.
+
+        ``DROP TRIGGER IF EXISTS`` on an existing trigger takes SQLite's write lock (the
+        ``CREATE … IF NOT EXISTS`` forms do not), so the unconditional drop+recreate that lets a
+        changed trigger body roll out would otherwise block every open of a settled database
+        behind a sibling process's transaction. ``sqlite_master.sql`` stores the CREATE text
+        verbatim minus ``IF NOT EXISTS`` and the ``;``, so an exact comparison decides.
+        """
+        stored = dict(cursor.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall())
+        pending_drop: Optional[str] = None
+        statement = ""
+        for line in ddl.splitlines():
+            statement += line + "\n"
+            if not sqlite3.complete_statement(statement):
+                continue
+            statement, current = "", statement.strip()
+            upper = current.upper()
+            if upper.startswith("DROP TRIGGER IF EXISTS "):
+                pending_drop = current
+                continue
+            if upper.startswith("CREATE TRIGGER IF NOT EXISTS "):
+                desired = current.replace("IF NOT EXISTS ", "", 1).rstrip(";")
+                if stored.get(desired.split(None, 3)[2]) == desired:
+                    pending_drop = None
+                    continue
+            if pending_drop is not None:
+                cursor.execute(pending_drop)
+                pending_drop = None
+            cursor.execute(current)
+        if statement.strip():
+            raise sqlite3.OperationalError("incomplete DDL statement")
+
+    @staticmethod
     def _execute_ddl_script_transactional(cursor: sqlite3.Cursor, ddl: str) -> None:
         """Execute a DDL script without ``executescript``'s implicit commit."""
         statement = ""
@@ -884,13 +919,18 @@ class SessionSchemaMixin:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
-        cursor.executescript(DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+        self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
         # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A
         # ``current_version < 12`` gate never re-ran for already-v12+ databases.
+        # Read before writing: an UPDATE takes the write lock even when it matches no rows, so
+        # the unconditional form blocked every open behind a sibling's write transaction. The
+        # probe is short-circuited on the modern NOT NULL column and index-served on legacy
+        # ones. Deliberately not INDEXED BY (raises "no query solution" on NOT NULL columns).
         with contextlib.suppress(sqlite3.OperationalError):
-            cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
+            if cursor.execute("SELECT 1 FROM messages WHERE active IS NULL LIMIT 1").fetchone() is not None:
+                cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         stale_row = cursor.execute("SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_STALE_KEY,)).fetchone()
@@ -1012,7 +1052,13 @@ class SessionSchemaMixin:
             and not self._has_fts_trash(cursor)
             and not self._fts_external_index_empty_with_messages(cursor)
         ):
-            self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
+            # Stamp only when it would change something: on a settled DB every condition above
+            # already holds, and re-writing the same value takes the write lock on every open.
+            if cursor.execute(
+                "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
+                (str(FTS_STORAGE_VERSION),),
+            ).fetchone() is None:
+                self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
 
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
         # every future migration for a user who never optimizes). FTS5 unavailable is the

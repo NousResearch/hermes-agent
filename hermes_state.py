@@ -933,13 +933,22 @@ class SessionDB(
         token = uuid.uuid4().hex
         try:
             with self._lock:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                    (_STATE_DB_GENERATION_KEY, token),
-                )
+                # Read first: the stamp is minted once per file, and a no-op INSERT OR IGNORE
+                # still takes the write lock — under a sibling's transaction it blocked for the
+                # busy timeout and the except below then dropped the token entirely. First
+                # opener still wins via INSERT OR IGNORE; racers converge on the re-read.
                 row = self._conn.execute(
                     "SELECT value FROM state_meta WHERE key = ?", (_STATE_DB_GENERATION_KEY,),
                 ).fetchone()
+                if not (row and row[0]):
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                        (_STATE_DB_GENERATION_KEY, token),
+                    )
+                    row = self._conn.execute(
+                        "SELECT value FROM state_meta WHERE key = ?",
+                        (_STATE_DB_GENERATION_KEY,),
+                    ).fetchone()
                 if row and row[0]:
                     token = str(row[0])
                 pragma_row = self._conn.execute("PRAGMA application_id").fetchone()

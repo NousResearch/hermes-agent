@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -409,20 +409,30 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 // duplicating it — and a pre-warm for an already-open profile is a no-op.
 // Throttled per profile so drive-by hovers can't spam spawn attempts; failures
 // stay silent here and surface on the real switch, which owns retry/error UX.
+// A `connectionId` scopes the warm to a registry source (the (connection,
+// profile) rows a multi-source roster shows): same guards, keyed by the pool
+// scope key, dialed through openGatewayForAgent. Every speculative warm in
+// the app — rail, session rows, plugin rosters — goes through here so one
+// resolver owns the policy (#91545, #103631).
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
-export function prewarmProfileBackend(name: string): void {
+export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)
+  const connection = (connectionId ?? '').trim() || null
+  const scope = registryBackendScopeKey(connection, key)
 
-  if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+  if (
+    key === normalizeProfileKey($activeGatewayProfile.get()) &&
+    (!connection || connection === activeGatewayConnectionId())
+  ) {
     return
   }
 
   const now = Date.now()
 
-  if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
+  if (now - (prewarmedAt.get(scope) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
     return
   }
 
@@ -437,8 +447,9 @@ export function prewarmProfileBackend(name: string): void {
     return
   }
 
-  prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  prewarmedAt.set(scope, now)
+  const dial = connection ? openGatewayForAgent(connection, key) : openGatewayForProfile(key)
+  dial.catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null

@@ -19,6 +19,7 @@ interface SearchFieldProps {
   hints?: string[]
   containerClassName?: string
   inputClassName?: string
+  icon?: ReactNode
   loading?: boolean
   onClear?: () => void
   inputRef?: RefObject<HTMLInputElement | null>
@@ -39,6 +40,7 @@ export function SearchField({
   hints,
   containerClassName,
   inputClassName,
+  icon,
   loading = false,
   onClear,
   inputRef,
@@ -66,7 +68,7 @@ export function SearchField({
         containerClassName
       )}
     >
-      <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
+      {icon ?? <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />}
       <input
         aria-label={ariaLabel ?? placeholder}
         className={cn(

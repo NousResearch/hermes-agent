@@ -59,6 +59,29 @@ function generateSessions(count: number): SessionInfo[] {
 
 const noop = () => {}
 
+describe('SidebarSessionsSection header', () => {
+  it('renders exactly one leading section marker', () => {
+    const { container } = render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Slack"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    expect(container.querySelectorAll('.dither')).toHaveLength(1)
+  })
+})
+
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0

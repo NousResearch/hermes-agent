@@ -296,7 +296,7 @@ function useSessionActions({
     }),
     spec({
       disabled: !onPin,
-      icon: 'pin',
+      icon: 'pinned',
       label: pinned ? r.unpin : r.pin,
       onSelect: () => {
         triggerHaptic('selection')

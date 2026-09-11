@@ -906,6 +906,11 @@ def _pause_windows_gateways_for_update() -> dict | None:
 def _cold_start_windows_gateway_after_update() -> bool:
     """Direct-spawn a detached gateway after update for the ``cold_start_if_installed`` case (installed but down).
 
+    Windows Service installs: when an SCM unit is registered for this install, ``is_service_registered()``
+    is authoritative even though a stopped service has no live process tree for
+    ``find_windows_gateway_services()`` to discover. The restart MUST go through StartService — never
+    ``_spawn_detached`` beside an SCM-owned install — and failure surfaces instead of falling back.
+
     Idempotent: re-checks nothing is running so a concurrent autostart can't duplicate. A successful Popen
     doesn't prove survival (a job object denying breakaway kills it), so success is gated on the liveness poll.
     Vouched PIDs are attested so a death AFTER updater exit is reported by the next CLI invocation.
@@ -929,6 +934,32 @@ def _cold_start_windows_gateway_after_update() -> bool:
         if _desktop_owns_gateway_lifecycle():
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
             return True
+    # Windows Service installs: a registered-but-stopped SCM unit has no live process tree for
+    # find_windows_gateway_services() to see, so reaching this point does NOT prove the install is
+    # unmanaged. StartService is the only correct restart path here — a detached spawn beside an
+    # SCM-owned install would create two parallel gateways racing for the same port/session state.
+    # No detached fallback: failure surfaces.
+    try:
+        if gateway_windows.is_service_registered():
+            if gateway_windows.start_service():
+                print()
+                print("  ✓ Gateway started via cold-start after update (via SCM Windows Service)")
+                return True
+            raise RuntimeError(
+                "SCM Windows Service start failed after update — gateway not restarted. "
+                f"Fix the service and run: sc start {gateway_windows.get_service_name()}"
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        # Probe raised (e.g. pywin32 gone missing): fail closed rather than risk spawning a
+        # second gateway beside an SCM-owned one. Non-SCM installs stay unaffected —
+        # is_service_registered()'s winreg fallback keeps detection working without pywin32.
+        raise RuntimeError(
+            "Could not verify Windows Service ownership before cold-start "
+            f"(refusing detached fallback): {exc}"
+        ) from exc
+
     with _abort_on_error("Could not cold-start Windows gateway after update"):
         pid = gateway_windows._spawn_detached()
     if not pid:

@@ -6038,12 +6038,26 @@ def _cmd_install(args):
     elif backend == "launchd":
         launchd_install(force)
     elif backend == "windows":
-        _gw_windows().install(
-            force=force,
-            start_now=getattr(args, 'start_now', None),
-            start_on_login=getattr(args, 'start_on_login', None),
-            elevated_handoff=getattr(args, 'elevated_handoff', False),
-        )
+        service_type = getattr(args, 'service_type', None)
+        if service_type == 'service':
+            # Explicit Windows Service install — don't fallback on failure
+            _gw_windows().install_service(force=force, allow_fallback=False)
+        elif service_type == 'scheduled-task':
+            # Explicit Scheduled Task install
+            _gw_windows().install(
+                force=force,
+                start_now=getattr(args, 'start_now', None),
+                start_on_login=getattr(args, 'start_on_login', None),
+                elevated_handoff=getattr(args, 'elevated_handoff', False),
+            )
+        else:
+            # Default: Scheduled Task (defers to Windows Service if already registered)
+            _gw_windows().install(
+                force=force,
+                start_now=getattr(args, 'start_now', None),
+                start_on_login=getattr(args, 'start_on_login', None),
+                elevated_handoff=getattr(args, 'elevated_handoff', False),
+            )
     else:
         _handle_no_backend("install", wsl=True, s6=True)
 

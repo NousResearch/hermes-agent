@@ -258,7 +258,7 @@ def _tool_defs_cache_key(
 
     Covers every argument plus everything that changes the result without one:
     registry generation, config.yaml mtime/size (dynamic schemas), kanban
-    context, profile scope. check_fn results are TTL-cached in the registry.
+    context, profile scope, and the refresh-free Wisdom entitlement verdict.
     """
     profile_scope = check_fn_cache_scope()
     if profile_scope == CHECK_FN_CACHE_BYPASS:
@@ -269,11 +269,20 @@ def _tool_defs_cache_key(
         cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
+    # Wisdom's availability check deliberately bypasses the registry TTL because logout,
+    # token replacement, and expiry must take effect immediately. Mirror its cheap, local
+    # entitlement verdict in this outer memo key so quiet-mode cache hits cannot hide those
+    # transitions. is_entitled() reads local JWT state without refresh or network I/O.
+    try:
+        from hermes_wisdom.entitlement import is_entitled
+        wisdom_entitled = bool(is_entitled())
+    except Exception:
+        wisdom_entitled = False
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
-        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, wisdom_entitled,
     )
 
 

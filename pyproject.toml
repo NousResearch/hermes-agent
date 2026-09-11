@@ -192,6 +192,7 @@ fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
+tts-langdetect = ["langdetect==1.0.9", "six==1.17.0"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
@@ -498,6 +499,7 @@ httpx = false
 httpx2 = false
 huggingface_hub = false
 jinja2 = false
+langdetect = false
 lark-oapi = false
 markdown = false
 maturin = false
@@ -541,6 +543,7 @@ setuptools = false
 setuptools-rust = false
 wheel = false
 sherpa-onnx = false
+six = false
 slack-bolt = false
 slack-sdk = false
 snowballstemmer = false

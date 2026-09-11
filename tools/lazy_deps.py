@@ -62,6 +62,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Voxtral STT + TTS share the SDK.
     "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
+    "tts.langdetect": ("langdetect==1.0.9", "six==1.17.0"),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────

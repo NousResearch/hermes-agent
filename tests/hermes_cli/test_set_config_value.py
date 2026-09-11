@@ -118,6 +118,15 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_edge_voice_by_language_accepts_dynamic_language_code(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("tts.edge.voice_by_language.pt-br", "pt-BR-FranciscaNeural")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        config = _read_config(_isolated_hermes_home)
+        assert "pt-br: pt-BR-FranciscaNeural" in config
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
@@ -501,6 +510,7 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "tts.edge.voice_by_language.zh-cn",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

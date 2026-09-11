@@ -1001,6 +1001,8 @@ DEFAULT_CONFIG = {
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             "voice": "en-US-AriaNeural",
+            "auto_language": False,
+            "voice_by_language": {},
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam

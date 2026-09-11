@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import re
@@ -692,7 +693,129 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
+_PYTHON_EXECUTABLE = re.compile(r"python(?:[23](?:\.\d+)*)?")
+
+
+def _python_operand(arguments: list[str]) -> tuple[Optional[str], Optional[str]]:
+    """Python's source operand, not its option values or the script's own argv."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            index += 1
+            break
+        if argument == "-" or argument == "-m" or argument.startswith("-m"):
+            return None, None  # stdin/modules are not filesystem script operands
+        if argument == "-c":
+            return "python", arguments[index + 1] if index + 1 < len(arguments) else None
+        if argument.startswith("-c"):
+            return "python", argument[2:]
+        if argument in {"-W", "-X"}:
+            index += 2
+            continue
+        if not argument.startswith("-"):
+            break
+        index += 1
+    if index < len(arguments) and arguments[index] != "-":
+        return "file", arguments[index]
+    return None, None
+
+
+def _script_language(path: Path, text: str, language: Optional[str]) -> str:
+    """An explicit interpreter wins; direct execution consults only the shebang."""
+    if language is not None:
+        return language
+    if text.startswith("#!"):
+        try:
+            tokens = shlex.split(text.split("\n", 1)[0][2:])
+        except ValueError:
+            return "shell"
+        # A shebang's env -S tail has already been split above, unlike a shell
+        # command's quoted -S operand (handled by the command-payload walk).
+        if tokens and _executable_name(tokens[0]) == "env":
+            tokens = [token for token in tokens if token not in {"-S", "--split-string"}]
+        index = _executed_command_index(tokens)
+        if index is not None and _PYTHON_EXECUTABLE.fullmatch(_executable_name(tokens[index])):
+            return "python"
+        return "shell"
+    # Bash's executable-format fallback treats shebangless text as shell, regardless of suffix.
+    return "shell"
+
+
+def _python_command_payloads(text: str) -> Optional[list[str]]:
+    """Literal process-call operands only, never arbitrary Path/open/data strings.
+
+    Resolve ordinary import aliases, not data flow or computed commands. Invalid Python
+    falls back to the existing shell walk (important for mixed/polyglot source). The
+    caller charges the full source before parsing, and each payload before recursion.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name in {"os", "subprocess", "asyncio"}:
+                    aliases[item.asname or item.name] = item.name
+        elif isinstance(node, ast.ImportFrom) and node.module in {"os", "subprocess", "asyncio"}:
+            for item in node.names:
+                aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+
+    shell_calls = {
+        "os.system", "os.popen", "subprocess.getoutput", "subprocess.getstatusoutput",
+        "asyncio.create_subprocess_shell",
+    }
+    calls = shell_calls | {
+        "subprocess.run", "subprocess.Popen", "subprocess.call",
+        "subprocess.check_call", "subprocess.check_output", "asyncio.create_subprocess_exec",
+    }
+    payloads: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if isinstance(function, ast.Name):
+            name = aliases.get(function.id, function.id)
+        elif isinstance(function, ast.Attribute) and isinstance(function.value, ast.Name):
+            name = f"{aliases.get(function.value.id, function.value.id)}.{function.attr}"
+        else:
+            continue
+        if name not in calls:
+            continue
+        operand = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg in {"args", "command", "cmd", "program"}),
+            None,
+        )
+        shell = name in shell_calls or (
+            name.startswith("subprocess.") and any(
+                kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in node.keywords
+            )
+        )
+        if name == "asyncio.create_subprocess_exec":
+            # Unlike subprocess's sequence operand, asyncio takes program, *args.
+            items = node.args if node.args else [operand]
+        elif isinstance(operand, (ast.List, ast.Tuple)):
+            items = operand.elts
+        else:
+            items = [operand]
+        literal_items = [
+            item.value for item in items
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+        if literal_items and len(literal_items) == len(items):
+            # POSIX shell=True sequences supply command, then shell positional arguments;
+            # only the first element is shell source. Without a shell even a string is
+            # ONE executable path: preserve spaces rather than splitting it as a command.
+            payloads.append(literal_items[0] if shell else shlex.join(literal_items))
+    return payloads
+
+
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[tuple[Path, Optional[str]]]:
     """Yield the scripts the token at *index* executes, if any."""
     if index >= len(segment):
         return
@@ -701,7 +824,20 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            for path in _resolved_or_nothing(segment[index + 1], cwd):
+                yield path, "shell"
+        return
+
+    if _PYTHON_EXECUTABLE.fullmatch(executable_name):
+        # Interpreter-name recognition is additive: ./python3 may itself be a
+        # shell script. Direct execution uses its own identity, not Python's.
+        if "/" in executable:
+            for path in _resolved_or_nothing(executable, cwd):
+                yield path, None
+        kind, operand = _python_operand(segment[index + 1 :])
+        if kind == "file" and operand is not None:
+            for path in _resolved_or_nothing(operand, cwd):
+                yield path, "python"
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -722,17 +858,23 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            for path in _resolved_or_nothing(arguments[arg_index], cwd):
+                yield path, "shell"
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        for path in _resolved_or_nothing(executable, cwd):
+            yield path, None
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
+def _iter_referenced_script_edges(
+    command: str, *, cwd: Optional[str] = None
+) -> Iterator[tuple[Path, Optional[str]]]:
+    """Yield script paths with execution language (None means direct execution).
+
+    Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
     for segment in _iter_command_segments(command):
@@ -743,6 +885,15 @@ def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
             yield from _references_at(segment, peeled, cwd)
+
+
+def _iter_python_inline_payloads(command: str) -> Iterator[str]:
+    for segment in _iter_command_segments(command):
+        index = _executed_command_index(segment)
+        if index is not None and _PYTHON_EXECUTABLE.fullmatch(_executable_name(segment[index])):
+            kind, operand = _python_operand(segment[index + 1 :])
+            if kind == "python" and operand is not None:
+                yield operand
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -882,37 +1033,58 @@ def _read_script_for_scanning(script_path: str) -> str:
 # --- recursive walk ---------------------------------------------------------------------------
 
 def _contains_unsafe_gateway_action(
-    command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
+    command: str, *, cwd: Optional[str], depth: int,
+    visited: dict[Path, set[Optional[str]]], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    language: Optional[str] = "shell", source_path: Optional[Path] = None,
 ) -> bool:
-    # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
+    # Charge BEFORE all tokenization, including shebang recognition and Python parsing.
     if not budget.charge_text(command):
         return _budget_exhausted("text", depth)
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return True
+    if source_path is not None:
+        language = _script_language(source_path, command, language)
 
-    def recurse(text: str, cwd: Optional[str]) -> bool:
+    def recurse(
+        text: str, cwd: Optional[str], language: Optional[str] = "shell",
+        source_path: Optional[Path] = None,
+    ) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, language=language, source_path=source_path,
         )
+
+    if language == "python":
+        payloads = _python_command_payloads(command)
+        if payloads is not None:
+            return any(recurse(payload, cwd) for payload in payloads)
+        # Unparseable/polyglot source keeps the old conservative shell walk.
 
     for payload in _iter_shell_command_payloads(command):
         if recurse(payload, cwd):
             return True
+    for payload in _iter_python_inline_payloads(command):
+        if recurse(payload, cwd, "python"):
+            return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    for script_path, script_language in _iter_referenced_script_edges(command, cwd=cwd):
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             return True
         resolved = _resolve_lenient(script_path)
-        if resolved in visited:
+        contexts = visited.get(resolved)
+        if contexts is not None and script_language in contexts:
             continue
-        if not budget.charge_path():
-            return _budget_exhausted("paths", depth)
-        visited.add(resolved)
+        if contexts is None:
+            if not budget.charge_path():
+                return _budget_exhausted("paths", depth)
+            contexts = visited[resolved] = set()
+        # Python first must not suppress a later explicit shell edge to the same file.
+        # A new context is re-read/re-scanned under the same byte/line/remote budget.
+        contexts.add(script_language)
         # Never read more than the walk can still afford to tokenize; a file larger than the
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
@@ -931,7 +1103,10 @@ def _contains_unsafe_gateway_action(
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
+        if recurse(
+            script_text, _resolve_script_directory(str(resolved)) or cwd,
+            script_language, resolved,
+        ):
             return True
     return False
 
@@ -953,7 +1128,7 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     """
     try:
         return _contains_unsafe_gateway_action(
-            command, cwd=cwd, depth=0, visited=set(), budget=_LifecycleScanBudget(),
+            command, cwd=cwd, depth=0, visited={}, budget=_LifecycleScanBudget(),
             read_remote_script=read_remote_script,
         )
     except Exception:
@@ -999,16 +1174,23 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
             combined = f"{combined}\n{script_text}"
 
     if python_script:
-        # Python runs via the interpreter, never a POSIX shell, and the shell reference walk is a
-        # false-positive generator on Python sources (pathlib "/" resolves to the filesystem root).
-        # The regex still scans the full text; non-regular/oversized files fail closed (sentinel).
-        # The data-exemption masker tokenizes with shlex, so it is charged against the walk budget.
-        # The direct command regex below still scans the full text, so a literal `hermes gateway restart`
-        # embedded in a .py script is still blocked. See #77131, #78398.
+        # Keep the combined-text check (including commands split across prompt/source),
+        # then walk each execution context separately. The scheduler runs .py via Python;
+        # the prompt can still explicitly invoke that same file via a shell.
         if not _LifecycleScanBudget().charge_text(combined):
             unsafe = _budget_exhausted("text", 0)
         else:
-            unsafe = _lifecycle_command_scan_with_data_exemption(combined)
+            unsafe = _direct_lifecycle_scan(combined)
+            if not unsafe:
+                budget = _LifecycleScanBudget()
+                visited: dict[Path, set[Optional[str]]] = {}
+                cwd = _resolve_script_directory(script) if script else None
+                unsafe = _contains_unsafe_gateway_action(
+                    script_text, cwd=cwd, depth=0, visited=visited, budget=budget,
+                    language="python",
+                ) or _contains_unsafe_gateway_action(
+                    prompt or "", cwd=cwd, depth=0, visited=visited, budget=budget,
+                )
     else:
         unsafe = contains_gateway_lifecycle_command_or_referenced_script(
             combined, cwd=_resolve_script_directory(script) if script else None

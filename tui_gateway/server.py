@@ -688,10 +688,44 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 def _emit_approval_request(sid: str, data: dict | None) -> None:
     """Emit ``approval.request`` with the command redacted: a credential-shaped value Tirith flagged would
     otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
+    Reuse the shared gateway seam so all approval transports redact consistently (#48456, #50767).
 
-    Reuse the shared gateway See #48456, #50767.
+    Delivery hardening (#83443, #84395): a session whose WebSocket disconnected is parked on
+    ``_detached_ws_transport`` — a drop sink whose ``write()`` returns False. Writing the frame through
+    the session transport loses it there, and the agent thread then blocks the full
+    ``approvals.timeout`` with no prompt ever rendered. Fan the frame out to the registered live
+    transports instead, so a still-connected peer receives the prompt.
     """
-    _emit("approval.request", sid, _approval_request_payload(data))
+    payload = _approval_request_payload(data)
+    from tui_gateway.event_replay import _stamp_event
+    frame = _event_frame("approval.request", sid, payload)
+    _stamp_event(frame)  # same seq/replay bookkeeping write_json applies to event frames
+    transport = (_sessions.get(sid) or {}).get("transport")
+    if transport is not None:
+        try:
+            # Trust the write() result, not just liveness: the drop sentinel — and a transport
+            # mid-close (disconnect received, teardown not yet run) — returns False, which is the
+            # signal to fall through to the broadcast rather than lose the approval.
+            if transport.write(frame):
+                return
+        except Exception:
+            logger.debug("approval.request session write failed sid=%s", sid, exc_info=True)
+    with _live_transports_lock:
+        targets = [t for t in _live_transports if t is not transport]
+    if not targets:
+        return
+    # The frame keeps its session_id, so the frontend still routes it to the right session on the
+    # broadcast path. This intentionally crosses session boundaries (a second connected peer can
+    # render another session's prompt); safe only because approval.respond is session/ownership
+    # scoped server-side — keep that invariant.
+    logger.warning(
+        "approval.request for session %s has no live transport; broadcasting to %d connected client(s)",
+        sid, len(targets))
+    for target in targets:
+        try:
+            target.write(frame)
+        except Exception:  # one wedged peer must not stall the rest
+            logger.debug("approval.request broadcast write failed peer=%r", target, exc_info=True)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -932,11 +966,22 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     client; the self-improvement "💾 …" summary is emitted as review.summary (no print surface), honoring
     display.memory_notifications."""
     notify_registered = False
-    with contextlib.suppress(Exception):
+    try:
         from tools.approval import load_permanent_allowlist, register_gateway_notify
         register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
         notify_registered = True
         load_permanent_allowlist()
+    except Exception:
+        # Never swallow this silently: a session with no notify callback blocks the agent thread
+        # for the full approvals.timeout with nothing rendered (#83443, #84395). The live-transport
+        # fallback in _emit_approval_request only covers a socket that died after registration —
+        # this log covers the case where the session never registered at all.
+        logger.exception(
+            "Failed to register gateway approval notify for session %s (key=%s) — "
+            "approval prompts for this session may not reach the client",
+            sid,
+            key,
+        )
     _wire_callbacks(sid)
     with contextlib.suppress(Exception):  # bare agents without the attribute must not break startup
         agent.background_review_callback = lambda message, _sid=sid: _emit("review.summary", _sid, {"text": str(message)})

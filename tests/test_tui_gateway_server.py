@@ -22678,3 +22678,127 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+class _RecordingTransport:
+    """Minimal transport double: records frames, configurable write() result."""
+
+    def __init__(self, *, ok: bool = True):
+        self.frames = []
+        self.ok = ok
+
+    def write(self, obj):
+        self.frames.append(obj)
+        return self.ok
+
+    def close(self):
+        pass
+
+
+def test_emit_approval_request_falls_back_to_live_transports_when_session_detached(caplog):
+    """A detached (drop-sentinel) session must not lose approval events.
+
+    #83443 / #84395: when the desktop WebSocket disconnects, the session is parked on
+    _detached_ws_transport (a write-returns-False black hole). An approval.request emitted
+    through that session silently vanished and the agent thread blocked the full approval
+    timeout with nothing rendered. The emitter must fall back to the registered live
+    transports so a still-connected peer receives the prompt.
+    """
+    live = _RecordingTransport()
+    sid = "detached-approval-sid"
+    server.register_live_transport(live)
+    server._sessions[sid] = {"transport": server._detached_ws_transport}
+    try:
+        with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+            server._emit_approval_request(
+                sid,
+                {
+                    "command": "rm -rf /tmp/x",
+                    "pattern_key": "dangerous",
+                    "description": "dangerous command",
+                    "allow_permanent": True,
+                },
+            )
+    finally:
+        server.unregister_live_transport(live)
+        server._sessions.pop(sid, None)
+
+    assert len(live.frames) == 1, "approval must be fanned out to live transports"
+    frame = live.frames[0]
+    assert frame["params"]["type"] == "approval.request"
+    # The frame keeps its session_id so the client routes it to the right session.
+    assert frame["params"]["session_id"] == sid
+    # Redaction must still apply on the broadcast path.
+    assert "rm -rf" in frame["params"]["payload"]["command"]
+    assert "broadcasting" in caplog.text
+
+
+def test_emit_approval_request_uses_session_transport_when_live():
+    """A live session keeps the direct transport path (no broadcast, no duplicate)."""
+    session_transport = _RecordingTransport()
+    other = _RecordingTransport()
+    sid = "live-approval-sid"
+    server.register_live_transport(other)
+    server._sessions[sid] = {"transport": session_transport}
+    try:
+        server._emit_approval_request(sid, {"command": "ls"})
+    finally:
+        server.unregister_live_transport(other)
+        server._sessions.pop(sid, None)
+
+    assert len(session_transport.frames) == 1, "session transport gets the frame"
+    assert len(other.frames) == 0, "live transports are not spammed when the session is live"
+
+
+def test_emit_approval_request_dropped_write_is_broadcast_not_lost():
+    """A session transport that reports False (mid-close) must fall through to the broadcast."""
+    half_closed = _RecordingTransport(ok=False)
+    live = _RecordingTransport()
+    sid = "half-closed-approval-sid"
+    server.register_live_transport(live)
+    server._sessions[sid] = {"transport": half_closed}
+    try:
+        server._emit_approval_request(sid, {"command": "ls"})
+    finally:
+        server.unregister_live_transport(live)
+        server._sessions.pop(sid, None)
+
+    assert len(half_closed.frames) == 1 and half_closed.ok is False
+    assert len(live.frames) == 1, "dropped write must not lose the approval"
+
+
+def test_emit_approval_request_without_any_transport_is_silent():
+    """No session transport and no live peers: nothing to deliver, and no crash."""
+    sid = "orphan-approval-sid"
+    server._sessions[sid] = {"transport": server._detached_ws_transport}
+    try:
+        server._emit_approval_request(sid, {"command": "ls"})
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_approval_notify_registration_failure_logs_loudly(caplog, monkeypatch):
+    """A failed register_gateway_notify must not be swallowed silently.
+
+    #83443 / #84395 silent-approval-timeout family: a session whose notify callback never
+    registered would block the agent for the full timeout with nothing rendered. The build
+    path must log the failure loudly (it previously hid behind contextlib.suppress).
+    """
+    import tools.approval as _approval
+
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(
+        _approval,
+        "register_gateway_notify",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("injected registration failure")),
+    )
+
+    class _Agent:
+        model = "test"
+
+    with caplog.at_level(logging.ERROR, logger="tui_gateway.server"):
+        registered = server._wire_session_agent("fail-reg-sid", "fail-reg-key", _Agent())
+
+    assert registered is False
+    assert "Failed to register gateway approval notify" in caplog.text
+    assert "injected registration failure" in caplog.text

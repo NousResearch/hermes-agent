@@ -25,6 +25,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")
     cron_create.add_argument(
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
+    # Flag form of the same value. argparse cannot match a trailing value to a
+    # nargs="?" positional once optionals are interleaved before it
+    # ("cron create 30m --name x hello world" leaves "hello world" unconsumed),
+    # so a prompt placed after other options needs this spelling.
+    cron_create.add_argument(
+        "--prompt", dest="prompt_flag",
+        help="Same as the positional prompt; use it when the prompt follows "
+             "other options (the positional form cannot bind there).")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument("--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, "

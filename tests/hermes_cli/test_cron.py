@@ -427,6 +427,47 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     assert "Failed to create job: boom" in out
 
 
+def test_cron_create_forwards_prompt_flag(monkeypatch, capsys):
+    """`cron create --prompt X` must reach create_job as the prompt.
+
+    The positional form cannot bind a trailing value after interleaved
+    optionals, so the flag is the supported spelling in that position;
+    dropping it here prevents the command from parsing.
+    """
+    captured = {}
+
+    def fake_api(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "job_id": "jid",
+            "name": "n",
+            "schedule": "once",
+            "next_run_at": "2026-09-14T09:45:00+08:00",
+            "job": {},
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", fake_api)
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    args = SimpleNamespace(
+        schedule="2026-09-14T09:45:00+08:00",
+        prompt=None,
+        prompt_flag="send report",
+        name="n",
+        deliver="telegram",
+        repeat=1,
+        skill=["reminder"],
+        skills=None,
+        script=None,
+        workdir=None,
+        no_agent=False,
+    )
+
+    assert cron_cli.cron_create(args) == 0
+    assert captured["prompt"] == "send report"
+
+
 class TestCronRunBackgroundDispatch:
     """`hermes cron run` must not report 'failed' when the run was dispatched
     to the background delegation worker.

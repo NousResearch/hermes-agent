@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getGlobalModelOptions } from '@/hermes'
 
 import {
+  catalogProviderMatches,
   firstSelectableCatalogModel,
   manualPickRemoved,
   modelOptionsQueryKey,
@@ -252,6 +253,22 @@ describe('manualPickRemoved', () => {
   })
 })
 
+describe('catalogProviderMatches', () => {
+  const cloudflare = {
+    aliases: ['custom:cloudflare', 'cloudflare'],
+    models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast'],
+    name: 'Cloudflare',
+    slug: 'cloudflare'
+  }
+
+  it('matches slug, display name, and custom-provider aliases', () => {
+    expect(catalogProviderMatches(cloudflare, 'cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
 describe('reconcileSelectionAfterCatalogRefresh', () => {
   const zhipu = { name: '智谱2', slug: 'zhipu', models: ['glm-4.5-air', 'glm-5-turbo'] }
 
@@ -263,25 +280,72 @@ describe('reconcileSelectionAfterCatalogRefresh', () => {
 
   const moa = { name: 'Mixture of Agents', slug: 'moa', models: ['default'] }
 
+  const openrouter = {
+    models: ['glm-4.5-air', 'gpt-5.5'],
+    name: 'OpenRouter',
+    slug: 'openrouter'
+  }
+
   it('switches to the first new-group model when the current pick is gone', () => {
-    expect(selectionInCatalog([bytea], 'glm-4.5-air')).toBe(false)
+    expect(selectionInCatalog([bytea], 'glm-4.5-air', 'zhipu')).toBe(false)
     expect(firstSelectableCatalogModel([moa, bytea])).toEqual({
       model: 'deepseek-v4-flash',
       provider: 'byteplus'
     })
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa, bytea])).toEqual({
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa, bytea], 'zhipu')).toEqual({
       model: 'deepseek-v4-flash',
       provider: 'byteplus'
     })
   })
 
   it('keeps the current pick when it is still in the refreshed catalog', () => {
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [zhipu, moa])).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [zhipu, moa], 'zhipu')).toBeNull()
+  })
+
+  it('keeps the current provider when the same model id exists on another provider', () => {
+    expect(selectionInCatalog([openrouter, zhipu], 'glm-4.5-air', 'zhipu')).toBe(true)
+    expect(selectionInCatalog([openrouter, zhipu], 'glm-4.5-air', 'openrouter')).toBe(true)
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [openrouter, zhipu], 'zhipu')).toBeNull()
+  })
+
+  it('keeps a custom provider pair when OpenRouter lists the same model id', () => {
+    const model = '@cf/meta/llama-3.3-70b-instruct-fp8-fast'
+
+    const cloudflare = {
+      aliases: ['custom:cloudflare', 'cloudflare'],
+      models: [model],
+      name: 'Cloudflare',
+      slug: 'cloudflare'
+    }
+
+    const openrouterCf = { models: [model, 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }
+
+    expect(selectionInCatalog([openrouterCf, cloudflare], model, 'custom:cloudflare')).toBe(true)
+    expect(reconcileSelectionAfterCatalogRefresh(model, [openrouterCf, cloudflare], 'custom:cloudflare')).toBeNull()
+  })
+
+  it('does not jump to OpenRouter when the current provider is missing but still lists the same model id', () => {
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [openrouter, moa], 'zhipu')).toBeNull()
+  })
+
+  it('keeps the pick when the current provider is present but unconfigured', () => {
+    const emptyZhipu = { models: [], name: '智谱2', slug: 'zhipu' }
+
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [emptyZhipu, openrouter], 'zhipu')).toBeNull()
+  })
+
+  it('falls back when the current provider is populated and dropped the model', () => {
+    const zhipuWithoutAir = { models: ['glm-5-turbo'], name: '智谱2', slug: 'zhipu' }
+
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [zhipuWithoutAir, openrouter], 'zhipu')).toEqual({
+      model: 'glm-5-turbo',
+      provider: 'zhipu'
+    })
   })
 
   it('does not wipe the pick when the refreshed catalog has no selectable models', () => {
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa])).toBeNull()
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [])).toBeNull()
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', undefined)).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa], 'zhipu')).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [], 'zhipu')).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', undefined, 'zhipu')).toBeNull()
   })
 })

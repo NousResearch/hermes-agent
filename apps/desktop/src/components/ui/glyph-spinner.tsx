@@ -77,7 +77,7 @@ export function GlyphSpinner({
 }: GlyphSpinnerProps) {
   const spin = FRAMES_BY_NAME[spinner] ?? FRAMES_BY_NAME.braille!
   // Pause when this surface is a hidden (kept-alive) tab: N mounted tabs each
-  // animating burns CPU for pixels nobody can see. Window blur / minimize /
+  // animating burns CPU for pixels nobody can see. Window minimize /
   // document-hidden are handled globally instead, by the
   // `:root[data-renderer-animations-paused]` rule in styles.css that
   // main.tsx's installRendererAnimationPauseState() drives — the same

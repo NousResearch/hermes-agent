@@ -36,7 +36,9 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
     completion = MagicMock()
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=[]
-    ), patch.object(update_cmd, "_m") as m:
+    ), patch.object(update_cmd, "_m") as m, patch.object(
+        update_cmd, "_rebuild_desktop_after_update", return_value=True
+    ):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
     # The refresh pairs with the web build like every other call site.

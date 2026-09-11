@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n현재 모드: `{mode}`\\n\\n옵션을 선택하세요:"
     choice_fast:           "fast — Priority Processing 켜기"
     choice_normal:         "normal — 표준 처리"
+    choice_auto:           "auto — 매 턴의 처음 몇 초 동안 빠름"
+    choice_cold:           "cold — 세션의 첫 턴에만 빠름"
 
   footer:
     status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
@@ -339,6 +341,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**최종 활동:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · 무료 요금제 · nous/welcome · /login 명령으로 로그인"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

@@ -25,7 +25,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
@@ -408,7 +408,7 @@ export function AppearanceSettings() {
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
-  const retiredTips = useStore($retiredTips)
+  const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -844,9 +844,9 @@ export function AppearanceSettings() {
                   ]}
                   value={tipsEnabled ? 'on' : 'off'}
                 />
-                {/* The ✕ on a tip is permanent, so this is the only way back.
-                    It appears once there is something to bring back. */}
-                {retiredTips.length > 0 && (
+                {/* A tip shows once (✕ or timer), so this is the only way to a
+                    second lap. It appears once there is something to bring back. */}
+                {spentTips > 0 && (
                   <Button
                     onClick={() => {
                       triggerHaptic('selection')
@@ -855,7 +855,7 @@ export function AppearanceSettings() {
                     size="inline"
                     variant="text"
                   >
-                    {a.tipsReset(retiredTips.length)}
+                    {a.tipsReset(spentTips)}
                   </Button>
                 )}
               </div>

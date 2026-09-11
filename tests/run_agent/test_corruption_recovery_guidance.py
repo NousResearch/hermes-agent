@@ -13,9 +13,97 @@ The fix adds:
    message to all home channels after the gateway connects
 3. Improved "corrupt" cause wording in _format_turn_completion_explanation
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
+4. _send_session_db_warning_notifications() re-probes the active store (15 x 1s,
+   off the event loop) before broadcasting, so a startup lock that clears while the
+   messaging adapters connect never produces a warning about a failure that is
+   already gone
 """
 
 from pytest import fixture
+
+
+def test_session_db_warning_rechecks_recovery_before_notifying():
+    """A startup lock that has already cleared must not produce a stale user warning."""
+    import asyncio
+
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "OperationalError: database is locked"
+    probes = []
+
+    def recover(*, raise_on_error=False):
+        probes.append(raise_on_error)
+        runner._session_db_init_error = None
+        return object()
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("a cleared lock must not be broadcast as a live failure")
+
+    runner._open_session_db_for_active_scope = recover
+    runner._send_home_channel_message = fail_if_called
+
+    asyncio.run(runner._send_session_db_warning_notifications())
+
+    assert probes == [False]
+    assert runner._session_db_init_error is None
+
+
+def test_session_db_warning_waits_for_transient_lock_recovery(monkeypatch):
+    """A lock hidden behind the shared-store wrapper gets a recovery grace period."""
+    import asyncio
+
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "SessionStore SQLite handle unavailable"
+    outcomes = iter((None, None, object()))
+
+    def recover(*, raise_on_error=False):
+        outcome = next(outcomes)
+        if outcome is not None:
+            runner._session_db_init_error = None
+        return outcome
+
+    async def no_sleep(_seconds):
+        return None
+
+    runner._open_session_db_for_active_scope = recover
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    asyncio.run(runner._send_session_db_warning_notifications())
+
+    assert runner._session_db_init_error is None
+
+
+def test_session_db_warning_broadcasts_when_the_lock_persists(monkeypatch):
+    """A lock that never clears still warns the user — the probe must not swallow real failures."""
+    import asyncio
+
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "OperationalError: database is locked"
+    runner._open_session_db_for_active_scope = lambda *, raise_on_error=False: None
+    sent = []
+
+    monkeypatch.setattr(
+        runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())]
+    )
+
+    async def capture_send(_platform, _home, _transport, message, _log_fmt):
+        sent.append(message)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(runner, "_send_home_channel_message", capture_send)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    asyncio.run(runner._send_session_db_warning_notifications())
+
+    assert sent, "a lock that survived the grace period must still be broadcast"
+    assert "locked" in sent[0].lower() or "may not be persisted" in sent[0]
 
 
 def test_format_turn_completion_corrupt_includes_recovery_options():

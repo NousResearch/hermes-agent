@@ -138,7 +138,13 @@ class CLITerminalMixin:
         stacks on stale content (#60920, #25337); terminals without it never emit ``CSI I``.
         """
         now = time.monotonic()
-        if now - getattr(self, "_last_focus_regain_redraw", 0.0) < min_interval:
+        # None, not 0.0, is the "never fired" sentinel. time.monotonic() has an arbitrary
+        # origin -- on Linux it counts from boot -- so a 0.0 default reads as "repainted at
+        # monotonic zero" rather than "never repainted". On a host whose uptime is still
+        # below min_interval that suppresses the very first focus-in, which is the repaint
+        # that matters most: the one recovering the stale surface after a regain.
+        last = getattr(self, "_last_focus_regain_redraw", None)
+        if last is not None and now - last < min_interval:
             return
         self._last_focus_regain_redraw = now
         self._force_full_redraw()

@@ -418,6 +418,30 @@ class TestFocusRegainRedraw:
 
         assert calls == ["redraw"]
 
+    def test_focus_regain_redraw_fires_on_freshly_booted_host(self, bare_cli, monkeypatch):
+        """The first repaint fires even when the clock reads below ``min_interval``.
+
+        ``time.monotonic()`` has an arbitrary origin -- on Linux it counts from boot --
+        so on a host with low uptime (a fresh CI runner, a just-restarted box) the first
+        focus-in was compared against a 0.0 default and suppressed. Invisible on a
+        long-lived dev machine, where the monotonic clock is always large enough.
+
+        This is also why ``test_focus_regain_redraw_is_rate_limited`` above is
+        intermittent in CI: it pins ``min_interval=60.0``, so it fails on any runner
+        whose uptime is under 60 seconds when the slice runs, and passes on rerun.
+        """
+        from hermes_cli import cli_terminal_mixin
+
+        calls = []
+        bare_cli._force_full_redraw = lambda: calls.append("redraw")
+        monkeypatch.setattr(cli_terminal_mixin.time, "monotonic", lambda: 32.5)
+
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+
+        # First fires despite 32.5 < 60.0; the second is still rate-limited.
+        assert calls == ["redraw"]
+
     def test_focus_regain_redraw_fires_again_after_interval(self, bare_cli):
         calls = []
         bare_cli._force_full_redraw = lambda: calls.append("redraw")

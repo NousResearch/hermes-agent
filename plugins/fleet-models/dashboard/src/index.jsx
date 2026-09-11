@@ -788,7 +788,7 @@ function ModelsPage() {
     <div className="fm-root">
       <header className="fm-head">
         <div>
-          <h1>Models</h1>
+          <h1>Fleet Models</h1>
           <div className="fm-sub">Every agent's waterfall from one file — <code>~/.hermes/fleet/models.yaml</code> · revision {state.revision} · {state.doc.updated_by || "—"} {ago(state.doc.updated_at)}</div>
         </div>
         <div className="fm-row">

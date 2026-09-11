@@ -183,10 +183,17 @@ def teardown_function(_fn):
 
 
 def test_deliver_callback_accepts_matching_state():
+    from tui_gateway import server
+
     flow = _make_session()
-    out = deliver_callback_flow(
-        "sess-relay-1", "hosp", code="abc", state="s3cr3tstate",
-        iss="https://as.example.com")
+    response = server._methods["mcp.servers.oauth.callback"](
+        1,
+        {
+            "session_id": "sess-relay-1", "name": "hosp", "code": "abc",
+            "state": "s3cr3tstate", "iss": "https://as.example.com",
+        },
+    )
+    out = response["result"]
     assert out == {"ok": True, "session_id": "sess-relay-1"}
     assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
 

@@ -1391,6 +1391,16 @@ DEFAULT_CONFIG = {
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
+    "profiles": {
+        # Absolute, on-disk dirs treated as READ-ONLY additional named-profile roots
+        # for *dispatch* (`hermes -p <name>`, kanban workers). Profiles under these
+        # roots are reachable by name but are intentionally NOT enumerated by
+        # `hermes profile list` or the desktop bot roster, so low-activity / worker
+        # profiles can stay out of the spawn pool while still receiving dispatcher
+        # work. Default [] = current behaviour (only ~/.hermes/profiles).
+        "extra_profiles_roots": [],
+    },
+
     "slack": {
         "require_mention": True,  # require @mention to respond in channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention

@@ -4174,11 +4174,15 @@ class BasePlatformAdapter(ABC):
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))
-        profile, profile_route_rejected = None, False  # profile from configured routes, if any
+        # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
+        # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
+        owner_profile = getattr(self, "_owner_profile", None)
+        profile, profile_route_rejected = owner_profile, False
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
-                profile = self.gateway_runner._profile_name_for_source(SessionSource(**fields))
+                profile = self.gateway_runner._profile_name_for_source(
+                    SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:

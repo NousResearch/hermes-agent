@@ -4268,23 +4268,32 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_name_for_source(
+        self, source: SessionSource, adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes (most specific wins).
-        ``None`` = default/active profile. Gated on ``multiplex_profiles``, since the scoped run only
-        activates under multiplexing; otherwise keys would be profile-namespaced while the agent ran in
-        ``agent:main``."""
+        ``None`` = default/active profile (or, for a secondary adapter, its own profile — the caller
+        stamps it). Gated on ``multiplex_profiles``, since the scoped run only activates under
+        multiplexing; otherwise keys would be profile-namespaced while the agent ran in ``agent:main``.
+        ``adapter_profile`` is the profile owning the receiving bot; only routes declaring it as
+        ``bot_profile`` apply (#104933)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
+        if adapter_profile is None:
+            # Sources built outside ``build_source`` may still carry the receiving adapter as provenance.
+            owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
+            if isinstance(owner, tuple):
+                adapter_profile = owner[1]
         from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None))
+                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",

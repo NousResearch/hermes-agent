@@ -322,6 +322,29 @@ no route stay on the default/active profile. The routed profile gets the full
 per-profile isolation described above (config, skills, memory, credentials,
 session namespace). Routing works on every platform adapter, not just Discord.
 
+A route applies only to messages received by the **default profile's bot**
+unless it names another bot with `bot_profile: <profile>`. Telegram DMs use the
+same `chat_id` for every bot (the user's id), so without this a
+`chat_id` route meant for the shared bot would also capture that user's DMs
+with a secondary profile's dedicated bot. Messages arriving at a secondary
+profile's own bot stay in that profile:
+
+```yaml
+    # Pin one user's DM with team_b's OWN bot to a third profile
+    - name: teamb-owner-dm
+      platform: telegram
+      bot_profile: team_b
+      chat_id: "72719239"
+      profile: ops-for-team-b
+```
+
+Authorization for a routed message is always decided by the **receiving bot's
+profile** (its token and allowlist), including follow-ups sent while the agent
+is busy and mid-turn checks such as `/topic` or `/stop`; the routed profile
+itself needs no copy of the allowlist. A routed profile without a bot of its
+own also receives background notifications (process completions, heartbeats,
+async delegation results) through the shared bot after a gateway restart.
+
 On WhatsApp and WhatsApp Cloud, a `chat_id` route matches across user-identity
 forms: a bare phone number (`15551234567`), a JID
 (`15551234567@s.whatsapp.net`), and a LID (`…@lid`) all refer to the same

@@ -109,6 +109,91 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
+# ---------------------------------------------------------------------
+# Exploratory-goal heuristic (#34196)
+# ---------------------------------------------------------------------
+_EXPLORATORY_KEYWORDS: Tuple[str, ...] = (
+    "review",
+    "reflect",
+    "reflection",
+    "suggest",
+    "suggestions",
+    "explore",
+    "brainstorm",
+    "propose options",
+    "propose some",
+    "analyze",
+    "analysis",
+    "compare",
+    "comparison",
+    "summarize",
+    "summary",
+    "think about",
+    "think through",
+    "consider",
+    "recommend",
+    "recommendation",
+    "observe",
+    "reflect on ways",
+    "ways you can help",
+    "ways to help",
+    "what could",
+    "what would you suggest",
+    "investigate",
+    "audit",
+    "evaluate",
+)
+
+_ILLUSTRATIVE_MARKERS: Tuple[str, ...] = (
+    "for example",
+    "e.g.",
+    "such as",
+    "examples include",
+    "examples:",
+    "maybe",
+    "you could",
+    "could be",
+    "or maybe",
+    "or perhaps",
+    "like writing",
+    "like preparing",
+    "like creating",
+)
+
+
+def _classify_goal_shape(goal: str) -> str:
+    """Classify a goal as 'exploratory', 'illustrative', or 'concrete'."""
+    if not goal:
+        return "concrete"
+    text = goal.lower()
+    is_exploratory = any(kw in text for kw in _EXPLORATORY_KEYWORDS)
+    is_illustrative = any(marker in text for marker in _ILLUSTRATIVE_MARKERS)
+    if is_exploratory:
+        return "exploratory"
+    if is_illustrative:
+        return "illustrative"
+    return "concrete"
+
+
+_GOAL_SHAPE_HINTS: Dict[str, str] = {
+    "exploratory": (
+        "\n\nNote: This goal is EXPLORATORY (review/reflect/suggest/analyze). "
+        "A substantive synthesis or recommendation list IS the deliverable. "
+        "Do not require the agent to manufacture additional artifacts that "
+        "the goal only mentioned as examples. Mark DONE when the response "
+        "meaningfully addresses the stated scope."
+    ),
+    "illustrative": (
+        "\n\nNote: This goal lists possible actions with 'for example' / "
+        "'maybe' / 'you could' markers. Treat those as illustrative "
+        "possibilities, NOT as required deliverables. The agent satisfies "
+        "the goal by addressing the core request — it does not need to "
+        "produce every listed example."
+    ),
+    "concrete": "",
+}
+
+
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
@@ -153,6 +238,23 @@ JUDGE_SYSTEM_PROMPT = (
     "finishes.\n\n"
     "CONTINUE — not done, and there is a concrete next step the agent can "
     "take right now. This is the default when in doubt.\n\n"
+    "- The goal is EXPLORATORY (asks to review, reflect, suggest, explore, "
+    "brainstorm, propose options, analyze, or compare) AND the response "
+    "provides a substantive synthesis / analysis / recommendation that "
+    "addresses the stated scope. For exploratory goals a high-quality "
+    "synthesis IS the deliverable — do NOT keep continuing just to "
+    "manufacture artifacts the goal merely listed as examples of help.\n\n"
+    "Guardrails when judging CONTINUE:\n"
+    "- Do NOT infer 'incomplete' from a file being untracked, unstaged, "
+    "or uncommitted unless the goal explicitly required staging, "
+    "committing, pushing, or a clean working tree.\n"
+    "- Do NOT require a magic phrase like 'goal complete'. A clear final "
+    "answer with the requested content satisfies the goal.\n"
+    "- Treat goal items phrased as 'for example' / 'maybe' / 'you could' "
+    "as illustrative possibilities, NOT required deliverables.\n"
+    "- When the goal scope is narrow (one file, one section, one specific "
+    "change) and the response confirms that exact scope is done, return "
+    "DONE — do not expand scope to neighboring sections.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
     '{"verdict": "done", "reason": "<one sentence>"}\n'
     '{"verdict": "blocked", "reason": "<one sentence>"}\n'
@@ -906,16 +1008,23 @@ def judge_goal(
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
+    goal_shape = _classify_goal_shape(goal)
+    shape_hint = _GOAL_SHAPE_HINTS.get(goal_shape, "")
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
         if clean_subgoals:
             contract_block = f"{contract_block}\n{_render_extra_criteria(clean_subgoals)}"
         prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(contract_block=_truncate(contract_block, 2500), **common)
+        # Contract is the authoritative definition of done — the shape hint
+        # (a heuristic) deliberately does not override it.
     elif clean_subgoals:
         subgoals_block = "\n".join(f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1))
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=_truncate(subgoals_block, 2000), **common)
+        # With-subgoals template enforces strict evidence per criterion;
+        # don't dilute that with exploratory/illustrative hints.
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
+        prompt = prompt + shape_hint
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
@@ -1688,6 +1797,6 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
+    "JUDGE_SYSTEM_PROMPT", "DEFAULT_MAX_TURNS", "_classify_goal_shape", "_GOAL_SHAPE_HINTS", "_EXPLORATORY_KEYWORDS", "_ILLUSTRATIVE_MARKERS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
     "run_kanban_goal_loop",
 ]

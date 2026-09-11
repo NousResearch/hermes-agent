@@ -873,3 +873,90 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+class TestClassifyGoalShape:
+    def test_exploratory_review(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("Please review the architecture") == "exploratory"
+
+    def test_illustrative_for_example(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("Help me plan, for example writing a README") == "illustrative"
+
+    def test_concrete_default(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("Add a --verbose flag to the CLI") == "concrete"
+
+    def test_empty_is_concrete(self):
+        from hermes_cli.goals import _classify_goal_shape
+        assert _classify_goal_shape("") == "concrete"
+
+
+class TestJudgeSystemPromptGuardrails:
+    def test_mentions_exploratory(self):
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "EXPLORATORY" in JUDGE_SYSTEM_PROMPT
+
+    def test_mentions_untracked(self):
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "untracked" in JUDGE_SYSTEM_PROMPT
+
+    def test_mentions_magic_phrase(self):
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "magic phrase" in JUDGE_SYSTEM_PROMPT
+
+    def test_mentions_illustrative(self):
+        from hermes_cli.goals import JUDGE_SYSTEM_PROMPT
+        assert "illustrative" in JUDGE_SYSTEM_PROMPT
+
+
+class TestJudgePromptIncludesGoalShapeHint:
+    def test_exploratory_gets_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        def fake_llm(call_llm, system_prompt, user_prompt, timeout):
+            captured["user"] = user_prompt
+            return '{"verdict": "done", "reason": "ok"}'
+
+        with patch("hermes_cli.goals._call_goal_judge_llm", side_effect=fake_llm), patch(
+            "agent.auxiliary_client.call_llm", return_value=None
+        ):
+            goals.judge_goal("review the logs", "Here is a synthesis of the logs.")
+        assert "EXPLORATORY" in captured["user"]
+
+    def test_concrete_no_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        def fake_llm(call_llm, system_prompt, user_prompt, timeout):
+            captured["user"] = user_prompt
+            return '{"verdict": "continue", "reason": "ok"}'
+
+        with patch("hermes_cli.goals._call_goal_judge_llm", side_effect=fake_llm), patch(
+            "agent.auxiliary_client.call_llm", return_value=None
+        ):
+            goals.judge_goal("Add a --verbose flag to the CLI", "I added it.")
+        assert "EXPLORATORY" not in captured["user"]
+        assert "for example" not in captured["user"]
+
+    def test_subgoals_skip_hint(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        def fake_llm(call_llm, system_prompt, user_prompt, timeout):
+            captured["user"] = user_prompt
+            return '{"verdict": "continue", "reason": "ok"}'
+
+        with patch("hermes_cli.goals._call_goal_judge_llm", side_effect=fake_llm), patch(
+            "agent.auxiliary_client.call_llm", return_value=None
+        ):
+            goals.judge_goal("review the logs", "synthesis", subgoals=["must cite file X"])
+        assert "EXPLORATORY" not in captured["user"]

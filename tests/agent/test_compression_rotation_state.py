@@ -18,6 +18,7 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import time
 from pathlib import Path
@@ -106,6 +107,74 @@ def refresh_state_db(tmp_path: Path):
         yield db
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("tier", ["priority", None, "auto", "cold"])
+@pytest.mark.parametrize("provider", ["openai", "custom"])
+def test_runtime_metadata_survives_creation_and_rotations(refresh_state_db, monkeypatch, tier, provider):
+    import hermes_cli.runtime_provider as rp
+
+    endpoint = "https://example.invalid/v1"
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "custom_providers": [{"name": "test-route", "base_url": endpoint}],
+    })
+    db = refresh_state_db
+    agent = _build_agent_with_db(db, "runtime-parent")
+    agent.service_tier = tier
+    agent.provider = provider
+    agent.base_url = endpoint
+    agent._session_init_model_config["_delegate_from"] = "spawner"
+    agent._ensure_db_session()
+    try:
+        initial = json.loads(db.get_session(agent.session_id)["model_config"])
+        assert initial["service_tier"] == (tier or "normal")
+        assert initial["provider"] == ("custom:test-route" if provider == "custom" else provider)
+
+        # Live switches must win over the constructor snapshot on every rotation.
+        for current_tier in (None, "priority", "auto", "cold"):
+            parent = agent.session_id
+            agent.service_tier = current_tier
+            agent.provider = "openai"
+            agent.model = "runtime-model"
+            agent.reasoning_config = {"effort": "high"}
+            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+            assert agent.session_id != parent
+            row = db.get_session(agent.session_id)
+            config = json.loads(row["model_config"])
+            assert row["parent_session_id"] == parent
+            assert row["model"] == agent.model
+            assert config["provider"] == agent.provider
+            assert config["service_tier"] == (current_tier or "normal")
+            assert config["reasoning_config"] == agent.reasoning_config
+            assert config["_delegate_from"] == "spawner"
+            assert "api_key" not in config
+            assert "base_url" not in config
+            assert "request_overrides" not in config
+        assert json.loads(db.get_session("runtime-parent")["model_config"]) == initial
+    finally:
+        agent.close()
+
+
+def test_desktop_persist_keeps_observed_normal_distinct_from_missing(refresh_state_db):
+    from types import SimpleNamespace
+
+    from tui_gateway.server import (
+        _persist_live_session_runtime,
+        _runtime_model_config,
+        _stored_session_runtime_overrides,
+    )
+
+    db = refresh_state_db
+    agent = _build_agent_with_db(db, "normal-runtime", platform="desktop")
+    agent._ensure_db_session()
+    try:
+        _persist_live_session_runtime({"agent": agent, "session_key": agent.session_id})
+        row = db.get_session(agent.session_id)
+        assert json.loads(row["model_config"])["service_tier"] == "normal"
+        assert _stored_session_runtime_overrides(row)["service_tier_override"] == ""
+        assert "service_tier" not in _runtime_model_config(SimpleNamespace())
+    finally:
+        agent.close()
 
 
 class TestGoalMigratesOnRotation:

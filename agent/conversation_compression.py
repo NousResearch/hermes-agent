@@ -3275,6 +3275,14 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
     return _session_source_for_agent(getattr(agent, "platform", None))
 
 
+def _publication_model_config(agent):
+    """Live session metadata for the compression child (falls back to the init snapshot)."""
+    row_config = getattr(agent, "_session_row_model_config", None)
+    if callable(row_config):
+        return row_config()
+    return getattr(agent, "_session_init_model_config", None)
+
+
 def _publish_rotated_compaction(
     agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
     old_session_id: str, compressed_user_turn_outcome: str,
@@ -3314,7 +3322,7 @@ def _publish_rotated_compaction(
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=_publication_model_config(agent), system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,

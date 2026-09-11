@@ -91,6 +91,41 @@ def test_multitype_array_becomes_anyof_no_branch_dropped():
     assert prop["description"] == "status filter"
 
 
+def test_multitype_array_branch_gets_items_and_properties():
+    # A multi-type ``type`` that includes "array"/"object" synthesizes an
+    # anyOf whose branches must ALSO be repaired: a bare {"type": "array"}
+    # branch would otherwise skip the array-items injection and Gemini would
+    # still 400 the whole declaration with ``...items: missing field`` (#71804).
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "flex": {"type": ["array", "object", "string"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["flex"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [
+        {"type": "array", "items": {}},
+        {"type": "object", "properties": {}},
+        {"type": "string"},
+    ]
+
+
+def test_nullable_multitype_array_branch_gets_items():
+    # Same repair with a "null" member lifted to ``nullable: true``.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "flex": {"type": ["array", "string", "null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["flex"]
+    assert prop["anyOf"] == [{"type": "array", "items": {}}, {"type": "string"}]
+    assert prop["nullable"] is True
+
+
 def test_all_null_type_array_becomes_null_type():
     tools = [_tool("t", {
         "type": "object",
@@ -198,6 +233,63 @@ def test_items_sanitized_in_array_schema():
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
     assert items == {"type": "object", "properties": {}}
+
+
+def test_array_without_items_gets_empty_items():
+    """#71804: Gemini 400s a bare ``{"type": "array"}`` with
+    ``...items: missing field``. Inject a permissive ``items: {}``."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "command": {"type": "array"},  # no ``items``
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    command = out[0]["function"]["parameters"]["properties"]["command"]
+    assert command == {"type": "array", "items": {}}
+
+
+def test_nested_array_without_items_gets_empty_items():
+    """An inner array element type missing ``items`` is also filled."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "matrix": {
+                "type": "array",
+                "items": {"type": "array"},  # inner array missing ``items``
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    matrix = out[0]["function"]["parameters"]["properties"]["matrix"]
+    assert matrix["items"] == {"type": "array", "items": {}}
+
+
+def test_array_with_items_is_unchanged():
+    """A well-formed array (``items`` present) keeps its declared item type."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    tags = out[0]["function"]["parameters"]["properties"]["tags"]
+    assert tags == {"type": "array", "items": {"type": "string"}}
+
+
+def test_bare_string_array_value_gets_items():
+    """A malformed bare-string ``"array"`` schema node normalizes to a
+    dict *with* ``items`` (#71804)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "items_list": "array",  # bare string where a schema dict belongs
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    node = out[0]["function"]["parameters"]["properties"]["items_list"]
+    assert node == {"type": "array", "items": {}}
 
 
 # ─────────────────────────────────────────────────────────────────────────

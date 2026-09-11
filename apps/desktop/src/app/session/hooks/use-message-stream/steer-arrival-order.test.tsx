@@ -19,6 +19,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ComposerModeFrame } from '@/app/chat/composer/contrib'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -32,7 +33,7 @@ import { useMessageStream } from './index'
 const SID = 'steer-order-session'
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
-let redirect: ((text: string) => Promise<boolean>) | null = null
+let redirect: ((text: string, opts?: ComposerModeFrame) => Promise<boolean | 'canceled'>) | null = null
 let states: Map<string, ClientSessionState>
 
 /** The gateway accepts every redirect — these suites pin CLIENT ordering. */

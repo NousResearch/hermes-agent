@@ -289,3 +289,51 @@ describe('useComposerQueue park integration', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 })
+
+// 'canceled' (the composer middleware declined the send) is a TRUTHY string:
+// a truthiness test would consume the queued entry while delivering nothing.
+// Only a delivered redirect (`true`) may remove it — the settle drain owns the
+// rest, so the user's words are never lost.
+describe('steer-now honors a canceled composer frame', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(true)
+  })
+
+  it('keeps the entry queued when the middleware cancels', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'ship it' })!
+    const onSteer = vi.fn<NonNullable<ChatBarProps['onSteer']>>(async () => 'canceled' as const)
+    const { hook } = renderQueueHook({ busy: true, onSteer })
+
+    let consumed = true
+
+    await act(async () => {
+      consumed = await hook.result.current.steerQueuedNow(entry.id)
+    })
+
+    expect(consumed).toBe(false)
+    expect(getQueuedPrompts(SESSION_KEY).map(item => item.id)).toEqual([entry.id])
+  })
+
+  it('consumes the entry only on a delivered redirect', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'ship it' })!
+    const onSteer = vi.fn<NonNullable<ChatBarProps['onSteer']>>(async () => true)
+    const { hook } = renderQueueHook({ busy: true, onSteer })
+
+    await act(async () => {
+      await hook.result.current.steerQueuedNow(entry.id)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+})

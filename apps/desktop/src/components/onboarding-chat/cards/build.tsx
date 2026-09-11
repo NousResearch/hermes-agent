@@ -5,11 +5,14 @@
  * before it renders.
  */
 
+import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useSessionView } from '@/app/chat/session-view'
 import { $handoffError, retrySetupHandoff } from '@/app/contrib/handoff-receipt'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
 import {
@@ -17,10 +20,14 @@ import {
   firstTaskTitle,
   hasCompletedSetupHandoff,
   parseHandoffPlan,
-  requestSetupHandoff
+  requestSetupHandoff,
+  SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
+import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
 
 /** A tappable option is the user's own reply, so it goes out VISIBLE — the
  *  model's next message answers a real turn, not a hidden [setup] note. */
@@ -33,6 +40,9 @@ const FALLBACK_OPTION = "Let's figure it out together"
  * `::onboarding{step="first" options="A Discord bot|A habit tracker|…"}`.
  */
 export function FirstBuildCard({ attrs, locked }: CardProps) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
   const [picked, setPicked] = useState<null | string>(null)
 
   // Parse + validate the model's options: up to 4, each short enough to sit on
@@ -64,7 +74,7 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
       return
     }
 
-    if (requestComposerSubmit(option)) {
+    if (requestComposerSubmit(option, { target })) {
       setPicked(option)
     }
   }
@@ -92,6 +102,9 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
  * and a locked (replayed) transcript never re-fires.
  */
 export function HandoffCard({ attrs, locked }: CardProps) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
   const task = (attrs.task ?? '').trim().slice(0, 60)
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
@@ -99,10 +112,35 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const error = useStore($handoffError)
 
   useEffect(() => {
-    if (task && brief && !locked) {
-      requestSetupHandoff(task, brief, plan)
+    if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || hasCompletedSetupHandoff()) {
+      return
     }
-  }, [brief, locked, plan, task])
+
+    let cancelled = false
+    void resolveSessionOwner(storedId)
+      .then(owner => {
+        assertSessionOwnerResolved(owner, { method: 'onboarding.handoff', sessionId: storedId })
+
+        if (!cancelled) {
+          requestSetupHandoff(task, brief, plan, {
+            storedId,
+            runtimeId,
+            connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
+            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+          })
+        }
+      })
+      .catch(error => {
+        if (!cancelled) {
+          $handoffError.set(String(error))
+          $setupHandoff.set({ task, brief, plan, phase: 'error' })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [brief, locked, plan, task, storedId, runtimeId])
 
   if (!task || !brief) {
     return null
@@ -131,42 +169,46 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   )
 }
 
-/**
- * The progress card — the build's live status, inline in the transcript. The
- * model re-emits `::onboarding{step="progress" title="…"}` as it works; each
- * emission appends a step row to a session-wide list (module-scope, keyed by
- * nothing — the onboarding thread is the only consumer), the newest row
- * pulsing while the turn streams. Read-only: the user watches the build
- * breathe; permission prompts ride the session concurrently.
- *
- * No fake percentages — the model can't know N-of-M mid-build, so the card is
- * an honest growing step list, not a bar that lies.
- */
-const progressSteps: string[] = []
-
+/** Progress comes from this transcript, so virtualization cannot append history. */
 export function ProgressCard({ attrs, locked }: CardProps) {
+  const view = useSessionView()
+  const messages = useStore(view.$messages)
+  const messageId = useAuiState(state => state.message.id)
   const title = (attrs.title ?? '').trim() || 'Working on it'
+  const index = messages.findIndex(message => message.id === messageId)
+  const previous = index < 0 ? [] : messages.slice(0, index)
 
-  // Append on first sight of a new title (re-emits of the same step are the
-  // model re-rendering mid-stream, not a new step).
-  const [index] = useState(() => {
-    if (progressSteps[progressSteps.length - 1] !== title) {
-      progressSteps.push(title)
-    }
+  const steps = previous.flatMap(message => {
+    const directives = message.parts.flatMap(part =>
+      part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
+    )
 
-    return progressSteps.length - 1
+    const progress = directives
+      .filter(
+        segment =>
+          segment.kind === 'directive' &&
+          segment.directive.name === 'onboarding' &&
+          segment.directive.attrs.step === 'progress'
+      )
+      .at(-1)
+
+    return progress?.kind === 'directive'
+      ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
+      : []
   })
+
+  steps.push({ id: messageId, title })
 
   return (
     <div className="my-3 grid max-w-md gap-1.5" data-onboarding-card>
-      {progressSteps.slice(0, index + 1).map((step, i) => {
-        const current = i === index
+      {steps.map(step => {
+        const current = step.id === messageId
 
         return (
-          <div className="flex items-center gap-2 text-sm" key={`${i}-${step}`}>
-            <StatusDot live={current && !locked} muted={!current} />
+          <div className="flex items-center gap-2 text-sm" key={step.id}>
+            <StatusDot live={current && locked} muted={!current} />
             <span className={current ? 'text-(--ui-text-secondary)' : 'text-(--ui-text-quaternary)'}>
-              {current && !locked ? `${step}…` : step}
+              {current && locked ? `${step.title}…` : step.title}
             </span>
           </div>
         )

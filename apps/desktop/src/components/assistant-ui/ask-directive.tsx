@@ -19,18 +19,27 @@
  * turn.
  */
 
+import { useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useSessionView } from '@/app/chat/session-view'
 import { cn } from '@/lib/utils'
 
 // Picked questions, module-scoped: transcript virtualization remounts
 // directives with fresh local state, which would resurrect a settled picker.
-// Keyed by question text — good enough at transcript scale.
+// A repeated question in a later message or another session is a new choice.
 const settled = new Set<string>()
 
 export function AskDirective({ attrs, streaming }: { attrs: Record<string, string>; streaming: boolean }) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const messageId = useAuiState(state => state.message.id)
   const question = (attrs.question ?? '').trim()
+  const identity = JSON.stringify([storedId ?? runtimeId, messageId, question])
+  const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
 
   const options = (attrs.options ?? '')
     .split('|')
@@ -39,7 +48,7 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
     .slice(0, 6)
 
   const wantsInput = attrs.input === 'true' || attrs.input === 'yes'
-  const [picked, setPicked] = useState<null | string>(() => (settled.has(question) ? '' : null))
+  const [picked, setPicked] = useState<null | string>(() => (settled.has(identity) ? '' : null))
 
   if (!question || (options.length === 0 && !wantsInput)) {
     return null
@@ -50,8 +59,8 @@ export function AskDirective({ attrs, streaming }: { attrs: Record<string, strin
       return
     }
 
-    if (requestComposerSubmit(value.trim())) {
-      settled.add(question)
+    if (requestComposerSubmit(value.trim(), { target })) {
+      settled.add(identity)
       setPicked(value.trim())
     }
   }

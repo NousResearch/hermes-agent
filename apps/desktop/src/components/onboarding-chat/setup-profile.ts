@@ -69,6 +69,7 @@ export function parseHandoffPlan(raw: string | undefined): HandoffPlan {
 }
 
 export interface SetupHandoffState {
+  guide?: SetupSession
   task: string
   brief: string
   phase: SetupHandoffPhase
@@ -81,24 +82,25 @@ export interface SetupHandoffState {
  *  Null until the model emits the handoff directive. */
 export const $setupHandoff = atom<null | SetupHandoffState>(null)
 
-/** The guide's own session ids (+ owning profile, null in the profile-less
- *  fallback), kept so the handoff can whisper a hidden [setup] note back into
- *  the guide chat — on the guide's own backend — after the build takes over. */
-export const $setupSession = atom<null | {
-  profile: null | string
+/** The issuing welcome chat owns the completion note, even in a background tile. */
+export interface SetupSession {
+  connectionId: null | string
+  profile: string
   runtimeId: string
   storedId: null | string
-}>(null)
+}
+
+export const $setupSession = atom<null | SetupSession>(null)
 
 /** Raise the handoff request (once per task — re-parses and re-mounts of the
  *  directive are no-ops, and a relaunch after a completed handoff stays
  *  quiet thanks to the storage latch). */
-export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan = 'build'): boolean {
+export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {
   if ($setupHandoff.get() !== null || readKey(HANDOFF_DONE_KEY) === '1') {
     return false
   }
 
-  $setupHandoff.set({ brief, phase: 'pending', plan, task })
+  $setupHandoff.set({ brief, phase: 'pending', plan, task, guide })
 
   return true
 }

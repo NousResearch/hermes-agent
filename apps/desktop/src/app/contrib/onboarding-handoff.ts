@@ -122,6 +122,7 @@ async function adoptGuideSession(
   const adoptedRuntimeId = $activeSessionId.get()
   $chatOnboardingThreadIds.set(adoptedRuntimeId ? [canonical.id, adoptedRuntimeId] : [canonical.id])
   $setupSession.set({
+    connectionId: guideSourceConnectionId(canonical.id),
     profile: SETUP_PROFILE,
     runtimeId: adoptedRuntimeId ?? canonical.id,
     storedId: canonical.id
@@ -219,7 +220,7 @@ export function useOnboardingHandoff({
 
       const storedId = $selectedStoredSessionId.get()
       $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
-      $setupSession.set({ profile: SETUP_PROFILE, runtimeId, storedId })
+      $setupSession.set({ connectionId: guideSourceConnectionId(storedId), profile: SETUP_PROFILE, runtimeId, storedId })
 
       // Manual title authority prevents the hidden runbook becoming the title.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
@@ -294,7 +295,7 @@ export function useOnboardingHandoff({
         return
       }
 
-      $setupSession.set({ profile: SETUP_PROFILE, runtimeId: $activeSessionId.get() ?? '', storedId: selectedStoredId })
+      $setupSession.set({ connectionId, profile: SETUP_PROFILE, runtimeId: $activeSessionId.get() ?? '', storedId: selectedStoredId })
       $setupHandoff.set({ task: saved.task, brief: saved.brief, plan: saved.plan, phase: 'pending' })
     } catch (error) {
       notify({
@@ -316,19 +317,8 @@ export function useOnboardingHandoff({
     $setupHandoff.set({ ...setupHandoff, phase: 'opening' })
 
     void (async () => {
-      // A replayed welcome card after relaunch can be the first caller; its
-      // selected chat restores the guide pointer before any profile switch.
-      const setupSession = $setupSession.get() ?? {
-        storedId: $selectedStoredSessionId.get(),
-        runtimeId: $activeSessionId.get() ?? '',
-        profile: $activeGatewayProfile.get()
-      }
-
-      if (!$setupSession.get() && setupSession.storedId) {
-        $setupSession.set(setupSession)
-      }
-
-      const connectionId = guideSourceConnectionId(setupSession.storedId)
+      const setupSession = setupHandoff.guide ?? $setupSession.get()
+      const connectionId = setupSession?.connectionId ?? null
 
       const signpost = !declinedLookAround($messages.get())
       const previousNewChatProfile = $newChatProfile.get()
@@ -344,6 +334,7 @@ export function useOnboardingHandoff({
           throw new Error('The welcome chat owner is not available yet. Reopen it and retry the first build.')
         }
 
+        $setupSession.set(setupSession)
         receiptKey = handoffReceiptKey(connectionId, setupSession.storedId)
         receipt = readHandoffReceipt(receiptKey)
         const owner: HandoffReceipt['owner'] = receipt?.owner ?? { connectionId, profile: BUILD_PROFILE }

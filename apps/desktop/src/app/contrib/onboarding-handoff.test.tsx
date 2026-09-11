@@ -76,19 +76,19 @@ import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-act
 import type { ClientSessionState } from '@/app/types'
 import * as assembly from '@/components/onboarding-chat/assembly'
 import { $chatOnboardingSolo, $onboardingGreeting } from '@/components/onboarding-chat/assembly'
-import { group } from '@/components/pane-shell/tree/model'
-import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
-import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import {
   $setupHandoff,
   $setupSession,
   hasCompletedSetupHandoff,
   resetSetupHandoffForTests
 } from '@/components/onboarding-chat/setup-profile'
+import { group } from '@/components/pane-shell/tree/model'
+import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $onboardingAnswers, DEFAULT_ANSWERS } from '@/store/onboarding-answers'
 import { $onboardingGate, devResetOnboardingFlow } from '@/store/onboarding-gate'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
@@ -149,7 +149,12 @@ beforeEach(() => {
   mocks.connectionId = 'source-a'
   $activeGatewayProfile.set('hermes-setup')
   $newChatProfile.set('hermes-setup')
-  $setupSession.set({ profile: 'hermes-setup', runtimeId: 'guide-runtime', storedId: 'guide-stored' })
+  $setupSession.set({
+    connectionId: 'source-a',
+    profile: 'hermes-setup',
+    runtimeId: 'guide-runtime',
+    storedId: 'guide-stored'
+  })
   $activeSessionId.set('guide-runtime')
   $selectedStoredSessionId.set('guide-stored')
   mocks.request.mockImplementation(async (_connection, profile, method) => {
@@ -275,7 +280,11 @@ describe('the real onboarding handoff effect', () => {
     )
     vi.mocked(h.options.createBackendSessionForSend).mockImplementation(async () => {
       expect($chatOnboardingSolo.get()).toBe(true)
-      if (failure === 'throw') throw new Error('create failed')
+
+      if (failure === 'throw') {
+        throw new Error('create failed')
+      }
+
       return null
     })
 
@@ -353,6 +362,52 @@ describe('the real onboarding handoff effect', () => {
       expect.anything()
     )
     expect(mocks.watch).toHaveBeenCalledWith('build-runtime-2', 'default')
+  })
+
+  it('recovers the issuing tile guide while another chat is selected', async () => {
+    const h = harness()
+    act(() => $setupHandoff.set({ ...task, phase: 'pending' }))
+    await waitFor(() => expect($setupHandoff.get()?.phase).toBe('error'))
+    h.unmount()
+    resetSetupHandoffForTests()
+    $activeGatewayProfile.set('other-profile')
+    $activeSessionId.set('other-runtime')
+    $selectedStoredSessionId.set('other-stored')
+    mocks.connectionId = 'other-source'
+    mocks.request.mockImplementation(async (_connection, _profile, method) =>
+      method === 'session.resume'
+        ? { session_id: 'recovered', session_key: 'build-stored', running: false, messages: [] }
+        : { status: 'streaming' }
+    )
+    const resumed = harness()
+    act(() =>
+      $setupHandoff.set({
+        ...task,
+        phase: 'pending',
+        guide: {
+          connectionId: 'source-a',
+          profile: 'hermes-setup',
+          storedId: 'guide-stored',
+          runtimeId: 'guide-runtime'
+        }
+      })
+    )
+    await waitFor(() => expect($setupHandoff.get()?.phase).toBe('done'))
+
+    expect(resumed.options.createBackendSessionForSend).not.toHaveBeenCalled()
+    expect($setupSession.get()).toMatchObject({
+      runtimeId: 'guide-runtime',
+      storedId: 'guide-stored',
+      connectionId: 'source-a'
+    })
+    expect(mocks.request).toHaveBeenCalledWith(
+      'source-a',
+      'hermes-setup',
+      'prompt.submit',
+      expect.objectContaining({ session_id: 'guide-runtime', display_kind: 'hidden' }),
+      expect.anything()
+    )
+    expect(mocks.request.mock.calls.some(([connection]) => connection === 'other-source')).toBe(false)
   })
 
   it('reconciles a lost ACK after remount without creating or submitting another build', async () => {

@@ -4,9 +4,11 @@
  * report the pick so the model moves on.
  */
 
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -18,10 +20,13 @@ export interface CardProps {
 }
 
 export function useCardCommit() {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
   const [done, setDone] = useState(false)
 
   const commit = (summary: string): boolean => {
-    const sent = requestComposerSubmit(`[setup] ${summary}`, { displayKind: 'hidden' })
+    const sent = requestComposerSubmit(`[setup] ${summary}`, { displayKind: 'hidden', target })
 
     if (sent) {
       setDone(true)

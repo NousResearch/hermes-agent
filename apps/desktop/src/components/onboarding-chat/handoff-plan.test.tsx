@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $machine } from '@/store/machine'
 import { DEFAULT_ANSWERS } from '@/store/onboarding-answers'
+import { $activeSessionId, $selectedStoredSessionId, setSessionOwnerHint } from '@/store/session'
 
 import { OnboardingChatDirective } from './directive'
 import { $setupHandoff, buildFirstTaskRunbook, parseHandoffPlan, resetSetupHandoffForTests } from './setup-profile'
@@ -60,7 +61,10 @@ describe('the machine-setup plan', () => {
     }
   })
 
-  it('carries the plan from the card through to the handoff', () => {
+  it('carries the plan from the card through to the handoff', async () => {
+    $activeSessionId.set('guide-runtime')
+    $selectedStoredSessionId.set('guide-stored')
+    setSessionOwnerHint('guide-stored', { connectionId: 'guide-source', profile: 'hermes-setup' })
     render(
       <OnboardingChatDirective
         attrs={{
@@ -75,6 +79,6 @@ describe('the machine-setup plan', () => {
 
     // The card performs the handoff on mount — there is no surface to pick.
     expect(screen.queryAllByRole('button')).toHaveLength(0)
-    expect($setupHandoff.get()?.plan).toBe('machine-setup')
+    await waitFor(() => expect($setupHandoff.get()?.plan).toBe('machine-setup'))
   })
 })

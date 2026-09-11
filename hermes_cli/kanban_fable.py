@@ -57,6 +57,7 @@ Allowed classification tags (see :data:`FABLE_ALLOWED_CLASSIFICATIONS`):
 * ``investigation`` — root-cause / forensic investigation
 * ``challenger`` — adversarial / devil's advocate review
 * ``review-complejo`` — complex multi-file or cross-cutting code review
+* ``deep/fable`` — explicit composite marker for the deep-review Fable lane
 
 Read-only canary (no DB writes, no task, safe to run by hand)::
 
@@ -103,6 +104,10 @@ FABLE_ALLOWED_CLASSIFICATIONS: frozenset[str] = frozenset({
     "investigation",
     "challenger",
     "review-complejo",
+    # Composite lane marker used by the deep-review board.  Keep this as an
+    # explicit value rather than splitting arbitrary strings: a task must
+    # declare the Fable lane intentionally, never inherit it from prose.
+    "deep/fable",
 })
 
 # The launcher refuses to do anything without this flag. Passing it is the

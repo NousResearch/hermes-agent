@@ -276,6 +276,12 @@ def test_default_spawn_raises_instead_of_falling_back(
         (lambda p: p["checks"][0].update(timeout=True), "timed out"),
         (
             lambda p: p["checks"][0]["result"].update(
+                modelUsage={kf.FABLE_MODEL: {}, "claude-haiku-4-5-20251001": {}}
+            ),
+            "non-Fable",
+        ),
+        (
+            lambda p: p["checks"][0]["result"].update(
                 modelUsage={"claude-opus-5": {}}
             ),
             "non-Fable",
@@ -546,6 +552,11 @@ def test_task_has_fable_classification():
     assert kf.task_has_fable_classification(None) is False
     assert kf.task_has_fable_classification("") is False
     assert kf.task_has_fable_classification("random-tag") is False
+    # The deep-review board uses an explicit composite classification. It must
+    # engage the lane, while lookalikes remain ordinary task metadata.
+    assert kf.task_has_fable_classification("deep/fable") is True
+    assert kf.task_has_fable_classification(" DEEP/FABLE ") is True
+    assert kf.task_has_fable_classification("deep/fable-ish") is False
 
 
 def test_create_task_persists_classification(kanban_home):

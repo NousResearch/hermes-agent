@@ -21,7 +21,6 @@ import faulthandler
 import logging
 import os
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -34,10 +33,10 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# Windows threading waits use a 32-bit microsecond timeout internally, whose
-# ceiling is about 4294.967s. POSIX keeps the one-year cap established for the
-# macOS time_t overflow in #83220.
-MAX_SAFE_TIMEOUT_S = 4_294.0 if sys.platform == "win32" else 31_536_000.0
+# CPython exposes the platform wait ceiling in seconds. Keep the one-year cap
+# established for the macOS time_t overflow in #83220, bounded by that runtime
+# contract on platforms such as Windows where the threading ceiling is lower.
+MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX)
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0

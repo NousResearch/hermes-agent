@@ -8,7 +8,7 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
-import sys
+import threading
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -252,8 +252,8 @@ def _get_approval_timeout() -> int:
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
         # Keep the fallback safe even when the canonical deadline module cannot
-        # import; Windows threading waits overflow above about 4294.967s.
-        safe_cap = 4_294 if sys.platform == "win32" else 365 * 24 * 3600
+        # import by applying the same one-year/runtime-ceiling relationship.
+        safe_cap = int(min(365 * 24 * 3600, threading.TIMEOUT_MAX))
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)

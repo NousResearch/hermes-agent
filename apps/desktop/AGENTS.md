@@ -173,6 +173,12 @@ global that would leak across sends or providers.
   `note`/`mode`, `runComposerMiddleware` runs ONCE per send, and the frame
   travels as submit options → `prompt.submit {note, mode}` (typed, voice, and
   queued drains all pass `onSubmit`).
+- A queued entry OWNS its frame: `queueCurrentDraft` runs the chain once at
+  enqueue and seals `{mode, note}` onto the entry (`QueuedPromptEntry`); every
+  drain (foreground, background, steer) hands the sealed frame back as submit
+  options with `fromQueue`, and the chain sees `fromQueue` in the draft so it
+  must pass the frame through untouched — re-deriving at drain time would
+  stamp the send with whatever mode is live then.
 - Steers are sends too: `redirectPrompt` runs the middleware before the RPC and
   before the session-not-found retry; `steerPrompt` (tile) runs it BEFORE the
   optimistic append so a cancel leaves no bubble behind.

@@ -6,6 +6,11 @@ regardless of ``is_available()`` (so the dispatcher surfaces a typed "X_API_KEY 
 instead of silently switching); else the legacy auto-detect walk ``browser-use`` → ``browserbase``
 filtered by availability; else ``None`` (local browser mode). There is no capability split here —
 every provider implements the full :class:`agent.browser_provider.BrowserProvider` lifecycle.
+
+Rendered-page integrations without persistent CDP/WebSocket sessions do not belong in this
+registry. For example, MrScraper registers ``mrscraper_fetch_rendered_html`` as a native tool and
+registers separately as a web search/extract provider; it deliberately is not a
+``browser.cloud_provider``.
 """
 
 from __future__ import annotations

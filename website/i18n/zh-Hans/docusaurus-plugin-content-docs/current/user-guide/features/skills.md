@@ -158,6 +158,16 @@ metadata:
 
 **示例：** 内置的 `duckduckgo-search` skill 使用 `fallback_for_toolsets: [web]`。当你设置了 `FIRECRAWL_API_KEY` 时，web toolset 可用，agent 使用 `web_search`——DuckDuckGo skill 保持隐藏。如果 API key 缺失，web toolset 不可用，DuckDuckGo skill 会自动作为 fallback 出现。
 
+专门使用 MrScraper 的 skill 可以声明所需的原生工具：
+
+```yaml
+metadata:
+  hermes:
+    requires_tools: [mrscraper_extract_page_by_prompt]
+```
+
+这样，只有当内置 MrScraper 插件已注册该工具且配置了 `MRSCRAPER_API_TOKEN` 时，skill 才会显示。其他可用工具包括 `mrscraper_search_google_serp`、`mrscraper_fetch_rendered_html`、scraper 创建/重新运行工具和结果检索工具。这可避免在集成无法运行的会话中加入提供商专用说明。
+
 没有任何条件字段的 skills 行为与之前完全相同——始终显示。
 
 ## 加载时的安全设置

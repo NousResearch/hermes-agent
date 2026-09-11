@@ -12,6 +12,7 @@ Hermes Agent 内置完整的浏览器自动化工具集，支持多种后端选�
 - **Browserbase 云端模式** — 通过 [Browserbase](https://browserbase.com) 使用托管云端浏览器及反机器人工具
 - **Browser Use 云端模式** — 通过 [Browser Use](https://browser-use.com) 作为备选云端浏览器提供商
 - **Firecrawl 云端模式** — 通过 [Firecrawl](https://firecrawl.dev) 使用内置抓取功能的云端浏览器
+- **MrScraper 渲染页面工具** — 通过 [MrScraper](https://mrscraper.com) 使用支持 JavaScript 渲染的云端浏览器进行可靠的网站抓取和爬取
 - **Camofox 本地模式** — 通过 [Camofox](https://github.com/jo-inc/camofox-browser) 实现本地反检测浏览（基于 Firefox 的指纹伪装）
 - **本地 Chromium 系 CDP** — 使用 `/browser connect` 将浏览器工具连接到本地运行的 Chrome、Brave、Chromium 或 Edge 实例
 - **本地浏览器模式** — 通过 `agent-browser` CLI 和本地 Chromium 安装运行
@@ -25,6 +26,7 @@ Hermes Agent 内置完整的浏览器自动化工具集，支持多种后端选�
 核心能力：
 
 - **多提供商云端执行** — Browserbase、Browser Use 或 Firecrawl — 无需本地浏览器
+- **一次性渲染提取** — MrScraper 无需启动交互式浏览器会话，即可渲染 URL 并返回 HTML、Markdown、Cookie 或截图
 - **本地 Chromium 系集成** — 通过 CDP 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器，实现实时操控
 - **内置隐身功能** — 随机指纹、CAPTCHA 解决、住宅代理（Browserbase）
 - **会话隔离** — 每个任务拥有独立的浏览器会话
@@ -85,6 +87,21 @@ FIRECRAWL_API_URL=http://localhost:3002
 # Session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+### MrScraper 渲染页面工具 {#mrscraper-rendered-page-tool}
+
+内置的 [MrScraper](https://mrscraper.com) 集成提供 `mrscraper_fetch_rendered_html`，用于一次性获取经 JavaScript 渲染的页面。它可以返回 HTML 或 Markdown，还可请求截图、代理国家/地区、Cookie、资源屏蔽、等待 CSS 选择器，以及 `load`/`networkidle` 等待条件。
+
+```bash
+# ~/.hermes/.env
+MRSCRAPER_API_TOKEN=your-token-here
+```
+
+从 [MrScraper 控制台](https://app.mrscraper.com) 获取 token，或通过 `hermes tools` → **Web Search & Extract** → **MrScraper** 输入。同一集成也可作为标准 `web_search` 和 `web_extract` 工具的后端；参见[网页搜索与提取](web-search.md#mrscraper)。
+
+:::important 不是云浏览器后端
+MrScraper 的渲染页面 API 处理独立 URL 请求，不会创建持久的 CDP/WebSocket 会话。请勿设置 `browser.cloud_provider: mrscraper`。`browser_click`、`browser_type`、`browser_scroll` 等交互操作仍需使用 Browserbase、Browser Use、Firecrawl、Camofox 或本地浏览器。
+:::
 
 ### 混合路由：公网 URL 使用云端，LAN/localhost 使用本地
 

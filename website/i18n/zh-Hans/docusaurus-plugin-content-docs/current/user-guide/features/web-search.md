@@ -25,6 +25,7 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | 付费 |
+| **MrScraper** | `MRSCRAPER_API_TOKEN` | ✔ | ✔ | 付费 |
 | **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
 
 Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `pip install ddgs`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
@@ -254,6 +255,34 @@ PARALLEL_API_KEY=your-parallel-key-here
 
 ---
 
+### MrScraper {#mrscraper}
+
+[MrScraper](https://mrscraper.com) 提供 Google SERP 搜索、JavaScript 渲染页面提取、结构化提取、网站抓取、scraper 创建与重新运行，以及结果检索。
+
+```bash
+# ~/.hermes/.env
+MRSCRAPER_API_TOKEN=your-token-here
+```
+
+从 [MrScraper 控制台](https://app.mrscraper.com) 获取 token，然后在 `hermes tools` → **Web Search & Extract** 中选择 **MrScraper**，或直接配置：
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "mrscraper"
+  extract_backend: "mrscraper"
+```
+
+除了标准的 `web_search` 和 `web_extract`，内置集成还提供一组专用 `mrscraper_*` 工具，用于抓取、按 prompt/listing/结构化规则提取、管理 scraper、批量运行和获取结果。`mrscraper_fetch_rendered_html` 可返回渲染后的 HTML 或 Markdown，并可请求截图、代理国家/地区、Cookie 或等待选择器。
+
+:::note 渲染页面，而非交互式浏览器
+MrScraper 可以渲染单个 URL，但不提供 `browser_click`、`browser_type` 等交互式 `browser_*` 工具所需的持久 CDP/WebSocket 会话。需要多步骤页面交互时，请单独配置浏览器提供商。参见[浏览器自动化](browser.md#mrscraper-rendered-page-tool)。
+:::
+
+Hermes MCP 目录中也提供官方托管的 MrScraper MCP。这是一个独立集成，使用独立密钥 `MCP_MRSCRAPER_API_KEY`；如希望使用 MCP 工具而非内置原生工具，可运行 `hermes mcp install mrscraper`。
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 通过 Responses API 将 `web_search` 路由至 Grok 服务端的 [web_search 工具](https://docs.x.ai/developers/tools/web-search)。Grok 执行实际搜索并以结构化 JSON 返回最佳结果。
@@ -310,7 +339,7 @@ web:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | mrscraper | xai
 ```
 
 ### 按能力配置 {#per-capability-configuration}
@@ -344,6 +373,8 @@ web:
 | `SEARXNG_URL` | searxng |
 
 xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或通过 xAI Grok OAuth 登录）不会自动将网页流量路由至 xAI，因为这些凭证同时用于推理/TTS/图像生成，用户可能希望为网页使用不同的后端。请通过 `web.backend: "xai"` 显式启用。
+
+MrScraper 同样不在旧版优先级自动检测链中。请显式设置 `web.backend: "mrscraper"`（或两个按能力配置键）；`hermes tools` 会自动写入这些配置。
 
 ---
 

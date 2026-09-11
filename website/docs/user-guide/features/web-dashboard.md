@@ -235,7 +235,7 @@ Config changes take effect on the next agent session or gateway restart. The web
 Manage the `.env` file where API keys and credentials are stored. Keys are grouped by category:
 
 - **LLM Providers** — OpenRouter, Anthropic, OpenAI, DeepSeek, etc.
-- **Tool API Keys** — Browserbase, Firecrawl, Tavily, Keenable, ElevenLabs, etc.
+- **Tool API Keys** — Browserbase, Firecrawl, MrScraper, Tavily, Keenable, ElevenLabs, etc.
 - **Messaging Platforms** — Telegram, Discord, Slack bot tokens, etc.
 - **Agent Settings** — non-secret env vars like `API_SERVER_ENABLED`
 
@@ -335,6 +335,8 @@ block in `config.yaml` that `hermes mcp` reads from.
 catalog) and install any of them with one click. Entries that need API keys
 prompt for them inline; the values go to `.env`. This is the same catalog
 `hermes mcp catalog` / `hermes mcp install` use.
+
+For example, the **MrScraper** catalog entry connects directly to MrScraper's hosted Streamable HTTP MCP server. Installation asks for `MCP_MRSCRAPER_API_KEY`, stores it in the active profile's `.env`, and lets you choose which live server tools to enable. This MCP credential is separate from `MRSCRAPER_API_TOKEN`, which powers Hermes' bundled native web and rendered-page integrations.
 
 ![MCP admin page — your servers with enable/disable toggles, plus the install catalog](/img/dashboard/admin-mcp.png)
 

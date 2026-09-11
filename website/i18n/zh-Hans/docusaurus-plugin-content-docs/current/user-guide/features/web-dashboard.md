@@ -116,7 +116,7 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 管理存储 API 密钥和凭据的 `.env` 文件。密钥按类别分组：
 
 - **LLM Providers** — OpenRouter、Anthropic、OpenAI、DeepSeek 等
-- **Tool API Keys** — Browserbase、Firecrawl、Tavily、ElevenLabs 等
+- **Tool API Keys** — Browserbase、Firecrawl、MrScraper、Tavily、ElevenLabs 等
 - **Messaging Platforms** — Telegram、Discord、Slack bot token 等
 - **Agent Settings** — 非敏感环境变量，如 `API_SERVER_ENABLED`
 
@@ -176,6 +176,12 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 - **Category filter** — 点击类别标签缩小列表范围（如 MLOps、MCP、Red Teaming、AI）
 - **Toggle** — 使用开关启用或禁用单个技能。更改在下一次会话时生效。
 - **Toolsets** — 单独的部分显示内置工具集（文件操作、Web 浏览等），包含其活跃/非活跃状态、设置要求和包含的工具列表
+
+### MCP
+
+无需 CLI 即可管理 [MCP](./mcp) 服务器。Dashboard 与 `hermes mcp` 读写 `config.yaml` 中同一个 `mcp_servers` 配置块；可以添加、启用/禁用、测试和移除服务器，也可以浏览 Hermes 内置的 `optional-mcps/` 目录并一键安装。
+
+例如，目录中的 **MrScraper** 条目会直接连接到 MrScraper 托管的 Streamable HTTP MCP 服务器。安装时会请求 `MCP_MRSCRAPER_API_KEY`，将其保存到当前 profile 的 `.env`，并允许选择要启用的在线工具。该 MCP 密钥与 `MRSCRAPER_API_TOKEN` 相互独立；后者用于 Hermes 内置的原生网页搜索、提取和渲染页面集成。
 
 :::warning 安全提示
 Web Dashboard 会读写包含 API 密钥和机密的 `.env` 文件。它默认绑定到 `127.0.0.1`——只能从本机访问。如果绑定到 `0.0.0.0`，网络上的任何人都可以查看和修改你的凭据。Dashboard 本身没有任何认证机制。

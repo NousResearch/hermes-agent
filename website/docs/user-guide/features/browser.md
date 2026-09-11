@@ -13,6 +13,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browserbase cloud mode** via [Browserbase](https://browserbase.com) as an alternative cloud browser provider with anti-bot tooling
 - **Browser Use mode** via the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use), the default browser driver for local Chrome and Browser Use cloud browsers
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
+- **MrScraper rendered-page tool** via [MrScraper](https://mrscraper.com) for reliable website scraping and crawling using cloud browsers with JavaScript rendering
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Lightpanda local engine** via [Lightpanda](https://lightpanda.io) — a headless browser built from scratch in Zig for machines; instant start up, 16x lower memory and 9x faster than Chrome. Works in Browser Use mode (Hermes spawns it, no Chromium or Node needed) and with the built-in tools (automatic Chrome fallback for actions it doesn't support yet)
 - **Local Chromium-family CDP** — connect browser tools to your own Chrome, Brave, Chromium, or Edge instance using `/browser connect`
@@ -26,6 +27,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 
 Key capabilities:
 
+- **One-shot rendered extraction** — MrScraper can render a URL and return HTML, Markdown, cookies, or a screenshot without starting an interactive browser session
 - **Multi-provider cloud execution** — Browser Use, Browserbase, or Firecrawl — no local browser needed
 - **Local Chromium-family integration** — attach to your running Chrome, Brave, Chromium, or Edge browser via CDP for hands-on browsing
 - **Cloud anti-bot support** — Browser Use Cloud includes stealth, residential proxies, and CAPTCHA solving
@@ -125,6 +127,21 @@ FIRECRAWL_API_URL=http://localhost:3002
 # Session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+### MrScraper rendered-page tool {#mrscraper-rendered-page-tool}
+
+The bundled [MrScraper](https://mrscraper.com) integration adds `mrscraper_fetch_rendered_html` for one-shot JavaScript-rendered page retrieval. It can return HTML or Markdown and optionally request a screenshot, proxy country, cookies, resource blocking, a CSS selector to wait for, or a `load`/`networkidle` wait condition.
+
+```bash
+# ~/.hermes/.env
+MRSCRAPER_API_TOKEN=your-token-here
+```
+
+Get a token from the [MrScraper dashboard](https://app.mrscraper.com), or enter it through `hermes tools` → **Web Search & Extract** → **MrScraper**. The same integration can back the standard `web_search` and `web_extract` tools; see [Web Search & Extract](web-search.md#mrscraper).
+
+:::important Not a cloud-browser backend
+MrScraper's rendered-page API handles independent URL requests; it does not create a persistent CDP/WebSocket session. Do not set `browser.cloud_provider: mrscraper`. Interactive actions such as `browser_click`, `browser_type`, and `browser_scroll` still require Browserbase, Browser Use, Firecrawl, Camofox, or a local browser.
+:::
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

@@ -263,6 +263,16 @@ metadata:
 
 **Example:** The built-in `duckduckgo-search` skill uses `fallback_for_toolsets: [web]`. When you have `FIRECRAWL_API_KEY` set, the web toolset is available and the agent uses `web_search` — the DuckDuckGo skill stays hidden. If the API key is missing, the web toolset is unavailable and the DuckDuckGo skill automatically appears as a fallback.
 
+A skill designed around MrScraper can instead declare a specific native tool:
+
+```yaml
+metadata:
+  hermes:
+    requires_tools: [mrscraper_extract_page_by_prompt]
+```
+
+The skill is then shown only when the bundled MrScraper plugin has registered that tool and `MRSCRAPER_API_TOKEN` is configured. Other available tools include `mrscraper_search_google_serp`, `mrscraper_fetch_rendered_html`, scraper creation/rerun tools, and result-retrieval tools. This keeps provider-specific instructions out of sessions where the integration cannot run.
+
 Skills without any conditional fields behave exactly as before — they're always shown.
 
 ## Secure Setup on Load

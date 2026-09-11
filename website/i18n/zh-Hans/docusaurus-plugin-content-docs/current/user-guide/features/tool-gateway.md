@@ -166,6 +166,10 @@ FIRECRAWL_GATEWAY_URL=https://...         # 单独覆盖 Firecrawl 端点
 
 ## 常见问题
 
+### Nous Tool Gateway 是否包含 MrScraper？
+
+不包含。Tool Gateway 的托管网页路由使用 Firecrawl，托管交互式浏览器路由使用 Browser Use。Hermes 另有内置的 MrScraper 直连集成，可用于 `web_search`、`web_extract`、渲染 HTML、结构化提取、运行 scraper 和检索结果；通过 `hermes tools` 配置 `MRSCRAPER_API_TOKEN`，并保持 `web.use_gateway: false` 即可使用。也可单独运行 `hermes mcp install mrscraper` 安装官方托管的 MrScraper MCP。
+
 ### 需要删掉已有的 API Key 吗？
 
 不需要。类别选择为 **Nous Subscription**（`nous`）时，运行时会忽略该类别的直连 Key；Key 仍保留在 `.env`。之后在 `hermes tools` 里改回直连提供商，Key 即恢复生效。

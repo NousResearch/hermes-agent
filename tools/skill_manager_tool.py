@@ -798,14 +798,7 @@ SKILL_MANAGE_SCHEMA = {
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
-        "skill_view() shows format conventions. New skills also include human-facing "
-        "metadata.hermes.editorial_name and editorial_description; these "
-        "decorate UIs without replacing the agent-facing name/description. "
-        "When creating a skill, record only the "
-        "requirements it actually used under `metadata.hermes` as "
-        "`requires_tools`, `requires_toolsets`, and `requires_plugins`; "
-        "Collective Wisdom uses these declarations to prefill the reviewed "
-        "System Specification and never installs dependencies automatically."
+        "skill_view() shows format conventions."
     ),
     "parameters": {
         "type": "object",

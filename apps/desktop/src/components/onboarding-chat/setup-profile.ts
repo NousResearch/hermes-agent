@@ -24,6 +24,7 @@
 
 import { atom } from 'nanostores'
 
+import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
 import { activeGatewayConnectionId } from '@/store/gateway'
@@ -111,13 +112,21 @@ export function guideSourceConnectionId(guideStoredId: null | string | undefined
   return (guideStoredId && getSessionOwnerHint(guideStoredId)?.connectionId) || activeGatewayConnectionId() || null
 }
 
+export function guideHandoffReceiptKey(guideStoredId: string): string {
+  return handoffReceiptKey(guideSourceConnectionId(guideStoredId), guideStoredId)
+}
+
+export function readGuideHandoffReceipt(guideStoredId: string): { key: string; receipt: HandoffReceipt | null } {
+  const key = guideHandoffReceiptKey(guideStoredId)
+
+  return { key, receipt: readHandoffReceipt(key) }
+}
+
 /** The request atom suppresses remounts; only an accepted receipt suppresses relaunches. */
 export function requestSetupHandoff(task: string, brief: string, plan: HandoffPlan, guide: SetupSession): boolean {
   if (
     $setupHandoff.get() !== null ||
-    (guide.storedId &&
-      readHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(guide.storedId), guide.storedId))?.status ===
-        'accepted')
+    (guide.storedId && readGuideHandoffReceipt(guide.storedId).receipt?.status === 'accepted')
   ) {
     return false
   }

@@ -6,6 +6,8 @@
  * asserted rather than eyeballed on a first run.
  */
 
+import type { Rectangle } from 'electron'
+
 export interface GrowRequest {
   bottom?: number
   left?: number
@@ -65,6 +67,10 @@ export function growWindowBounds(
     Math.round(workArea.height * MAX_WORK_AREA)
   )
 
+  return centeredBounds(workArea, width, height)
+}
+
+export function centeredBounds(workArea: Rectangle, width: number, height: number): Rectangle {
   return {
     height,
     width,

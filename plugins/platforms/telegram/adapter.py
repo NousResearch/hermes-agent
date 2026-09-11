@@ -148,7 +148,6 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
-from plugins.platforms.telegram.wisdom_adapter import TelegramWisdomMixin
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -368,7 +367,7 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
-class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
+class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     MAX_MESSAGE_LENGTH = 4096
@@ -746,7 +745,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
 
     def _is_callback_user_authorized(
         self, user_id: str, *, chat_id: Optional[str] = None, chat_type: Optional[str] = None,
-        thread_id: Optional[str] = None, user_name: Optional[str] = None, command: Optional[str] = None) -> bool:
+        thread_id: Optional[str] = None, user_name: Optional[str] = None) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
@@ -758,12 +757,9 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
                 normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
-                thread_id=str(thread_id) if thread_id is not None else None,
-                **({"command": command} if command else {}))
+                thread_id=str(thread_id) if thread_id is not None else None)
             if injected is not None:
                 return injected
-            if command:
-                return False
         auth_fn = self._legacy_runner_auth_fn()
         if auth_fn is not None:
             try:
@@ -772,18 +768,10 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
                     platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
                     user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
                     thread_id=str(thread_id) if thread_id is not None else None)
-                if not bool(auth_fn(source)):
-                    return False
-                if command:
-                    runner = getattr(auth_fn, "__self__", None)
-                    slash_access = getattr(runner, "_check_slash_access", None)
-                    return callable(slash_access) and slash_access(source, command) is None
-                return True
+                return bool(auth_fn(source))
             except Exception:
                 logger.debug(
                     "[Telegram] Falling back to env-only callback auth for user %s", normalized_user_id, exc_info=True)
-        if command:
-            return False
         decision = self._env_allowlist_decision(normalized_user_id)
         if decision is None:
             # Fail-closed: no allowlist means deny unless GATEWAY_ALLOW_ALL_USERS is set.
@@ -4263,15 +4251,6 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
-        if data.startswith("wa:"):
-            await self._handle_wisdom_agent_callback(query, data)
-            return
-        if data.startswith("wi:"):
-            await self._handle_wisdom_callback(
-                query, data, query_chat_id=cb["chat_id"], query_chat_type=cb["chat_type"],
-                query_thread_id=cb["thread_id"], query_user_name=cb["user_name"],
-            )
-            return
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
             (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),

@@ -1,6 +1,6 @@
 import { type BrowserWindow, ipcMain, screen } from 'electron'
 
-import { type GrowRequest, growWindowBounds } from './window-growth'
+import { centeredBounds, type GrowRequest, growWindowBounds } from './window-growth'
 
 interface ChatOnboardingWindowOptions {
   enabled: boolean
@@ -40,14 +40,6 @@ export function registerChatOnboardingWindow({ enabled, mainWindow }: ChatOnboar
     const width = Math.min(600, area.width)
     const height = Math.min(640, area.height)
 
-    win.setBounds(
-      {
-        height,
-        width,
-        x: Math.round(area.x + (area.width - width) / 2),
-        y: Math.round(area.y + (area.height - height) / 2)
-      },
-      true
-    )
+    win.setBounds(centeredBounds(area, width, height), true)
   })
 }

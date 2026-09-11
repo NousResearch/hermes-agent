@@ -16,8 +16,7 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, extract_skill_editorial_metadata,
-    is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -185,23 +184,9 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _skill_metadata_projection(
-    skills: List[Dict[str, Any]], *, include_editorial: bool
-) -> List[Dict[str, Any]]:
-    """Copy cached metadata, omitting UI-only copy for agent-facing callers."""
-    if include_editorial:
-        return [dict(skill) for skill in skills]
-    return [
-        {key: value for key, value in skill.items()
-         if key not in {"editorial_name", "editorial_description"}}
-        for skill in skills
-    ]
-
-
-def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI).
-    ``include_editorial=True`` adds human-facing copy without replacing the canonical fields."""
+    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -212,7 +197,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return _skill_metadata_projection(cached[2], include_editorial=include_editorial)
+        return [dict(s) for s in cached[2]]
     skills = []
     seen_names: set = set()
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
@@ -232,10 +217,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
-                description = _truncate_description(description)
-                editorial = extract_skill_editorial_metadata(
-                    frontmatter, fallback_name=name, fallback_description=description)
-                skills.append({"name": name, "description": description, **editorial,
+                skills.append({"name": name, "description": _truncate_description(description),
                                "category": _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -244,7 +226,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return _skill_metadata_projection(skills, include_editorial=include_editorial)
+    return [dict(s) for s in skills]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -655,25 +637,6 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
-def _record_active_skill_view(skill_name: str, **kw) -> None:
-    """Track every successful skill_view, including unchanged dedup stubs."""
-
-    try:
-        from tools.skill_usage import bump_use, bump_view
-
-        bump_view(skill_name)
-        # A skill_view tool call is the agent actively loading the skill to
-        # act on it. The unchanged-content stub saves prompt tokens, but it is
-        # still a real use for lifecycle and local Wisdom qualification.
-        bump_use(
-            skill_name,
-            task_id=kw.get("task_id"),
-            session_id=kw.get("session_id"),
-        )
-    except Exception:
-        pass
-
-
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
@@ -681,9 +644,6 @@ def _skill_view_with_bump(args, **kw):
     name = args.get("name", "")
     task_id = kw.get("task_id")
     if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
-        with suppress(Exception):
-            if resolved := json.loads(stub).get("name") or name:
-                _record_active_skill_view(str(resolved), **kw)
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
@@ -691,7 +651,11 @@ def _skill_view_with_bump(args, **kw):
         if isinstance(parsed, dict) and parsed.get("success"):
             _record_skill_view(task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                _record_active_skill_view(str(resolved), **kw)
+                from tools.skill_usage import bump_use, bump_view
+                bump_view(str(resolved))
+                # Viewing is actively loading the skill to act on it — that counts as use
+                # (the curator's stale timer keys off last_used_at).
+                bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 
 

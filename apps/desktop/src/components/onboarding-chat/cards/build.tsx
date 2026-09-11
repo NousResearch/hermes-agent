@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
-import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
+import { quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
@@ -19,8 +19,9 @@ import {
   $handoffError,
   $setupHandoff,
   firstTaskTitle,
-  guideSourceConnectionId,
+  guideHandoffReceiptKey,
   parseHandoffPlan,
+  readGuideHandoffReceipt,
   requestSetupHandoff,
   retrySetupHandoff,
   SETUP_PROFILE
@@ -111,16 +112,20 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
-  let error = useStore($handoffError)
-  let completed = false
 
-  try {
-    completed =
-      !!storedId &&
-      readHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(storedId), storedId))?.status === 'accepted'
-  } catch (receiptError) {
-    error = String(receiptError)
-  }
+  const receipt = useMemo(() => {
+    try {
+      return {
+        completed: !!storedId && readGuideHandoffReceipt(storedId).receipt?.status === 'accepted',
+        error: null
+      }
+    } catch (error) {
+      return { completed: false, error: String(error) }
+    }
+  }, [storedId, state?.phase])
+
+  const error = useStore($handoffError) ?? receipt.error
+  const completed = receipt.completed
 
   useEffect(() => {
     if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || completed) {
@@ -161,6 +166,36 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const failed = state?.phase === 'error' || error !== null
   const title = state?.sessionTitle ?? firstTaskTitle(task)
 
+  const retry = async () => {
+    if (state?.phase !== 'error') {
+      return
+    }
+
+    try {
+      if (receipt.error && storedId) {
+        quarantineHandoffReceipt(guideHandoffReceiptKey(storedId))
+      }
+
+      if (!state.guide && storedId && runtimeId) {
+        const owner = await resolveSessionOwner(storedId)
+        assertSessionOwnerResolved(owner, { method: 'onboarding.handoff', sessionId: storedId })
+        $setupHandoff.set({
+          ...state,
+          guide: {
+            storedId,
+            runtimeId,
+            connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
+            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+          }
+        })
+      }
+
+      retrySetupHandoff()
+    } catch (error) {
+      $handoffError.set(String(error))
+    }
+  }
+
   return (
     <div className="my-3 flex max-w-md items-center gap-2 text-sm" data-onboarding-card>
       <StatusDot live={!settled && !failed} />
@@ -171,8 +206,8 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             ? `${title} was started — find it in your sessions`
             : `Opening ${title}\u2026`}
       </span>
-      {failed && (
-        <Button disabled={locked} onClick={retrySetupHandoff} size="sm" variant="text">
+      {state?.phase === 'error' && (
+        <Button disabled={locked} onClick={() => void retry()} size="sm" variant="text">
           Retry first build
         </Button>
       )}
@@ -187,29 +222,27 @@ export function ProgressCard({ attrs, locked }: CardProps) {
   const messageId = useAuiState(state => state.message.id)
   const title = (attrs.title ?? '').trim() || 'Working on it'
 
-  const steps = useMemo(() => {
-    const index = messages.findIndex(message => message.id === messageId)
-    const previous = index < 0 ? [] : messages.slice(0, index)
+  const index = messages.findIndex(message => message.id === messageId)
+  const previous = index < 0 ? [] : messages.slice(0, index)
 
-    return previous.flatMap(message => {
-      const directives = message.parts.flatMap(part =>
-        part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
+  const steps = previous.flatMap(message => {
+    const directives = message.parts.flatMap(part =>
+      part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
+    )
+
+    const progress = directives
+      .filter(
+        segment =>
+          segment.kind === 'directive' &&
+          segment.directive.name === 'onboarding' &&
+          segment.directive.attrs.step === 'progress'
       )
+      .at(-1)
 
-      const progress = directives
-        .filter(
-          segment =>
-            segment.kind === 'directive' &&
-            segment.directive.name === 'onboarding' &&
-            segment.directive.attrs.step === 'progress'
-        )
-        .at(-1)
-
-      return progress?.kind === 'directive'
-        ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
-        : []
-    })
-  }, [messages, messageId])
+    return progress?.kind === 'directive'
+      ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
+      : []
+  })
 
   return (
     <div className="my-3 grid max-w-md gap-1.5" data-onboarding-card>

@@ -385,7 +385,11 @@ def _get_db():
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            _db, _db_error = acquire(), None
+            # Pin to import-time launch home (#102526). A bare acquire() follows
+            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
+            # overrides per profile at startup — first touch inside a foreign window
+            # permanently binds this process-wide handle to the wrong state.db.
+            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -3219,7 +3223,6 @@ from . import (  # noqa: E402
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
-    session_wisdom as _session_wisdom,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
@@ -3237,7 +3240,7 @@ from . import (  # noqa: E402
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
-    _session_compression, _change_watcher, _tool_progress, _session_wisdom, _session_notifications,
+    _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,

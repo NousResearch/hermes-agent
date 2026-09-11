@@ -1720,6 +1720,13 @@ class TestGenericPreCatalogStaleGuard:
         assert not _stale_pre_catalog_cache_entry("grok-4.20", 2_000_000)
         # Sibling qwen slugs with legitimately small windows are untouched.
         assert not _stale_pre_catalog_cache_entry("qwen3-coder", 131_072)
+        # DeepSeek V4 / V4.1 Flash: 1M. Pre-entry builds persisted the 128K
+        # ``deepseek`` catch-all; a leftover must drop, a 1M value must not.
+        assert _stale_pre_catalog_cache_entry("deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek/deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4-pro", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-flash", 1_000_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek", 128_000)
 
     def test_unknown_models_never_dropped(self):
         from agent.model_metadata import _stale_pre_catalog_cache_entry

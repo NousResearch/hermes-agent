@@ -8,7 +8,13 @@ import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
-export type OnboardingPhase = 'idle' | 'cinematic' | 'guided' | 'skipped' | 'handoff' | 'done'
+export const ONBOARDING_PHASES = ['idle', 'cinematic', 'guided', 'skipped', 'handoff', 'done'] as const
+
+export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
+
+function isOnboardingPhase(value: string | null): value is OnboardingPhase {
+  return ONBOARDING_PHASES.some(phase => phase === value)
+}
 
 export interface OnboardingGateState {
   phase: OnboardingPhase
@@ -20,11 +26,7 @@ type GuideKickoff = { status: 'idle' } | { status: 'starting'; promise: Promise<
 function loadGate(): OnboardingGateState {
   const saved = readKey(PHASE_KEY)
 
-  const phase =
-    isOnboardingEnabled() &&
-    (saved === 'cinematic' || saved === 'guided' || saved === 'skipped' || saved === 'handoff' || saved === 'done')
-      ? saved
-      : 'idle'
+  const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
   return { phase, guideQueued: phase === 'cinematic' && hasSeenIntroReveal() }
 }

@@ -14,6 +14,7 @@ import {
   buildHandoffCompleteNote,
   firstTaskTitle,
   guideSourceConnectionId,
+  readGuideHandoffReceipt,
   retrySetupHandoff,
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
@@ -40,7 +41,7 @@ import {
 import { patchSessionTile } from '@/store/session-states'
 
 import { BUILD_PROFILE, type HandoffDeps, type HandoffReceipt, paintHandoffBrief, startHandoff } from './handoff-leg'
-import { handoffReceiptKey, readHandoffReceipt, saveHandoffReceipt } from './handoff-receipt'
+import { saveHandoffReceipt } from './handoff-receipt'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 export interface OnboardingHandoffOptions extends Pick<
@@ -82,7 +83,7 @@ export function useOnboardingHandoff({
     const connectionId = guideSourceConnectionId(selectedStoredId)
 
     try {
-      const saved = readHandoffReceipt(handoffReceiptKey(connectionId, selectedStoredId))
+      const { receipt: saved } = readGuideHandoffReceipt(selectedStoredId)
 
       if (!saved) {
         return
@@ -146,8 +147,8 @@ export function useOnboardingHandoff({
 
         $setupSession.set(setupSession)
         // Resume only has the guide's stored id, so its source must also key the saved receipt.
-        const receiptKey = handoffReceiptKey(guideSourceConnectionId(setupSession.storedId), setupSession.storedId)
-        receipt = readHandoffReceipt(receiptKey)
+        const { key: receiptKey, receipt: saved } = readGuideHandoffReceipt(setupSession.storedId)
+        receipt = saved
         const owner: HandoffReceipt['owner'] = receipt?.owner ?? { connectionId, profile: BUILD_PROFILE }
         // Save facts before session.create freezes the new agent's memory.
         // A retry never re-creates the session or copies the guide's memory.

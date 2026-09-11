@@ -182,7 +182,7 @@ def _iter_gateway_skills(platform: str):
 
     from agent.skill_commands import get_skill_commands
     from agent.skill_utils import (
-        get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
+        get_all_skills_dirs, get_disabled_skill_names, get_project_skills_dirs)
     from tools.skills_tool import SKILLS_DIR
 
     try:
@@ -191,7 +191,8 @@ def _iter_gateway_skills(platform: str):
         disabled = set()
     hub_dir = (SKILLS_DIR / ".hub").resolve()
     roots = [SKILLS_DIR.resolve()]
-    for getter in (get_external_skills_dirs, get_project_skills_dirs):
+    # [1:] = skills.create_dir + external_dirs (index 0 is the local dir, already a root).
+    for getter in (lambda: get_all_skills_dirs()[1:], get_project_skills_dirs):
         try:
             for d in getter():
                 try:

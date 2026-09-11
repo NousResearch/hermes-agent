@@ -53,6 +53,14 @@ carries the same keys. Corrections carry the frame in the agent's pending
 slot (`_pending_steer*` / `_pending_redirect*`) and consume it one-shot at the
 delivery site.
 
+ASK-mode notes are SANDWICHED for primacy+recency: besides the leading copy from
+`_prepare_turn_input`, the same note is parked in the one-shot slot
+(`agent._gateway_turn_context_notes`) gated on the `[mode:ask]` head, so
+`_merge_gateway_notes` appends it too — `api_content = note + text + note`.
+Ask-only: plan/debug keep their single leading copy. Session auto-titles prefer
+`agent._persist_user_message_override` (str or multimodal list) over the live
+message content, so API-only scaffolding never leaks into a session title.
+
 ## Shared subagent snapshots
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling

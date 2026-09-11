@@ -842,6 +842,12 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            # Sandwich ask (primacy+recency): the SAME note also TRAILS the sent
+            # bytes — the one-shot slot is appended by _merge_gateway_notes while
+            # the prepend above leads them. Ask-only; plan/debug keep their single
+            # leading copy.
+            if turn_note and turn_note.lstrip().startswith("[mode:ask]"):
+                agent._gateway_turn_context_notes = turn_note
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author)

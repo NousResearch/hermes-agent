@@ -205,12 +205,13 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
     assert second_handoffs[0][COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
 
 
-def test_max_iterations_nudge_is_synthetic_not_actionable():
-    """#78580: the max-iteration runtime nudge is runtime scaffolding, not a
-    human turn. It is appended as ``role="user"`` and persisted verbatim in
-    state.db (metadata flags do not survive projection), so recognition must be
-    content-based — exactly like the continuation/todo markers."""
-    # The projected form: a bare role/content row with no internal metadata.
+def test_legacy_max_iterations_user_nudge_is_synthetic_not_actionable():
+    """Transcripts emitted before structural provenance remain resumable.
+
+    Those releases persisted the runtime nudge as a bare user row, so legacy
+    recognition must remain content-based like the continuation/todo markers.
+    """
+    # The legacy projected form has no internal provenance metadata.
     nudge = {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST}
 
     assert ContextCompressor._is_synthetic_compression_user_turn(nudge) is True
@@ -233,6 +234,28 @@ def test_zero_user_compaction_continue_uses_runtime_tool_provenance():
     assert compressed[-1]["tool_name"] == RUNTIME_NOTIFICATION_TOOL_NAME
     assert compressed[-1]["tool_call_id"] == compressed[-2]["tool_calls"][0]["id"]
     assert compressed[-1]["content"] == COMPRESSION_CONTINUATION_USER_CONTENT
+
+
+def test_runtime_notification_provenance_survives_session_db_round_trip(tmp_path):
+    compressed = [{"role": "assistant", "content": "compressed history"}]
+    _ensure_compressed_has_user_turn([], compressed)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "runtime-notification-round-trip"
+    db.create_session(session_id, source="test")
+    try:
+        db.append_messages_batch(session_id, compressed)
+        restored = db.get_messages_as_conversation(session_id)
+    finally:
+        db.close()
+
+    assert not any(message.get("role") == "user" for message in restored)
+    assistant_call = restored[-2]["tool_calls"][0]
+    tool_result = restored[-1]
+    assert assistant_call["function"]["name"] == RUNTIME_NOTIFICATION_TOOL_NAME
+    assert tool_result["tool_call_id"] == assistant_call["id"]
+    assert tool_result["tool_name"] == RUNTIME_NOTIFICATION_TOOL_NAME
+    assert tool_result["content"] == COMPRESSION_CONTINUATION_USER_CONTENT
 
 
 def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):

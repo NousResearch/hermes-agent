@@ -29,6 +29,8 @@ from gateway import run_turn as gateway_run_turn
 from gateway import run_turn_runner as gateway_run_turn_runner
 from gateway import run_turn as gateway_run_turn
 from gateway import run_turn_runner as gateway_run_turn_runner
+from gateway import run_turn_exec as gateway_run_turn_exec
+from gateway import run_turn_hmwa as gateway_run_turn_hmwa
 from gateway.session_context import set_current_session_id, get_session_env
 
 
@@ -113,7 +115,7 @@ def test_every_post_compression_session_id_assignment_persists():
     session_id, then drop it on next gateway restart.
     """
     assignments = []
-    for mod in (gateway_run, gateway_run_turn, gateway_run_turn_runner):
+    for mod in (gateway_run, gateway_run_turn, gateway_run_turn_runner, gateway_run_turn_hmwa, gateway_run_turn_exec):
         assignments += _session_id_assignments_followed_by_save(inspect.getsource(mod))
     assert assignments, (
         "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "

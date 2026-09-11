@@ -16,6 +16,8 @@ export interface ConnectorFlowState {
 export interface ConnectorFlowDeps {
   request: <T>(method: string, params: { session_id: string; connectors?: string[]; reconnect?: boolean }) => Promise<T>
   open: (url: string) => Promise<void>
+  /** The browser has the sign-in and the card is now waiting on the user. */
+  onWaiting?: (slug: string) => void
   delay?: () => Promise<void>
   now?: () => number
 }
@@ -207,6 +209,7 @@ export function createConnectorFlow(sessionId: string, seeds: ConnectorRow[], de
       }
 
       update(slug, { phase: 'waiting' })
+      deps.onWaiting?.(slug)
       await wait(slug, token)
     } catch {
       if (valid(slug, token)) {

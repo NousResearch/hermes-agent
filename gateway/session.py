@@ -590,24 +590,26 @@ class SessionEntry:
         )
 
 
-# Sources with no durable human thread — inbound machine callers and system-generated event
-# streams (Home Assistant state changes).  A continuity pointer here would aim the agent at
-# unrelated history and cost tokens for nothing, so they stay silent.  Everything else
-# (Telegram, Signal, WhatsApp, Matrix, email, plugin platforms, ...) is a real conversation
-# that survives a session reset and benefits from the hint — hence a DENYLIST, not an
-# allowlist, which would silently exclude dynamic plugin platforms (Platform._missing_).
+# Sources with no durable human thread — inbound machine callers (api_server, webhook,
+# msgraph_webhook) and system-generated event streams (Home Assistant state changes; the
+# Raft wake bridge's content-free hints).  A continuity pointer here would aim the agent at
+# unrelated history and cost tokens for nothing, so they stay silent.  Everything else is a
+# real conversation that survives a session reset and benefits from the hint — including
+# callback transports that carry per-user DMs (WeCom) and dynamic plugin platforms
+# (Platform._missing_), which an allowlist would silently exclude.  Listed by platform VALUE
+# so dynamic platforms can be classified explicitly.
 _NON_HUMAN_SESSION_HINT_PLATFORMS = frozenset({
-    Platform.API_SERVER,
-    Platform.HOMEASSISTANT,
-    Platform.WEBHOOK,
-    Platform.MSGRAPH_WEBHOOK,
-    Platform.WECOM_CALLBACK,
+    "api_server",
+    "homeassistant",
+    "msgraph_webhook",
+    "raft",
+    "webhook",
 })
 
 
 def supports_human_session_hints(platform: Platform) -> bool:
     """Whether a source represents a durable human conversation."""
-    return platform not in _NON_HUMAN_SESSION_HINT_PLATFORMS
+    return platform.value not in _NON_HUMAN_SESSION_HINT_PLATFORMS
 
 
 def build_channel_continuity_note(entry: "SessionEntry", source: SessionSource) -> Optional[str]:

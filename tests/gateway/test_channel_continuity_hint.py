@@ -6,8 +6,9 @@ Covers:
 - SessionStore records the previous session_id on auto-reset (and only then).
 - prev_session_id survives a to_dict() → from_dict() roundtrip (gateway restart).
 - build_channel_continuity_note() emits a hint for human chat surfaces (Slack,
-  Discord, Telegram, plugin platforms, ...) that were auto-reset with real prior
-  activity, and stays silent for machine callers and Home Assistant events.
+  Discord, Telegram, WeCom callback DMs, plugin platforms, ...) that were
+  auto-reset with real prior activity, and stays silent for machine callers,
+  Home Assistant events, and the Raft wake bridge.
 """
 
 from datetime import datetime, timedelta
@@ -121,6 +122,13 @@ class TestBuildChannelContinuityNote:
         assert note is not None
         assert "thread" in note
 
+    def test_wecom_callback_dm_emits_hint(self):
+        # Callback transport, but durable per-user DMs — a human chat surface.
+        entry = _reset_entry(Platform.WECOM_CALLBACK)
+        note = build_channel_continuity_note(entry, _human_source(Platform.WECOM_CALLBACK))
+        assert note is not None
+        assert "conversation" in note
+
     def test_plugin_platform_emits_hint(self):
         # Scoped by denylist: plugin platforms created via Platform._missing_ qualify too.
         irc = Platform("irc")
@@ -133,8 +141,8 @@ class TestBuildChannelContinuityNote:
             Platform.API_SERVER,
             Platform.WEBHOOK,
             Platform.MSGRAPH_WEBHOOK,
-            Platform.WECOM_CALLBACK,
             Platform.HOMEASSISTANT,
+            Platform("raft"),  # machine-only wake bridge
         ],
     )
     def test_non_human_sources_stay_silent(self, platform):

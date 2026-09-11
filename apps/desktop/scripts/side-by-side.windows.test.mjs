@@ -102,8 +102,10 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
     fs.rmSync(manifestDir, { recursive: true, force: true })
     fs.mkdirSync(path.join(manifestDir, 'bin'), { recursive: true })
     fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/hermes.exe'))
+    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/hermes-acp.exe'))
     fs.writeFileSync(path.join(manifestDir, 'manifest.json'), JSON.stringify({
-      target: `win32-${process.arch}`, launchers: ['hermes'], runtime: { commands: { hermes: 'bin/hermes.exe' } },
+      target: `win32-${process.arch}`, launchers: ['hermes', 'hermes-acp'],
+      runtime: { commands: { hermes: 'bin/hermes.exe', 'hermes-acp': 'bin/hermes-acp.exe' } },
     }))
     // Fresh processes match the per-build module cache boundary. No fabricated
     // product identity/config; these are the production hook and generators.
@@ -148,7 +150,14 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
     const aliases = [...roundtrip.matchAll(/<uap5:ExecutionAlias\s+Alias="([^"]+)"/g)].map(match => match[1])
     check(name === facts.identity.msixAppIdWithOrg, `${label}: manifest identity differs from generated product`)
     check(version === facts.app.version, `${label}: manifest version differs from appIdentity`)
-    check(aliases.length === 1 && aliases[0] === `${facts.identity.cliName}.exe`, `${label}: aliases ${aliases} do not match ${facts.identity.cliName}`)
+    check(aliases.length === 2 && aliases.includes(`${facts.identity.cliName}.exe`) && aliases.includes(`${facts.identity.cliName}-acp.exe`), `${label}: aliases ${aliases} do not match ${facts.identity.cliName}`)
+    if (label !== 'stable') {
+      for (const [command, payloadFile] of Object.entries(facts.payload.runtime.commands)) {
+        const alias = command.replace(/^hermes/, facts.identity.cliName) + '.exe'
+        const extension = [...roundtrip.matchAll(/<uap5:Extension\b[\s\S]*?<\/uap5:Extension>/g)].map(match => match[0]).find(value => value.includes(`Alias="${alias}"`))
+        check(extension && attribute(extension, 'uap5:Extension', 'Executable') === path.win32.join('app/resources/agent-payload', payloadFile), `${label}: ${alias} invokes the wrong entrypoint`)
+      }
+    }
     const descriptor = path.join(root, `${label}.appinstaller`)
     const generated = run(process.execPath, [path.join(desktop, 'scripts/gen-appinstaller.mjs'), '--out', descriptor, '--base-url', 'https://example.invalid/fixture'], { cwd: work, env: childEnv })
     if (flavorEnv.HERMES_BUILD_COMMIT) {
@@ -164,7 +173,7 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
   }
   const [stable, canary, update, a, b] = rows
   check(new Set([stable, canary, a, b].map(row => row.name)).size === 4, 'Flavor package identities collide')
-  check(new Set([stable, canary, a, b].flatMap(row => row.aliases)).size === 4, 'Flavor execution aliases collide')
+  check(new Set([stable, canary, a, b].flatMap(row => row.aliases)).size === 8, 'Flavor execution aliases collide')
   check(canary.name === update.name && canary.name !== stable.name, 'Canary upgrade does not stay in its own family')
   check(canary.version.localeCompare(update.version, undefined, { numeric: true }) < 0, 'Canary version does not increase')
   fs.writeFileSync(path.join(root, 'rows.json'), JSON.stringify(rows, null, 2))

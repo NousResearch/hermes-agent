@@ -939,3 +939,14 @@ def test_human_reply_unaffected_by_bots_require_mention():
         gated._should_process_message(_group_message("replying", reply_to_bot=True))
         is True
     )
+
+
+def test_clean_bot_trigger_text_preserves_slash_command_spaces():
+    """Verify /cmd@botname args retains space, whereas @botname plain text strips leading space."""
+    adapter = _make_adapter(bot_username="my_bot")
+
+    assert adapter._clean_bot_trigger_text("/queue@my_bot do something") == "/queue do something"
+    assert adapter._clean_bot_trigger_text("/queue@my_bot") == "/queue"
+    assert adapter._clean_bot_trigger_text("@my_bot do something") == "do something"
+    assert adapter._clean_bot_trigger_text("@my_bot: do something") == "do something"
+

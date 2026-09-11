@@ -39,11 +39,10 @@ mcp_servers:
 ```
 
 Restart Hermes Agent. On startup it will:
-
-1. Connects to the server.
-2. Discovers available tools.
-3. Registers them with names such as `mcp__time__get_current_time`.
-4. Injects them into the eligible platform toolsets.
+1. Connect to the server
+2. Discover available tools
+3. Register them with names such as `mcp__time__get_current_time`
+4. Inject them into all platform toolsets
 
 You can then use the tools naturally -- just ask the agent to get the current time.
 
@@ -129,7 +128,7 @@ Examples:
 
 ### Auto-Injection
 
-After discovery, MCP tools are automatically injected into the eligible `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
+After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
 ### Connection Lifecycle
 

@@ -447,6 +447,37 @@ def shutdown_kernels_for_owner(owner: str) -> None:
 atexit.register(shutdown_all_kernels)
 
 
+def _sweep_idle_kernels() -> None:
+    """Pop+teardown every idle-expired, unattached kernel. Shared by ``_acquire_kernel``
+    (sweeps on every new-kernel lookup) and ``_reap_idle_kernels_forever`` (sweeps on a
+    timer), because a session that never calls execute_code again after its last cell
+    left its kernel process running forever — nothing else touches the registry."""
+    _, idle_timeout = _lifecycle_limits()
+    with _REGISTRY.lock:
+        now = time.monotonic()
+        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
+                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+    for doomed in expired:
+        doomed.teardown()
+
+
+def _reap_idle_kernels_forever() -> None:
+    """Background daemon: sweeps idle kernels on a timer so an owner that goes quiet
+    (closes its session, crashes, or simply never runs execute_code again) doesn't leave
+    its kernel process running until the whole gateway restarts. See #88637."""
+    while not _REAPER_STOP.wait(_REAPER_INTERVAL_S):
+        try:
+            _sweep_idle_kernels()
+        except Exception:
+            logger.exception("idle kernel reaper sweep failed")
+
+
+_REAPER_STOP = threading.Event()
+_REAPER_INTERVAL_S = 60
+threading.Thread(target=_reap_idle_kernels_forever, daemon=True, name="hermes-kernel-reaper").start()
+atexit.register(_REAPER_STOP.set)
+
+
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
     """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or

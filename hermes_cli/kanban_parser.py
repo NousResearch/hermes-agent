@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_notify as kbn
@@ -187,6 +188,14 @@ _SPECS = [
         _arg("--provider", dest="provider_override",
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
+        _arg("--reasoning", default=None, dest="reasoning_effort",
+             metavar="LEVEL", type=str.lower,
+             choices=("none", *VALID_REASONING_EFFORTS),
+             help="Pin the worker's thinking depth for this task "
+                  "(passed as --reasoning <level>) without changing the "
+                  "profile's agent.reasoning_effort. Independent of "
+                  "--model. 'none' disables thinking. Omit to inherit "
+                  "the profile setting."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
@@ -241,6 +250,15 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+    _cmd("set-reasoning", [
+        _TASK_ID,
+        _arg("effort", nargs="?", default=None, type=str.lower,
+             choices=("inherit", "none", *VALID_REASONING_EFFORTS),
+             help="Thinking depth to pin the worker to (spawned with "
+                  "--reasoning <level>). 'none' disables thinking; 'inherit' "
+                  "clears the override so the worker uses its profile's "
+                  "agent.reasoning_effort."),
+    ], help="Set or clear a task's reasoning-effort override (takes effect on the next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

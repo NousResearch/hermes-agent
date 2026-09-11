@@ -2893,12 +2893,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
-                    # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
-                    repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
-                    if repaired != "{}":
-                        arguments = repaired
-                    else:
+                    # Preserve interrupted/output-capped args for recovery; repairing
+                    # them would hide truncation before _finish_chat_stream routes it.
+                    if finish_reason in (None, FINISH_REASON_LENGTH):
                         has_truncated_tool_args = True
+                    else:
+                        # Completed responses may still have malformed JSON (GLM via Ollama).
+                        repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
+                        if repaired != "{}":
+                            arguments = repaired
+                        else:
+                            has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.

@@ -6504,6 +6504,40 @@ class TestStreamingApiCall:
         assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
         assert resp.choices[0].finish_reason == "length"
 
+    @pytest.mark.parametrize("finish_reason", [None, "length", "stop", "tool_calls"])
+    @pytest.mark.parametrize("raw, expected", [
+        pytest.param('{"a": [1, 2', {"a": [1, 2]}, id="nested-array"),
+        pytest.param('{"items": ["x", "y"', {"items": ["x", "y"]}, id="string-array"),
+        pytest.param('{"content": "hello } world', {"content": "hello } world"}, id="brace-in-string"),
+        pytest.param('{"path":"x.txt","content":"hel', {"path": "x.txt", "content": "hel"}, id="open-string"),
+    ])
+    def test_tool_arg_repair_respects_stream_completion(self, agent, raw, expected, finish_reason):
+        """Identical broken arguments need recovery until the provider completes."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", raw)])]
+        if finish_reason is not None:
+            chunks.append(_make_chunk(finish_reason=finish_reason))
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        if finish_reason is None:
+            assert resp.id == PARTIAL_STREAM_STUB_ID
+            assert resp.choices[0].finish_reason == "length"
+            assert resp.choices[0].message.tool_calls is None
+            assert resp._dropped_tool_names == ["write_file"]
+        else:
+            assert resp.id != PARTIAL_STREAM_STUB_ID
+            assert resp.choices[0].finish_reason == finish_reason
+            tc = resp.choices[0].message.tool_calls
+            assert len(tc) == 1
+            assert tc[0].function.name == "write_file"
+            if finish_reason == "length":
+                assert tc[0].function.arguments == raw
+            else:
+                assert json.loads(tc[0].function.arguments) == expected
+
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.
 

@@ -257,8 +257,8 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
 
     @staticmethod
     def _history_with_truncated_write():
-        # Exactly the incident shape: arguments cut off mid-string.
-        truncated = '{"content": "# chapter draft\nline one\nline two'
+        # A missing value keeps this on the unrepairable fallback after string repair.
+        truncated = '{"content": "# chapter draft\nline one\nline two", "path":'
         history = [{
             "role": "assistant",
             "content": "",
@@ -305,7 +305,7 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
                 {"id": "c1", "type": "function",
                  "function": {"name": "read_file", "arguments": good}},
                 {"id": "c2", "type": "function",
-                 "function": {"name": "write_file", "arguments": '{"content": "cut'}},
+                 "function": {"name": "write_file", "arguments": '{"content": "cut", "path":'}},
             ],
         }]
         before = copy.deepcopy(history)

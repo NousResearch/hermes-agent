@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 
 /**

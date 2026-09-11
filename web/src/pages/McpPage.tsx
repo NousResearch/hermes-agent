@@ -12,7 +12,7 @@ import type {
   McpHttpAuth,
   McpServer,
   McpTestResult,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";

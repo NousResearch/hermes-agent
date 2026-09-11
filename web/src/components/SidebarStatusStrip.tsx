@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 

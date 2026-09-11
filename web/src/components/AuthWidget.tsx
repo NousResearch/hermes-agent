@@ -24,7 +24,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, type AuthMeResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { AuthMeResponse } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 

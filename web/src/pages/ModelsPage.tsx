@@ -21,7 +21,7 @@ import type {
   MoaModelSlot,
   ModelsAnalyticsModelEntry,
   ModelsAnalyticsResponse,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { timeAgo, cn, themedBody } from "@/lib/utils";
 import {
   DASHBOARD_MODAL_BACKDROP,

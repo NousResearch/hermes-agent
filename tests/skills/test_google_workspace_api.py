@@ -195,3 +195,69 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_api_run_gws_raises_gws_error_instead_of_exiting(api_module):
+    """A failing gws CLI raises GwsError; it must not terminate the process."""
+    def failing_run(cmd, **kwargs):
+        return MagicMock(returncode=3, stdout="", stderr="auth failed")
+
+    with patch.object(api_module.subprocess, "run", side_effect=failing_run):
+        with pytest.raises(api_module.GwsError):
+            api_module._run_gws(["gmail", "users", "messages", "list"])
+
+
+def test_api_gmail_search_falls_back_when_gws_fails(api_module, capsys, monkeypatch):
+    """Regression: a present-but-failing gws aborted the command with no output.
+
+    The Python API path works with the same token, so a gws failure must fall
+    through to it rather than ending the run.
+    """
+    def failing_run(cmd, **kwargs):
+        return MagicMock(returncode=3, stdout="", stderr="auth failed")
+
+    service = MagicMock()
+    service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+        "messages": [{"id": "m1"}],
+    }
+    service.users.return_value.messages.return_value.get.return_value.execute.return_value = {
+        "id": "m1",
+        "threadId": "t1",
+        "snippet": "snip",
+        "labelIds": ["UNREAD"],
+        "payload": {"headers": [{"name": "Subject", "value": "hello"}]},
+    }
+    monkeypatch.setattr(api_module, "build_service", lambda *a, **k: service)
+
+    args = api_module.argparse.Namespace(query="is:unread", max=1)
+    with patch.object(api_module.subprocess, "run", side_effect=failing_run):
+        api_module.gmail_search(args)
+
+    captured = capsys.readouterr()
+    assert "falling back to the Python API" in captured.err
+    payload = json.loads(captured.out)
+    assert payload[0]["id"] == "m1"
+    assert payload[0]["subject"] == "hello"
+
+
+def test_api_docs_append_falls_back_when_gws_fails(api_module, monkeypatch):
+    """The if/else gate sites must still bind a document on the fallback path."""
+    def failing_run(cmd, **kwargs):
+        return MagicMock(returncode=3, stdout="", stderr="boom")
+
+    service = MagicMock()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "body": {"content": [{"endIndex": 5}]},
+    }
+    calls = {}
+    monkeypatch.setattr(api_module, "build_service", lambda *a, **k: service)
+    monkeypatch.setattr(
+        api_module, "_docs_insert_text",
+        lambda doc_id, text, index: calls.update(doc_id=doc_id, index=index),
+    )
+
+    args = api_module.argparse.Namespace(doc_id="doc1", text="hi")
+    with patch.object(api_module.subprocess, "run", side_effect=failing_run):
+        api_module.docs_append(args)
+
+    assert calls == {"doc_id": "doc1", "index": 4}

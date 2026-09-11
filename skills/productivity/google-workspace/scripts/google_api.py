@@ -61,11 +61,31 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     return normalized
 
 
+def _normalize_token_file() -> None:
+    """Keep the on-disk token readable by ``gws``.
+
+    The CLI requires the ``type`` field; the Python client library does not, so
+    a token written by a code path that omitted it makes gws fail while the
+    Python API keeps working. Normalize in place rather than only on refresh.
+    """
+    try:
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    normalized = _normalize_authorized_user_payload(data)
+    if normalized != data:
+        try:
+            TOKEN_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+
 def _ensure_authenticated():
     if not TOKEN_PATH.exists():
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
         print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
         sys.exit(1)
+    _normalize_token_file()
 
 
 def _stored_token_scopes() -> list[str]:
@@ -92,6 +112,18 @@ def _gws_env() -> dict[str, str]:
     return env
 
 
+class GwsError(RuntimeError):
+    """The ``gws`` CLI is installed but the call failed.
+
+    Raised instead of exiting so callers can fall through to the Python API
+    path, which works with the same token.
+    """
+
+
+def _gws_fallback_notice(exc: Exception) -> None:
+    print(f"gws failed ({exc}); falling back to the Python API", file=sys.stderr)
+
+
 def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None = None):
     binary = _gws_binary()
     if not binary:
@@ -113,8 +145,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"
-        print(err, file=sys.stderr)
-        sys.exit(result.returncode or 1)
+        raise GwsError(err)
 
     stdout = result.stdout.strip()
     if not stdout:
@@ -123,9 +154,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
     try:
         return json.loads(stdout)
     except json.JSONDecodeError:
-        print("ERROR: Unexpected non-JSON output from gws:", file=sys.stderr)
-        print(stdout, file=sys.stderr)
-        sys.exit(1)
+        raise GwsError(f"unexpected non-JSON output from gws: {stdout[:200]}")
 
 
 def _headers_dict(msg: dict) -> dict[str, str]:
@@ -213,37 +242,40 @@ def build_service(api, version):
 
 def gmail_search(args):
     if _gws_binary():
-        results = _run_gws(
-            ["gmail", "users", "messages", "list"],
-            params={"userId": "me", "q": args.query, "maxResults": args.max},
-        )
-        messages = results.get("messages", [])
-        output = []
-        for msg_meta in messages:
-            msg = _run_gws(
-                ["gmail", "users", "messages", "get"],
-                params={
-                    "userId": "me",
-                    "id": msg_meta["id"],
-                    "format": "metadata",
-                    "metadataHeaders": ["From", "To", "Subject", "Date"],
-                },
+        try:
+            results = _run_gws(
+                ["gmail", "users", "messages", "list"],
+                params={"userId": "me", "q": args.query, "maxResults": args.max},
             )
-            headers = _headers_dict(msg)
-            output.append(
-                {
-                    "id": msg["id"],
-                    "threadId": msg["threadId"],
-                    "from": headers.get("from", ""),
-                    "to": headers.get("to", ""),
-                    "subject": headers.get("subject", ""),
-                    "date": headers.get("date", ""),
-                    "snippet": msg.get("snippet", ""),
-                    "labels": msg.get("labelIds", []),
-                }
-            )
-        print(json.dumps(output, indent=2, ensure_ascii=False))
-        return
+            messages = results.get("messages", [])
+            output = []
+            for msg_meta in messages:
+                msg = _run_gws(
+                    ["gmail", "users", "messages", "get"],
+                    params={
+                        "userId": "me",
+                        "id": msg_meta["id"],
+                        "format": "metadata",
+                        "metadataHeaders": ["From", "To", "Subject", "Date"],
+                    },
+                )
+                headers = _headers_dict(msg)
+                output.append(
+                    {
+                        "id": msg["id"],
+                        "threadId": msg["threadId"],
+                        "from": headers.get("from", ""),
+                        "to": headers.get("to", ""),
+                        "subject": headers.get("subject", ""),
+                        "date": headers.get("date", ""),
+                        "snippet": msg.get("snippet", ""),
+                        "labels": msg.get("labelIds", []),
+                    }
+                )
+            print(json.dumps(output, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     results = service.users().messages().list(
@@ -277,23 +309,26 @@ def gmail_search(args):
 
 def gmail_get(args):
     if _gws_binary():
-        msg = _run_gws(
-            ["gmail", "users", "messages", "get"],
-            params={"userId": "me", "id": args.message_id, "format": "full"},
-        )
-        headers = _headers_dict(msg)
-        result = {
-            "id": msg["id"],
-            "threadId": msg["threadId"],
-            "from": headers.get("from", ""),
-            "to": headers.get("to", ""),
-            "subject": headers.get("subject", ""),
-            "date": headers.get("date", ""),
-            "labels": msg.get("labelIds", []),
-            "body": _extract_message_body(msg),
-        }
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        try:
+            msg = _run_gws(
+                ["gmail", "users", "messages", "get"],
+                params={"userId": "me", "id": args.message_id, "format": "full"},
+            )
+            headers = _headers_dict(msg)
+            result = {
+                "id": msg["id"],
+                "threadId": msg["threadId"],
+                "from": headers.get("from", ""),
+                "to": headers.get("to", ""),
+                "subject": headers.get("subject", ""),
+                "date": headers.get("date", ""),
+                "labels": msg.get("labelIds", []),
+                "body": _extract_message_body(msg),
+            }
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     msg = service.users().messages().get(
@@ -317,26 +352,29 @@ def gmail_get(args):
 
 def gmail_send(args):
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
-        message["To"] = args.to
-        message["Subject"] = args.subject
-        if args.cc:
-            message["Cc"] = args.cc
-        if args.from_header:
-            message["From"] = args.from_header
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        body = {"raw": raw}
-        if args.thread_id:
-            body["threadId"] = args.thread_id
-
-        result = _run_gws(
-            ["gmail", "users", "messages", "send"],
-            params={"userId": "me"},
-            body=body,
-        )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
-        return
+        try:
+            message = MIMEText(args.body, "html" if args.html else "plain")
+            message["To"] = args.to
+            message["Subject"] = args.subject
+            if args.cc:
+                message["Cc"] = args.cc
+            if args.from_header:
+                message["From"] = args.from_header
+    
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            body = {"raw": raw}
+            if args.thread_id:
+                body["threadId"] = args.thread_id
+    
+            result = _run_gws(
+                ["gmail", "users", "messages", "send"],
+                params={"userId": "me"},
+                body=body,
+            )
+            print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     message = MIMEText(args.body, "html" if args.html else "plain")
@@ -360,38 +398,41 @@ def gmail_send(args):
 
 def gmail_reply(args):
     if _gws_binary():
-        original = _run_gws(
-            ["gmail", "users", "messages", "get"],
-            params={
-                "userId": "me",
-                "id": args.message_id,
-                "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
-            },
-        )
-        headers = _headers_dict(original)
-
-        subject = headers.get("subject", "")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-
-        message = MIMEText(args.body)
-        message["To"] = headers.get("from", "")
-        message["Subject"] = subject
-        if args.from_header:
-            message["From"] = args.from_header
-        if headers.get("message-id"):
-            message["In-Reply-To"] = headers["message-id"]
-            message["References"] = headers["message-id"]
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        result = _run_gws(
-            ["gmail", "users", "messages", "send"],
-            params={"userId": "me"},
-            body={"raw": raw, "threadId": original["threadId"]},
-        )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
-        return
+        try:
+            original = _run_gws(
+                ["gmail", "users", "messages", "get"],
+                params={
+                    "userId": "me",
+                    "id": args.message_id,
+                    "format": "metadata",
+                    "metadataHeaders": ["From", "Subject", "Message-ID"],
+                },
+            )
+            headers = _headers_dict(original)
+    
+            subject = headers.get("subject", "")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
+    
+            message = MIMEText(args.body)
+            message["To"] = headers.get("from", "")
+            message["Subject"] = subject
+            if args.from_header:
+                message["From"] = args.from_header
+            if headers.get("message-id"):
+                message["In-Reply-To"] = headers["message-id"]
+                message["References"] = headers["message-id"]
+    
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            result = _run_gws(
+                ["gmail", "users", "messages", "send"],
+                params={"userId": "me"},
+                body={"raw": raw, "threadId": original["threadId"]},
+            )
+            print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     original = service.users().messages().get(
@@ -423,10 +464,13 @@ def gmail_reply(args):
 
 def gmail_labels(args):
     if _gws_binary():
-        results = _run_gws(["gmail", "users", "labels", "list"], params={"userId": "me"})
-        labels = [{"id": l["id"], "name": l["name"], "type": l.get("type", "")} for l in results.get("labels", [])]
-        print(json.dumps(labels, indent=2))
-        return
+        try:
+            results = _run_gws(["gmail", "users", "labels", "list"], params={"userId": "me"})
+            labels = [{"id": l["id"], "name": l["name"], "type": l.get("type", "")} for l in results.get("labels", [])]
+            print(json.dumps(labels, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     results = service.users().labels().list(userId="me").execute()
@@ -443,13 +487,16 @@ def gmail_modify(args):
         body["removeLabelIds"] = args.remove_labels.split(",")
 
     if _gws_binary():
-        result = _run_gws(
-            ["gmail", "users", "messages", "modify"],
-            params={"userId": "me", "id": args.message_id},
-            body=body,
-        )
-        print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
-        return
+        try:
+            result = _run_gws(
+                ["gmail", "users", "messages", "modify"],
+                params={"userId": "me", "id": args.message_id},
+                body=body,
+            )
+            print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("gmail", "v1")
     result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
@@ -467,31 +514,34 @@ def calendar_list(args):
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
 
     if _gws_binary():
-        results = _run_gws(
-            ["calendar", "events", "list"],
-            params={
-                "calendarId": args.calendar,
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "maxResults": args.max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-            },
-        )
-        events = []
-        for e in results.get("items", []):
-            events.append({
-                "id": e["id"],
-                "summary": e.get("summary", "(no title)"),
-                "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-                "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
-                "location": e.get("location", ""),
-                "description": e.get("description", ""),
-                "status": e.get("status", ""),
-                "htmlLink": e.get("htmlLink", ""),
-            })
-        print(json.dumps(events, indent=2, ensure_ascii=False))
-        return
+        try:
+            results = _run_gws(
+                ["calendar", "events", "list"],
+                params={
+                    "calendarId": args.calendar,
+                    "timeMin": time_min,
+                    "timeMax": time_max,
+                    "maxResults": args.max,
+                    "singleEvents": True,
+                    "orderBy": "startTime",
+                },
+            )
+            events = []
+            for e in results.get("items", []):
+                events.append({
+                    "id": e["id"],
+                    "summary": e.get("summary", "(no title)"),
+                    "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
+                    "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
+                    "location": e.get("location", ""),
+                    "description": e.get("description", ""),
+                    "status": e.get("status", ""),
+                    "htmlLink": e.get("htmlLink", ""),
+                })
+            print(json.dumps(events, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("calendar", "v3")
     results = service.events().list(
@@ -529,18 +579,21 @@ def calendar_create(args):
         event["attendees"] = [{"email": e.strip()} for e in args.attendees.split(",") if e.strip()]
 
     if _gws_binary():
-        result = _run_gws(
-            ["calendar", "events", "insert"],
-            params={"calendarId": args.calendar},
-            body=event,
-        )
-        print(json.dumps({
-            "status": "created",
-            "id": result["id"],
-            "summary": result.get("summary", ""),
-            "htmlLink": result.get("htmlLink", ""),
-        }, indent=2))
-        return
+        try:
+            result = _run_gws(
+                ["calendar", "events", "insert"],
+                params={"calendarId": args.calendar},
+                body=event,
+            )
+            print(json.dumps({
+                "status": "created",
+                "id": result["id"],
+                "summary": result.get("summary", ""),
+                "htmlLink": result.get("htmlLink", ""),
+            }, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("calendar", "v3")
     result = service.events().insert(calendarId=args.calendar, body=event).execute()
@@ -555,9 +608,12 @@ def calendar_create(args):
 
 def calendar_delete(args):
     if _gws_binary():
-        _run_gws(["calendar", "events", "delete"], params={"calendarId": args.calendar, "eventId": args.event_id})
-        print(json.dumps({"status": "deleted", "eventId": args.event_id}))
-        return
+        try:
+            _run_gws(["calendar", "events", "delete"], params={"calendarId": args.calendar, "eventId": args.event_id})
+            print(json.dumps({"status": "deleted", "eventId": args.event_id}))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("calendar", "v3")
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
@@ -572,16 +628,19 @@ def calendar_delete(args):
 def drive_search(args):
     query = args.query if args.raw_query else f"fullText contains '{args.query}'"
     if _gws_binary():
-        results = _run_gws(
-            ["drive", "files", "list"],
-            params={
-                "q": query,
-                "pageSize": args.max,
-                "fields": "files(id, name, mimeType, modifiedTime, webViewLink)",
-            },
-        )
-        print(json.dumps(results.get("files", []), indent=2, ensure_ascii=False))
-        return
+        try:
+            results = _run_gws(
+                ["drive", "files", "list"],
+                params={
+                    "q": query,
+                    "pageSize": args.max,
+                    "fields": "files(id, name, mimeType, modifiedTime, webViewLink)",
+                },
+            )
+            print(json.dumps(results.get("files", []), indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("drive", "v3")
     results = service.files().list(
@@ -595,12 +654,15 @@ def drive_get(args):
     """Get metadata for a single Drive file by ID."""
     fields = "id, name, mimeType, modifiedTime, size, webViewLink, parents, owners(emailAddress)"
     if _gws_binary():
-        result = _run_gws(
-            ["drive", "files", "get"],
-            params={"fileId": args.file_id, "fields": fields},
-        )
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        try:
+            result = _run_gws(
+                ["drive", "files", "get"],
+                params={"fileId": args.file_id, "fields": fields},
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("drive", "v3")
     result = service.files().get(fileId=args.file_id, fields=fields).execute()
@@ -697,18 +759,21 @@ def drive_create_folder(args):
         body["parents"] = [args.parent]
 
     if _gws_binary():
-        result = _run_gws(
-            ["drive", "files", "create"],
-            params={"fields": "id, name, webViewLink"},
-            body=body,
-        )
-        print(json.dumps({
-            "status": "created",
-            "id": result["id"],
-            "name": result.get("name", ""),
-            "webViewLink": result.get("webViewLink", ""),
-        }, indent=2, ensure_ascii=False))
-        return
+        try:
+            result = _run_gws(
+                ["drive", "files", "create"],
+                params={"fields": "id, name, webViewLink"},
+                body=body,
+            )
+            print(json.dumps({
+                "status": "created",
+                "id": result["id"],
+                "name": result.get("name", ""),
+                "webViewLink": result.get("webViewLink", ""),
+            }, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("drive", "v3")
     result = service.files().create(body=body, fields="id, name, webViewLink").execute()
@@ -737,22 +802,25 @@ def drive_share(args):
         permission["domain"] = args.domain
 
     if _gws_binary():
-        result = _run_gws(
-            ["drive", "permissions", "create"],
-            params={
+        try:
+            result = _run_gws(
+                ["drive", "permissions", "create"],
+                params={
+                    "fileId": args.file_id,
+                    "sendNotificationEmail": args.notify,
+                },
+                body=permission,
+            )
+            print(json.dumps({
+                "status": "shared",
+                "permissionId": result.get("id", ""),
                 "fileId": args.file_id,
-                "sendNotificationEmail": args.notify,
-            },
-            body=permission,
-        )
-        print(json.dumps({
-            "status": "shared",
-            "permissionId": result.get("id", ""),
-            "fileId": args.file_id,
-            "role": permission["role"],
-            "type": permission["type"],
-        }, indent=2, ensure_ascii=False))
-        return
+                "role": permission["role"],
+                "type": permission["type"],
+            }, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("drive", "v3")
     result = service.permissions().create(
@@ -774,9 +842,12 @@ def drive_delete(args):
     """Trash or permanently delete a Drive file. Defaults to trash (reversible)."""
     if args.permanent:
         if _gws_binary():
-            _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id})
-            print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
-            return
+            try:
+                _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id})
+                print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
+                return
+            except GwsError as exc:
+                _gws_fallback_notice(exc)
         service = build_service("drive", "v3")
         service.files().delete(fileId=args.file_id).execute()
         print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
@@ -785,13 +856,16 @@ def drive_delete(args):
     # Trash (reversible). Use files.update with trashed=True.
     body = {"trashed": True}
     if _gws_binary():
-        _run_gws(
-            ["drive", "files", "update"],
-            params={"fileId": args.file_id},
-            body=body,
-        )
-        print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
-        return
+        try:
+            _run_gws(
+                ["drive", "files", "update"],
+                params={"fileId": args.file_id},
+                body=body,
+            )
+            print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("drive", "v3")
     service.files().update(fileId=args.file_id, body=body).execute()
@@ -805,26 +879,29 @@ def drive_delete(args):
 
 def contacts_list(args):
     if _gws_binary():
-        results = _run_gws(
-            ["people", "people", "connections", "list"],
-            params={
-                "resourceName": "people/me",
-                "pageSize": args.max,
-                "personFields": "names,emailAddresses,phoneNumbers",
-            },
-        )
-        contacts = []
-        for person in results.get("connections", []):
-            names = person.get("names", [{}])
-            emails = person.get("emailAddresses", [])
-            phones = person.get("phoneNumbers", [])
-            contacts.append({
-                "name": names[0].get("displayName", "") if names else "",
-                "emails": [e.get("value", "") for e in emails],
-                "phones": [p.get("value", "") for p in phones],
-            })
-        print(json.dumps(contacts, indent=2, ensure_ascii=False))
-        return
+        try:
+            results = _run_gws(
+                ["people", "people", "connections", "list"],
+                params={
+                    "resourceName": "people/me",
+                    "pageSize": args.max,
+                    "personFields": "names,emailAddresses,phoneNumbers",
+                },
+            )
+            contacts = []
+            for person in results.get("connections", []):
+                names = person.get("names", [{}])
+                emails = person.get("emailAddresses", [])
+                phones = person.get("phoneNumbers", [])
+                contacts.append({
+                    "name": names[0].get("displayName", "") if names else "",
+                    "emails": [e.get("value", "") for e in emails],
+                    "phones": [p.get("value", "") for p in phones],
+                })
+            print(json.dumps(contacts, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("people", "v1")
     results = service.people().connections().list(
@@ -852,12 +929,15 @@ def contacts_list(args):
 
 def sheets_get(args):
     if _gws_binary():
-        result = _run_gws(
-            ["sheets", "spreadsheets", "values", "get"],
-            params={"spreadsheetId": args.sheet_id, "range": args.range},
-        )
-        print(json.dumps(result.get("values", []), indent=2, ensure_ascii=False))
-        return
+        try:
+            result = _run_gws(
+                ["sheets", "spreadsheets", "values", "get"],
+                params={"spreadsheetId": args.sheet_id, "range": args.range},
+            )
+            print(json.dumps(result.get("values", []), indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("sheets", "v4")
     result = service.spreadsheets().values().get(
@@ -872,17 +952,20 @@ def sheets_update(args):
     body = {"values": values}
 
     if _gws_binary():
-        result = _run_gws(
-            ["sheets", "spreadsheets", "values", "update"],
-            params={
-                "spreadsheetId": args.sheet_id,
-                "range": args.range,
-                "valueInputOption": "USER_ENTERED",
-            },
-            body=body,
-        )
-        print(json.dumps({"updatedCells": result.get("updatedCells", 0), "updatedRange": result.get("updatedRange", "")}, indent=2))
-        return
+        try:
+            result = _run_gws(
+                ["sheets", "spreadsheets", "values", "update"],
+                params={
+                    "spreadsheetId": args.sheet_id,
+                    "range": args.range,
+                    "valueInputOption": "USER_ENTERED",
+                },
+                body=body,
+            )
+            print(json.dumps({"updatedCells": result.get("updatedCells", 0), "updatedRange": result.get("updatedRange", "")}, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("sheets", "v4")
     result = service.spreadsheets().values().update(
@@ -898,18 +981,21 @@ def sheets_append(args):
     body = {"values": values}
 
     if _gws_binary():
-        result = _run_gws(
-            ["sheets", "spreadsheets", "values", "append"],
-            params={
-                "spreadsheetId": args.sheet_id,
-                "range": args.range,
-                "valueInputOption": "USER_ENTERED",
-                "insertDataOption": "INSERT_ROWS",
-            },
-            body=body,
-        )
-        print(json.dumps({"updatedCells": result.get("updates", {}).get("updatedCells", 0)}, indent=2))
-        return
+        try:
+            result = _run_gws(
+                ["sheets", "spreadsheets", "values", "append"],
+                params={
+                    "spreadsheetId": args.sheet_id,
+                    "range": args.range,
+                    "valueInputOption": "USER_ENTERED",
+                    "insertDataOption": "INSERT_ROWS",
+                },
+                body=body,
+            )
+            print(json.dumps({"updatedCells": result.get("updates", {}).get("updatedCells", 0)}, indent=2))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("sheets", "v4")
     result = service.spreadsheets().values().append(
@@ -926,14 +1012,17 @@ def sheets_create(args):
         body["sheets"] = [{"properties": {"title": args.sheet_name}}]
 
     if _gws_binary():
-        result = _run_gws(["sheets", "spreadsheets", "create"], body=body)
-        print(json.dumps({
-            "status": "created",
-            "spreadsheetId": result.get("spreadsheetId", ""),
-            "title": result.get("properties", {}).get("title", ""),
-            "spreadsheetUrl": result.get("spreadsheetUrl", ""),
-        }, indent=2, ensure_ascii=False))
-        return
+        try:
+            result = _run_gws(["sheets", "spreadsheets", "create"], body=body)
+            print(json.dumps({
+                "status": "created",
+                "spreadsheetId": result.get("spreadsheetId", ""),
+                "title": result.get("properties", {}).get("title", ""),
+                "spreadsheetUrl": result.get("spreadsheetUrl", ""),
+            }, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("sheets", "v4")
     result = service.spreadsheets().create(
@@ -954,14 +1043,17 @@ def sheets_create(args):
 
 def docs_get(args):
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
-        result = {
-            "title": doc.get("title", ""),
-            "documentId": doc.get("documentId", ""),
-            "body": _extract_doc_text(doc),
-        }
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        try:
+            doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
+            result = {
+                "title": doc.get("title", ""),
+                "documentId": doc.get("documentId", ""),
+                "body": _extract_doc_text(doc),
+            }
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("docs", "v1")
     doc = service.documents().get(documentId=args.doc_id).execute()
@@ -977,9 +1069,13 @@ def docs_create(args):
     """Create a new Doc. Optionally seed it with initial body text."""
     body = {"title": args.title}
 
+    doc = None
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "create"], body=body)
-    else:
+        try:
+            doc = _run_gws(["docs", "documents", "create"], body=body)
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
+    if doc is None:
         service = build_service("docs", "v1")
         doc = service.documents().create(body=body).execute()
 
@@ -998,9 +1094,13 @@ def docs_create(args):
 
 def docs_append(args):
     """Append text to the end of an existing Doc."""
+    doc = None
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
-    else:
+        try:
+            doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
+    if doc is None:
         service = build_service("docs", "v1")
         doc = service.documents().get(documentId=args.doc_id).execute()
 
@@ -1035,12 +1135,15 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
         }
     }]
     if _gws_binary():
-        _run_gws(
-            ["docs", "documents", "batchUpdate"],
-            params={"documentId": doc_id},
-            body={"requests": requests},
-        )
-        return
+        try:
+            _run_gws(
+                ["docs", "documents", "batchUpdate"],
+                params={"documentId": doc_id},
+                body={"requests": requests},
+            )
+            return
+        except GwsError as exc:
+            _gws_fallback_notice(exc)
 
     service = build_service("docs", "v1")
     service.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()

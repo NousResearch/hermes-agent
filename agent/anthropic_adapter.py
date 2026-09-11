@@ -351,7 +351,7 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
     SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
     ``with_options()``, which re-runs the constructor and re-reads the environment."""
-    merged = dict(headers or {})
+    merged = dict(headers)
     if "api_key" in kwargs and "auth_token" not in kwargs:
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:

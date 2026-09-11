@@ -14,30 +14,28 @@ from agent.anthropic_adapter import build_anthropic_client
 SENTINEL = "sentinel-env-token-DO-NOT-SEND"
 
 
+def wire_headers(client) -> dict:
+    """Headers the SDK would put on a /v1/messages POST (the Omit() default is resolved here)."""
+    from anthropic._models import FinalRequestOptions
+
+    return dict(client._build_headers(FinalRequestOptions(method="post", url="/v1/messages", json_data={})))
+
+
+
 def test_api_key_client_and_its_copies_never_carry_the_env_bearer(monkeypatch):
     """The guard is a copy-safe Omit() default header: ``with_options()`` re-runs the constructor
     and re-reads ANTHROPIC_AUTH_TOKEN, so an attribute clear alone would re-leak on the copy."""
     anthropic_sdk = pytest.importorskip("anthropic")
-    from anthropic._models import FinalRequestOptions
-
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", SENTINEL)
     from agent.anthropic_adapter import _new_sdk_client
 
     client = _new_sdk_client(anthropic_sdk, {"api_key": "provider-key", "base_url": "http://127.0.0.1:1"}, {})
     for wire_client in (client, client.with_options(timeout=30)):
-        headers = dict(wire_client._build_headers(
-            FinalRequestOptions(method="post", url="/v1/messages", json_data={})))
+        headers = wire_headers(wire_client)
         assert headers.get("x-api-key") == "provider-key"
         assert "authorization" not in headers
-
-    # Mirror case: bearer-style construction must not ship an env ANTHROPIC_API_KEY, on copies either.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-env-key-DO-NOT-SEND")
-    bearer = _new_sdk_client(anthropic_sdk, {"auth_token": "bearer-secret", "base_url": "http://127.0.0.1:1"}, {})
-    for wire_client in (bearer, bearer.with_options(timeout=30)):
-        headers = dict(wire_client._build_headers(
-            FinalRequestOptions(method="post", url="/v1/messages", json_data={})))
-        assert headers.get("authorization") == "Bearer bearer-secret"
-        assert "x-api-key" not in headers
+    # The bearer mirror (no env x-api-key beside a portal JWT) is owned by
+    # tests/agent/test_nous_portal_anthropic_wire.py::TestClientShape.
 
 
 def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):

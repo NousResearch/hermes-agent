@@ -305,6 +305,54 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
         recovered_db.close()
 
 
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_lost_and_found_lane_recovers_page1_header_damaged_source(tmp_path: Path) -> None:
+    """#106667: a garbage page-1 header makes SQLite (and the shell's .recover) refuse the file
+    with 'file is not a database' although every data page survives. The lane must still
+    salvage the rows, and must do it on its snapshot — the user's file stays byte-identical."""
+    source = tmp_path / "header-damaged.db"
+    output = tmp_path / "header-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        for session_number in range(3):
+            session_id = f"hdr-session-{session_number}"
+            db.create_session(session_id, "cli", cwd="/tmp/hdr")
+            for message_number in range(9):
+                db.append_message(session_id, "user", f"payload {session_number} {message_number}")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
+    data = bytearray(source.read_bytes())
+    data[0:100] = bytes(range(1, 101))  # not the magic, not zeroes: the incident shape
+    source.write_bytes(data)
+    damaged_bytes = source.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        sqlite3.connect(str(source)).execute("SELECT count(*) FROM sqlite_master").fetchone()
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["sqlite3_cli"]["header_zeroed"] is True
+    assert any("header salvage" in warning for warning in report["verification"]["warnings"])
+    assert source.read_bytes() == damaged_bytes
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 27
+    finally:
+        conn.close()
+
+
 # ── mapper unit tests (no sqlite3 CLI required) ─────────────────────────────
 
 

@@ -1040,6 +1040,12 @@ def _recover_via_lost_and_found(
         "BEST-EFFORT page-level salvage: the source table schemas were unreadable, so rows were rebuilt from raw "
         "pages and mapped heuristically. Review every count before trusting this output."
     )
+    if cli_report.get("header_zeroed"):
+        verification["warnings"].append(
+            "header salvage: SQLite refused the source outright (page-1 header damaged, 'file is not a "
+            "database'); the header of the private snapshot copy was zeroed so .recover could walk the "
+            "surviving pages. Rows written only to a -wal after the last checkpoint are not included."
+        )
     verification.update(loss_detected=True, complete=False)
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
     # stay green. A systematic timestamp violation is the semantic tell — never report such a salvage as verified.

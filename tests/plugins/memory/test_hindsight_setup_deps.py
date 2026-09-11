@@ -2,7 +2,7 @@
 declared ``extra: hindsight`` (uv.lock pin) for all modes — and the
 local_embedded wizard must ACTUALLY install the isolated side-env runtime via
 embedded_runtime.ensure_sideenv (hindsight-embed + hindsight-api-slim[all],
-pinned, built by the pm.ensure.uv bridge). Never the deleted ``tools.lazy_deps``."""
+pinned, built by PM's isolated-environment operation). Never the deleted ``tools.lazy_deps``."""
 
 import sys
 from types import SimpleNamespace

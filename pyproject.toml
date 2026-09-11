@@ -225,6 +225,7 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
+google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 
 messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.2", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
@@ -744,11 +745,20 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
 # but ~180 legacy sites deep; they graduate to this list once the backlog
 # is burned down (see per-file-ignores below for the frozen baseline).
-select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
+select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."
+"pm.client.uv".msg = "Use PM's semantic Python operations."
+"pm.ensure.uv".msg = "The raw uv bridge was removed; use PM operations."
+"pm._uv".msg = "Tool acquisition is private to PM."
+"pm.environment".msg = "The environment engine is private; use PM operations."
+"pm.runtime_stage".msg = "Use pm.stage_manager_runtime for build-time bootstrap."
 
 [tool.ruff.lint.per-file-ignores]
+"pm/**" = ["TID251"]
 # Tests can intentionally exercise locale-encoding edge cases.
-"tests/**" = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
+"tests/**" = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
 # Skills and plugins are partially user-authored — their own conventions.
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]

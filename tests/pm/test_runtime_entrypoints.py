@@ -28,27 +28,31 @@ def test_cli_runtime_executes_without_redispatch(monkeypatch):
 
 
 def test_ci_dependency_phase_uses_isolated_runtime(tmp_path, monkeypatch):
-    from pm import runtime
+    import pm.client as client
+    from pm import paths
     from scripts.ci import setup_toolchain
-    import subprocess
 
-    monkeypatch.setattr("pm._uv._toolchain", lambda: pytest.fail("dependency work ran in bootstrap Python"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    project = tmp_path / "source"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[project]\nname="ci-proof"\nversion="1"\n[project.optional-dependencies]\ndev=[]\n')
+    monkeypatch.setattr(paths, "repo_root", lambda: project)
+    monkeypatch.setattr(client, "is_runtime", lambda: False)
     calls = []
-    python = tmp_path / "pm-runtime" / "python"
-    monkeypatch.setattr(runtime, "is_runtime", lambda: False)
-    monkeypatch.setattr(runtime, "runtime_python", lambda: python)
-    monkeypatch.setattr(subprocess, "run", lambda command, **kw: calls.append((command, kw)))
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "app-deps"))
-    args = SimpleNamespace(home=tmp_path, extras=["dev"], toolchain="all")
-    setup_toolchain.dependencies(args)
-    command, options = calls.pop()
-    assert command[:3] == [str(python), "-I", "-B"]
-    assert Path(command[3]).name == "setup_toolchain.py"
-    assert command[4:] == ["dependencies", "--home", str(tmp_path), "--toolchain", "all", "--extras", json.dumps(["dev"])]
-    assert "PYTHONPATH" not in options["env"]
-    assert options["check"] is True
-    assert calls == []
+
+    def request(operation, arguments, **kwargs):
+        calls.append((operation, arguments))
+        return str(tmp_path / "test-environment/bin/python") if operation == "build_environment" else None
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(setup_toolchain, "python3_alias", lambda _: None)
+    monkeypatch.setattr(setup_toolchain, "file_commands", lambda *args: None)
+    monkeypatch.setattr(setup_toolchain, "add_path", lambda *args: None)
+    setup_toolchain.dependencies(SimpleNamespace(home=tmp_path, extras=["dev"], toolchain="all"))
+    assert [operation for operation, _ in calls] == ["check_project_lock", "build_environment"]
+    assert calls[0][1]["source"] == str(project)
+    assert calls[1][1]["extras"] == ["dev"]
+    assert calls[1][1]["groups"] == ["test"]
+    assert all(arguments["explicit"] for _, arguments in calls)
 
 
 @pytest.mark.parametrize("distribution", ["nix", "docker"])

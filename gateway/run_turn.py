@@ -1708,9 +1708,10 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
-                await store.append_to_transcript(
-                    sid, self._hmwa_failed_turn_boundary_row(self._hmwa_failed_turn_notice(agent_result), ts),
-                )
+                    # The boundary belongs to the user row it closes; a deduped retry already has one.
+                    await store.append_to_transcript(
+                        sid, self._hmwa_failed_turn_boundary_row(self._hmwa_failed_turn_notice(agent_result), ts),
+                    )
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.

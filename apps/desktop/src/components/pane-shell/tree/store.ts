@@ -277,6 +277,47 @@ function saveHiddenStripTabs(next: ReadonlySet<string>) {
   writeJson(HIDDEN_STRIP_TAB_KEY, next.size === 0 ? null : [...next])
 }
 
+/** Persisted renderer state is untrusted: an older build (or a layout change)
+ *  may have stored every tab in a zone as hidden. Keep the active tab as the
+ *  same escape hatch enforced by setStripTabHidden for new interactions. */
+function repairPersistedStripTabs() {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return
+  }
+
+  const stored = $hiddenStripTabs.get()
+  const repaired = new Set(stored)
+  const visited = new Set<string>()
+
+  for (const paneId of stored) {
+    const group = findGroupOfPane(tree, paneId)
+
+    if (!group || visited.has(group.id)) {
+      continue
+    }
+
+    visited.add(group.id)
+
+    if (group.panes.length > 0 && group.panes.every(id => repaired.has(id))) {
+      repaired.delete(group.panes.includes(group.active) ? group.active : group.panes[0])
+    }
+  }
+
+  if (repaired.size === stored.size) {
+    return
+  }
+
+  saveHiddenStripTabs(repaired)
+
+  for (const paneId of stored) {
+    if (!repaired.has(paneId)) {
+      setTreePaneHidden(paneId, false)
+    }
+  }
+}
+
 export function isStripTabHidden(paneId: string): boolean {
   return $hiddenStripTabs.get().has(paneId)
 }
@@ -327,6 +368,8 @@ export function setStripTabHidden(paneId: string, hidden: boolean): boolean {
 for (const paneId of $hiddenStripTabs.get()) {
   setTreePaneHidden(paneId, true)
 }
+
+repairPersistedStripTabs()
 
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}
@@ -1220,6 +1263,7 @@ export function declareDefaultTree(tree: LayoutNode) {
 
   if (!current) {
     $layoutTree.set(tree)
+    repairPersistedStripTabs()
 
     return
   }
@@ -1229,6 +1273,8 @@ export function declareDefaultTree(tree: LayoutNode) {
   if (next !== current) {
     commit(next)
   }
+
+  repairPersistedStripTabs()
 }
 
 /**

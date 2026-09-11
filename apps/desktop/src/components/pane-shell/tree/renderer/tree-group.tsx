@@ -350,11 +350,15 @@ export function TreeGroup({
   // (tabs reading top-to-bottom). In a column (stacked zones) the horizontal
   // header IS the collapsed form, exactly as before.
   //
-  // EXCEPTION: when the zone has ≥2 shown panes, keep the horizontal tab bar
-  // even when minimized — the user can still switch (and restore) without
-  // expanding first. The vertical rail is only for a lone pane, where it
-  // still renders that pane's tab as the restore handle.
-  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && shown.length <= 1
+  // EXCEPTION: multi-tab tool zones keep the horizontal tab bar so the user
+  // can switch without expanding first. Hide-only standing chrome does not:
+  // Sessions/Bots must stay a visible rail inside the narrow row track rather
+  // than squeezing a horizontal strip (and its restore chevron) to 1.75rem.
+  const hideOnlyRail = shown.some(id => paneChrome(paneFor(id)).hideOnly)
+
+  const verticalCollapse =
+    Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && (shown.length <= 1 || hideOnlyRail)
+
   // A minimized group IS its header, so it shows one regardless.
   const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
 
@@ -461,9 +465,21 @@ export function TreeGroup({
               // Strip line faces the content the zone collapsed away from.
               railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
             )}
+            data-collapsed-rail={node.id}
             onClick={() => restoreTreePane(activeId)}
             title={t.zones.restore}
           >
+            <button
+              aria-label={t.zones.restore}
+              className="grid size-7 shrink-0 place-items-center [-webkit-app-region:no-drag] text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+              onClick={event => {
+                event.stopPropagation()
+                restoreTreePane(activeId)
+              }}
+              type="button"
+            >
+              <Codicon name="chevron-up" size="0.75rem" />
+            </button>
             <div
               className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               role="tablist"
@@ -500,7 +516,10 @@ export function TreeGroup({
           bounds, strip refs, focus ownership and split geometry as the body. */}
       {(headerVisible || topEdge) && (
         <div
-          className="flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
+          className={cn(
+            'flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)',
+            topEdge && 'relative z-60'
+          )}
           data-panel-header=""
           style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
         >

@@ -271,6 +271,11 @@ _WS_AUTH_TIMEOUT = 20.0
 # close the transport never surfaces (observed as a CLOSE_WAIT socket with the loop parked on recv, #98097)
 # leaves the gateway "connected" while inbound stops; this timeout forces the normal reconnect path instead.
 _WS_READ_IDLE_TIMEOUT = 300.0
+# Idle reads on a healthy-but-quiet relay are normal (no chat traffic ⇒ no app frames), so before the read
+# watchdog declares the connection silent it probes liveness with an explicit control ping and waits for the
+# pong (herc flap, 2026-09-10: relay answers pings fine — killing healthy connections every 300s opened a
+# message-loss window every cycle). The probe must stay well inside the transport's ping_timeout (20s).
+_WS_IDLE_PROBE_TIMEOUT = 10.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
@@ -1263,7 +1268,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 backoff = min(backoff * 2, 30.0)
 
     async def _ws_read_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
-        """Read frames until the relay closes; an idle read raises ConnectionError to reconnect."""
+        """Read frames until the relay closes; a read that stays idle past the liveness probe reconnects."""
         frame_iter = websocket.__aiter__()
         while True:
             try:
@@ -1271,7 +1276,18 @@ class BuzzAdapter(BasePlatformAdapter):
             except StopAsyncIteration:
                 return
             except asyncio.TimeoutError:
-                raise ConnectionError(f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent") from None
+                # 300s without an app frame is normal for a quiet relay; distinguish "quiet" from
+                # "dead" before reconnecting — a failed probe (or a closed transport raising here)
+                # still takes the reconnect path, so the #98097 CLOSE_WAIT cover holds.
+                try:
+                    pong = await websocket.ping()
+                    await asyncio.wait_for(pong, timeout=_WS_IDLE_PROBE_TIMEOUT)
+                    continue
+                except Exception:
+                    raise ConnectionError(
+                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s and idle liveness ping "
+                        f"got no pong within {_WS_IDLE_PROBE_TIMEOUT:.0f}s; assuming the connection went silent"
+                    ) from None
             try:
                 message = json.loads(raw)
             except (ValueError, TypeError):

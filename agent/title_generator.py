@@ -115,6 +115,32 @@ def _auto_title_enabled() -> bool:
         return True
 
 
+def _title_max_words() -> Optional[int]:
+    """Configured ``auxiliary.title_generation.max_words``, or None when unset.
+
+    A positive integer (>= 1) is enforced on both title paths; anything else (absent, <=0,
+    non-numeric) means "not set" and keeps the legacy behavior.
+    """
+    try:
+        raw = _title_config().get("max_words")
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+            return None
+        value = int(raw)
+        return value if value >= 1 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _truncate_to_word_limit(text: str, max_words: int) -> str:
+    """Truncate ``text`` at a word boundary to at most ``max_words`` words, or return it unchanged."""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]).rstrip(" ,.;:—-")
+
+
 def strip_control_wrappers(text: str) -> str:
     """Remove leading control wrappers (nested too) so a slash-command turn reduces to the prose the user typed."""
     current = (text or "").strip()
@@ -161,6 +187,9 @@ def is_titleable_user_message(user_message: str) -> bool:
 def derive_title(user_message: str) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
     line = " ".join(_first_line(_summarize_user_message(user_message)).split())
+    max_words = _title_max_words()
+    if max_words is not None:
+        line = _truncate_to_word_limit(line, max_words)
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         space = cut.rfind(" ")
@@ -269,6 +298,11 @@ def generate_title(
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
+        # Enforce the configured word cap verbatim (not a prompt ask): truncate at a word boundary
+        # so the persisted title can never exceed max_words, whatever the model returned.
+        max_words = _title_max_words()
+        if title is not None and max_words is not None and len(title.split()) > max_words:
+            title = _truncate_to_word_limit(title, max_words)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,

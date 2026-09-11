@@ -8,6 +8,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    derive_title,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -598,3 +599,101 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestMaxWordsConfig:
+    """auxiliary.title_generation.max_words parsing: positive int → enforced, else legacy."""
+
+    def _cfg(self, max_words):
+        return {"auxiliary": {"title_generation": {"max_words": max_words}}}
+
+    def test_absent_means_unset(self):
+        from agent.title_generator import _title_max_words
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert _title_max_words() is None
+
+    def test_positive_integer_is_enforced(self):
+        from agent.title_generator import _title_max_words
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg(5)):
+            assert _title_max_words() == 5
+
+    def test_disabled_default_zero_is_unset(self):
+        from agent.title_generator import _title_max_words
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg(0)):
+            assert _title_max_words() is None
+
+    @pytest.mark.parametrize("bad", [-3, -1, "four", 2.5, True, [3]])
+    def test_implausible_values_fall_back_to_unset(self, bad):
+        from agent.title_generator import _title_max_words
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg(bad)):
+            assert _title_max_words() is None
+
+
+class TestDerivedTitleMaxWords:
+    """The derived title is truncated at a word boundary when max_words is set."""
+
+    def test_truncates_at_word_boundary(self):
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"title_generation": {"max_words": 3}}}):
+            assert derive_title("Debugging Python import errors in the test suite") == (
+                "Debugging Python import"
+            )
+
+    def test_short_title_unchanged(self):
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"title_generation": {"max_words": 6}}}):
+            assert derive_title("Fix the flaky auth test") == "Fix the flaky auth test"
+
+    def test_unset_keeps_legacy_behavior(self):
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert derive_title("Debugging Python import errors in the test suite") == (
+                "Debugging Python import errors in the test suite"
+            )
+
+
+class TestLlmTitleMaxWords:
+    """The LLM title is truncated to the configured cap, verbatim (not a prompt ask)."""
+
+    def test_truncates_oversized_model_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "one two three four five six seven eight nine ten"
+        )
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"title_generation": {"max_words": 4}}}):
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                assert generate_title("question", "answer") == "one two three four"
+
+    def test_guaranteed_enforcement_under_answer_guard(self):
+        """A wordy answer is truncated to max_words and then passes the (larger) answer guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+        )
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"title_generation": {"max_words": 6}}}):
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                title = generate_title("question", "answer")
+                assert title == "one two three four five six"
+                assert len(title.split()) <= 6
+
+    def test_unset_keeps_legacy_answer_guard(self):
+        """Without max_words an oversized answer is still rejected, not truncated."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+        )
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                assert generate_title("question", "answer") is None
+
+    def test_unset_keeps_normal_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Investigate the title resolver bug"
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                assert generate_title("question", "answer") == "Investigate the title resolver bug"

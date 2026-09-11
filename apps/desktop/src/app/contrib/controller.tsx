@@ -317,20 +317,19 @@ registry.registerMany([
             name: 'onboarding',
             render: ({ attrs, streaming }) => <OnboardingChatDirective attrs={attrs} streaming={streaming} />
           } satisfies TranscriptDirectiveContribution
+        },
+        // ::ask is the guided chat's question card, registered only with the
+        // onboarding flag. B4 decides its wider use.
+        {
+          id: 'transcript.ask',
+          area: TRANSCRIPT_DIRECTIVE_AREA,
+          data: {
+            name: 'ask',
+            render: ({ attrs, streaming }) => <AskDirective attrs={attrs} streaming={streaming} />
+          } satisfies TranscriptDirectiveContribution
         }
       ]
     : []),
-  // `::ask{question="…" options="A|B|C" input="true"}` — the model's generic
-  // interactive question: option pills + optional type-and-go, in ANY session.
-  // The antidote to wall-of-text answers; dashboard flows lean on it hard.
-  {
-    id: 'transcript.ask',
-    area: TRANSCRIPT_DIRECTIVE_AREA,
-    data: {
-      name: 'ask',
-      render: ({ attrs, streaming }) => <AskDirective attrs={attrs} streaming={streaming} />
-    } satisfies TranscriptDirectiveContribution
-  },
   {
     id: 'layout.reset',
     area: PALETTE_AREA,

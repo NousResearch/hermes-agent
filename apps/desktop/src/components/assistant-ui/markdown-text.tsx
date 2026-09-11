@@ -33,6 +33,7 @@ import {
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
@@ -43,6 +44,8 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+
+const onboardingEnabled = isOnboardingEnabled()
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -559,7 +562,7 @@ function MarkdownParagraph({
   // the slot empty instead. Once streaming ends this branch is dead, so a
   // SETTLED malformed/unclaimed directive still shows as prose (an authoring
   // bug the user should see).
-  if (streaming && plain !== null && isDirectiveInProgress(plain)) {
+  if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
     return null
   }
 

@@ -10,7 +10,10 @@ import type { ReactNode } from 'react'
  * fences get promoted whether or not the model asked), directives are
  * addressed (nothing renders unless a plugin claimed the name).
  *
- * What keeps a directive from hijacking prose is the CLAIM, not its position:
+ * The product parser requires the entire paragraph to be one directive, so
+ * mid-prose text and malformed or unclaimed directives stay prose.
+ *
+ * For the guided chat segmenter, the guard is the CLAIM, not its position:
  * a name nobody registered — and a malformed one — stays exactly the text it
  * always was. Position used to be the guard too (a directive had to be the
  * whole paragraph), and that cost more than it bought: a model that wrote the
@@ -55,12 +58,46 @@ export type TranscriptParagraphSegment =
   | { kind: 'prose'; text: string }
   | { kind: 'directive'; directive: ParsedTranscriptDirective }
 
+// The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
+// Length caps bound the attr scan on adversarial input.
+const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?$/
+
 // `::name` or `::name{...}`, anywhere a word can start — so `std::vector` is
 // never a directive. Length caps bound the attr scan on adversarial input.
-const DIRECTIVE_RE = /(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?/g
+const SEGMENT_RE = /(?<=^|\s)::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?/g
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi
+
+/**
+ * Parse a paragraph as a transcript directive. Returns null unless the ENTIRE
+ * trimmed text is one directive — prose containing `::` stays prose.
+ * Pure and synchronous — safe to call during render.
+ */
+export function parseTranscriptDirective(text: string): ParsedTranscriptDirective | null {
+  const trimmed = text.trim()
+
+  // Cheap reject before the regex: directives are short single lines.
+  if (!trimmed.startsWith('::') || trimmed.length > 1200 || trimmed.includes('\n')) {
+    return null
+  }
+
+  const match = DIRECTIVE_RE.exec(trimmed)
+
+  if (!match) {
+    return null
+  }
+
+  const attrs: Record<string, string> = {}
+
+  if (match[2]) {
+    for (const pair of match[2].matchAll(ATTR_RE)) {
+      attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
+    }
+  }
+
+  return { name: match[1], attrs, source: trimmed }
+}
 
 function parseAttrs(body: string | undefined): ParsedTranscriptDirective['attrs'] {
   const attrs: Record<string, string> = {}
@@ -107,9 +144,9 @@ export function segmentTranscriptDirectives(text: string): TranscriptParagraphSe
   const out: TranscriptParagraphSegment[] = []
   let cursor = 0
 
-  DIRECTIVE_RE.lastIndex = 0
+  SEGMENT_RE.lastIndex = 0
 
-  for (const match of text.matchAll(DIRECTIVE_RE)) {
+  for (const match of text.matchAll(SEGMENT_RE)) {
     const start = match.index ?? 0
 
     // A brace the attr group refused (unclosed, or past the length cap) means

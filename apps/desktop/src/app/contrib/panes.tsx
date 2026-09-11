@@ -11,6 +11,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
+import { useMemo } from 'react'
 
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
@@ -118,24 +119,35 @@ export function ReviewPaneContent() {
 
 /** Collect statusbar contributions for one side. A `render()` contribution
  *  becomes a render-item (arbitrary stateful node); otherwise the declarative
- *  `data` payload is the StatusbarItem. */
+ *  `data` payload is the StatusbarItem.
+ *
+ *  Memoized on `items` (a stable reference from `useContributions` until the
+ *  area actually changes — see `registry.getArea`'s snapshot cache): without
+ *  this, every render-item's `render` wrapper was a brand-new arrow function,
+ *  so `ContribRender`'s `createElement(render)` saw a different component
+ *  TYPE on every statusbar re-render and remounted the whole contributed
+ *  subtree — dropping any state it held (e.g. an open Dialog). See #91603. */
 export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem[] {
   const items = useContributions(`statusBar.${side}`)
 
-  return items
-    .map(c =>
-      c.render
-        ? ({
-            id: c.id,
-            render: () => (
-              <ContribBoundary id={c.id} variant="chip">
-                <ContribRender render={c.render!} />
-              </ContribBoundary>
-            )
-          } satisfies StatusbarItem)
-        : (c.data as StatusbarItem)
-    )
-    .filter(Boolean)
+  return useMemo(
+    () =>
+      items
+        .map(c =>
+          c.render
+            ? ({
+                id: c.id,
+                render: () => (
+                  <ContribBoundary id={c.id} variant="chip">
+                    <ContribRender render={c.render!} />
+                  </ContribBoundary>
+                )
+              } satisfies StatusbarItem)
+            : (c.data as StatusbarItem)
+        )
+        .filter(Boolean),
+    [items]
+  )
 }
 
 /** Collect TitlebarTool data contributions for one side of the titlebar. */

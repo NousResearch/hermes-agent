@@ -212,18 +212,27 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
         return _to_plain_data(v, _depth=_depth + 1, _path=_path)
 
     _path.add(obj_id)
-    if hasattr(value, "model_dump"):
-        try:
-            # warnings=False: streaming-accumulator blocks trip pydantic's serializer-mismatch
-            # UserWarning, which otherwise leaks to the terminal.
-            dumped = value.model_dump(warnings=False)
-        except TypeError:  # duck-typed model_dump without pydantic's signature
-            dumped = value.model_dump()
-        result = rec(dumped)
-    elif isinstance(value, dict):
+    if isinstance(value, dict):
         result = {k: rec(v) for k, v in value.items()}
     elif isinstance(value, (list, tuple)):
         result = [rec(v) for v in value]
+    elif hasattr(value, "model_dump"):
+        try:
+            try:
+                # warnings=False: streaming-accumulator blocks trip pydantic's serializer-mismatch
+                # UserWarning, which otherwise leaks to the terminal.
+                dumped = value.model_dump(warnings=False)
+            except TypeError:  # duck-typed model_dump without pydantic's signature
+                dumped = value.model_dump()
+        except (AttributeError, RuntimeError):
+            # Nested SDK/dict serializers raise AttributeError or wrap it as
+            # RuntimeError("'dict' object has no attribute 'model_dump'").
+            if hasattr(value, "__dict__"):
+                result = {k: rec(v) for k, v in vars(value).items() if not k.startswith("_")}
+            else:
+                result = value
+        else:
+            result = rec(dumped)
     elif hasattr(value, "__dict__"):
         result = {k: rec(v) for k, v in vars(value).items() if not k.startswith("_")}
     else:

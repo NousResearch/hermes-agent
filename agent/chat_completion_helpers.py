@@ -1400,14 +1400,25 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
 
 def _model_dump_safe(obj):
     """``model_dump(warnings=False)`` (avoids pydantic serializer UserWarnings on
-    generic-union SDK models), falling back for shims that reject the kwarg."""
+    generic-union SDK models), falling back for shims that reject the kwarg
+    and for dump calls that raise AttributeError/RuntimeError (nested dict)."""
     try:
-        return obj.model_dump(warnings=False)
-    except TypeError:
-        return obj.model_dump()
+        try:
+            return obj.model_dump(warnings=False)
+        except TypeError:
+            return obj.model_dump()
+    except (AttributeError, RuntimeError):
+        if isinstance(obj, dict):
+            return obj
+        raw = getattr(obj, "__dict__", None)
+        if isinstance(raw, dict):
+            return {k: v for k, v in raw.items() if not k.startswith("_")}
+        return obj
 
 
 def _dump_if_model(value):
+    if isinstance(value, dict):
+        return value
     return _model_dump_safe(value) if hasattr(value, "model_dump") else value
 
 

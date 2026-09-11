@@ -2891,7 +2891,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         except Exception:
             self._composer_placeholder = ""
         self._command_palette_state = self._secret_state = None
-        self._pending_resume_sessions = None  # armed by a bare `/resume`; the next bare number selects
         self._pending_agent_seed = None  # one-shot seed from a slash handler
         self._secret_deadline = 0
         self._tool_start_time: float = 0.0
@@ -3222,16 +3221,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 session_key=getattr(self, "session_id", None), platform="cli",
             )
 
-        # A bare `/resume` prompt is one-shot: any other command disarms it so a later
-        # number isn't swallowed as a stale selection.
-        # See #34584.
-        if canonical not in {"resume", "sessions"}:
-            # Armed when a bare `/resume` prints the recent-sessions list so the very next bare numeric
-            # input (e.g. `3`) resolves to that session. Holds the exact list used for index resolution;
-            # one-shot (cleared on the next submitted input, whether it's the selection or anything else).
-            # See #34584.
-            self._pending_resume_sessions = None
-
         entry = self._slash_handler(canonical)
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
@@ -3483,9 +3472,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 _cprint(f"  📄 Detected file: {_drop_path.name}")
                 user_input = f"[User attached file: {_drop_path}]" + (f"\n{_remainder}" if _remainder else "")
         elif isinstance(user_input, str):
-            # A bare number right after a bare `/resume` selects that session (never sent to the agent).
-            if self._pending_resume_sessions and self._consume_pending_resume_selection(user_input):
-                return
             if not is_seeded_query:
                 if self.handle_bang_shell(user_input):
                     return

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 import json
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
+from pathlib import Path
 
 
 ExportFormat = Literal["jsonl", "markdown"]
@@ -261,3 +262,17 @@ def default_save_filename(session_id: str, fmt: str) -> str:
     """Default filename for a /save export of the given session."""
     safe_id = "".join(ch for ch in str(session_id) if ch.isalnum() or ch in ("-", "_")) or "session"
     return f"hermes_session_{safe_id}.{fmt}"
+
+
+def save_session_export(
+    session: Dict[str, Any], *, fmt: str = "json", path: Optional[Path] = None,
+    home: Optional[Path] = None,
+) -> Path:
+    """Write one canonical SessionDB export using the shared ``/save`` renderer."""
+    from hermes_constants import get_hermes_home
+
+    fmt = normalize_save_format(fmt)
+    destination = path or ((home or get_hermes_home()) / "sessions" / "saved" / default_save_filename(_session_id(session), fmt))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_session_for_save(session, fmt), encoding="utf-8")
+    return destination

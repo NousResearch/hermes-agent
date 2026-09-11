@@ -171,7 +171,7 @@ _LONG_HANDLERS = frozenset({
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
-    "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
+    "wake.status", "session.active_list", "session.branch", "session.compress", "session.list", "session.export",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
 })
@@ -2612,6 +2612,10 @@ def _session_live_title(session: dict, key: str) -> str:
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     key = _session_lookup_key(session, fallback=sid)
+    persisted_key = ""
+    with contextlib.suppress(Exception), _session_db(session) as db:
+        if db is not None and (not hasattr(db, "get_session") or db.get_session(key)):
+            persisted_key = key
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
@@ -2629,7 +2633,8 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()), "preview": preview,
-        "session_key": key, "started_at": float(session.get("created_at") or now), "status": status,
+        **({"session_key": persisted_key} if persisted_key else {}),
+        "started_at": float(session.get("created_at") or now), "status": status,
         "title": _session_live_title(session, key),
     }
 

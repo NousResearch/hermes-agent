@@ -127,7 +127,8 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
     return {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
             "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
             "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
-            "source": row.get("source") or ""}
+            "source": row.get("source") or "", "model": tip_row.get("model") or row.get("model") or "",
+            "last_active": tip_row.get("last_active") or row.get("last_active") or row.get("started_at") or 0}
 
 
 # Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
@@ -428,11 +429,16 @@ def _(rid, params: dict, db) -> dict:
     try:
         if title_lookup := _str_param(params, "title"):
             return _session_list_by_title(rid, db, title_lookup)
-        limit = int(params.get("limit", 200) or 200)
-        # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
-        # surfaces that OWN hidden sessions (Bots pane, pickers).
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"))[:limit]
-        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
+        limit = max(1, min(int(params.get("limit", 50) or 50), 200))
+        offset = max(0, int(params.get("offset", 0) or 0))
+        query = _str_param(params, "query")
+        rows = _listing_rows(
+            db, offset + limit + 1, include_hidden=_flag(params, "include_hidden"),
+            exclude_sources=list(_LISTING_DENY_SOURCES), search_query=query or None,
+        )
+        rows = rows[offset:offset + limit + 1]
+        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows[:limit]],
+                         "has_more": len(rows) > limit})
     except Exception as e:
         return _err(rid, 5006, str(e))
 
@@ -960,6 +966,40 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5036, f"delete failed: {e}")
     return _ok(rid, {"deleted": target}) if deleted else _err(rid, 4007, "session not found")
+
+
+@method("session.rename")
+@_with_db(5037, session_scoped=False)
+def _(rid, params: dict, db) -> dict:
+    target, title = _str_param(params, "session_id"), _str_param(params, "title")
+    if not target or not title:
+        return _err(rid, 4006, "session_id and title required")
+    try:
+        if not db.set_session_title(target, title) and not db.get_session(target):
+            return _err(rid, 4007, "session not found")
+    except ValueError as e:
+        return _err(rid, 4022, str(e))
+    except Exception as e:
+        return _err(rid, 5037, f"rename failed: {e}")
+    return _ok(rid, {"session_id": target, "title": title})
+
+
+@method("session.export")
+@_with_db(5038, session_scoped=False)
+def _(rid, params: dict, db) -> dict:
+    target = _str_param(params, "session_id")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    try:
+        data = db.export_session(target)
+        if not data:
+            return _err(rid, 4007, "session not found")
+        from hermes_cli.session_export import save_session_export
+        profile = _str_param(params, "profile") or None
+        path = save_session_export(data, fmt="json", home=_profile_home(profile) or get_hermes_home())
+    except Exception as e:
+        return _err(rid, 5038, f"export failed: {e}")
+    return _ok(rid, {"session_id": target, "file": str(path)})
 
 
 def _title_read(session: dict, db, key: str) -> str:

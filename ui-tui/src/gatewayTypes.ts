@@ -242,15 +242,21 @@ export interface SessionListItem {
   source?: string
   started_at: number
   title: string
+  model?: string
+  last_active?: number
 }
 
 export interface SessionListResponse {
+  has_more?: boolean
   sessions?: SessionListItem[]
 }
 
 export interface SessionDeleteResponse {
   deleted: string
 }
+
+export interface SessionRenameResponse { session_id: string; title: string }
+export interface SessionExportResponse { session_id: string; file: string }
 
 export interface SessionMostRecentResponse {
   session_id?: null | string

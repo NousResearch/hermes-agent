@@ -93,7 +93,7 @@ class TestStableChannelActive:
         no config read happens when it is present."""
         assert _stable_channel_active(_Args(channel="stable")) is True
         assert _stable_channel_active(_Args(channel="main")) is False
-        # canary on a source tree normalizes to main, never stable.
+        # Canary is a distinct release channel, never stable.
         assert _stable_channel_active(_Args(channel="canary")) is False
 
     def test_per_install_record_activates(self, tmp_path, monkeypatch):

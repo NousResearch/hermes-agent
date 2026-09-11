@@ -74,10 +74,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help=(
             "Persist the update channel for THIS install (recorded per "
             "install in config.yaml under update.installs). 'stable' tracks "
-            "tagged releases, 'main' the git main branch, 'canary' the "
-            "canary prereleases (desktop bundles only; source installs "
-            "normalize canary to main). Installs whose updates an external "
-            "steward owns (nix, docker, app stores) have no channel."
+            "published stable releases, 'main' the git main branch, and "
+            "'canary' published canary prereleases. Source installs check out "
+            "the selected release's exact commit. Package channels are baked "
+            "into their separate stable/canary identities and cannot be changed."
         ),
     )
     update_parser.add_argument(
@@ -96,8 +96,8 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         metavar="CHANNEL",
         help=(
             "Track CHANNEL for this run only (transient override; "
-            "--set-channel persists). 'stable' updates to the newest tagged "
-            "release, 'main' to the branch tip."
+            "--set-channel persists). 'stable' and 'canary' select published "
+            "releases, 'main' the branch tip. Source installs only."
         ),
     )
     update_parser.set_defaults(func=cmd_update)

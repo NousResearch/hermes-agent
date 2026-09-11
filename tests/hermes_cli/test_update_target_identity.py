@@ -85,7 +85,17 @@ def update_tree(tmp_path, monkeypatch):
 @pytest.mark.parametrize('server', ['sha', 'tag-fallback', 'moved-sha', 'moved-fallback',
                                   'at-release', 'ahead-release', 'explicit-branch'])
 def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, monkeypatch, server):
+    from hermes_cli import source_releases
+
     t = update_tree
+    responses = {
+        '/releases/stable/release-candidates.json': {'tag': 'v1.1.0', 'commit': t.wanted},
+        '/repos/NousResearch/hermes-agent/releases/tags/v1.1.0': {
+            'tag_name': 'v1.1.0', 'draft': False, 'prerelease': False,
+        },
+        '/repos/NousResearch/hermes-agent/commits/v1.1.0': {'sha': t.wanted},
+    }
+    monkeypatch.setattr(source_releases, '_read', lambda url, **_: json.dumps(responses[urlsplit(url).path]))
     expected = t.wanted
     if server in {'at-release', 'ahead-release'}:
         git(t.clone, 'fetch', '--no-tags', 'origin', t.wanted)
@@ -94,7 +104,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
             (t.clone / 'local.txt').write_text('local commit\n', encoding='utf-8')
             git(t.clone, 'add', 'local.txt')
             git(t.clone, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'local')
-        expected = git(t.clone, 'rev-parse', 'HEAD')
+        expected = t.wanted
     if server == 'explicit-branch':
         git(t.origin, 'branch', 'retained-branch', t.newer)
         t.args.branch = 'retained-branch'
@@ -128,7 +138,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert error.value.code == 1
         assert git(t.clone, 'rev-parse', 'HEAD') == t.base
         assert t.resumed
-    elif server in {'at-release', 'ahead-release'}:
+    elif server == 'at-release':
         cli_main.cmd_update(t.args)
         assert t.repaired == [True]
         assert git(t.clone, 'rev-parse', 'HEAD') == expected
@@ -138,7 +148,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert git(t.clone, 'rev-parse', 'HEAD') == expected
         content = 'unreleased-main\n' if server == 'explicit-branch' else 'release\n'
         assert (t.clone / 'content.txt').read_text(encoding='utf-8') == content
-        assert git(t.clone, 'branch', '--show-current') == 'retained-branch'
+        assert git(t.clone, 'branch', '--show-current') == ('retained-branch' if server == 'explicit-branch' else '')
     assert resolved == (server != 'explicit-branch')
     assert git(t.clone, 'rev-parse', 'v1.1.0') == t.base
     assert not git(t.clone, 'status', '--porcelain')
@@ -146,21 +156,22 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
 
 
 @pytest.mark.platforms('windows')
-@pytest.mark.parametrize('transport', ['gitless', 'no-git', 'api-tags', 'missing-sha',
+@pytest.mark.parametrize('transport', ['gitless', 'no-git', 'missing-release', 'missing-sha',
                                      'git-error', 'moved-git-error', 'dirty'])
 def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, monkeypatch, tmp_path, transport):
     t = update_tree
     archive = tmp_path / 'source.zip'
     git(t.origin, 'archive', '--format=zip', '--prefix=hermes-agent-source/', f'--output={archive}', t.wanted)
     archive_bytes = archive.read_bytes()
-    latest = {'tag_name': 'v1.1.0'}
+    latest = {'tag_name': 'v1.1.0', 'draft': False, 'prerelease': False}
     routes = {
         '/repos/NousResearch/hermes-agent/releases/latest': latest,
+        '/repos/NousResearch/hermes-agent/releases/tags/v1.1.0': latest,
         '/repos/NousResearch/hermes-agent/commits/v1.1.0': {'sha': t.wanted},
         '/repos/NousResearch/hermes-agent/tags?per_page=100': [{'name': 'v1.1.0', 'commit': {'sha': t.wanted}}],
         f'/NousResearch/hermes-agent/archive/{t.wanted}.zip': archive_bytes,
     }
-    if transport == 'api-tags':
+    if transport == 'missing-release':
         routes.pop('/repos/NousResearch/hermes-agent/releases/latest')
     if transport == 'missing-sha':
         routes['/repos/NousResearch/hermes-agent/commits/v1.1.0'] = {'sha': 'not-a-commit'}
@@ -191,7 +202,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
     def local_open(request, *args, **kwargs):
         url = request.full_url if isinstance(request, urllib.request.Request) else request
         parsed = urlsplit(url)
-        assert parsed.scheme == 'https' and parsed.netloc in {'api.github.com', 'github.com'}, url
+        assert parsed.scheme == 'https' and parsed.netloc in {'api.github.com', 'github.com', 'hermes-assets.nousresearch.com'}, url
         urls.append(url)
         local = f'http://127.0.0.1:{server.server_port}{parsed.path}'
         if parsed.query:
@@ -219,7 +230,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             fetched = True
         return result
 
-    if transport in {'gitless', 'no-git', 'api-tags', 'missing-sha'}:
+    if transport in {'gitless', 'no-git', 'missing-release', 'missing-sha'}:
         (t.clone / '.git').rename(tmp_path / 'git-state')
     if transport == 'dirty':
         (t.clone / 'content.txt').write_text('local work\n', encoding='utf-8')
@@ -227,7 +238,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
     monkeypatch.setattr(urllib.request, 'urlopen', local_open)
     monkeypatch.setattr(subprocess, 'run', guarded_run)
     try:
-        if transport in {'missing-sha', 'dirty'}:
+        if transport in {'missing-sha', 'missing-release', 'dirty'}:
             with pytest.raises(SystemExit) as error:
                 cli_main.cmd_update(t.args)
             assert error.value.code == 1
@@ -243,7 +254,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
         if transport in {'git-error', 'moved-git-error', 'dirty'}:
             assert failed and fetched
             assert len([cmd for cmd in git_calls if 'ls-remote' in cmd]) == 1
-            assert not any('api.github.com' in url for url in urls)
+            assert sum('/commits/' in url for url in urls) == 1
     finally:
         server.shutdown()
         thread.join(timeout=5)

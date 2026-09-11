@@ -21,10 +21,9 @@ same path, and the channel opt-in must survive that.
 * Written by ``hermes update --set-channel <x>`` from inside an install
   (it knows its own id — the user never types a sha).
 * Shown by ``hermes update --install-id`` and the desktop About page.
-* Channels are meaningful ONLY where the mechanism is ``self`` (which git
-  ref: main / stable / canary→main) or ``electron-updater`` (which feed:
-  latest.yml / canary.yml). ``external`` installs have no channel; the
-  steward owns updates.
+* Source installs select main or a published stable/canary release. Bundles
+  derive their channel from the baked tag, never from these records.
+  ``external`` installs have no configurable channel; the steward owns updates.
 
 Pure-stdlib leaf module (plus hermes-internal imports done lazily): the
 installers and boot paths read it before the full config machinery loads.
@@ -118,6 +117,12 @@ def channel_record(config: Optional[dict], project_root: Optional[Path] = None) 
     return record if isinstance(record, dict) else {}
 
 
+def _package_channel(stamp: dict) -> bool:
+    return stamp.get("payload") in ("bundled", "light") or stamp.get("updateMechanism") in (
+        "electron-updater", "app-installer", "microsoft-store"
+    )
+
+
 def default_channel(project_root: Optional[Path] = None) -> str:
     """The channel an unconfigured install tracks.
 
@@ -134,7 +139,7 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     """
     root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer", "microsoft-store"):
+    if not _package_channel(stamp):
         return CHANNEL_MAIN
     return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
 
@@ -143,35 +148,14 @@ def resolve_update_channel(
     config: Optional[dict] = None,
     project_root: Optional[Path] = None,
 ) -> str:
-    """The effective update channel for this install.
-
-    Resolution: the per-install record (``update.installs.<sha16>.channel``)
-    when valid; otherwise the mechanism default (main for self-source,
-    stable/canary for release bundles by artifact tag). Source
-    installs asking for canary normalize to main — canary builds are
-    release artifacts, and a git checkout tracks branches; callers print
-    the note.
-    """
-    configured: Any = channel_record(config, project_root).get("channel")
+    """Source records select releases or main; package tags fix bundle identity."""
+    root = Path(project_root) if project_root is not None else _default_root()
+    if _package_channel(_read_stamp(root)):
+        return default_channel(root)
+    configured: Any = channel_record(config, root).get("channel")
     if isinstance(configured, str) and configured.strip().lower() in VALID_CHANNELS:
-        channel = configured.strip().lower()
-    else:
-        channel = default_channel(project_root)
-
-    if channel == CHANNEL_CANARY:
-        root = Path(project_root) if project_root is not None else _default_root()
-        if _read_stamp(root).get("updateMechanism") not in ("electron-updater", "app-installer", "microsoft-store"):
-            # canary→main normalization for source installs.
-            return CHANNEL_MAIN
-    return channel
-
-
-def canary_normalized_note() -> str:
-    """The one-line note callers print when canary normalizes to main."""
-    return (
-        "→ Channel 'canary' on a source install tracks main "
-        "(canary builds are desktop release artifacts)."
-    )
+        return configured.strip().lower()
+    return default_channel(root)
 
 
 def set_install_channel(
@@ -184,15 +168,19 @@ def set_install_channel(
     including Microsoft Store, rather than this configuration.
     Raises ``ValueError`` for an invalid channel or an OS-owned install.
     """
+    from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
+
+    root = Path(project_root) if project_root is not None else _default_root()
+    if is_commit_build(root):
+        raise ValueError(COMMIT_BUILD_UPDATE_MESSAGE)
     channel = (channel or "").strip().lower()
     if channel not in VALID_CHANNELS:
         raise ValueError(
             f"unknown channel {channel!r} (one of {', '.join(VALID_CHANNELS)})"
         )
 
-    root = Path(project_root) if project_root is not None else _default_root()
     stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") in ("external", "app-installer", "microsoft-store"):
+    if _package_channel(stamp) or stamp.get("updateMechanism") == "external":
         distribution = stamp.get("distribution") or "an external steward"
         raise ValueError(
             f"channels don't apply here; updates are owned by {distribution}"
@@ -220,13 +208,7 @@ def handle_metadata_args(args, project_root: Path) -> bool:
     if channel == CHANNEL_CANARY:
         print("Canary builds can write forward-incompatible state. Back up your data before switching.")
     elif channel == CHANNEL_STABLE:
-        from hermes_cli.steward import read_install_stamp
-
-        current = read_install_stamp(project_root).get("displayVersion", "")
-        if "-canary." in current:
-            stable = current.partition("-canary.")[0]
-            print(f"You are on {current}. Wait for v{stable} or a newer stable release.")
-            print("For a manual reinstall, see https://hermes-agent.nousresearch.com.")
+        print("Switching to an older stable release may not read state written by canary. Back up your data first.")
     return True
 
 

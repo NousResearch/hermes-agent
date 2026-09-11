@@ -807,6 +807,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 500) |
+| `HERMES_ENVIRONMENT_HINT` | Free-text environment description for embedder/container setup (for example, proxies, mounts, or sandbox details), added to the system prompt’s environment block. A non-empty value takes precedence over `agent.environment_hint`; for user configuration, set `agent.environment_hint` in `config.yaml`. |
 | `HERMES_INFERENCE_MODEL` | Override model name at process level (takes priority over `config.yaml` for the session). Also settable via `-m`/`--model` flag. |
 | `HERMES_YOLO_MODE` | Set to `1` to bypass dangerous-command approval prompts. Equivalent to `--yolo`. |
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |

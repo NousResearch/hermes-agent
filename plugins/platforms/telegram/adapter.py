@@ -4447,8 +4447,14 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
         if resolved:
             await query.answer(text=f"✓ {resolved_text[:60]}")
             await self._edit_html_quiet(
-                query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
+                query, f"❓ {_html.escape(getattr(query.message, 'text', None) or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
             logger.info("Telegram clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, resolved_text, user_display)
+            # Resolution unblocks the already-running agent/typing
+            # lifecycle. Clear this callback's pause now; the outer
+            # processing task still owns stopping the refresh loop after
+            # follow-up delivery, including delivery failures.
+            if cb["chat_id"] is not None:
+                self.resume_typing_for_chat(str(cb["chat_id"]))
         else:
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)

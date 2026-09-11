@@ -29,7 +29,7 @@ _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
-_LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
+_LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "hermes-webui*", "--plain", "--no-legend", "--no-pager"]
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
@@ -240,7 +240,7 @@ def _needs_sudo(scope: str) -> bool:
 
 
 def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+    """Best-effort ``systemctl restart`` of every hermes-gateway/serve/webui unit."""
     answered = set()
     for scope, scope_cmd, result in listings:
         answered.add(scope)
@@ -310,7 +310,7 @@ def _run_pending_fleet_restart() -> bool:
                     kill_gateway_processes(all_profiles=True)
                     _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
-        # hermes-serve* units (the Desktop app's backend, #83438).
+        # hermes-serve* units (the Desktop app's backend, #83438) and companion hermes-webui* units.
         if systemd_listings is not None:
             _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
@@ -421,17 +421,19 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
     return (
-        # list-units is already pattern-filtered, but keep the name gate so a stray non-gateway/serve line
+        # list-units is already pattern-filtered, but keep the name gate so a stray non-gateway/serve/webui line
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
         or unit == "hermes-serve.service"
         or unit.startswith("hermes-serve-")
+        or unit == "hermes-webui.service"
+        or unit.startswith("hermes-webui-")
     )
 
 
 def _for_each_systemd_gateway_unit(list_units_stdout: str, *, process_unit, on_unit_timeout) -> None:
-    """Process each hermes-gateway*/hermes-serve* unit from ``systemctl list-units``.
+    """Process each hermes-gateway*/hermes-serve*/hermes-webui* unit from ``systemctl list-units``.
 
     ``TimeoutExpired`` from ``process_unit`` is isolated per unit via ``on_unit_timeout``
     so one wedged systemctl call cannot abort the rest of the fleet.
@@ -789,7 +791,7 @@ def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
     restarted_services: list, failed_or_stale_units: list,
 ) -> None:
-    """Restart one active systemd gateway/serve unit: graceful SIGUSR1 drain, then forced restart.
+    """Restart one active systemd gateway/serve/webui unit: graceful SIGUSR1 drain, then forced restart.
 
     Appends settled names to ``restarted_services`` and failures to ``failed_or_stale_units``.
     """
@@ -889,7 +891,7 @@ def _restart_one_systemd_gateway_unit(
 
 
 def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget):
-    """Restart every active hermes-gateway*/hermes-serve* systemd unit (user + system).
+    """Restart every active hermes-gateway*/hermes-serve*/hermes-webui* systemd unit (user + system).
 
     Settled units → ``restarted_services`` (bare) and ``restarted_scoped_units``
     (``scope/name``); failures → ``failed_or_stale_units``. Per-unit timeouts isolated.

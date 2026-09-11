@@ -669,7 +669,7 @@ class GatewaySessionCommandsMixin:
 
         # Defense in depth: /topic mutates SQLite side tables, so re-check the allowlist here.
         try:
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 return t("gateway.topic.unauthorized")
         except Exception:
             logger.debug("Topic auth check failed", exc_info=True)

@@ -203,12 +203,14 @@ def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatc
 def test_authorization_adapter_ignores_per_turn_active_profile(mux_home):
     """#87240 egress half: inside a secondary profile's runtime scope the
     default bot must not be handed to that profile (fail-closed None); the
-    launch profile still resolves ``self.adapters``."""
+    launch profile still resolves ``self.adapters``. The secondary's own bot
+    is down (reconnect pending), so it is not a route-only satellite."""
     from gateway.run import _profile_runtime_scope
 
     runner = _runner(mux_home)
     default_bot = object()
     runner.adapters = {Platform.TELEGRAM: default_bot}
+    runner._profile_failed_platforms = {"secondary": {Platform.TELEGRAM: object()}}
 
     with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
         assert runner._authorization_adapter(Platform.TELEGRAM, profile="secondary") is None

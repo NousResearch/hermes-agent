@@ -3972,9 +3972,8 @@ class GatewayRunner(
         config all read the transport profile's ``gateway.bot_loop_guard``."""
         return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
 
-    @staticmethod
-    def _under_authorization_profile(source: SessionSource, check):
-        authorization_home = getattr(source, "_authorization_profile_home", None)
+    def _under_authorization_profile(self, source: SessionSource, check):
+        authorization_home = self._authorization_home_for_source(source)
         if authorization_home is None:
             return check()
         with _profile_runtime_scope(Path(authorization_home)):

@@ -501,7 +501,7 @@ class GatewayStartupMixin:
         allowlist existed (or whose owner was since removed) must not silently receive a full agent
         response just because it carries a resume marker."""
         try:
-            if self._is_user_authorized(source):
+            if self._is_user_authorized_for_source(source):
                 return True
             logger.warning(
                 "Skipping auto-resume for %s: session owner is no "

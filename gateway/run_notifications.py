@@ -1011,10 +1011,9 @@ class GatewayNotificationsMixin:
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        profile = getattr(source, "profile", None)
-        adapters = self.adapters
-        if profile and profile not in ("default", getattr(self, "_primary_profile_name", None)):
-            adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile, {})
+        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
+        # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
+        adapters = self._adapters_for_profile(getattr(source, "profile", None))
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:

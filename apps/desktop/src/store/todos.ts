@@ -19,6 +19,27 @@ import { $sessionStates } from './session-states'
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
 
+/** Unfiltered todo snapshot per RUNTIME session id — every non-empty todo
+ *  list the app has observed for that session, active or not. Unlike
+ *  `$todosBySession` (composer-chip-oriented: intentionally drops a stale
+ *  active list on hydrate so a dead turn's plan doesn't pin the composer
+ *  forever), this is the authoritative feed for the Agents panel's Task
+ *  Overview sidebar (`store/session-todos-overview.ts`), which must keep
+ *  showing pending items for an idle session — that IS the point of a
+ *  persistent "할일 현황" list, not a bug to filter out. Written from the
+ *  same two producers as `$todosBySession` (live `todo.updated` events and
+ *  session hydration) so the two stores never drift out of sync on content,
+ *  only on which entries linger. */
+export const $rawTodosBySession = atom<Record<string, TodoItem[]>>({})
+
+export function setRawSessionTodos(sid: string, todos: TodoItem[]) {
+  if (!sid || todos.length === 0) {
+    return
+  }
+
+  $rawTodosBySession.set({ ...$rawTodosBySession.get(), [sid]: todos })
+}
+
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
 
@@ -102,6 +123,7 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
 
   clearTimers.cancel(sid)
   $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
+  setRawSessionTodos(sid, todos)
 
   if (!todoListActive(todos)) {
     clearTimers.schedule(sid, FINISHED_LINGER_MS, () => dropSessionTodos(sid, false))
@@ -167,6 +189,12 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
   }
 
   const visible = running ? todos : todosForHydration(todos)
+
+  // The composer-chip store may legitimately drop a stale active list (see
+  // `todosForHydration`), but the sidebar's raw feed always gets the real
+  // snapshot — an idle session with pending items is exactly what the Task
+  // Overview panel exists to show, not something to hide.
+  setRawSessionTodos(sid, todos)
 
   if (visible !== null) {
     setSessionTodos(sid, visible, revision)

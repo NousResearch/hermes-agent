@@ -120,6 +120,7 @@ import {
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { removeSessionTodoOverviewRow } from '@/store/session-todos-overview'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -2450,6 +2451,7 @@ export function useSessionActions({
 
       dropListedSession(storedSessionId)
       $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
@@ -2472,6 +2474,18 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removedOwner)
+
+        // Only now that the RPC has actually landed — an optimistic removal
+        // here would survive the catch below's full-state rollback (nothing
+        // restores a swept row), leaving the Task Overview sidebar missing a
+        // row for a session that's still very much alive after a failed
+        // delete. store/session-todos-overview.ts has no other eviction path
+        // for a hard-deleted session, so every id alias gets swept here.
+        for (const id of removedIds) {
+          if (id) {
+            removeSessionTodoOverviewRow(id)
+          }
+        }
 
         dropTranscriptTailEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll

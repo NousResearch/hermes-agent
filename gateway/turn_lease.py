@@ -45,9 +45,11 @@ class TurnLeaseToken:
 
     __slots__ = ("session_id", "owner_key", "generation", "released", "lease")
 
-    def __init__(self, session_id: str, owner_key: str, generation: int, lease: Optional["_SessionLease"] = None) -> None:
+    def __init__(self, session_id: str, owner_key: str, generation: int, lease: "_SessionLease") -> None:
         self.session_id, self.owner_key, self.generation = session_id, owner_key, generation
         self.released = False
+        # The concrete lease, so release resolves by identity even after a rotation re-aliases
+        # ``session_id`` (both ids map to this same lease).
         self.lease = lease
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
@@ -166,9 +168,7 @@ class SessionTurnLeaseRegistry:
         if token is None or token.released:
             return False
         token.released = True
-        lease = getattr(token, "lease", None) or self._leases.get(token.session_id)
-        if lease is None:
-            return False
+        lease = token.lease
         if lease.holder is not token:
             logger.debug("turn lease release skipped on session %s: token (key %s gen %s) is not "
                          "the current holder", token.session_id, token.owner_key, token.generation)

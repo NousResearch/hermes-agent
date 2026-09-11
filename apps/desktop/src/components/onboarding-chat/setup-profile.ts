@@ -220,10 +220,10 @@ function connectFirstRunbook(picks: string[]): string[] {
   return [
     `CONNECT FIRST. During setup the user picked these apps, given here as exact gateway slugs: ${named}. Your first action in this session, before any plan and before any other tool call, is ONE manage_connections call with action="connect" and connectors set to every one of those slugs. Do not call action="status" first; the slugs are exact and the catalog check is already done.`,
     'The app opens every sign-in from that result in the user\'s browser and shows one row per app, so never paste the links. In the same turn say one short line: which apps are being connected and, in a clause each, what this task gets from each one. Then end the turn.',
-    'The app sends you a hidden note that begins with "[setup] links opened" once the sign-ins are open. When it arrives, call manage_connections action="wait" with the same slugs and timeout_seconds=180, and say nothing until it returns.',
+    'The app sends you a hidden note that begins with "[setup] links opened" once the sign-ins are open. When it arrives, call manage_connections action="wait" with the same slugs and timeout_seconds=120, and say nothing until it returns.',
     'The user can start early. A message from them that begins with "Start with" names the apps that are connected and the ones they skipped; treat it as the go signal and begin the task with the connected apps only.',
-    'When the wait returns, begin the task at once with the apps that are connected. Do not ask what to do about the pending ones: say in one line which apps did not connect and that the task goes on without them, and offer a fresh link only if they ask for one.',
-    'Account data comes only from the connected apps and the open web. Never fall back to credentials that happen to be on this computer (a logged-in gh, ssh keys, tokens in files, browser sessions): the user did not hand those to this task.',
+    'When the wait returns with every app connected, begin the task at once. When it returns with apps still pending, stop and ask in one line: which apps did not connect, and whether they want you to continue without them or try connecting again (a fresh action="connect" mints new links). Wait for their answer.',
+    'Account data comes from the connected apps first. Tools already signed in on this machine, like a logged-in gh, are fair to use when the task benefits; say so in one line when you do.',
     'Discover a connected app\'s tools with tool_search and use real results for the task; never fabricate account data. Reading is separate from sending, deleting or scheduling: ask before those. No recurring job unless that is what they asked for.',
     'Make the result something they can open: a single HTML page when the idea allows it, and at least one real reading or action through a connected app.'
   ]
@@ -320,7 +320,7 @@ export async function buildFirstTaskSeedMessages(
  *  follow are driven by the build's own progress (see first-build.ts), not by
  *  a schedule Setup has to remember to create. */
 export function buildHandoffCompleteNote(task: string): string {
-  return `[setup] handoff complete — "${task.trim()}" is now building in its own session, and the user is watching it there. Say ONE short line and then stop: you're around if they want a hand, and this chat stays where it is. Do not ask a question, do not offer a list, do not schedule anything.`
+  return `[setup] handoff complete — "${task.trim()}" is now building in its own session on the default profile, and the user is watching it there. The app is showing them a short tour of the profile rail and the sessions list right now, so do not describe either. Say ONE short line and then stop: you're around if they want a hand, and this chat stays where it is. Do not ask a question, do not offer a list, do not schedule anything.`
 }
 
 // ── gateway helpers (called from the wiring's kickoff + handoff effects) ─────

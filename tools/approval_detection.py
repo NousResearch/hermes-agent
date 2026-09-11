@@ -393,6 +393,14 @@ DANGEROUS_PATTERNS = [
     (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    # Package-manager installs pull arbitrary code from registries — same risk as curl|bash (#108235).
+    # Only registry installs are flagged: npm only with -g/--global (plain `npm install` is project-local).
+    # pip/pip3/uv pip, pipx, and uv tool installs are always treated as registry pulls; a future
+    # refinement could carve out `-r/--requirement` and `-e/--editable` if they prove too noisy.
+    (r'\b(?:pip3?|uv\s+pip)\b[^;|&\n]*\binstall\b', "package install via pip (pulls arbitrary code from registry)"),
+    (r'\bpipx\b[^;|&\n]*\binstall\b', "package install via pipx (pulls arbitrary code from registry)"),
+    (r'\buv\b[^;|&\n]*\btool\s+install\b', "package install via uv tool (pulls arbitrary code from registry)"),
+    (r'\bnpm\b(?=[^;\n]*\s(?:-g\b|--global\b))[^;\n]*\b(?:install|i)\b', "package install via npm (global, pulls arbitrary code from registry)"),
 ]
 
 

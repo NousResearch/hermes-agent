@@ -181,11 +181,7 @@ export async function buildLocalMediaResponse(
  * Electron's `file://` loader ignores `Range` and answers `200` with the whole body, so Chromium
  * reports `video.seekable` as `[0, 0]`. Pass this into the media-protocol handler instead.
  */
-export function fetchLocalMedia(
-  resolvedPath: string,
-  headers: Headers,
-  method: string
-): Promise<Response> {
+export function fetchLocalMedia(resolvedPath: string, headers: Headers, method: string): Promise<Response> {
   return buildLocalMediaResponse(resolvedPath, {
     method,
     rangeHeader: headers.get('range')

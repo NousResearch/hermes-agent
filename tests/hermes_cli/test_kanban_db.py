@@ -271,7 +271,7 @@ def _exited_status(code: int) -> int:
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
-    """A rate-limit sentinel exit releases the task to ``ready`` and leaves
+    """A capacity sentinel exit releases the task to ``ready`` and leaves
     ``consecutive_failures`` untouched — the breaker must never trip on a
     transient throttle, even across many quota-wall hits."""
     import hermes_cli.kanban_db as _kb
@@ -327,10 +327,94 @@ def test_rate_limit_exit_requeues_without_counting_failure(
                 "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
             ).fetchall()
         ]
-        assert "rate_limited" in outcomes
+        assert "capacity_failure" in outcomes
         assert "crashed" not in outcomes
+        event_kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "capacity_failure" in event_kinds
+        assert "gave_up" not in event_kinds
 
 
+def test_capacity_failure_storm_uses_5m_15m_60m_backoff(
+    kanban_home, monkeypatch,
+):
+    """Capacity retries back off deterministically without consuming strikes."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    now = 7_000_000
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="capacity storm", assignee="a")
+        evidence = "provider 429: quota exhausted for deployment azure-prod"
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            (evidence, tid),
+        )
+        conn.commit()
+        for attempt, wait in enumerate((300, 900, 3600, 3600), start=1):
+            pid = 71000 + attempt
+            kb.claim_task(conn, tid, claimer=f"{host}:w{attempt}")
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, started_at=? WHERE id=?",
+                (pid, now, tid),
+            )
+            conn.commit()
+            monkeypatch.setattr(_kb.time, "time", lambda: now)
+            _kbd._record_worker_exit(
+                pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+            )
+            assert tid not in kbd.detect_crashed_workers(conn)
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.consecutive_failures == 0
+            assert task.last_failure_error
+            assert task.last_failure_error == evidence
+            run = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            assert run["outcome"] == "capacity_failure"
+
+            monkeypatch.setattr(_kb.time, "time", lambda: now + wait - 1)
+            assert kbd.check_respawn_guard(conn, tid) == "capacity_backoff"
+            monkeypatch.setattr(_kb.time, "time", lambda: now + wait)
+            assert kbd.check_respawn_guard(conn, tid) is None
+            now += wait
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='gave_up'",
+            (tid,),
+        ).fetchone()[0] == 0
+
+
+def test_genuine_non_429_crash_still_consumes_strikes(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="real crash", assignee="a")
+        for attempt in range(_kb.DEFAULT_FAILURE_LIMIT):
+            pid = 72000 + attempt
+            kb.claim_task(conn, tid, claimer=f"{host}:w{attempt}")
+            conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+            conn.commit()
+            _kbd._record_worker_exit(pid, _exited_status(1))
+            assert tid in kbd.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == _kb.DEFAULT_FAILURE_LIMIT
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='gave_up'",
+            (tid,),
+        ).fetchone()[0] == 1
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

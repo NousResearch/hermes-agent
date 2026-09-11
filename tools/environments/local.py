@@ -596,13 +596,16 @@ def _resolve_shell_init_files() -> list[str]:
 
 def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     """Prepend guarded, silent ``source <file>`` lines: ``set +e`` keeps going on
-    errors, ``2>/dev/null`` hides noisy prompts, ``|| true`` neutralises the status."""
-    if not files:
-        return cmd_string
+    errors, then re-pin this install after rc files rewrite PATH. The re-pin also
+    runs with no explicit files because ``bash -l`` still reads native login rc."""
     safe = [p.replace("'", "'\\''") for p in files]
-    prelude = ["set +e", *(f"[ -r '{p}' ] && . '{p}' 2>/dev/null || true" for p in safe)]
-    return "\n".join(prelude) + "\n" + cmd_string
-
+    prelude = (["set +e", *(f"[ -r '{p}' ] && . '{p}' 2>/dev/null || true" for p in safe)]
+               if safe else [])
+    bin_dir = None if _IS_WINDOWS else _resolve_hermes_bin_dir()
+    if bin_dir:
+        safe_bin = bin_dir.replace("'", "'\\''")
+        prelude.append(f"export PATH='{safe_bin}':\"$PATH\"")
+    return "\n".join(prelude) + "\n" + cmd_string if prelude else cmd_string
 
 # --- Process-group teardown (POSIX) ---
 def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:

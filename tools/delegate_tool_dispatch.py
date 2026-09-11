@@ -291,17 +291,28 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
             parts.append(None)
     return tuple(parts), in_tool
 
+# 2026-09-11: a MiniMax-M3 parent serialized 5 fake re-wake/status cycles into ONE message after
+# dispatch ("Pickup continues…", "Status unchanged…"); the UI looked stuck in a loop, the user typed
+# "stop", and a healthy child was killed mid-analysis. This sentence exists to forbid that pattern.
+_STATUS_ONCE_RULE = (
+    "Write the status ONCE, then stop generating. Do not emit a series of status updates or narrate future "
+    "wake-ups ('continuing', 'still running', 'pickup') — the completion message is the only thing that "
+    "re-wakes you; simulated re-wakes look like a stuck loop to the user."
+)
+
 _BACKGROUND_NOTES = {
     "one": (
         "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
         "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
-        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
+        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it. "
+        + _STATUS_ONCE_RULE
     ),
     "many": (
         "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
         "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
         "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
-        "poll transcripts or artifacts to wait for them."
+        "poll transcripts or artifacts to wait for them. "
+        + _STATUS_ONCE_RULE
     ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "

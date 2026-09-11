@@ -423,7 +423,7 @@ def local_authority_gateway_id() -> str:
 
 
 _connect = partial(
-    connect, db_label="state.db (hosted_rooms)", ready=_schema_is_current,
+    connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
     initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
 
 

@@ -345,13 +345,16 @@ class CLIAgentSetupMixin:
         """Offer the provider picker when no provider is configured at all (interactive
         startup, TTY). Runs the same flow as ``hermes model`` so onboarding has a single
         source of truth. True when a provider was configured."""
+        from prompt_toolkit.application import get_app_session
+
         from cli import _cprint, logger
         _cprint("")
         _cprint("⚕ No inference provider is configured yet — let's fix that.")
         _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
                 "no API key needed) and a model.")
         try:
-            answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
+            with get_app_session().input.cooked_mode():
+                answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print()
             answer = "n"
@@ -360,7 +363,8 @@ class CLIAgentSetupMixin:
             return False
         try:
             from hermes_cli.main import select_provider_and_model
-            select_provider_and_model()
+            with get_app_session().input.cooked_mode():
+                select_provider_and_model()
         except (KeyboardInterrupt, EOFError, SystemExit):
             print()
             _cprint("  Setup cancelled. Run 'hermes model' any time.")

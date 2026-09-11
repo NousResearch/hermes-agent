@@ -27,7 +27,6 @@ def _runner_with_pending_once():
 def test_restore_runs_from_finally_even_when_turn_raises():
     runner, state = _runner_with_pending_once()
     gen = runner._begin_session_run_generation(KEY)
-    state.conversation.one_turn_restore["run_generation"] = gen
 
     with pytest.raises(RuntimeError):
         try:

@@ -486,10 +486,7 @@ class GatewayInboundMixin:
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
         from gateway.run import _INTERRUPT_REASON_EVICTED
         self._interrupt_running_turn(_quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
-        self._release_running_agent_state(_quick_key)
-        # The interrupt flag is cleared only by the turn finalizer. Remove the cached instance after
-        # releasing the slot so a late-finishing orphan cannot poison the replacement turn (#44212).
-        self._evict_cached_agent(_quick_key)
+        self._drop_turn_slot(_quick_key)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
@@ -1258,11 +1255,6 @@ class GatewayInboundMixin:
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
-        # A pending one-shot snapshot (/moa, /model --once) belongs to the turn that claims the slot:
-        # only its finalizer may restore it. Stop/reset/eviction settle it before bumping the
-        # generation (``_invalidate_session_run_generation``), so a displaced turn never leaks it.
-        if _claim_state.conversation.one_turn_restore:
-            _claim_state.conversation.one_turn_restore["run_generation"] = _run_generation
 
         try:
             try:

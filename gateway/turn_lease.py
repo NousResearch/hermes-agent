@@ -144,7 +144,8 @@ class SessionTurnLeaseRegistry:
         if (token is None or token.released or not new_session_id
                 or new_session_id == token.session_id):
             return False
-        if (lease := self._leases.get(token.session_id)) is None or lease.holder is not token:
+        lease = token.lease
+        if lease.holder is not token:
             return False
         existing = self._leases.get(new_session_id)
         if existing is not None and existing is not lease and not existing.idle:
@@ -156,7 +157,6 @@ class SessionTurnLeaseRegistry:
                 token.session_id, new_session_id, token.owner_key, token.generation,
                 *_holder_desc(existing.holder), new_session_id)
             return False
-        # Preserve alias across rotation: both old and new session IDs point to the same lease
         self._leases[new_session_id] = lease
         lease.last_used = time.time()
         token.session_id = new_session_id

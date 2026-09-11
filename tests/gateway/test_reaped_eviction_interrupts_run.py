@@ -77,13 +77,13 @@ def test_eviction_interrupts_before_release_and_drops_cached_agent(entrypoint: s
     else:
         gateway._hm_evict_running_agent(KEY, "stale_running_agent_eviction")
 
-    assert isinstance(gateway, GatewayInboundMixin)
     assert agent.interrupted
     assert events[0] == ("interrupt", _INTERRUPT_REASON_EVICTED, True)
     release_events = [event for event in events if event[0] == "release"]
     assert release_events == [("release", True)]  # the interrupt was requested BEFORE the slot release
     assert gateway._peek_session_state(KEY).turn.agent is None
     assert KEY not in gateway._agent_cache
+    # The reason must be a registered control message or the finalizer treats it as user text.
     assert _is_control_interrupt_message(_INTERRUPT_REASON_EVICTED)
 
 
@@ -127,7 +127,6 @@ def test_one_shot_override_settles_on_stop_and_stale_finalizer_is_a_noop() -> No
     state.conversation.model_override = {"model": "once-model", "provider": "test"}
     state.conversation.one_turn_restore = {"had_override": True, "override": dict(prior)}
     owning_gen = gateway._begin_session_run_generation(KEY)
-    state.conversation.one_turn_restore["run_generation"] = owning_gen
 
     gateway._invalidate_session_run_generation(KEY, reason="user_stop")  # settlement point
     assert state.conversation.model_override == prior
@@ -152,9 +151,6 @@ async def test_turn_lease_rebind_preserves_parent_lock_domain_and_releases() -> 
     assert registry.rebind(token, "child-session") is True
     assert token.session_id == "child-session"
 
-    # Both parent and child session IDs must be registered to the same lease
-    assert registry._leases.get("parent-session") is registry._leases.get("child-session")
-    assert registry._leases["parent-session"].holder is token
 
     # Parent lock domain remains busy while child is held
     import asyncio

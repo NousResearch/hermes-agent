@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
+from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import cfg_get
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -255,14 +256,24 @@ class GatewayAgentCacheMixin:
         self._persist_active_agents()
         return True
 
+    def _drop_turn_slot(self, session_key: str) -> None:
+        """Release the running-agent slot and evict the cached instance (/stop, eviction, reaper).
+        ``_interrupt_requested`` is cleared only by the turn finalizer, so on a hung/still-draining
+        run the flag would survive and silently kill the session's NEXT message (interrupted=True,
+        api_calls=0, empty response); the next message rebuilds from history while the old agent
+        keeps its flag so a hung drain still dies (#44212)."""
+        self._release_running_agent_state(session_key)
+        self._evict_cached_agent(session_key)
+
     def _held_turn_lease(self, session_key: str, run_generation: int):
-        """Return ``(registry, token)`` when ``session_key`` holds a lease token for ``run_generation``, else None."""
+        """Return ``(registry, lease_tokens)`` when ``session_key`` holds a lease token for
+        ``run_generation``, else None. Callers ``get``/``pop`` the token from the map themselves."""
         registry = getattr(self, "_turn_leases", None)
         state = self._peek_session_state(session_key) if session_key and registry is not None else None
-        token = state.turn.lease_tokens.get(run_generation) if state is not None else None
-        if token is None:
+        tokens = state.turn.lease_tokens if state is not None else None
+        if tokens is None or run_generation not in tokens:
             return None
-        return registry, token
+        return registry, tokens
 
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``). Keyed by (routing
@@ -271,8 +282,8 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation)
         if held is None:
             return False
-        registry, token = held
-        self._peek_session_state(session_key).turn.lease_tokens.pop(run_generation, None)
+        registry, tokens = held
+        token = tokens.pop(run_generation)
         try:
             return registry.release(token)
         except Exception:
@@ -286,9 +297,9 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation) if new_session_id else None
         if held is None:
             return False
-        registry, token = held
+        registry, tokens = held
         try:
-            return registry.rebind(token, new_session_id)
+            return registry.rebind(tokens[run_generation], new_session_id)
         except Exception:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
@@ -392,12 +403,11 @@ class GatewayAgentCacheMixin:
         running_agent = state.turn.agent if state else None
         _process_task_id, _process_baseline = "", None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
+            # A raising interrupt implementation must not leave the slot unroutable: the generation
+            # bump and release below are the cleanup that matters.
+            with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
+                                 session_key, exc_info=True):
                 request_hard_interrupt(running_agent, interrupt_reason)
-            except Exception:
-                # A raising interrupt implementation must not leave the slot unroutable: the
-                # generation bump and release below are the cleanup that matters.
-                logger.warning("Failed to interrupt running agent for %s; continuing", session_key, exc_info=True)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:
@@ -442,13 +452,7 @@ class GatewayAgentCacheMixin:
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:
-            self._release_running_agent_state(session_key)
-            # Evict the cached agent: ``_interrupt_requested`` is only cleared by the turn finalizer,
-            # so on a hung/still-draining run the flag survives and silently kills the session's NEXT
-            # message (interrupted=True, api_calls=0, empty response). Like /new and /model, the next
-            # message rebuilds from history; the old agent keeps its flag so a hung drain still dies.
-            # See #44212.
-            self._evict_cached_agent(session_key)
+            self._drop_turn_slot(session_key)
 
     async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard

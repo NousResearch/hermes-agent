@@ -110,7 +110,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
 
   return (
     <div
-      className="relative w-[46vw] min-w-[560px] max-w-[900px] rounded-xl p-7"
+      className="relative w-[46vw] min-w-[560px] max-w-[1350px] rounded-xl p-7"
       style={{
         background: 'rgba(10, 11, 14, 0.88)',
         border: '1px solid rgba(255,255,255,0.09)',

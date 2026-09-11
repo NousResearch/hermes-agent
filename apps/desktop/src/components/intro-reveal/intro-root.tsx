@@ -13,6 +13,10 @@ export function mountIntroReveal(): void {
   }
 
   document.title = 'Hermes'
+  // The intro fills a display the user sits back from; the app's 16 px root
+  // is sized for a working window. Every intro measure is in rem, so one
+  // root scale keeps the composition proportional (director: legibility).
+  document.documentElement.style.fontSize = '150%'
   const root = document.getElementById('root')
 
   if (!root) {

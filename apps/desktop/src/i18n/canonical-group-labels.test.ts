@@ -17,6 +17,7 @@ vi.mock('../plugins/hermes-bots/shared', () => ({ getPluginCtx: () => null }))
 
 import { useCanonicalGroupLabels } from '../plugins/hermes-bots/canonical-group-labels'
 import { BOTS_LOCALES } from '../plugins/hermes-bots/i18n'
+
 import { TRANSLATIONS } from './catalog'
 
 it('provides translated canonical group controls and recovery copy in every supported locale', () => {
@@ -35,10 +36,12 @@ it('provides translated canonical group controls and recovery copy in every supp
     for (const [key, value] of Object.entries(messages!)) {
       expect(result.current[key as keyof typeof result.current]).toBe(value)
       expect(value.trim(), `${locale}.${key}`).not.toBe('')
+
       if (locale !== 'en') {
         expect(value, `${locale}.${key}`).not.toBe(english![key])
       }
     }
+
     unmount()
   }
 })

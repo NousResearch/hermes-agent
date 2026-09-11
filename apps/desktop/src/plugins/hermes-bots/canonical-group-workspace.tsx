@@ -1,9 +1,9 @@
 import { Button } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
-import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
@@ -160,7 +160,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments binding={binding} attachments={attachments} onChange={setAttachments} disabled={!restored || busy || !!pending} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={!restored || busy || !!pending} onChange={setAttachments} />
       <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={!restored || busy || !!pending} onChange={e => setDraft(e.target.value)} value={draft} />
       <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>

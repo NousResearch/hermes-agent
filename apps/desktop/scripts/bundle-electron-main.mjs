@@ -19,7 +19,10 @@ function productIdentity(source, stamp) {
   }
   return execFileSync(process.execPath, ['-e', 'console.log(JSON.stringify(require(process.argv[1])))',
     join(source, 'apps/desktop/product-identity.cjs')], {
-    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: stamp.tag || '' },
+    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: stamp.tag || '',
+      // Commit builds stamp source='commit-build'; the display name carries
+      // the short SHA (see product-identity.cjs). Tagged builds pass ''.
+      HERMES_BUILD_COMMIT: stamp.source === 'commit-build' ? (stamp.commit || '') : '' },
     encoding: 'utf8',
   }).trim()
 }

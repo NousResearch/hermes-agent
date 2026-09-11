@@ -1051,7 +1051,12 @@ class SessionSearchMixin:
             return []
 
         order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
-        route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
+        # During backfill the result is indexed hits followed by the unindexed gap.
+        # Applying OFFSET to only the first source repeats the gap's first page forever.
+        paginate_rebuild = offset > 0 and limit > 0 and self.fts_rebuild_status() is not None
+        route_limit = limit + offset if paginate_rebuild else limit
+        route = dict(order_by_sql=order_by_sql, limit=route_limit,
+                     offset=0 if paginate_rebuild else offset, **filters)
         # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram/cjk
         # indexes (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
         wants_unindexed_rows = (bool(role_filter) and "tool" in role_filter) or (
@@ -1075,13 +1080,14 @@ class SessionSearchMixin:
                 if not self._enter_fts_fail_open(exc):
                     raise
                 matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+                return self._finalize_search_matches(matches, result_fields=result_fields)
 
         # Deferred-rebuild supplement: while the backfill is pending the FTS indexes miss
         # the (progress, high_water] gap; top up with a bounded LIKE scan so old messages
         # never vanish mid-rebuild. Cost decays to zero as the backfill advances.
-        if self.fts_rebuild_status() is not None and len(matches) < limit:
+        if self.fts_rebuild_status() is not None and len(matches) < route_limit:
             try:
-                gap_matches = self._search_unindexed_gap(query, limit - len(matches), **filters)
+                gap_matches = self._search_unindexed_gap(query, route_limit - len(matches), **filters)
                 seen_ids = {m["id"] for m in matches}
                 matches.extend(m for m in gap_matches if m["id"] not in seen_ids)
             except sqlite3.OperationalError as exc:
@@ -1105,6 +1111,8 @@ class SessionSearchMixin:
                 matches = self._match_rows("messages_fts_cjk", fb_query, **route) or matches
             if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
+        if paginate_rebuild:
+            matches = matches[offset:offset + limit]
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
     def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:

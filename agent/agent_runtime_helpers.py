@@ -850,8 +850,8 @@ def recover_with_credential_pool(
         )
         return agent._swap_credential(next_entry) is not False
     if effective_reason == FailoverReason.upstream_rate_limit:
-        # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
-        # healthy. Do not rotate/exhaust; let fallback switch models.
+        # The failure is scoped to a model (Gemini QuotaFailure or an aggregator's
+        # upstream), not this credential. Do not persist global key exhaustion.
         upstream = (error_context or {}).get("upstream_provider") if error_context else None
         if upstream:
             _ra().logger.info(
@@ -860,7 +860,7 @@ def recover_with_credential_pool(
             )
         else:
             _ra().logger.info(
-                "Upstream aggregator 429 (provider unknown) — skipping "
+                "Model-scoped upstream 429 — skipping "
                 "credential rotation, deferring to fallback chain"
             )
         return False, has_retried_429
@@ -3111,7 +3111,7 @@ _RESETS_IN_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
 )
-_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
+_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:(?:after|in)\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
 
 
 def _reset_delay_from_message(message: str) -> Optional[float]:

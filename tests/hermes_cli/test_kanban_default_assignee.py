@@ -7,27 +7,25 @@ the task is skipped (existing behavior preserved).
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
 
 import pytest
 
 
 @pytest.fixture()
-def isolated_kanban_home(monkeypatch):
+def isolated_kanban_home(tmp_path, monkeypatch):
     """Spin up a fresh HERMES_HOME with a clean kanban DB."""
-    test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
-    monkeypatch.setenv("HERMES_HOME", test_home)
-    # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+    test_home = tmp_path / ".hermes"
+    test_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(test_home))
+
+    # Kanban paths resolve HERMES_HOME at call time.  Reusing the canonical
+    # module object is load-bearing: deleting the entire hermes_cli package
+    # tree from sys.modules leaves already-collected test modules holding
+    # stale plugin-manager functions, so later lifecycle hooks register on a
+    # different singleton from the dispatcher that emits them.
     from hermes_cli import kanban_db
+
     yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
 
 
 def _fake_spawn(*args, **kwargs):
@@ -95,5 +93,4 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
         )
     assert task_id not in res.auto_assigned_default
     assert any(s[0] == task_id and s[1] == "default" for s in res.spawned)
-
 

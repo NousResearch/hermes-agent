@@ -2222,14 +2222,14 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
-  language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
+  language: "en"               # Global hint; nonempty provider language wins. Blank falls back to the language env var.
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
   cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
     model: "base"              # tiny, base, small, medium, large-v3
-    language: ""               # per-provider override of stt.language
+    language: ""               # Blank inherits stt.language, then the language env var
     initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
     vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)
     vad_min_silence_ms: 500    # min silence (ms) that splits speech chunks when vad is on
@@ -2237,21 +2237,52 @@ stt:
     logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
     unload_after_idle_seconds: 0   # 0=never unload (default); e.g. 300 = release the model after 5min idle
   groq:
-    language: ""               # per-provider override of stt.language
+    language: ""               # Blank inherits stt.language, then the language env var
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # per-provider override of stt.language
+    language: ""               # Blank inherits stt.language, then the language env var
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
+The shared language resolver uses the **first nonempty string** in this order:
+
+```text
+stt.<provider>.language -> stt.language -> HERMES_LOCAL_STT_LANGUAGE -> no language hint
+```
+
+A blank value means **continue to the next source**, not "force auto-detection". ElevenLabs also accepts `stt.elevenlabs.language_code` as a provider-specific alias. **The global default is `stt.language: "en"`**, so leaving only the provider language blank still resolves to English. To pin another language, set a provider or global language code such as `"zh"`, `"es"`, or `"uk"`.
+
+Without a request-level plugin hook override:
+
+| Provider language | Global language | `HERMES_LOCAL_STT_LANGUAGE` | Resolved hint |
+| --- | --- | --- | --- |
+| `""` | `"en"` | unset | `en` |
+| `"zh"` | `""` | unset | `zh` |
+| `""` | `""` | `en` | `en` |
+| `""` | `""` | unset | none |
+
+For automatic language detection with **local faster-whisper**, use:
+
+```yaml
+stt:
+  provider: local
+  language: ""
+  local:
+    language: ""
+```
+
+Also remove any `HERMES_LOCAL_STT_LANGUAGE` override from the process environment or `.env`. A nonempty provider setting or a `pre_transcription` hook can still select a language.
+
+When no hint is resolved, faster-whisper and the native cloud handlers omit the language argument; plugin providers receive `None`.
+
+Command backends have additional behavior. `local_command` uses `stt.local.language` as its provider setting. Named command providers first use `language` from their command configuration (`stt.providers.<name>`, or the legacy `stt.<name>` block), then fall back through the shared resolver. Both paths use `en` for the `{language}` placeholder if no language is resolved. Custom templates may omit that placeholder or use their own engine's detection option. If `local` falls back to a Whisper CLI because faster-whisper is unavailable, the same blank settings therefore do not currently guarantee auto-detection. See [command providers](features/tts.md#stt-custom-command-providers) for their configuration.
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
 
 Provider behavior:
 
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
-- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
+- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Set `stt.groq.language` or `stt.language` to pin a hint; `HERMES_LOCAL_STT_LANGUAGE` is used only when both are empty.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.

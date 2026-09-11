@@ -443,11 +443,12 @@ stt:
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
   provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
+  # language: "en"                   # Global default; blank falls back to HERMES_LOCAL_STT_LANGUAGE
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""                     # Blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   groq:
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""                     # Blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -473,6 +474,8 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+Blank provider language settings inherit the global `stt.language` value (default `"en"`) before consulting the environment. See [STT language resolution](../configuration.md#speech-to-text-stt) for the auto-detection conditions and command-backend limits.
 
 ### Environment Variables
 

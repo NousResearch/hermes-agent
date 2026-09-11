@@ -10,6 +10,7 @@ import concurrent.futures
 import json
 import logging
 import socket
+import sys
 import threading
 import time
 from typing import Any
@@ -67,6 +68,13 @@ _WS_WRITE_TIMEOUT_S = 10.0
 _WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
+# Bound every serialized line retained by a connection: the token-coalescing buffer, batches already
+# scheduled behind _send_lock, and the active send. FanoutTransport has the same outer 4 MiB / 256-frame
+# mailbox, but direct session transports and loop-thread writes bypass that mailbox. Count immediate
+# Python string heap, not wire bytes, so wide Unicode cannot understate retained memory.
+_WS_BACKLOG_MAX_FRAMES = 256
+_WS_BACKLOG_MAX_BYTES = 4 * 1024 * 1024
+
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
 # set to genuinely high-frequency, display-only events — anything a client must see promptly
@@ -96,14 +104,85 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
         self.auth_identity = auth_identity
         self._closed = False
-        # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
-        # calling write(); the timer handle is only ever touched on the loop thread.
+        # Token-coalescing buffer. The lock also owns aggregate backlog accounting for every admitted
+        # serialized line, including batches that have left this list and are waiting on _send_lock.
         self._token_lock = threading.Lock()
         self._pending_tokens: list[str] = []
+        self._pending_send_frames = 0
+        self._pending_send_bytes = 0
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
+
+    @staticmethod
+    def _line_heap_bytes(line: str) -> int:
+        """Immediate retained heap for one serialized frame string."""
+        return sys.getsizeof(line)
+
+    def _release_lines_locked(self, lines: list[str]) -> None:
+        if not lines:
+            return
+        self._pending_send_frames = max(0, self._pending_send_frames - len(lines))
+        released = sum(self._line_heap_bytes(line) for line in lines)
+        self._pending_send_bytes = max(0, self._pending_send_bytes - released)
+
+    def _release_lines(self, lines: list[str]) -> None:
+        with self._token_lock:
+            self._release_lines_locked(lines)
+
+    def _drop_buffered_locked(self) -> None:
+        buffered, self._pending_tokens = self._pending_tokens, []
+        self._release_lines_locked(buffered)
+
+    def _latch_closed_locked(self) -> None:
+        self._closed = True
+        self._drop_buffered_locked()
+
+    def _latch_closed(self) -> None:
+        with self._token_lock:
+            self._latch_closed_locked()
+
+    def _reserve_line_locked(self, line: str) -> tuple[bool, tuple[int, int] | None]:
+        """Reserve one serialized line; overflow closes the peer and returns attempted occupancy.
+
+        A single oversized first frame is admitted: it already exists in memory and may be a legitimate
+        history response. The next frame is rejected, so no backlog can grow behind it.
+        """
+        if self._closed:
+            return False, None
+        size = self._line_heap_bytes(line)
+        attempted = (self._pending_send_frames + 1, self._pending_send_bytes + size)
+        over_frames = self._pending_send_frames >= _WS_BACKLOG_MAX_FRAMES
+        over_bytes = self._pending_send_frames > 0 and attempted[1] > _WS_BACKLOG_MAX_BYTES
+        if over_frames or over_bytes:
+            self._latch_closed_locked()
+            return False, attempted
+        self._pending_send_frames = attempted[0]
+        self._pending_send_bytes = attempted[1]
+        return True, None
+
+    def _schedule_backlog_close(self, attempted: tuple[int, int]) -> None:
+        frames, heap_bytes = attempted
+        _log.warning(
+            "ws send backlog exceeded peer=%s attempted_frames=%d attempted_heap_bytes=%d "
+            "limits=%d/%d — closing",
+            self._peer, frames, heap_bytes, _WS_BACKLOG_MAX_FRAMES, _WS_BACKLOG_MAX_BYTES,
+        )
+
+        def _start_close() -> None:
+            coro = self._close_stalled_socket()
+            try:
+                self._loop.create_task(coro)
+            except RuntimeError:
+                coro.close()
+
+        try:
+            self._loop.call_soon_threadsafe(_start_close)
+        except RuntimeError:
+            # Loop teardown already owns the socket. No coroutine was constructed, so there is nothing
+            # to close or await here.
+            pass
 
     def write(self, obj: dict) -> bool:
         if self._closed:
@@ -117,26 +196,59 @@ class WSTransport:
         # call_soon_threadsafe is safe from a worker or the loop.
         params = obj.get("params") if isinstance(obj, dict) else None
         if isinstance(params, dict) and params.get("type") in _STREAMING_EVENT_TYPES:
+            overflow = None
             with self._token_lock:
-                self._pending_tokens.append(line)
-                if not self._token_flush_armed:
-                    self._token_flush_armed = True
-                    self._loop.call_soon_threadsafe(self._arm_token_flush)
-            return not self._closed
+                admitted, overflow = self._reserve_line_locked(line)
+                if admitted:
+                    self._pending_tokens.append(line)
+                    if not self._token_flush_armed:
+                        self._token_flush_armed = True
+                        try:
+                            self._loop.call_soon_threadsafe(self._arm_token_flush)
+                        except RuntimeError:
+                            self._latch_closed_locked()
+                            admitted = False
+            if overflow is not None:
+                self._schedule_backlog_close(overflow)
+            return admitted and not self._closed
         # Non-streaming frame: append behind any buffered tokens and flush the whole batch NOW so it
         # can never overtake them. The send is scheduled INSIDE the lock so wire order matches buffer
         # order even if the coalesce timer fires on the loop at the same moment.
         from agent.async_utils import safe_schedule_threadsafe
+        batch: list[str] = []
+        fut = None
+        overflow = None
         with self._token_lock:
-            self._pending_tokens.append(line)
-            batch, self._pending_tokens = self._pending_tokens, []
-            if on_loop:
-                self._loop.create_task(self._safe_send_many(batch))
-                return True
-            fut = safe_schedule_threadsafe(self._safe_send_many(batch), self._loop)
-            if fut is None:
-                self._closed = True
-                return False
+            admitted, overflow = self._reserve_line_locked(line)
+            if admitted:
+                self._pending_tokens.append(line)
+                batch, self._pending_tokens = self._pending_tokens, []
+                if on_loop:
+                    coro = self._safe_send_many(batch, reserved=True)
+                    try:
+                        self._loop.create_task(coro)
+                    except Exception:
+                        coro.close()
+                        self._release_lines_locked(batch)
+                        self._latch_closed_locked()
+                        admitted = False
+                else:
+                    fut = safe_schedule_threadsafe(
+                        self._safe_send_many(batch, reserved=True), self._loop,
+                        logger=_log, log_message="WS send: failed to schedule batch",
+                    )
+                    if fut is None:
+                        self._release_lines_locked(batch)
+                        self._latch_closed_locked()
+                        admitted = False
+        if overflow is not None:
+            self._schedule_backlog_close(overflow)
+        if not admitted:
+            return False
+        if on_loop:
+            return not self._closed
+        if fut is None:
+            return False
         try:
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
             return not self._closed
@@ -147,7 +259,7 @@ class WSTransport:
             _log.warning("ws write slow (loop stalled >%ss) peer=%s — frame left in flight", _WS_WRITE_TIMEOUT_S, self._peer)
             return not self._closed
         except Exception as exc:
-            self._closed = True
+            self._latch_closed()
             _log.warning("ws write failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
             return False
 
@@ -162,8 +274,18 @@ class WSTransport:
             self._token_flush_handle = None
             self._token_flush_armed = False
             batch, self._pending_tokens = self._pending_tokens, []
-            if batch and not self._closed:
-                self._loop.create_task(self._safe_send_many(batch))
+            if not batch:
+                return
+            if self._closed:
+                self._release_lines_locked(batch)
+                return
+            coro = self._safe_send_many(batch, reserved=True)
+            try:
+                self._loop.create_task(coro)
+            except Exception:
+                coro.close()
+                self._release_lines_locked(batch)
+                self._latch_closed_locked()
 
     @property
     def closed(self) -> bool:
@@ -174,48 +296,66 @@ class WSTransport:
         ahead of it in the SAME batch so nothing slips between."""
         if self._closed:
             return False
+        line = json.dumps(obj, ensure_ascii=False)
+        batch: list[str] = []
+        overflow = None
         with self._token_lock:
-            batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
-        await self._safe_send_many(batch)
+            admitted, overflow = self._reserve_line_locked(line)
+            if admitted:
+                self._pending_tokens.append(line)
+                batch, self._pending_tokens = self._pending_tokens, []
+        if overflow is not None:
+            self._schedule_backlog_close(overflow)
+        if not admitted:
+            return False
+        await self._safe_send_many(batch, reserved=True)
         return not self._closed
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    async def _safe_send_many(self, lines: list[str], *, reserved: bool = False) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
-        async with self._send_lock:
-            if self._closed:
-                return
-            for line in lines:
+        try:
+            async with self._send_lock:
                 if self._closed:
                     return
-                payload = _sanitize_ws_text(line)
-                try:
-                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
-                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
-                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
-                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
-                    # (session detach/reap, client reconnect) runs. See #106369.
-                    self._closed = True
-                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
-                                 self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_stalled_socket())
-                    return
-                except UnicodeEncodeError as exc:
-                    # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
-                    _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
-                    continue
-                except Exception as exc:
-                    # Latch while holding the writer lock so queued batches observe the failure first.
-                    self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
-                    return
+                for line in lines:
+                    if self._closed:
+                        return
+                    payload = _sanitize_ws_text(line)
+                    try:
+                        await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                    except asyncio.TimeoutError:
+                        # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                        # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                        # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                        # (session detach/reap, client reconnect) runs. See #106369.
+                        self._latch_closed()
+                        _log.warning(
+                            "ws send deadline exceeded (socket stalled, loop responsive) "
+                            "peer=%s deadline=%ss — closing",
+                            self._peer, _WS_SEND_DEADLINE_S,
+                        )
+                        self._loop.create_task(self._close_stalled_socket())
+                        return
+                    except UnicodeEncodeError as exc:
+                        # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
+                        _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
+                        continue
+                    except Exception as exc:
+                        # Latch while holding the writer lock so queued batches observe the failure first.
+                        self._latch_closed()
+                        _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                        return
+        finally:
+            if reserved:
+                self._release_lines(lines)
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
-        self._closed = True
-        if self._token_flush_handle is not None:
-            self._token_flush_handle.cancel()
-            self._token_flush_handle = None
+        with self._token_lock:
+            self._latch_closed_locked()
+            self._token_flush_armed = False
+            handle, self._token_flush_handle = self._token_flush_handle, None
+        if handle is not None:
+            handle.cancel()
 
     async def _close_stalled_socket(self) -> None:
         """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its

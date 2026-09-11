@@ -221,29 +221,27 @@ export function ProgressCard({ attrs, locked }: CardProps) {
   const messageId = useAuiState(state => state.message.id)
   const title = (attrs.title ?? '').trim() || 'Working on it'
 
-  const steps = useMemo(() => {
-    const index = messages.findIndex(message => message.id === messageId)
-    const previous = index < 0 ? [] : messages.slice(0, index)
+  const index = messages.findIndex(message => message.id === messageId)
+  const previous = index < 0 ? [] : messages.slice(0, index)
 
-    return previous.flatMap(message => {
-      const directives = message.parts.flatMap(part =>
-        part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
+  const steps = previous.flatMap(message => {
+    const directives = message.parts.flatMap(part =>
+      part.type === 'text' ? (segmentTranscriptDirectives(part.text) ?? []) : []
+    )
+
+    const progress = directives
+      .filter(
+        segment =>
+          segment.kind === 'directive' &&
+          segment.directive.name === 'onboarding' &&
+          segment.directive.attrs.step === 'progress'
       )
+      .at(-1)
 
-      const progress = directives
-        .filter(
-          segment =>
-            segment.kind === 'directive' &&
-            segment.directive.name === 'onboarding' &&
-            segment.directive.attrs.step === 'progress'
-        )
-        .at(-1)
-
-      return progress?.kind === 'directive'
-        ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
-        : []
-    })
-  }, [messages, messageId])
+    return progress?.kind === 'directive'
+      ? [{ id: message.id, title: progress.directive.attrs.title?.trim() || 'Working on it' }]
+      : []
+  })
 
   return (
     <div className="my-3 grid max-w-md gap-1.5" data-onboarding-card>

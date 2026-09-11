@@ -295,66 +295,110 @@ class ReportedFailureAdapter:
         return SendResult(success=False, error="Not connected")
 
 
-def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
-    """A retry cycle (crashed → reclaimed → crashed) notifies the user twice.
+def _append_failure_event(tid, kind="crashed", error=None):
+    conn = kbc.connect()
+    try:
+        kb._append_event(conn, tid, kind=kind, payload={"error": error} if error else None)
+    finally:
+        conn.close()
 
-    Before #21398 the notifier auto-unsubscribed on any terminal event kind
-    (gave_up / crashed / timed_out), so the second crash in a respawn cycle
-    silently dropped — the subscription was already gone. This test pins the
-    new contract: subscription survives non-final terminal events; the
-    cursor handles dedup.
 
-    Two crashes ten seconds apart on the same task — both should land on
-    the adapter.
-    """
-    db_path = tmp_path / "redeliver-cycle.db"
+def _tick_again(monkeypatch, runner):
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+
+def test_notifier_suppresses_repeated_crash_wakes_for_thirty_minutes(tmp_path, monkeypatch):
+    db_path = tmp_path / "crash-storm.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
+    now = [100.0]
+    monkeypatch.setattr("gateway.kanban_watchers_notifier.time.monotonic", lambda: now[0])
 
     conn = kbc.connect()
     try:
-        tid = kb.create_task(conn, title="cycle test", assignee="worker")
-        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
-        # First crash — fired by the dispatcher when the worker PID dies.
-        kb._append_event(conn, tid, kind="crashed")
+        tid = kb.create_task(conn, title="cycle test", assignee="worker", session_id="origin")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", delivery_mode="notify+wake",
+        )
     finally:
         conn.close()
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    for error in ("first", "second", "latest"):
+        _append_failure_event(tid, error=error)
+        _tick_again(monkeypatch, runner)
+        now[0] += 10
 
-    # First crash delivered.
     assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
     assert "crashed" in adapter.sent[0]["text"].lower()
+    assert _unseen_terminal_events(tid) == []
 
-    # Subscription survives — the cursor advanced past event #1, but the
-    # row is still there.
+
+def test_notifier_emits_crash_digest_after_suppression_window(tmp_path, monkeypatch):
+    db_path = tmp_path / "crash-digest.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    now = [100.0]
+    monkeypatch.setattr("gateway.kanban_watchers_notifier.time.monotonic", lambda: now[0])
+
     conn = kbc.connect()
     try:
-        subs = kbn.list_notify_subs(conn, tid)
-        assert len(subs) == 1, (
-            "Subscription must survive a crashed event so a respawn-cycle "
-            "second crash also notifies the user (issue #21398)."
-        )
-
-        # Second crash — same task, same dispatcher (or a respawn). Append
-        # another event to simulate the dispatcher firing crashed a second
-        # time during retry.
-        kb._append_event(conn, tid, kind="crashed")
+        tid = kb.create_task(conn, title="cycle test", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
     finally:
         conn.close()
 
-    # New tick: the second event has a fresh id past the cursor advance,
-    # so it gets claimed and delivered.
+    adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    for error in ("first", "middle", "latest failure"):
+        _append_failure_event(tid, kind="gave_up", error=error)
+        _tick_again(monkeypatch, runner)
+        now[0] += 10
 
-    assert len(adapter.sent) == 2, (
-        f"Second crashed event should also notify; got {len(adapter.sent)} "
-        f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
-    )
-    assert "crashed" in adapter.sent[1]["text"].lower()
+    now[0] = 1901.0
+    _append_failure_event(tid, kind="crashed", error="new window")
+    _tick_again(monkeypatch, runner)
+
+    assert len(adapter.sent) == 2
+    digest = adapter.sent[-1]["text"].lower()
+    assert "2 suppressed" in digest
+    assert "latest failure" in digest
+
+
+def test_notifier_delivers_completion_during_crash_suppression(tmp_path, monkeypatch):
+    db_path = tmp_path / "crash-recovery.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    monkeypatch.setattr("gateway.kanban_watchers_notifier.time.monotonic", lambda: 100.0)
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="recovers", assignee="worker", session_id="origin")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", delivery_mode="notify+wake",
+        )
+        kb._append_event(conn, tid, kind="crashed", payload={"error": "boom"})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    _tick_again(monkeypatch, runner)
+    _append_failure_event(tid, error="still broken")
+    _tick_again(monkeypatch, runner)
+    conn = kbc.connect()
+    try:
+        kb.complete_task(conn, tid, summary="recovered")
+    finally:
+        conn.close()
+    _tick_again(monkeypatch, runner)
+
+    assert len(adapter.sent) == 2
+    assert len(adapter.handled) == 2
+    assert "done" in adapter.sent[-1]["text"].lower()
 
 
 def test_notifier_subscription_survives_done_reopen_until_archive(

@@ -16,7 +16,7 @@ import time
 def current_entitlement() -> dict:
     """Return only fresh local entitlement metadata, never the bearer itself."""
     try:
-        import jwt
+        from hermes_cli.auth_constants import _decode_jwt_claims
         from hermes_cli.auth_nous import get_nous_auth_status_local
 
         status = get_nous_auth_status_local()
@@ -25,9 +25,10 @@ def current_entitlement() -> dict:
         token = status.get("access_token")
         if not isinstance(token, str) or not token:
             return {}
-        claims = jwt.decode(
-            token, options={"verify_signature": False, "verify_exp": False}
-        )
+        # Advisory decoding uses the auth layer's stdlib-only parser. Importing
+        # PyJWT here loads native cryptography during every CLI parser build,
+        # which can lock updater DLLs on Windows.
+        claims = _decode_jwt_claims(token)
         expires = claims.get("exp")
         now = time.time()
         if (

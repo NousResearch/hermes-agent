@@ -13,6 +13,7 @@ from gateway.wisdom_command import (
 from hermes_wisdom.agent_led.actions import current_action_view, handle_action
 from tests.gateway.test_slack_wisdom import _adapter as slack_adapter
 from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adapter
+from tests.wisdom.local_auth import authorize_local
 
 
 @pytest.mark.asyncio
@@ -81,6 +82,8 @@ async def test_unversioned_button_requires_fresh_review_before_exact_apply(
     adapter = telegram_adapter() if platform == "telegram" else slack_adapter()
     adapter._run_wisdom_profile_operation = AsyncMock(side_effect=lambda fn, **_: fn())
     adapter._owner_profile = "selected"
+    if entrypoint == "command":
+        authorize_local(monkeypatch, "org-1")
     if platform == "telegram":
         adapter._is_callback_user_authorized = Mock(return_value=True)
         adapter._edit_wisdom_command_view = AsyncMock()
@@ -257,7 +260,8 @@ def test_malformed_legacy_payload_has_no_follow_up_action(target, monkeypatch):
 
 
 @pytest.mark.parametrize("action", ["share", "install", "not_now", "mute"])
-def test_group_legacy_controls_never_render_private_state(action):
+def test_group_legacy_controls_never_render_private_state(action, monkeypatch):
+    authorize_local(monkeypatch, "org")
     service = Mock()
     view = current_action_view(
         f"wa:{action}:old",
@@ -278,6 +282,7 @@ def test_group_legacy_controls_never_render_private_state(action):
 def test_empty_or_fixed_inbox_keeps_current_review_navigation(monkeypatch, tmp_path):
     from hermes_wisdom.store import WisdomStore
 
+    authorize_local(monkeypatch, "org")
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")

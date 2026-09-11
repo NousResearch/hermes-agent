@@ -34,11 +34,14 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import { isOfficePreviewKind, type OfficePreview, parseOfficePreview } from '@/lib/ooxml-preview'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
+
+import { OfficePreviewView } from './preview-office'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -158,6 +161,7 @@ interface LocalPreviewState {
   error?: string
   language?: string
   loading: boolean
+  office?: OfficePreview
   text?: string
   truncated?: boolean
 }
@@ -263,6 +267,31 @@ function dataUrlToBlob(dataUrl: string) {
   }
 
   return new Blob([bytes], { type: 'application/pdf' })
+}
+
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(',')
+
+  if (comma < 0 || !dataUrl.startsWith('data:')) {
+    throw new Error('Invalid data URL')
+  }
+
+  const metadata = dataUrl.slice(5, comma).toLowerCase()
+  const payload = dataUrl.slice(comma + 1)
+  const binary = metadata.includes(';base64') ? atob(payload) : decodeURIComponent(payload)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return bytes
+}
+
+function fileExtension(filePath: string) {
+  const idx = filePath.lastIndexOf('.')
+
+  return idx >= 0 ? filePath.slice(idx).toLowerCase() : ''
 }
 
 async function readTextPreview(filePath: string) {
@@ -693,6 +722,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
+  const isOffice = isOfficePreviewKind(target.previewKind)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -711,7 +741,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget =
+    !isImage && !isPdf && !forcePreview && (isOffice ? Boolean(target.large) : Boolean(target.binary || target.large))
 
   useEffect(() => {
     let active = true
@@ -723,7 +754,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isPdf && !isText) {
+      if (!isImage && !isPdf && !isText && !isOffice) {
         setState({ loading: false })
 
         return
@@ -732,6 +763,21 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       setState({ loading: true })
 
       try {
+        if (isOffice) {
+          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
+          const office = await parseOfficePreview(dataUrlToBytes(dataUrl), fileExtension(filePath))
+
+          if (active) {
+            setState({
+              error: office ? undefined : translateNow('preview.officeParseError'),
+              loading: false,
+              office: office || undefined
+            })
+          }
+
+          return
+        }
+
         if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
@@ -795,6 +841,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     forcePreview,
     fsCacheKey,
     isImage,
+    isOffice,
     isPdf,
     isText,
     reloadKey,
@@ -1029,6 +1076,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   if (
     !isImage &&
     !isPdf &&
+    !isOffice &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -1041,6 +1089,16 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
+      />
+    )
+  }
+
+  if (isOffice && state.office) {
+    return (
+      <OfficePreviewView
+        formulaBarLabel={t.preview.formulaBarLabel}
+        preview={state.office}
+        truncatedLabel={t.preview.officeTruncated}
       />
     )
   }

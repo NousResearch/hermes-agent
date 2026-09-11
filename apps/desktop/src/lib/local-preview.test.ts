@@ -169,6 +169,43 @@ describe('remote HTML previews', () => {
   })
 })
 
+describe('Office previews', () => {
+  it('classifies OOXML workbooks as spreadsheet previews', () => {
+    expect(localPreviewTarget('/tmp/model.xlsx')).toMatchObject({
+      path: '/tmp/model.xlsx',
+      previewKind: 'spreadsheet'
+    })
+  })
+
+  it('classifies Word documents as document previews', () => {
+    expect(localPreviewTarget('/tmp/memo.docx')).toMatchObject({
+      previewKind: 'document'
+    })
+  })
+
+  it('leaves PowerPoint on the existing non-office preview path', () => {
+    expect(localPreviewTarget('/tmp/deck.pptx')?.previewKind).toBe('text')
+  })
+
+  it('does not treat legacy OLE office files as OOXML previews', () => {
+    expect(localPreviewTarget('/tmp/legacy.xls')?.previewKind).toBe('text')
+    expect(localPreviewTarget('/tmp/legacy.doc')?.previewKind).toBe('text')
+  })
+
+  it('does not UTF-8-enrich remote office files before loading their bytes', async () => {
+    vi.clearAllMocks()
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/remote/model.xlsx')).resolves.toMatchObject({
+      path: '/remote/model.xlsx',
+      previewKind: 'spreadsheet'
+    })
+    expect(readDesktopFileDataUrl).not.toBeCalled()
+  })
+})
+
 describe('PDF previews', () => {
   it('classifies PDF files as PDF previews', () => {
     expect(localPreviewTarget('/tmp/spec.pdf')).toMatchObject({

@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
+import { isFirstBuildSession } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { FirstBuildConnectorOffer } from '@/components/assistant-ui/first-build-connectors'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, type ConnectorCardCopy } from '@/components/ui/connector-card'
 import { Loader } from '@/components/ui/loader'
@@ -24,6 +26,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
   const messages = useStore(view.$messages)
+  const firstBuild = isFirstBuildSession(storedId)
 
   // One live card per offer. Every manage_connections call renders through
   // here, but only ONE is the card the user acts on; the rest are settled
@@ -140,7 +143,14 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   }
 
   const flow = useMemo(() => {
-    if (historical || !runtimeId || !owner || owner.storedId !== storedId || owner.runtimeId !== runtimeId) {
+    if (
+      firstBuild ||
+      historical ||
+      !runtimeId ||
+      !owner ||
+      owner.storedId !== storedId ||
+      owner.runtimeId !== runtimeId
+    ) {
       return null
     }
 
@@ -160,11 +170,10 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
           `The user clicked Connect for ${connectorTitle(slug)} and the sign-in is open in their browser. Call manage_connections action="wait" connectors=["${slug}"] now and hold there until it reports connected. Do NOT call connect again — a second link cancels the one they are signing in with. Say nothing until wait returns.`
         )
     })
-  }, [runtimeId, owner, storedId, signature, historical])
+  }, [runtimeId, owner, storedId, signature, historical, firstBuild])
 
   const { t } = useI18n()
-  // A result is a snapshot. Reopening a transcript only refreshes status; it
-  // cannot mint links, open tabs or restart an abandoned authorization.
+  // Ordinary sessions require a click to begin authorization.
   useEffect(() => {
     if (!flow) {
       return
@@ -180,6 +189,16 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
   if (historical) {
     return <ToolFallback {...props} />
+  }
+
+  if (firstBuild && storedId && owner?.storedId === storedId && owner.runtimeId === runtimeId) {
+    return (
+      <FirstBuildConnectorOffer
+        part={props}
+        storedId={storedId}
+        target={view.kind === 'tile' ? `tile:${storedId}` : 'main'}
+      />
+    )
   }
 
   if (!flow) {

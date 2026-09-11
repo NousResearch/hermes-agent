@@ -292,7 +292,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
+  messages.forEach((storedMessage, index) => {
+    // Only explicit producer provenance can classify a synthetic user turn.
+    // Human-authored text that resembles an envelope remains a human message.
+    const metadata = parseDisplayMetadata(storedMessage.display_metadata)
+    const isInternalDelegation =
+      storedMessage.display_kind === 'internal_event' &&
+      metadata?.user_originated === false &&
+      metadata.event_kind === 'workflow.async_delegation.terminal'
+    const message = isInternalDelegation
+      ? { ...storedMessage, display_kind: 'async_delegation_complete' }
+      : storedMessage
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 

@@ -552,6 +552,38 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
+# The installer shells out to a handful of POSIX utilities without proving
+# they exist first. On stripped-down Linux a missing utility surfaces far
+# from its cause: without awk the uv installer stalls with no error at all,
+# and a missing sed/tar only breaks later stages with opaque messages
+# (#101164). Fail fast with per-distro install instructions instead.
+check_core_utilities() {
+    local missing=""
+    local util
+    for util in awk sed tar; do
+        command -v "$util" >/dev/null 2>&1 || missing="$missing $util"
+    done
+    if [ -z "$missing" ]; then
+        return 0
+    fi
+
+    log_error "Missing required utilities:$missing"
+    log_info "Install them, then re-run this script:"
+    case "$OS" in
+        linux)
+            case "$DISTRO" in
+                ubuntu|debian) log_info "  sudo apt install gawk sed tar" ;;
+                fedora)        log_info "  sudo dnf install gawk sed tar" ;;
+                arch)          log_info "  sudo pacman -S gawk sed tar" ;;
+                *)             log_info "  Use your package manager to install awk, sed, and tar" ;;
+            esac
+            ;;
+        android) log_info "  pkg install gawk sed tar" ;;
+        macos)   log_info "  xcode-select --install (provides awk, sed, and tar)" ;;
+    esac
+    exit 1
+}
+
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
@@ -1040,12 +1072,30 @@ install_node_line() {
     local node_os="$2"
     local node_arch="$3"
 
-    # Resolve the latest v${node_line}.x.x tarball name from the index page
+    # Resolve the latest v${node_line}.x.x tarball name from the index page.
+    # GNU tar shells out to the xz binary for .tar.xz, and stripped-down
+    # Linux systems (a fresh Fedora WSL install ships without xz) fail with
+    # "tar (child): xz: Cannot exec" and burn through every release line.
+    # nodejs.org publishes a .tar.gz alongside every .tar.xz, so when xz is
+    # missing prefer the gz tarball instead (#101164). macOS bsdtar
+    # decompresses xz natively and keeps the (smaller) xz preference.
     local index_url="https://nodejs.org/dist/latest-v${node_line}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local prefer_gz=false
+    if [ "$OS" = "linux" ] && ! command -v xz >/dev/null 2>&1; then
+        prefer_gz=true
+        log_info "xz not found — preferring .tar.gz tarballs (GNU tar needs xz for .tar.xz)"
+    fi
+    local tarball_name=""
+    if [ "$prefer_gz" = true ]; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
+            | head -1)
+    fi
+    if [ -z "$tarball_name" ]; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    fi
 
     # Fallback to .tar.gz if .tar.xz not available
     if [ -z "$tarball_name" ]; then
@@ -3700,6 +3750,7 @@ run_stage_body() {
             print_banner
             detect_os
             resolve_install_layout
+            check_core_utilities
             install_uv
             check_python
             check_git
@@ -3843,6 +3894,7 @@ main() {
 
     detect_os
     resolve_install_layout
+    check_core_utilities
     install_uv
     check_python
     check_git

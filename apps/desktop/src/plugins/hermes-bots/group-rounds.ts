@@ -19,6 +19,7 @@ import {
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
 import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { rejectGroupSlashCommand } from './group-slash'
 import { harvestStrandedGroupReply } from './group-turns'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
@@ -662,6 +663,11 @@ export function sendToGroupChat(
   images?: Attachment[]
 ): null | string {
   const trimmed = String(text || '').trim()
+
+  if (rejectGroupSlashCommand(trimmed)) {
+    return null
+  }
+
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
   if ((!trimmed && !attached.length) || !members.length) {

@@ -179,7 +179,7 @@ import {
   SidebarPinnedEmptyState,
   SidebarSessionSkeletons
 } from './section-states'
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions, unpinIdentities } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
@@ -601,6 +601,18 @@ export function ChatSidebar({
         unconfirmedPinWrites
       ),
     [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+  )
+
+  // Unpin a Pinned-section row under EVERY id it is reachable under — see
+  // `unpinIdentities` in session-index.ts for why the exact-id filter in
+  // `unpinSession` can otherwise silently no-op.
+  const unpinPinnedRow = useCallback(
+    (pinId: string) => {
+      for (const id of unpinIdentities(pinId, sessionByAnyId)) {
+        unpinSession(id)
+      }
+    },
+    [sessionByAnyId]
   )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
@@ -1662,7 +1674,7 @@ export function ChatSidebar({
                 onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
-                onTogglePin={unpinSession}
+                onTogglePin={unpinPinnedRow}
                 onToggleUnread={toggleUnread}
                 open={pinsOpen}
                 pinned

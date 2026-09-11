@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions, unpinIdentities } from './session-index'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -153,5 +153,27 @@ describe('resolvePinnedSessions', () => {
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions([], index, sessions, settled)).toEqual([])
+  })
+})
+
+describe('unpinIdentities', () => {
+  // The stored pin may predate lineage keying: the set holds the OLD tip id
+  // while the menu hands us the lineage root (or vice versa). `unpinSession`
+  // filters by exact id, so a single-identity unpin silently removes nothing
+  // and the row stays pinned forever. The unpin must cover every identity.
+  it('covers a legacy tip-id pin when the menu passes the lineage root', () => {
+    const index = buildSessionByAnyId([], [], [row('tip_102151', { _lineage_root_id: 'root_080244' })])
+
+    expect(unpinIdentities('root_080244', index)).toEqual(['root_080244', 'tip_102151'])
+  })
+
+  it('covers a root-id pin when the menu passes the live tip', () => {
+    const index = buildSessionByAnyId([], [], [row('tip', { _lineage_root_id: 'root' })])
+
+    expect(unpinIdentities('tip', index)).toEqual(['tip', 'root'])
+  })
+
+  it('degrades to the bare id for an unindexed row', () => {
+    expect(unpinIdentities('unknown', new Map())).toEqual(['unknown'])
   })
 })

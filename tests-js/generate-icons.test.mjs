@@ -10,9 +10,19 @@ test('icon builds use only the locked build group outside every application venv
   expect(run).toHaveBeenCalledExactlyOnceWith('uv', [
     'run', '--isolated', '--locked', '--only-group', 'icon-build',
     '--cache-dir', path.join(root, '.cache', 'icon-build'),
-    'python', path.join(root, 'scripts', 'generate_icons.py'), '--check'
+    'python', path.join(root, 'scripts', 'generate_icons.py'), '--source', root, '--out', root, '--check'
   ], { cwd: root, stdio: 'inherit', windowsHide: true, env: { PATH: 'tools', UV_PYTHON: env.UV_PYTHON, VIRTUAL_ENV: 'runtime-venv' } })
   expect(env.PYTHONPATH).toBe('payload-libraries')
+})
+
+test('icon preparation passes explicit source and independent output roots', () => {
+  const run = vi.fn(() => ({ status: 0 }))
+  const source = path.resolve('source with spaces')
+  const out = path.resolve('icon outputs')
+  expect(generateIcons(['--source', source, '--out', out], { run })).toBe(0)
+  const [, args, options] = run.mock.calls[0]
+  expect(args.slice(-4)).toEqual(['--source', source, '--out', out])
+  expect(options.cwd).toBe(source)
 })
 
 test('failed icon processes cannot report a successful build', () => {

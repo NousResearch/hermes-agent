@@ -20,6 +20,12 @@ import pytest
 import pm.workspace as ws
 
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
     """A fake install: core repo with pyproject, plugin dirs, store."""
@@ -343,7 +349,7 @@ def test_changed_root_seeds_from_committed_lock_unchanged_keeps_extended(
         stdout = ""
 
     monkeypatch.setattr(importlib.import_module("pm.ensure"), "uv",
-                        lambda **kwargs: ("uv", {"UV_PYTHON": "pm-python"}))
+                        lambda **kwargs: ("uv", {"UV_PYTHON": "pm-python", "UV_CACHE_DIR": str(tmp_path / "cache")}))
     monkeypatch.setattr(ws.subprocess, "run", lambda cmd, **k: FakeProc())
 
     root = ws.workspace_root()

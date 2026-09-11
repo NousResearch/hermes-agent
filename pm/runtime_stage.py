@@ -13,7 +13,7 @@ from pm.package import InstallError
 
 def stage_runtime(uv: Path, python: Path, destination: Path, *,
                   project: Path | None = None, offline: bool = False,
-                  wheelhouse: Path | None = None) -> Path:
+                  wheelhouse: Path | None = None, cache: Path | None = None) -> Path:
     """Build at the final path; the caller owns publication and its marker.
 
     The scratch project prevents uv from discovering the application's workspace.
@@ -26,7 +26,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     destination = destination.absolute()
     executable = destination / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     env = runtime_environment()
-    env["UV_CACHE_DIR"] = str(uv_cache_dir())
+    env["UV_CACHE_DIR"] = str(uv_cache_dir() if cache is None else cache.absolute())
     env["UV_PROJECT_ENVIRONMENT"] = str(destination)
     env["UV_PYTHON"] = str(python)
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/actions/setup-pm/**'
       - '.github/actions/save-pm-cache/**'
+      - '.github/actions/setup-windows-build-deps/**'
+      - 'scripts/windows-build-deps.ps1'
+      - 'scripts/build/windows-deps.ps1'
+      - 'scripts/build/windows_deps.py'
+      - 'tests/pm/test_windows_build_deps.py'
       - '.github/workflows/pm-toolchain*.yml'
       - 'scripts/ci/*toolchain.py'
       - 'tests/scripts/test_setup_toolchain.py'

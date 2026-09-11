@@ -14,14 +14,14 @@ works with NO extra dependency. A top-level distlib install is preferred
 when present. (Self-contained .\_pth interpreters were REJECTED as an
 alternative approach: they break uv venv materialization.)
 
-Layout facts arrive via environment from scripts/bundles/payload.py:
+Layout facts arrive via environment from scripts/build/launchers.py:
 
   HERMES_MINT_BIN_DIR   absolute output dir (agent-payload/bin)
   HERMES_MINT_SPECS     JSON list of {"name": exe stem, "module": dotted
                         module, "func": entry function} — mirrors
                         [project.scripts] in pyproject.toml
   HERMES_MINT_WRAPPER   path of the RENDERED launcher-wrapper.py for THIS
-                        entry (substitution is scripts/bundles/payload.py's job,
+                        entry (substitution is scripts/build/launchers.py's job,
                         one implementation, one test)
   HERMES_MINT_PYTHON    bin-relative path of the store python, BACKslashes,
                         e.g. <launcher_dir>\..\tools\<entry>\python.exe —

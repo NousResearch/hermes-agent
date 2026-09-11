@@ -34,8 +34,9 @@ TAG=""
 COMMIT_MODE=""
 PAYLOAD=""
 OUT=""
+TUI_PRODUCT=""
 
-usage() { printf 'usage: build_deb.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --payload <dir> --out <dir>\n' >&2; exit 2; }
+usage() { printf 'usage: build_deb.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --payload <dir> --tui-product <dir> --out <dir>\n' >&2; exit 2; }
 log()  { printf '\n==> %s\n' "$*"; }
 fail() { printf 'build_deb: FAILED: %s\n' "$*" >&2; exit 1; }
 
@@ -45,6 +46,7 @@ while [ "$#" -gt 0 ]; do
         --tag) TAG="${2:?}"; shift 2 ;;
         --commit) COMMIT_MODE="${2:?}"; shift 2 ;;
         --payload) PAYLOAD="${2:?}"; shift 2 ;;
+        --tui-product) TUI_PRODUCT="${2:?}"; shift 2 ;;
         --out) OUT="${2:?}"; shift 2 ;;
         *) usage ;;
     esac
@@ -89,6 +91,9 @@ else
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
         || fail "tag $TAG not found in $REPO_ABS"
 fi
+[ -n "$TUI_PRODUCT" ] || fail "--tui-product is required (run scripts/termux/build.py)"
+TUI_PRODUCT="$(cd "$TUI_PRODUCT" && pwd)"
+[ -f "$TUI_PRODUCT/dist/entry.js" ] && [ -f "$TUI_PRODUCT/package.json" ] || fail "incomplete TUI product"
 for d in python node uv npm ffmpeg ripgrep runtime-libs app wheelhouse; do
     [ -d "$PAYLOAD_ABS/$d" ] || fail "payload missing $d/ -- run termux_build.sh + build_cpython.sh + build_node.sh first"
 done
@@ -198,10 +203,6 @@ seal_pm_runtime(root, python)
 # to route hermes update -> pkg upgrade remediation.
 printf 'apt\n' > "$PAYLOAD_ABS/app/.install_method"
 
-# [3] Entry functions come from the archived project's script declarations.
-log "Writing trampolines"
-python3 "$HERE/launchers.py" --payload "$PAYLOAD_ABS"
-
 # The shared stamp writer records the apt-termux update owner.
 # Commit mode exports HERMES_BUILD_COMMIT and leaves the tag empty.
 log "Writing app/install-stamp.json"
@@ -229,8 +230,8 @@ mkdir -p "$STAGE/DEBIAN" "$DEST/tools"
 for tool in python node uv npm ffmpeg ripgrep; do
     cp -a "$PAYLOAD_ABS/$tool" "$DEST/tools/"
 done
-cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime" "$PAYLOAD_ABS/bin" "$DEST/"
-python3 "$HERE/payload_facts.py" "$DEST" "$PAYLOAD_ABS/.work/build_set.txt"
+cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLOAD_ABS/pm-runtime" "$DEST/"
+python3 "$HERE/payload_facts.py" "$DEST" "$PAYLOAD_ABS/.work/build_set.txt" --tui-product "$TUI_PRODUCT"
 
 python3 "$HERE/launchers.py" --payload "$DEST" --control "$STAGE/DEBIAN"
 

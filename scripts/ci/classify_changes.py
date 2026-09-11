@@ -226,6 +226,8 @@ def classify(files: list[str]) -> dict[str, bool]:
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
+        or f.startswith("tests-js/")
+        or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)

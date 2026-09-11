@@ -76,6 +76,7 @@
 *.tsbuildinfo
 *-snapshots/
 .act-sandbox-agent.*
+.build/
 .bytecode-fingerprint
 .bytecode-fingerprint.tmp
 .codex/

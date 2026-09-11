@@ -342,24 +342,9 @@ jobs:
             payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
             payload-signatures-v1-${{ runner.os }}-
 
-      - name: Cache vcpkg OpenSSL (arm64)
+      - name: Set up native ARM64 build dependencies
         if: matrix.target.label == 'win32-arm64'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: C:\vcpkg\installed\arm64-windows-static-md
-          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
-
-      - name: Install OpenSSL (arm64)
-        if: matrix.target.label == 'win32-arm64'
-        shell: bash
-        run: |
-          if [ ! -f "/c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib" ]; then
-            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
-          fi
-          {
-            printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\n'
-            printf 'OPENSSL_STATIC=1\n'
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-windows-build-deps
 
       - name: Cache pm store
         # Tag-dispatched runs (every canary) scope actions/cache under the
@@ -482,7 +467,6 @@ jobs:
         timeout-minutes: 900
         env:
           PYTHONUTF8: '1'
-          CC_aarch64_pc_windows_msvc: ${{ matrix.target.label == 'win32-arm64' && 'clang' || '' }}
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
           AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
           AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
@@ -1460,33 +1444,23 @@ jobs:
             termux-build/payload/.work/build_set.txt
           key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/termux-builder.Dockerfile') }}
 
-      - name: Build the TUI bundle for the deb
-        shell: bash
-        # The deb ships the PREBUILT TUI (hermes --tui runs it directly via
-        # the payload node; there is no npm on a phone). Same shape as the
-        # desktop payload: git archive never carries built dists, so plant
-        # the just-built entry.js into the staged app tree.
-        run: |
-          npm ci --workspace ui-tui --include=dev --no-fund --no-audit --silent
-          npm run build --workspace ui-tui
-          python3 scripts/bundles/payload.py surfaces termux-build/payload --repo-dir app --tui-only
-
       - name: Assemble the .deb
         shell: bash
         env:
           TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
-        # build_deb.sh always validates in a fresh pinned container (no
-        # opt-out flag); the channel is derived from the tag inside the
-        # script via deb_version.py.
+        # The driver prepares locked TUI dependencies and builds the shared
+        # TUI product before handing the staged bionic payload to build_deb.sh.
+        # Native dependency staging stays above; .deb validation still runs
+        # in a fresh pinned container with no opt-out.
         run: |
           if [ -n "$HERMES_BUILD_COMMIT" ]; then
-            bash scripts/termux/build_deb.sh \
+            python3 scripts/termux/build.py \
               --repo . \
               --commit "$HERMES_BUILD_COMMIT" \
               --payload termux-build/payload \
               --out termux-build/deb
           else
-            bash scripts/termux/build_deb.sh \
+            python3 scripts/termux/build.py \
               --repo . \
               --tag "$HERMES_PAYLOAD_TAG" \
               --payload termux-build/payload \

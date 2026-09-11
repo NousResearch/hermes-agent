@@ -34,6 +34,10 @@ on:
     paths:
       - 'pm/**'
       - 'scripts/bundles/**'
+      - 'scripts/windows-build-deps.ps1'
+      - 'scripts/build/windows-deps.ps1'
+      - 'scripts/build/windows_deps.py'
+      - '.github/actions/setup-windows-build-deps/**'
       - 'uv.lock'
       - 'pyproject.toml'
       - '.github/workflows/pm-bundle.yml'
@@ -92,26 +96,10 @@ jobs:
           path: build/agent-payload/tools
           key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
 
-      # win32-arm64 builds cryptography from sdist (no win_arm64 wheel);
-      # its Rust core links OpenSSL statically from vcpkg.
-      - name: Cache vcpkg OpenSSL (arm64)
+      # win32-arm64 builds cryptography and obstore from sdist.
+      - name: Set up native ARM64 build dependencies
         if: matrix.target.label == 'win32-arm64'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: C:\vcpkg\installed\arm64-windows-static-md
-          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
-
-      - name: Install OpenSSL (arm64)
-        if: matrix.target.label == 'win32-arm64'
-        shell: bash
-        run: |
-          if [ ! -f "/c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib" ]; then
-            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
-          fi
-          {
-            printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\n'
-            printf 'OPENSSL_STATIC=1\n'
-          } >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-windows-build-deps
 
       - name: Pin CMake < 4 for sdist builds
         # python-olm (matrix extra) builds libolm from sdist on non-Linux
@@ -132,15 +120,13 @@ jobs:
         env:
           # Windows runners default to cp1252; pm prints UTF-8 (✓/✗).
           PYTHONUTF8: '1'
-          # ring/obstore's C sources need clang, not MSVC, on windows-arm64.
-          # Scoped to the cargo target triple so every other sdist keeps MSVC.
-          CC_aarch64_pc_windows_msvc: ${{ matrix.target.label == 'win32-arm64' && 'clang' || '' }}
         run: |
           # Archive what actions/checkout actually checked out. On
           # pull_request events github.sha names a merge commit that a
           # force-push invalidates mid-run ("not a tree object").
           python -m pm.cli bundle \
             --out build/agent-payload \
+            --cache "$UV_CACHE_DIR" \
             --ref HEAD
 
       - name: Save warmed Python dependencies even after a staging failure

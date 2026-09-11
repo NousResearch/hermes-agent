@@ -1,6 +1,6 @@
 """Unit tests for the bundled payload's win32 launcher wrapper.
 
-scripts/bundles/launcher_wrapper.py is the zip overlay a distlib
+scripts/build/launcher_wrapper.py is the zip overlay a distlib
 ScriptMaker packs into every minted CLI launcher exe (the rust shim's
 replacement). The wrapper is import-safe on purpose, so these tests drive
 its real logic — path resolution, sys.path order, the pycache_prefix
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
-_WRAPPER = _REPO / "scripts" / "bundles" / "launcher_wrapper.py"
+_WRAPPER = _REPO / "scripts" / "build" / "launcher_wrapper.py"
 
 
 def _load(env=None):

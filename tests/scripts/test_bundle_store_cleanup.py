@@ -31,13 +31,18 @@ def test_cached_bundle_prunes_unselected_facts_and_entries(tmp_path, monkeypatch
         lock.set_pin(name, "fixture", {})
     lock.save()
     monkeypatch.setattr(native, "_lockfile", lambda: lock)
+    from pathlib import Path
+    import shutil
+    staged_lock = output / "hermes-agent/pm/lock.json"
+    staged_lock.parent.mkdir(parents=True)
+    shutil.copy2(Path(__file__).resolve().parents[2] / "pm/lock.json", staged_lock)
     monkeypatch.setattr("scripts.bundles.payload.snapshot", lambda *args: None)
     monkeypatch.setattr(native, "_install_names", lambda names: 0)
     # Stop after cleanup, before invoking any venv/build subprocesses.
     monkeypatch.setattr(native, "pm_uv", lambda: (None, {}))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(user_store))
 
-    assert native.stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
+    assert native._stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
 
     remaining = Facts(staged_store / "facts.json")
     for name in stale:

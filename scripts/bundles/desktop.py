@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -15,8 +14,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from scripts.bundles.payload import plant_surfaces, relativize_links, stage_launchers
 
 
 def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
@@ -94,27 +91,24 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
     node_arch = capture([node, "-p", "process.arch"], repo)
     if node_arch != target.split("-")[1]:
         raise ValueError(f"Node {node_arch} does not match build target {target}")
-    stamp = json.dumps({"lock": hashlib.sha256((repo / "package-lock.json").read_bytes()).hexdigest(),
-                        "node": capture([node, "--version"], repo),
-                        "npm": capture([*npm, "--version"], repo), "target": target}, sort_keys=True)
-    stamp_path = repo / "node_modules/.install-stamp"
-    if not stamp_path.is_file() or stamp_path.read_text(encoding="utf-8-sig") != stamp:
-        stamp_path.unlink(missing_ok=True)
-        run([*npm, "ci", "--no-audit", "--no-fund", "--fetch-retries=5", "--prefer-offline"], cwd=repo, env=env)
-        stamp_path.write_text(stamp, encoding="utf-8")
-    # Use the installed semver implementation for package.json's actual grammar.
-    run([node, "-e", "const s=require('semver'),p=require('./package.json'); for(const [n,v] of [['node',process.versions.node],['npm',process.argv[1]]]) if(!s.satisfies(v,p.engines[n])) throw Error(n+' violates '+p.engines[n])", capture([*npm, "--version"], repo)], cwd=repo, env=env)
+    if target == "win32-arm64":
+        from scripts.build.windows_deps import prepare_windows_environment
+
+        env = prepare_windows_environment(source=repo, state=repo / "apps/desktop/build/.build-deps", env=env)
+    workspaces = ["apps/desktop"] + ([] if variant == "light" else ["ui-tui", "web"])
+    run([node, "scripts/build/node-deps.mjs", "--source", str(repo),
+         *[arg for workspace in workspaces for arg in ("--workspace", workspace)]], cwd=repo, env=env)
     payload = repo / "apps/desktop/build/agent-payload"
     if variant == "light":
         shutil.rmtree(payload, ignore_errors=True)
     else:
-        run([*npm, "run", "build", "--workspace", "ui-tui"], cwd=repo, env=env)
-        run([*npm, "run", "build", "--workspace", "web"], cwd=repo, env=env)
-        run([sys.executable, "-m", "pm.cli", "bundle", "--out", str(payload), "--ref", commit], cwd=repo, env=env)
-        manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8-sig"))
-        plant_surfaces(payload / manifest["repo"], repo)
-        relativize_links(payload)
-        stage_launchers(payload, manifest)
+        products = repo / "apps/desktop/build/products"
+        run([node, "scripts/generate-icons.mjs", "--source", str(repo), "--out", str(products / "icons")], cwd=repo, env=env)
+        run([node, "scripts/build/tui.mjs", "--source", str(repo), "--out", str(products / "tui")], cwd=repo, env=env)
+        run([node, "scripts/build/web.mjs", "--source", str(repo), "--icons", str(products / "icons"),
+             "--out", str(products / "web")], cwd=repo, env=env)
+        run([sys.executable, "-m", "scripts.bundles.stage", "--out", str(payload), "--ref", commit,
+             "--tui", str(products / "tui"), "--web", str(products / "web")], cwd=repo, env=env)
     desktop = repo / "apps/desktop"
     # Windows file-version and MSIX build-number policy remains with its packager.
     version_args = []

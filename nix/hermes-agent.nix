@@ -171,6 +171,50 @@ let
 
   sitePackagesPath = python.sitePackages;
 
+  # Only the offline assembler's import closure. A frontend or catalog edit
+  # must not change this source, and no build output is read during evaluation.
+  agentBuilderSrc = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ../scripts/build/agent.py
+      ../scripts/build/inputs.py
+      ../scripts/build/launchers.py
+    ];
+  };
+
+  agentInputsFile = writeText "hermes-agent-inputs.json" (builtins.toJSON {
+    project = "${../pyproject.toml}";
+    code = "${hermesVenv}/${sitePackagesPath}";
+    repo = "share/hermes-agent";
+    placement = "references";
+    target = "${if stdenv.hostPlatform.isDarwin then "darwin" else "linux"}-${
+      if stdenv.hostPlatform.isAarch64 then "arm64" else "x64"
+    }";
+    python = "${hermesVenv}/bin/python3";
+    site_packages = "${hermesVenv}/${sitePackagesPath}";
+    environment = toString hermesVenv;
+    pm_runtime = toString pmRuntime;
+    command_dir = "${hermesVenv}/bin";
+    resources = {
+      skills = toString bundledSkills;
+      optional-skills = toString bundledOptionalSkills;
+      plugins = toString bundledPlugins;
+      locales = toString bundledLocales;
+      optional-mcps = toString bundledOptionalMcps;
+    };
+    frontends = {
+      tui = "${hermesTui}/lib/hermes-tui";
+      web = toString hermesWeb;
+    };
+    ref = if dirty then null else rev;
+    stamp = toString installStampFile;
+    env = {
+      HERMES_NODE = lib.getExe hermesNpmLib.nodejs;
+    } // lib.optionalAttrs (rev != null && !dirty) {
+      HERMES_REVISION = rev;
+    };
+  });
+
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
   # if requests isn't already in the sealed uv2nix venv.
@@ -229,56 +273,34 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    # Symlinks, not copies: these are all store paths already, and the
-    # wrapper env vars just hold paths.  Symlinking keeps this derivation
-    # near-instant when only the venv changed, with an identical closure.
-    mkdir -p $out/share/hermes-agent $out/bin
-    ln -s ${bundledSkills} $out/share/hermes-agent/skills
-    ln -s ${bundledOptionalSkills} $out/share/hermes-agent/optional-skills
-    ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
-    ln -s ${bundledLocales} $out/share/hermes-agent/locales
-    ln -s ${bundledOptionalMcps} $out/share/hermes-agent/optional-mcps
-    ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
-    ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
+    # uv2nix owns Python code and dependencies. The shared assembler only
+    # links resources and emits the derived command/environment description.
+    PYTHONPATH=${agentBuilderSrc} ${python}/bin/python3 -m scripts.build.agent \
+      --inputs ${agentInputsFile} --out "$out"
 
-    cp ${installStampFile} $out/share/hermes-agent/install-stamp.json
-
-    ${lib.concatMapStringsSep "\n"
-      (name: ''
-        makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-          --suffix PATH : "${runtimePath}" \
-          --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
-          --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \
-          --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
-          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
-          --set HERMES_OPTIONAL_MCPS $out/share/hermes-agent/optional-mcps \
-          --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
-          --set HERMES_TUI_DIR $out/ui-tui \
-          --set-default HERMES_BIN $out/bin/hermes \
-          --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe hermesNpmLib.nodejs} \
-          --set HERMES_INSTALL_ROOT $out/share/hermes-agent${
-            # Fold the line continuation INTO the optionalString: a bare
-            # `\` on the line above an empty expansion would dangle onto a
-            # blank line, ending the makeWrapper command early and running
-            # the next flag as its own shell command (`--suffix: command
-            # not found`). Only reproduces when rev == null (dirty trees).
-            # Only embed clean revs — a dirtyRev-derived rev is the parent
-            # of uncommitted work, and the banner's update check would
-            # compare against upstream as if the tree were at that commit.
-            lib.optionalString (rev != null && !dirty) " \\\n          --set HERMES_REVISION ${rev}"
-          }${
-            lib.optionalString (
-              extraPythonPackages != [ ]
-            ) " \\\n          --suffix PYTHONPATH : \"${pythonPath}\""
-          }
-      '')
-      [
-        "hermes"
-        "hermes-agent"
-        "hermes-acp"
-      ]
+    # Native wrappers retain Nix's PATH/PYTHONPATH policies. Names, executable
+    # sources and resource bindings come from the builder, not another table.
+    makeAgentWrapper() {
+      local source="$1" destination="$2"
+      shift 2
+      makeWrapper "$source" "$out/$destination" "$@" \
+        --suffix PATH : "${runtimePath}" \
+        --set-default HERMES_BIN "$out/bin/hermes"${
+          lib.optionalString (extraPythonPackages != [ ])
+            " \\\n        --suffix PYTHONPATH : \"${pythonPath}\""
+        }
     }
+    ${python}/bin/python3 - "$out/command-map.json" > "$TMPDIR/agent-wrappers.sh" <<'PY'
+    import json, shlex, sys
+
+    with open(sys.argv[1]) as handle:
+        description = json.load(handle)
+    env = [arg for key, value in sorted(description["env"].items())
+           for arg in ("--set", key, value)]
+    for command in description["commands"].values():
+        print(shlex.join(["makeAgentWrapper", command["source"], command["destination"], *env]))
+    PY
+    source "$TMPDIR/agent-wrappers.sh"
 
     ${lib.optionalString (extraPythonPackages != [ ]) ''
       echo "=== Checking for plugin/core package collisions ==="
@@ -299,6 +321,8 @@ stdenv.mkDerivation (finalAttrs: {
         hermesWeb
         hermesNpmLib
         hermesVenv
+        agentBuilderSrc
+        agentInputsFile
         installStampFile
         pmRuntime
         python

@@ -35,8 +35,11 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
         shutil.copy2(Path(sys._base_executable).resolve(), python)
     stage = getattr(native, "stage_pm_runtime", None)
     assert callable(stage), "native payload has no isolated PM runtime stage"
-    stage(root, Path(uv), python, repo)
-    stage(root, Path(uv), python, repo, offline=True)
+    cache = tmp_path / "build-cache"
+    stage(root, Path(uv), python, repo, cache=cache)
+    assert cache.is_dir()
+    assert not (tmp_path / "home/cache/uv").exists()
+    stage(root, Path(uv), python, repo, offline=True, cache=cache)
     (root / "manifest.json").write_text(json.dumps({"repo": "hermes-agent"}))
     assert not (repo / ".venv").exists()
     moved = tmp_path / "installed elsewhere"
@@ -124,6 +127,9 @@ def test_native_stage_builds_pm_before_application_environment(tmp_path, monkeyp
             return {"entry": "python"}
 
     calls = []
+    lock = tmp_path / "hermes-agent/pm/lock.json"
+    lock.parent.mkdir(parents=True)
+    shutil.copy2(Path(__file__).resolve().parents[2] / "pm/lock.json", lock)
     monkeypatch.setattr(payload, "snapshot", lambda *args: None)
     monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
     monkeypatch.setattr(native, "_install_names", lambda names: 0)
@@ -133,12 +139,15 @@ def test_native_stage_builds_pm_before_application_environment(tmp_path, monkeyp
     monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(entry=lambda name: tmp_path / "tools" / name))
     monkeypatch.setattr(native, "get_package", lambda name: SimpleNamespace(binary=lambda path, target: path / "python"))
 
-    def staged(root, uv, python, repo):
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache_dir))
+
+    def staged(root, uv, python, repo, *, cache):
+        assert cache == cache_dir
         calls.append((root, uv, python, repo))
         raise StopAfterPM
 
     monkeypatch.setattr(native, "stage_pm_runtime", staged)
-    monkeypatch.setattr(native, "_run_live", lambda *args, **kwargs: pytest.fail("app sync ran before PM stage"))
     with pytest.raises(StopAfterPM):
-        native.stage_native(SimpleNamespace(out=str(tmp_path), ref="HEAD"))
+        native._stage_native(SimpleNamespace(out=str(tmp_path), ref="HEAD"))
     assert calls == [(tmp_path, Path("uv"), tmp_path / "tools/python/python", tmp_path / "hermes-agent")]

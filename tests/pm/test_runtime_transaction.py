@@ -7,6 +7,12 @@ import pytest
 from pm.lock import Facts
 from pm.package import InstallError
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 
 @pytest.mark.parametrize("failure", ["build", "record", "missing", None])
 def test_sync_commits_only_a_successful_candidate(tmp_path, monkeypatch, failure):

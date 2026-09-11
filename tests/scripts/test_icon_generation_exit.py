@@ -17,9 +17,10 @@ def test_write_status_includes_every_target(tmp_path, monkeypatch, capsys, failu
     spec = importlib.util.spec_from_file_location("icon_generator_under_test", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "ROOT", tmp_path)
-    monkeypatch.setattr(module, "ensure_masters", lambda: None)
-    monkeypatch.setattr(sys, "argv", [str(script)])
+    source = tmp_path / "immutable source"
+    source.mkdir()
+    monkeypatch.setattr(module, "IconArt", lambda root: root)
+    monkeypatch.setattr(sys, "argv", [str(script), "--source", str(source), "--out", str(tmp_path)])
 
     image = io.BytesIO()
     Image.new("RGBA", (2, 2), (0, 0, 0, 0)).save(image, "PNG")
@@ -29,7 +30,9 @@ def test_write_status_includes_every_target(tmp_path, monkeypatch, capsys, failu
         (tmp_path / "blocked").write_text("not a directory", encoding="utf-8")
     monkeypatch.setattr(module, "TARGETS", [(first, "png", "first"), ("last.png", "png", "last")])
 
-    def target_bytes(kind, target):
+    def target_bytes(art, kind, target):
+        assert art == source
+        assert not list(source.iterdir())
         if target == "first":
             if failure == "render":
                 raise RuntimeError("injected render failure")

@@ -53,7 +53,10 @@ function Get-HermesClang {
 }
 
 function Initialize-HermesArm64BuildTools {
-    param([string]$StateRoot)
+    param([string]$StateRoot, [string]$OpenSSLRoot)
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw 'ARM64 build dependencies require Windows.'
+    }
     $buildRoot = Join-Path $StateRoot 'build-tools'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
     $vs = Get-HermesArm64VisualStudio
@@ -101,7 +104,13 @@ function Initialize-HermesArm64BuildTools {
     }
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { throw 'ARM64 C++ compiler is unavailable after environment setup' }
 
-    $cargoBin = Join-Path $HOME '.cargo\bin'
+    # Child builds isolate HOME/USERPROFILE. Keep Rust anchored to the homes
+    # used here, including caller-selected locations.
+    if (-not $env:CARGO_HOME) { $env:CARGO_HOME = Join-Path $HOME '.cargo' }
+    if (-not $env:RUSTUP_HOME) { $env:RUSTUP_HOME = Join-Path $HOME '.rustup' }
+    $env:CARGO_HOME = [IO.Path]::GetFullPath($env:CARGO_HOME)
+    $env:RUSTUP_HOME = [IO.Path]::GetFullPath($env:RUSTUP_HOME)
+    $cargoBin = Join-Path $env:CARGO_HOME 'bin'
     $env:PATH = "$cargoBin;$env:PATH"
     $rustup = Get-Command rustup.exe -ErrorAction SilentlyContinue
     if (-not $rustup) {
@@ -147,6 +156,8 @@ function Initialize-HermesArm64BuildTools {
         Invoke-HermesBuildCommand (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') @('-disableMetrics')
     }
     $env:VCPKG_ROOT = $vcpkgRoot
-    $env:OPENSSL_DIR = Install-HermesArm64OpenSSL -Vcpkg (Join-Path $vcpkgRoot 'vcpkg.exe') -Root $vcpkgRoot
+    # The install tree can be cached independently of the discovered checkout.
+    if (-not $OpenSSLRoot) { $OpenSSLRoot = $vcpkgRoot }
+    $env:OPENSSL_DIR = Install-HermesArm64OpenSSL -Vcpkg (Join-Path $vcpkgRoot 'vcpkg.exe') -Root $OpenSSLRoot
     $env:OPENSSL_STATIC = '1'
 }

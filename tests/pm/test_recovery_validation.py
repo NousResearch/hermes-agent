@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import os
+from pathlib import Path
 import shutil
 import sys
 
@@ -12,6 +13,12 @@ import pytest
 from pm.package import InstallError
 from pm.packages import uv_env
 from pm.recovery import validate_environment
+
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
 
 
 @pytest.mark.parametrize("damage", ["module", "distribution"])

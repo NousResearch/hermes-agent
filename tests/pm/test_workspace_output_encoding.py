@@ -44,7 +44,8 @@ def test_uv_failure_retains_utf8_build_diagnostic(
     monkeypatch.setattr(ws, "_generate_pyproject", lambda *a, **k: (tmp_path, False))
     monkeypatch.setattr(
         importlib.import_module("pm.ensure"), "uv",
-        lambda **kwargs: (sys.executable, dict(os.environ)),
+        lambda **kwargs: (sys.executable, {**os.environ, "UV_PYTHON": sys.executable,
+                                         "UV_CACHE_DIR": str(tmp_path / "cache")}),
     )
     completed = []
 

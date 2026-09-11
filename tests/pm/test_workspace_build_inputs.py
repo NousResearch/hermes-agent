@@ -12,6 +12,12 @@ from pm import workspace
 from pm.packages import uv_env
 
 
+@pytest.fixture(autouse=True)
+def isolated_machine_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+
 def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     core = tmp_path / "core"
     core.mkdir()

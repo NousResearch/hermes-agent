@@ -80,6 +80,8 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
 
 
 CASES = {
+    "shared JS builder → frontend": (["scripts/build/web.mjs"], _lanes(python=True, frontend=True)),
+    "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
     # pyproject.toml declares the pytest markers the OS lanes select on, so it

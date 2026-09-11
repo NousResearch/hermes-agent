@@ -514,6 +514,20 @@ export function startPaneDrag(
         enterZoneMode()
       }
 
+      // A strip is an exact target. Resolve it before the fuzzy zone engine:
+      // near a panel seam, proximity can otherwise pick the neighboring sidebar.
+      const hitStrip = !shift && strips.find(strip => rectContains(strip.rect, x, y))
+
+      if (hitStrip) {
+        return {
+          kind: 'group',
+          groupId: hitStrip.groupId,
+          groupIds: [hitStrip.groupId],
+          pos: 'center',
+          stack: slotBefore(hitStrip.slots, x, moving)
+        }
+      }
+
       // The hint updates on highlight-set changes AND on sub-zone position
       // changes (center/edge regions within the same primary zone).
       const point = { x, y }

@@ -30,7 +30,9 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
-    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
+    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _validate_publish_target,
+    _is_background_review, _refusal as _err)
+from tools.skill_publish_guard import live_skill_publish_guard, SkillPublishLockError
 from tools.skill_manager_batch import _skill_manage_batch
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
@@ -390,18 +392,50 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 # --- Core actions -------------------------------------------------------------
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+    # 1. input validation
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
         return _err(err)
-    if existing := _find_skill(name):
-        return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+    # 2. target resolution (BEFORE the lock so the guard can be scoped to the canonical name + target path; the guard itself only needs the canonical name for lock identity)
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return _err(scan_error)
+    # NOTE: there is deliberately NO pre-lock duplicate check here — a collision check outside
+    # the lock is stale by definition (a concurrent publisher can complete between check and
+    # lock acquisition) and would reintroduce the TOCTOU race the guard exists to close.
+    # The authoritative _find_skill call lives INSIDE the guard below.
+    try:
+        # 3. canonical-name lock acquisition; wraps the validate→mutate window
+        with live_skill_publish_guard(name, target=skill_dir):
+            # 4. authoritative duplicate recheck INSIDE lock (the pre-lock _find_skill call
+            #    in skill_manage's audit-ledger pre-capture is a cheap early-out and is
+            #    stale by definition)
+            if existing := _find_skill(name):
+                return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+            # 5. redirect/escape validation INSIDE lock
+            if target_err := _validate_publish_target(skill_dir):
+                return _err(target_err)
+            # 6. mkdir
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            # 7. atomic write
+            skill_md = skill_dir / "SKILL.md"
+            atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+            # 8. security scan
+            if scan_error := _security_scan_skill(skill_dir):
+                # 9. rollback WHILE lock is still held (so a concurrent publisher does not
+                #    see a half-deleted state). Lock release happens on context-manager exit.
+                shutil.rmtree(skill_dir, ignore_errors=True)
+                return _err(scan_error)
+    except SkillPublishLockError as exc:
+        # Convert to the friendly contract: never let lock contention or a hard failure
+        # surface as a duplicate-name refusal, never propagate the exception to the agent.
+        # HARD_ACQUISITION_FAILURE wording intentionally does not recommend an immediate
+        # retry (the lock module's own message enforces that — we just propagate it).
+        return {
+            "success": False,
+            "error": str(exc),
+            "lock_acquisition_failure": True,
+            "lock_failure_kind": exc.kind,
+        }
+
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {

@@ -63,6 +63,20 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 }
 ```
 
+### `last_status` literals
+
+`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
+renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
+badge, the Desktop routine inspector) maps each literal explicitly — a consumer
+must never test `== "ok"` for "the user got their result":
+
+| Literal | Meaning | Detail field |
+|---------|---------|--------------|
+| `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `error` | Agent run failed | `last_error` |
+| `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
 ### Job Lifecycle States
 
 | State | Meaning |
@@ -176,7 +190,9 @@ agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
 Each cron job runs in a completely fresh agent session:
 
 - No conversation history from previous runs
-- No memory of previous cron executions (unless persisted to memory/files)
+- No memory of previous cron executions (persistent memory — MEMORY.md /
+  USER.md — does load, like any other agent run, so durable preferences and
+  facts carry over; per-run conversation context does not)
 - The prompt must be self-contained — cron jobs cannot ask clarifying questions
 - The `cronjob` toolset is disabled (recursion guard)
 
@@ -215,6 +231,16 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
+
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
@@ -252,12 +278,15 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
 | BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
 | QQ Bot | `qqbot` or `qqbot:<chat_id>` | Bare name delivers to QQ (Tencent) via Official API v2 |
+| Bot Chat | `bot-chat` or `bot-chat:<profile>` | Inject into a local profile's canonical Bot Chat (the bot responds) |
 
 Platforms in the first group have explicit, validated target syntax — named channels (`#channel`), topics/threads, room/user IDs, group IDs, or phone numbers. The remaining platforms accept the generic `platform:<chat_id>` form (the value after the colon is used verbatim as the destination ID); a bare platform name always delivers to the home channel.
 
 **Named channels** (`slack:#engineering`, `discord:#engineering`, or a friendly name like `slack:engineering`) are resolved against the channel directory the gateway builds from connected adapters, so the gateway must have discovered the channel for name resolution to succeed; raw IDs (`slack:C0123ABCD45`) always work.
 
 For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
+
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
 
 ### Response Wrapping
 

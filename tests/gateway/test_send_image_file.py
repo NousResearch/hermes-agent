@@ -42,27 +42,6 @@ class TestExtractMediaImages:
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests
 # ---------------------------------------------------------------------------
-
-
-def _ensure_telegram_mock():
-    """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -244,7 +223,8 @@ class TestScreenshotCleanup:
     def test_cleanup_removes_old_screenshots(self, tmp_path):
         """_cleanup_old_screenshots should remove files older than max_age_hours."""
         import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser_tool_lifecycle import _cleanup_old_screenshots
+        from tools.browser_tool import _last_screenshot_cleanup_by_dir
 
         _last_screenshot_cleanup_by_dir.clear()
 
@@ -265,7 +245,8 @@ class TestScreenshotCleanup:
 
     def test_cleanup_is_throttled_per_directory(self, tmp_path):
         import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser_tool_lifecycle import _cleanup_old_screenshots
+        from tools.browser_tool import _last_screenshot_cleanup_by_dir
 
         _last_screenshot_cleanup_by_dir.clear()
 

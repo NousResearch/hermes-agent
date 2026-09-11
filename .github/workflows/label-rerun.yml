@@ -2,13 +2,16 @@ name: Label rerun
 
 # When the ``ci-reviewed`` label is added to a PR, rerun all failed jobs in
 # the latest CI run. This re-evaluates ``review-labels`` (which now sees the
-# label) and GitHub automatically reruns dependent jobs (``comment-live``,
-# ``all-checks-pass``) — so the review comment gets updated too.
+# label) and GitHub reruns the dependent ``all-checks-pass`` gate.
 #
-# If the CI run is still in progress when the label is added, we wait for it
-# to finish before rerunning (``gh run rerun`` only works on completed runs).
-# The wait can be long (20+ min for a full CI run), but it's better than
-# silently failing and leaving the reviewer stuck.
+# ``gh run rerun`` only works on a completed run. Thus this waits when the
+# run is still in progress. The wait is now short. The two slowest jobs are
+# the 40-minute comment poller and the 45-minute image build. Each one moved
+# to its own workflow, so a CI run ends when its required jobs end.
+#
+# The review comment updates without help. The poller in
+# ci-review-comment.yml watches the CI run through the API. It gets the
+# rerun results.
 
 on:
   pull_request:
@@ -38,22 +41,25 @@ jobs:
           set -uo pipefail
 
           # Find the latest CI run for this PR's head SHA.
-          RUN_ID=$(gh run list \
+          RUN_INFO=$(gh run list \
             --repo "$REPO" \
             --commit "$HEAD_SHA" \
-            --workflow ci.yml \
+            --workflow ci.yaml \
             --limit 1 \
             --json databaseId,status \
             --jq '.[0] | "\(.databaseId) \(.status)"' 2>/dev/null || true)
 
-          if [ -z "$RUN_ID" ]; then
+          if [ -z "$RUN_INFO" ]; then
             echo "No CI run found for this PR — nothing to rerun."
             exit 0
           fi
 
-          # Split "RUN_ID STATUS" into two vars.
-          RUN_ID="${RUN_ID%% *}"
-          STATUS="${RUN_ID##* }"
+          # Split "RUN_ID STATUS" into two vars. Read STATUS from RUN_INFO,
+          # not from the truncated RUN_ID. Both values came from the same
+          # var before, which made STATUS the run id. Thus the wait branch
+          # always ran.
+          RUN_ID="${RUN_INFO%% *}"
+          STATUS="${RUN_INFO##* }"
 
           echo "Latest CI run: $RUN_ID (status: $STATUS)"
 

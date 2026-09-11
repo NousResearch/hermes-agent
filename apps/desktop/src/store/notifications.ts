@@ -129,6 +129,10 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
   {
     test: msg => /microphone permission/i.test(msg),
     summarize: () => translateNow('notifications.errors.microphonePermission')
+  },
+  {
+    test: msg => /Restart required:/i.test(msg),
+    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired')
   }
 ]
 
@@ -142,7 +146,9 @@ function summarizeErrorMessage(message: string, fallback: string) {
   return message.length > 180 ? fallback : message || fallback
 }
 
-function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
+// Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
+// rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
+export function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)

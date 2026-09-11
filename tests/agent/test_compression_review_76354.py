@@ -44,13 +44,15 @@ def _drain_admission_slots():
 
 
 class TestF1CommitOverrunWhileHung:
-    def test_overrun_warning_fires_while_commit_still_blocked(self):
+    def test_overrun_warning_fires_while_commit_still_blocked(self, monkeypatch):
         """The warning + on_commit_overrun fire DURING the hang, not after.
 
         The fake commit is event-gated and is NOT released until after the
         assertions on the callback/log have been made while the worker
         thread is still blocked inside the commit boundary.
         """
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        monkeypatch.setattr(cc, "_get_compress_timeout_executor", lambda: executor)
         original = [{"role": "user", "content": "a"}]
         compressed = [{"role": "assistant", "content": "late"}]
         entered = threading.Event()
@@ -86,8 +88,8 @@ class TestF1CommitOverrunWhileHung:
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="fallback",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=0.05,
+                idle_timeout_seconds=1.0,
+                total_ceiling_seconds=1.0,
                 on_commit_overrun=on_overrun,
             )
 
@@ -124,13 +126,14 @@ class TestF1CommitOverrunWhileHung:
                     "expected the overrun WARNING while the commit was "
                     f"still blocked; got: {[r.getMessage() for r in records]}"
                 )
-                assert overruns and overruns[0][1] == pytest.approx(0.05)
+                assert overruns and overruns[0][1] == pytest.approx(1.0)
             finally:
                 release.set()
             t.join(timeout=5)
             assert not t.is_alive()
         finally:
             comp_logger.removeHandler(handler)
+            executor.shutdown(wait=True)
         assert done["result"] == (compressed, "committed-late")
         _drain_admission_slots()
 
@@ -454,6 +457,7 @@ class TestF6ExecutorSaturation:
             assert returned is messages
             # The cancelled attempt must not leave the durable lock held.
             assert db.get_compression_lock_holder(session_id) is None
+            db.close()
 
 
 class TestS3IdleChargedFromLastProgress:
@@ -477,6 +481,7 @@ class TestS3IdleChargedFromLastProgress:
                 system_prompt_fallback="fb",
                 idle_timeout_seconds=idle,
                 total_ceiling_seconds=5.0,
+                stall_fallback=False,
             )
         finally:
             elapsed = time.monotonic() - t0

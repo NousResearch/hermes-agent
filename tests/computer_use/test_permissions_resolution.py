@@ -22,11 +22,11 @@ def test_status_finds_user_local_driver_when_path_omits_it(tmp_path, monkeypatch
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 
-    with patch("tools.computer_use.permissions.sys.platform", "darwin"), \
-         patch("tools.computer_use.cua_backend.sys.platform", "darwin"), \
-         patch.object(permissions, "_run", return_value=MagicMock(stdout="0.0.0")), \
-         patch.object(permissions, "_doctor", return_value={"ok": True, "checks": []}), \
-         patch.object(permissions, "_mac_permissions"):
+    # No platform faking: ``~/.local/bin/cua-driver`` is a POSIX resolution
+    # candidate on Linux exactly as on macOS, so the regression reproduces on
+    # the host we actually run on.
+    with patch.object(permissions, "_run", return_value=MagicMock(stdout="0.0.0")), \
+         patch.object(permissions, "_doctor", return_value={"ok": True, "checks": []}):
         status = permissions.computer_use_status()
 
     assert status["installed"] is True

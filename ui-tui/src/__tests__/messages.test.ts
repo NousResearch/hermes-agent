@@ -4,10 +4,10 @@ import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { MessageLine } from '../components/messageLine.js'
+import { fmtMsgTimestamp, MessageLine } from '../components/messageLine.js'
 import { MAX_HISTORY } from '../config/limits.js'
 import { toTranscriptMessages } from '../domain/messages.js'
-import { capTranscriptHistory, upsert } from '../lib/messages.js'
+import { appendTranscriptMessage, capTranscriptHistory, upsert } from '../lib/messages.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -77,6 +77,18 @@ describe('toTranscriptMessages', () => {
     ])
   })
 
+  it('uses the display-only completion title without exposing the model payload', () => {
+    const text = '[ASYNC DELEGATION BATCH COMPLETE — private]\nFull result evidence'
+    const title = 'Subagent Task Failed: Review changes'
+
+    const [message] = toTranscriptMessages([
+      { role: 'user', text, display_kind: 'async_delegation_complete', display_metadata: { display_text: title } }
+    ])
+
+    expect(message).toMatchObject({ kind: 'event', role: 'system', text: title })
+    expect(toTranscriptMessages([{ role: 'user', text }])[0]?.text).toBe(text)
+  })
+
   it('projects async_delegation_complete without metadata as generic text', () => {
     const rows = [{ role: 'user', text: 'event', display_kind: 'async_delegation_complete' }]
 
@@ -128,6 +140,81 @@ describe('MessageLine', () => {
 
     expect(renderedLine).toContain('Ψ > Okay')
   })
+
+  it('keeps historical thinking blocks collapsed by default', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        msg: { kind: 'trail', role: 'system', text: '', thinking: 'step one\nstep two' },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('Thinking')
+    expect(rendered).not.toContain('step one')
+    expect(rendered).not.toContain('step two')
+  })
+
+  it('keeps live thinking blocks expanded while streaming', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        liveDetails: true,
+        msg: { kind: 'trail', role: 'system', text: '', thinking: 'step one\nstep two' },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('Thinking')
+    expect(rendered).toContain('step one')
+    expect(rendered).toContain('step two')
+  })
 })
 
 describe('upsert', () => {
@@ -160,5 +247,39 @@ describe('capTranscriptHistory', () => {
     expect(capped[0]).toBe(intro)
     expect(capped[1]?.text).toBe(`m${rows.length - (MAX_HISTORY - 1)}`)
     expect(capped.at(-1)?.text).toBe('m1004')
+  })
+})
+
+describe('display.timestamps (#41531)', () => {
+  it('formats a Unix-seconds timestamp as [HH:MM] and rejects garbage', () => {
+    const noon = new Date()
+    noon.setHours(13, 5, 0, 0)
+
+    expect(fmtMsgTimestamp(noon.getTime() / 1000)).toBe('[13:05]')
+    expect(fmtMsgTimestamp(undefined)).toBeNull()
+    expect(fmtMsgTimestamp(0)).toBeNull()
+    expect(fmtMsgTimestamp(Number.NaN)).toBeNull()
+  })
+
+  it('threads persisted transcript timestamps onto rehydrated rows', () => {
+    const rows = [
+      { role: 'user', text: 'when was this', timestamp: 1_750_000_000 },
+      { role: 'assistant', text: 'right then', timestamp: 1_750_000_060 }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result[0]?.createdAt).toBe(1_750_000_000)
+    expect(result[1]?.createdAt).toBe(1_750_000_060)
+  })
+
+  it('stamps live rows at append and preserves supplied times', () => {
+    const before = Date.now() / 1000
+    const [live] = appendTranscriptMessage([], { role: 'user', text: 'now' })
+
+    expect(live?.createdAt).toBeGreaterThanOrEqual(before - 1)
+    expect(live?.createdAt).toBeLessThanOrEqual(Date.now() / 1000 + 1)
+
+    const [kept] = appendTranscriptMessage([], { createdAt: 123, role: 'user', text: 'then' })
+    expect(kept?.createdAt).toBe(123)
   })
 })

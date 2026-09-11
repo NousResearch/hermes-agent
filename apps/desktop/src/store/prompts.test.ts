@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearClarifyRequest, setClarifyRequest } from './clarify'
 import {
@@ -10,11 +11,14 @@ import {
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
+  receiveApprovalRequest,
+  replayPendingApproval,
   setApprovalRequest,
   setSecretRequest,
   setSudoRequest
 } from './prompts'
-import { $activeSessionId } from './session'
+import { isSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { $activeSessionId, setActiveSessionId } from './session'
 
 // Prompts are parked per-session; the exported $*Request views are scoped to the
 // active session, so each test focuses the session it's asserting on.
@@ -26,6 +30,7 @@ afterEach(() => {
   clearAllPrompts()
   clearClarifyRequest()
   $activeSessionId.set(null)
+  resetBackgroundPollingGuard()
 })
 
 describe('approval prompt store', () => {
@@ -66,6 +71,124 @@ describe('approval prompt store', () => {
     })
 
     expect($approvalRequest.get()?.allowPermanent).toBe(false)
+  })
+
+  it('correlates clearing to the exact approval request id', () => {
+    setApprovalRequest({ command: 'x', description: 'd', requestId: 'r1', sessionId: 's1' })
+
+    clearApprovalRequest('s1', 'stale')
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    clearApprovalRequest('s1', 'r1')
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('acknowledges an approval only after parking it', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = []
+
+    const gateway = {
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push([method, params])
+
+        return { acknowledged: true }
+      }
+    }
+
+    await receiveApprovalRequest(gateway, {
+      command: 'x',
+      description: 'd',
+      requestId: 'r1',
+      sessionId: 's1'
+    })
+
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    expect(calls).toEqual([['approval.received', { request_id: 'r1', session_id: 's1' }]])
+  })
+
+  it('replays and acknowledges the oldest unresolved approval after reconnect', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = []
+
+    const gateway = {
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push([method, params])
+
+        if (method === 'approval.pending') {
+          return {
+            approvals: [
+              { command: 'first', description: 'd1', request_id: 'r1' },
+              { command: 'second', description: 'd2', request_id: 'r2' }
+            ]
+          }
+        }
+
+        return { acknowledged: true }
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1')
+
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    expect(calls).toEqual([
+      ['approval.pending', { session_id: 's1' }],
+      ['approval.received', { request_id: 'r1', session_id: 's1' }]
+    ])
+  })
+
+  it('does not replay a pending approval after the runtime is rejected as gone', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    await replayPendingApproval({ request }, 'dead-runtime')
+    await replayPendingApproval({ request }, 'dead-runtime')
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(isSessionGone('dead-runtime')).toBe(true)
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('propagates transient approval replay failures without latching the runtime', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('gateway timed out')
+    })
+
+    await expect(replayPendingApproval({ request }, 'transient-runtime')).rejects.toThrow('gateway timed out')
+    expect(isSessionGone('transient-runtime')).toBe(false)
+  })
+
+  it('keeps approval receipt failures contained and marks the runtime gone', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    $activeSessionId.set('dead-runtime')
+
+    await expect(
+      receiveApprovalRequest(
+        { request },
+        { command: 'x', description: 'd', requestId: 'r1', sessionId: 'dead-runtime' }
+      )
+    ).resolves.toBeUndefined()
+
+    expect(isSessionGone('dead-runtime')).toBe(true)
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+  })
+
+  it('propagates transient approval receipt failures without latching the runtime', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('gateway timed out')
+    })
+
+    setActiveSessionId('transient-runtime')
+
+    await expect(
+      receiveApprovalRequest(
+        { request },
+        { command: 'x', description: 'd', requestId: 'r2', sessionId: 'transient-runtime' }
+      )
+    ).rejects.toThrow('gateway timed out')
+
+    expect(isSessionGone('transient-runtime')).toBe(false)
+    expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 })
 
@@ -144,7 +267,7 @@ describe('$activeSessionAwaitingInput', () => {
     clearApprovalRequest('s1')
     expect($activeSessionAwaitingInput.get()).toBe(false)
 
-    setClarifyRequest({ choices: null, question: 'q', requestId: 'c1', sessionId: 's1' })
+    setClarifyRequest({ choices: null, multiSelect: false, question: 'q', requestId: 'c1', sessionId: 's1' })
     expect($activeSessionAwaitingInput.get()).toBe(true)
   })
 
@@ -154,5 +277,94 @@ describe('$activeSessionAwaitingInput', () => {
 
     $activeSessionId.set('s2')
     expect($activeSessionAwaitingInput.get()).toBe(true)
+  })
+})
+
+describe('pending approval replay backoff', () => {
+  afterEach(() => {
+    resetBackgroundPollingGuard()
+  })
+
+  it('stops polling a runtime the gateway no longer holds', async () => {
+    const calls: string[] = []
+
+    const gateway = {
+      request: async (method: string) => {
+        calls.push(method)
+        throw new Error('4001: session not found')
+      }
+    }
+
+    for (let i = 0; i < 5; i++) {
+      await replayPendingApproval(gateway, 'dead-1')
+    }
+
+    expect(calls).toEqual(['approval.pending'])
+  })
+
+  it('keeps polling every other runtime', async () => {
+    const calls: string[] = []
+
+    const gateway = {
+      request: async (_method: string, params: Record<string, unknown>) => {
+        calls.push(String(params.session_id))
+
+        if (params.session_id === 'dead-1') {
+          throw new Error('4001: session not found')
+        }
+
+        return { approvals: [] }
+      }
+    }
+
+    await replayPendingApproval(gateway, 'dead-1')
+    await replayPendingApproval(gateway, 'dead-1')
+    await replayPendingApproval(gateway, 'alive-1')
+    await replayPendingApproval(gateway, 'alive-1')
+
+    expect(calls).toEqual(['dead-1', 'alive-1', 'alive-1'])
+  })
+
+  it('does not latch on a transient failure', async () => {
+    const calls: string[] = []
+
+    const gateway = {
+      request: async (method: string) => {
+        calls.push(method)
+        throw new Error('websocket disconnected')
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1').catch(() => undefined)
+    await replayPendingApproval(gateway, 's1').catch(() => undefined)
+
+    expect(calls).toHaveLength(2)
+  })
+
+  it('polls again once the gone-latch is cleared', async () => {
+    const calls: string[] = []
+    let dead = true
+
+    const gateway = {
+      request: async (method: string) => {
+        calls.push(method)
+
+        if (dead) {
+          throw new Error('4001: session not found')
+        }
+
+        return { approvals: [] }
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1')
+    await replayPendingApproval(gateway, 's1')
+    expect(calls).toHaveLength(1)
+
+    dead = false
+    resetBackgroundPollingGuard()
+    await replayPendingApproval(gateway, 's1')
+
+    expect(calls).toHaveLength(2)
   })
 })

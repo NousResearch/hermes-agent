@@ -20,6 +20,10 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import {
+  attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt,
+} from "@/lib/dashboard-auth-reload";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -75,6 +79,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -160,20 +168,7 @@ export async function fetchJSON<T>(
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
     if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
-      let alreadyReloaded = false;
-      try {
-        alreadyReloaded =
-          sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
-      } catch {
-        /* SSR / privacy mode — fall through to throw */
-      }
-      if (!alreadyReloaded) {
-        try {
-          sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
-        } catch {
-          /* SSR / privacy mode — best effort */
-        }
-        window.location.reload();
+      if (attemptDashboardTokenReloadOnce()) {
         return new Promise<T>(() => {});
       }
     }
@@ -182,11 +177,7 @@ export async function fetchJSON<T>(
     // Clear the stale-token reload guard: a successful 2xx proves the
     // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
-    try {
-      sessionStorage.removeItem("hermes.tokenReloadAttempted");
-    } catch {
-      /* SSR / privacy mode — ignore */
-    }
+    clearDashboardTokenReloadAttempt();
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -398,7 +389,10 @@ export const api = {
   },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
@@ -462,11 +456,18 @@ export const api = {
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -973,6 +974,9 @@ export const api = {
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
   getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+
+  getPluginsCatalog: () =>
+    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
     fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
@@ -1871,11 +1875,13 @@ export interface StatusResponse {
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
   /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
-   * brokerable OAuth provider is registered, signalling that the desktop can
-   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
-   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
-   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
@@ -1892,8 +1898,42 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
+  last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
 }
 
 export interface SessionInfo {
@@ -1911,6 +1951,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2017,6 +2060,12 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  pagination?: {
+    limit: number;
+    offset: number;
+    order: "latest" | "oldest";
+    returned: number;
+  };
 }
 
 export interface LogsResponse {
@@ -2141,6 +2190,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -2236,6 +2286,7 @@ export interface CronJob {
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {
@@ -2412,9 +2463,7 @@ export interface MoaConfigResponse {
     aggregator_temperature: number;
     reference_timeout: number | null;
     degraded_reference_policy: "loud" | "silent";
-    max_tokens: number;
-    /** Optional advisor output cap — round-tripped, not edited here. */
-    reference_max_tokens?: number | null;
+
     /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
     enabled: boolean;
@@ -2425,7 +2474,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number;
   reference_timeout: number | null;
   degraded_reference_policy: "loud" | "silent";
-  max_tokens: number;
+
   enabled: boolean;
 }
 
@@ -2577,6 +2626,8 @@ export interface HubAgentPluginRow {
   auth_required: boolean;
   auth_command: string;
   user_hidden: boolean;
+  /** Reason string when this plugin is on the catalog removed blocklist. */
+  removed_reason?: string | null;
 }
 
 export interface PluginsHubProviders {
@@ -2596,6 +2647,8 @@ export interface AgentPluginInstallRequest {
   identifier: string;
   force?: boolean;
   enable?: boolean;
+  /** Install by curated-catalog name (resolves repo + pinned SHA server-side). */
+  catalog_name?: string;
 }
 
 export interface AgentPluginInstallResponse {
@@ -2606,6 +2659,48 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
+}
+
+// ── Plugin catalog types ───────────────────────────────────────────────
+
+export interface CatalogCapabilities {
+  provides_tools: string[];
+  provides_hooks: string[];
+  provides_middleware: string[];
+  requires_env: string[];
+}
+
+export interface CatalogEntry {
+  name: string;
+  description: string;
+  repo: string;
+  sha: string;
+  sha_short: string;
+  tier: "official" | "community";
+  maintainer: string;
+  requires_hermes: string;
+  platforms: string[];
+  capabilities: CatalogCapabilities;
+  docs_url: string;
+  capability_summary: string;
+  /** Installed-state merge (computed server-side). */
+  installed: boolean;
+  installed_sha: string | null;
+  update_available: boolean;
+  runtime_status: "disabled" | "enabled" | "inactive" | null;
+}
+
+export interface CatalogRemovedEntry {
+  name: string;
+  repo: string;
+  reason: string;
+  date: string;
+}
+
+export interface CatalogResponse {
+  entries: CatalogEntry[];
+  removed: CatalogRemovedEntry[];
+  generated_at: string;
 }
 
 export interface AgentPluginUpdateResponse {

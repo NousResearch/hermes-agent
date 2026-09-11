@@ -1,44 +1,10 @@
 #!/usr/bin/env python3
-"""
-Video Generation Tool
-=====================
+"""``video_generate``: one tool dispatching to a plugin-registered :class:`VideoGenProvider`
+(``agent/video_gen_provider.py`` ABC, ``agent/video_gen_registry.py``, ``plugins/video_gen/<name>/``).
 
-Single ``video_generate`` tool that dispatches to a plugin-registered
-video generation provider. Mirrors the ``image_generate`` design:
-
-- ``agent/video_gen_provider.py`` defines the :class:`VideoGenProvider` ABC.
-- ``agent/video_gen_registry.py`` holds the active providers (populated by
-  plugins at import time).
-- Each provider lives under ``plugins/video_gen/<name>/``.
-
-The tool itself is intentionally backend-agnostic and ships **no in-tree
-provider** — turn on a backend by enabling a plugin (``hermes plugins
-enable video_gen/<name>``) and selecting it in ``hermes tools`` → Video
-Generation.
-
-Unified surface
----------------
-One tool covers the common cases - text-to-video, image-to-video, and
-reference-to-video - with a compact schema:
-
-    prompt                   text instruction (required)
-    image_url                drives image-to-video
-    reference_image_urls     list, up to provider-declared cap
-    duration                 seconds (provider clamps)
-    aspect_ratio             "16:9" | "9:16" | "1:1" | ...
-    resolution               "480p" | "540p" | "720p" | "1080p"
-    negative_prompt          optional (Pixverse/Kling style)
-    audio                    optional (Veo3/Pixverse pricing tier)
-    seed                     optional
-    model                    optional, override the active provider's default
-
-Providers ignore parameters they do not support. The tool layer does
-**lightweight** validation (type/required-prompt) and lets each provider
-do its own clamping inside :meth:`VideoGenProvider.generate` — that keeps
-the tool surface stable as new providers ship with different capabilities.
-
-Video edit and video extend are intentionally not exposed here; providers with
-those workflows should expose separate tools.
+Ships **no in-tree provider**: enable a plugin and select it in ``hermes tools`` → Video
+Generation. The tool layer only does lightweight validation; each provider clamps/ignores
+unsupported params inside ``generate``. Video edit/extend are deliberately not exposed here.
 """
 
 from __future__ import annotations
@@ -52,8 +18,7 @@ from agent.video_gen_provider import (
     COMMON_RESOLUTIONS,
     DEFAULT_ASPECT_RATIO,
     DEFAULT_RESOLUTION,
-    error_response,
-)
+    error_response)
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -61,12 +26,9 @@ logger = logging.getLogger(__name__)
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
     "name": "video_generate",
-    # Placeholder — the real description is built dynamically at
-    # get_tool_definitions() time so it reflects the active backend's
-    # actual capabilities (which modalities / resolutions / duration
-    # ranges the user's currently-selected model supports).
-    # See _build_dynamic_video_schema() below and the dynamic-tool-schemas
-    # skill at github/hermes-agent-dev/references/dynamic-tool-schemas.md.
+    # Placeholder: description AND params are rebuilt at get_tool_definitions() time by
+    # _build_dynamic_video_schema() from capabilities() + the model's catalog entry. Optional
+    # args are advertised ONLY when honored; the handler accepts them regardless (replay compat).
     "description": "(rebuilt at get_definitions() time — see _build_dynamic_video_schema)",
     "parameters": {
         "type": "object",
@@ -78,166 +40,85 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "subject, style, camera movement, etc."
                 ),
             },
-            "image_url": {
-                "type": "string",
-                "description": (
-                    "Optional public HTTPS URL of a still image. When provided, "
-                    "the active backend routes to its image-to-video "
-                    "endpoint (animate the image); when omitted, it routes "
-                    "to text-to-video. For xAI chaining, use the `image` or "
-                    "`public_url` HTTPS URL from a prior Imagine result."
-                ),
-            },
-            "reference_image_urls": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional list of public HTTPS reference image URLs "
-                    "(style or character refs). For xAI chaining, use "
-                    "`image` or `public_url` from prior Imagine results."
-                ),
-            },
             "duration": {
                 "type": "integer",
                 "description": (
                     "Desired video duration in seconds. Providers clamp to "
-                    "their supported range (commonly 4-15s). Omit to use the "
-                    "provider's default."
+                    "their supported range. Omit for the provider default."
                 ),
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(COMMON_ASPECT_RATIOS),
-                "description": (
-                    "Output aspect ratio. Providers clamp to their supported "
-                    "set."
-                ),
+                "description": "Output aspect ratio.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
             "resolution": {
                 "type": "string",
                 "enum": list(COMMON_RESOLUTIONS),
-                "description": (
-                    "Output resolution. Providers clamp to their supported "
-                    "set."
-                ),
+                "description": "Output resolution.",
                 "default": DEFAULT_RESOLUTION,
-            },
-            "negative_prompt": {
-                "type": "string",
-                "description": (
-                    "Optional negative prompt — content to avoid in the "
-                    "output. Supported by Pixverse, Kling, and similar; "
-                    "ignored by providers that do not support it."
-                ),
-            },
-            "audio": {
-                "type": "boolean",
-                "description": (
-                    "Optional audio generation toggle. Supported by Veo3 and "
-                    "Pixverse (affects pricing tier); ignored elsewhere."
-                ),
-            },
-            "seed": {
-                "type": "integer",
-                "description": (
-                    "Optional seed for reproducible outputs (provider-"
-                    "dependent)."
-                ),
             },
             "model": {
                 "type": "string",
                 "description": (
-                    "Optional model override. If omitted, the user's "
-                    "configured ``video_gen.model`` (set via `hermes tools` "
-                    "→ Video Generation) is used. Models that the active "
-                    "provider does not know are rejected."
+                    "Optional model override; defaults to the configured "
+                    "``video_gen.model``. Unknown models are rejected."
                 ),
             },
+            # Capability-gated args are added by _build_dynamic_video_schema; never statically.
         },
+        # NOTE (schema diet, #95681): image_url / reference_image_urls / negative_prompt / audio / seed /
+        # upscale are added per-capability by _build_dynamic_video_schema.
         "required": ["prompt"],
     },
 }
 
 
-# ---------------------------------------------------------------------------
-# Config readers (mirror image_generation_tool.py)
-# ---------------------------------------------------------------------------
-
-
-def _read_video_gen_section() -> Dict[str, Any]:
+def _read_video_gen_key(key: str) -> Optional[str]:
+    """Return the stripped ``video_gen.<key>`` string from config.yaml, or None."""
     try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config()
-        section = cfg.get("video_gen") if isinstance(cfg, dict) else None
-        return section if isinstance(section, dict) else {}
+        from hermes_cli.config import cfg_get, load_config
+        value = cfg_get(load_config(), "video_gen", key)
     except Exception as exc:
         logger.debug("Could not read video_gen config: %s", exc)
-        return {}
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _read_configured_video_provider() -> Optional[str]:
-    value = _read_video_gen_section().get("provider")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    return _read_video_gen_key("provider")
 
 
 def _read_configured_video_model() -> Optional[str]:
-    value = _read_video_gen_section().get("model")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    return _read_video_gen_key("model")
 
 
-# ---------------------------------------------------------------------------
-# Availability check
-# ---------------------------------------------------------------------------
+def _discovered_registry():
+    """Import the provider registry after (idempotent) plugin discovery so user-installed plugins are visible."""
+    from agent import video_gen_registry
+    from hermes_cli.plugins import _ensure_plugins_discovered
+    _ensure_plugins_discovered()
+    return video_gen_registry, _ensure_plugins_discovered
 
 
 def check_video_generation_requirements() -> bool:
-    """Return True when at least one registered provider reports available.
-
-    Triggers plugin discovery (idempotent) so user-installed plugins are
-    visible to the toolset gate.
-    """
+    """True when at least one registered provider reports available."""
     try:
-        from agent.video_gen_registry import list_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        for provider in list_providers():
-            try:
-                if provider.is_available():
-                    return True
-            except Exception:
-                continue
+        registry_mod, _ = _discovered_registry()
+        return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
     except Exception:
-        pass
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
+        return False
 
 
 def _resolve_active_provider():
-    """Return the active provider object or None.
-
-    Forces plugin discovery before checking the registry — handles cases
-    where a long-lived session was started before a plugin was installed.
-    """
+    """Active provider or None; a miss forces a discovery refresh (sessions older than the plugin install)."""
     try:
-        from agent.video_gen_registry import get_active_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_active_provider()
+        registry_mod, ensure_discovered = _discovered_registry()
+        provider = registry_mod.get_active_provider()
         if provider is None:
-            _ensure_plugins_discovered(force=True)
-            provider = get_active_provider()
+            ensure_discovered(force=True)
+            provider = registry_mod.get_active_provider()
         return provider
     except Exception as exc:
         logger.debug("video_gen provider resolution failed: %s", exc)
@@ -246,175 +127,132 @@ def _resolve_active_provider():
 
 def _missing_provider_error(configured: Optional[str]) -> str:
     if configured:
-        msg = (
-            f"video_gen.provider='{configured}' is set but no plugin "
-            f"registered that name. Run `hermes plugins list` to see "
-            f"installed video gen backends, or `hermes tools` → Video "
-            f"Generation to pick one."
-        )
         return json.dumps(error_response(
-            error=msg, error_type="provider_not_registered",
-            provider=configured,
-        ))
-    msg = (
-        "No video generation backend is configured. Run `hermes tools` → "
-        "Video Generation to enable one (xAI, FAL, or Google Veo)."
-    )
+            error=(f"video_gen.provider='{configured}' is set but no plugin registered that name. "
+                   f"Run `hermes plugins list` to see installed video gen backends, or "
+                   f"`hermes tools` → Video Generation to pick one."),
+            error_type="provider_not_registered", provider=configured))
     return json.dumps(error_response(
-        error=msg, error_type="no_provider_configured",
-    ))
+        error=("No video generation backend is configured. Run `hermes tools` → "
+               "Video Generation to enable one (xAI, FAL, or Google Veo)."),
+        error_type="no_provider_configured"))
 
 
-# ---------------------------------------------------------------------------
-# Handler
-# ---------------------------------------------------------------------------
+_BOOL_WORDS = {"true": True, "1": True, "yes": True, "on": True,
+               "false": False, "0": False, "no": False, "off": False}
 
 
 def _coerce_int(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
     try:
-        return int(value)
+        return None if value is None or value == "" else int(value)
     except (TypeError, ValueError):
         return None
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
-    if value is None:
-        return None
     if isinstance(value, bool):
         return value
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in {"true", "1", "yes", "on"}:
-            return True
-        if v in {"false", "0", "no", "off"}:
-            return False
-    return None
+    return _BOOL_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
 
 
 def _normalize_reference_images(value: Any) -> Optional[List[str]]:
-    if value is None:
-        return None
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, (list, tuple)):
         return None
-    out: List[str] = []
-    for item in value:
-        if isinstance(item, str) and item.strip():
-            out.append(item.strip())
-    return out or None
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
-    duration = _coerce_int(args.get("duration"))
-    aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
-    resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
-    negative_prompt = (args.get("negative_prompt") or "").strip() or None
-    audio = _coerce_bool(args.get("audio"))
-    seed = _coerce_int(args.get("seed"))
+    task_id = _kw.get("task_id")
+
+    # Confinement chokepoint (mirrors image_generate): non-local backends hand providers data: URLs.
+    from tools.image_generation_tool import _confine_source_images
+    image_url, reference_image_urls, confine_error = _confine_source_images(
+        image_url, reference_image_urls, task_id)
+    if confine_error is not None:
+        return confine_error
+    # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
+    optional = {
+        "duration": _coerce_int(args.get("duration")),
+        "aspect_ratio": (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO,
+        "resolution": (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION,
+        "negative_prompt": (args.get("negative_prompt") or "").strip() or None,
+        "audio": _coerce_bool(args.get("audio")),
+        "seed": _coerce_int(args.get("seed")),
+        "upscale": _coerce_bool(args.get("upscale"))}
     model_override = (args.get("model") or "").strip() or None
 
-    # Soft validation — providers do their own. Prompt is required by the
-    # schema; the backend may still accept image-only on its image-to-video
-    # endpoint but our surface always needs a prompt.
+    # Soft validation — providers do their own; our surface never accepts image-only.
     if not prompt:
         return tool_error("prompt is required for video generation")
     if "operation" in args or "video_url" in args:
         return tool_error(
             "video_generate only supports text-to-video, image-to-video, and "
-            "reference-to-video; use a provider-specific tool for video edit/extend"
-        )
-
-    # Resolve the active provider.
+            "reference-to-video; use a provider-specific tool for video edit/extend")
     configured = _read_configured_video_provider()
     provider = _resolve_active_provider()
     if provider is None:
         return _missing_provider_error(configured)
 
-    # Resolve model: explicit arg wins, then config, then provider default.
+    # Explicit arg wins, then config, then provider default.
     model = model_override or _read_configured_video_model() or provider.default_model()
-
     kwargs: Dict[str, Any] = {
-        "model": model,
-        "_model_override_explicit": bool(model_override),
-        "image_url": image_url,
-        "reference_image_urls": reference_image_urls,
-        "duration": duration,
-        "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
-        "negative_prompt": negative_prompt,
-        "audio": audio,
-        "seed": seed,
-    }
+        "model": model, "_model_override_explicit": bool(model_override),
+        "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    pname = getattr(provider, "name", "?")
 
+    def _err(error: str, error_type: str) -> str:
+        return json.dumps(error_response(
+            error=error, error_type=error_type,
+            provider=getattr(provider, "name", ""), model=model or "", prompt=prompt))
     try:
         result = provider.generate(prompt=prompt, **kwargs)
     except TypeError as exc:
-        # A provider that hasn't widened its signature is a bug, not a
-        # caller error — log and surface a clear contract message.
-        logger.warning(
-            "video_gen provider '%s' rejected kwargs (signature too narrow): %s",
-            getattr(provider, "name", "?"), exc,
-        )
-        return json.dumps(error_response(
-            error=(
-                f"Provider '{getattr(provider, 'name', '?')}' signature is "
-                f"out of date with the video_generate schema. Report this "
-                f"to the plugin author."
-            ),
-            error_type="provider_contract",
-            provider=getattr(provider, "name", ""),
-            model=model or "",
-            prompt=prompt,
-        ))
+        # An un-widened provider signature is a plugin bug, not a caller error.
+        logger.warning("video_gen provider '%s' rejected kwargs (signature too narrow): %s", pname, exc)
+        return _err(
+            f"Provider '{pname}' signature is out of date with the video_generate schema. "
+            f"Report this to the plugin author.",
+            "provider_contract")
     except Exception as exc:
-        logger.warning(
-            "video_gen provider '%s' raised: %s",
-            getattr(provider, "name", "?"), exc,
-        )
-        return json.dumps(error_response(
-            error=f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
-            error_type="provider_exception",
-            provider=getattr(provider, "name", ""),
-            model=model or "",
-            prompt=prompt,
-        ))
-
+        logger.warning("video_gen provider '%s' raised: %s", pname, exc)
+        return _err(f"Provider '{pname}' error: {exc}", "provider_exception")
     if not isinstance(result, dict):
-        return json.dumps(error_response(
-            error="Provider returned a non-dict result",
-            error_type="provider_contract",
-            provider=getattr(provider, "name", ""),
-            model=model or "",
-            prompt=prompt,
-        ))
-
+        return _err("Provider returned a non-dict result", "provider_contract")
     return json.dumps(result)
 
 
-# ---------------------------------------------------------------------------
-# Dynamic schema — reflect the active backend's actual capabilities
-# ---------------------------------------------------------------------------
-#
-# Why dynamic: the user's configured backend determines which modalities
-# (text / image / refs), aspect ratios, resolutions, durations, and
-# audio/negative-prompt flags are real. A model that calls video_generate
-# without knowing the active backend wastes a turn on something like
-# "fal-ai/veo3.1/image-to-video requires image_url". Surfacing the per-model
-# surface in the description means the model usually gets the call right on
-# the first try.
-#
-# Memoization: model_tools.get_tool_definitions() keys its cache on
-# config.yaml mtime, so when the user changes provider/model via
-# `hermes tools` or `/skills`, the schema rebuilds automatically.
-
+# Dynamic schema — reflects the active backend's actual capabilities so the model usually gets
+# the call right first try. model_tools.get_tool_definitions() keys its cache on config.yaml
+# mtime, so the schema rebuilds on provider/model change. Optional params below are advertised
+# only when the provider's capabilities() sets the flag (order = schema property order).
+_CAPABILITY_PARAMS = (
+    ("supports_negative_prompt", "negative_prompt", {
+        "type": "string",
+        "description": "Content to avoid in the output.",
+    }),
+    ("supports_audio", "audio", {
+        "type": "boolean",
+        "description": "Enable native audio generation (affects pricing tier).",
+    }),
+    ("supports_seed", "seed", {
+        "type": "integer",
+        "description": "Seed for reproducible outputs.",
+    }),
+    ("supports_upscale", "upscale", {
+        "type": "boolean",
+        "description": (
+            "High-resolution pass via the backend's video upscaler "
+            "(~2x, extra cost/latency). Omit for native resolution."
+        ),
+    }),
+)
 
 _GENERIC_DESCRIPTION = (
     "Generate a video from a text prompt (text-to-video), animate a "
@@ -433,133 +271,112 @@ _GENERIC_DESCRIPTION = (
 )
 
 
-def _format_model_caveats(
-    model_meta: Dict[str, Any],
-    backend_caps: Dict[str, Any],
-) -> List[str]:
-    """Pull human-readable caveats out of one model's catalog metadata.
+def _schema(description: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "description": description,
+        "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 
-    Only surfaces things that meaningfully differ from the backend's
-    overall capabilities — repeating defaults is noise.
-    """
-    caveats: List[str] = []
 
-    modalities = set(model_meta.get("modalities") or [])
-    modality = model_meta.get("modality")  # FAL's plugin uses this key for single-modality entries
-    if modality:
-        modalities.add(modality)
-
-    if "image" in modalities and "text" not in modalities:
-        caveats.append(
-            "this model is image-to-video only — image_url is REQUIRED; "
-            "text-only calls will be rejected"
-        )
-    elif "text" in modalities and "image" not in modalities:
-        caveats.append(
-            "this model is text-to-video only — image_url is not supported"
-        )
-
-    return caveats
+def _provider_call(provider: Any, method: str, default: Any) -> Any:
+    """``provider.<method>()`` or ``default`` when it raises or returns a falsy value."""
+    try:
+        return getattr(provider, method)() or default
+    except Exception:
+        return default
 
 
 def _build_dynamic_video_schema() -> Dict[str, Any]:
-    """Build a description that reflects the active backend's actual surface.
-
-    Cheap: reads config (already memoized by the caller), asks the active
-    provider for `capabilities()` and the active model's catalog entry,
-    and formats a few lines of prose. Falls back to the generic
-    description when no provider is configured or registered.
-    """
+    """Description AND params from capabilities() + the model's catalog entry; enums and duration
+    bounds tighten to the active model. Unadvertised args are still accepted (replay compat)."""
+    static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
     parts: List[str] = [_GENERIC_DESCRIPTION]
-
     configured_model = _read_configured_video_model()
-
-    # Reflect the *resolved* active provider (same resolution the handler uses
-    # in _resolve_active_provider): an explicit ``video_gen.provider``, or —
-    # when unset — the single available registered backend. Keeping the
-    # description in sync with execution stops the agent from being told
-    # "no backend configured" while a call would actually succeed.
     provider = _resolve_active_provider()
-
     if provider is None:
         parts.append(
             "\nNo video backend is available. Calls will return an error "
-            "until the user picks one via `hermes tools` → Video Generation."
-        )
-        return {"description": "\n".join(parts)}
-
-    try:
-        caps = provider.capabilities() or {}
-    except Exception:
-        caps = {}
-    try:
-        models = provider.list_models() or []
-    except Exception:
-        models = []
-
+            "until the user picks one via `hermes tools` → Video Generation.")
+        return _schema("\n".join(parts), {"prompt": static_props["prompt"]})
+    caps = _provider_call(provider, "capabilities", {})
+    models = _provider_call(provider, "list_models", [])
     active_model = configured_model or provider.default_model()
-    model_meta = next(
-        (m for m in models if isinstance(m, dict) and m.get("id") == active_model),
-        {},
-    )
+    model_meta = next((m for m in models if isinstance(m, dict) and m.get("id") == active_model), {})
 
-    backend_label = provider.display_name
-    line = f"\nActive backend: {backend_label}"
-    if active_model:
-        line += f" · model: {active_model}"
-    parts.append(line)
-
-    # Model-specific caveats (the high-signal stuff)
-    for c in _format_model_caveats(model_meta, caps):
-        parts.append(f"- {c}")
-
-    # Backend modality summary — only useful when the backend supports
-    # both text and image. Single-modality backends are already covered by
-    # the model caveat above.
-    modalities = set(caps.get("modalities") or [])
-    if "text" in modalities and "image" in modalities and not model_meta.get("modality"):
+    # Model caveats surface only what differs from the backend's overall capabilities.
+    # FAL's plugin uses the singular ``modality`` key for single-modality entries.
+    model_modalities = set(model_meta.get("modalities") or [])
+    modality = model_meta.get("modality")
+    if modality:
+        model_modalities.add(modality)
+    if "image" in model_modalities and "text" not in model_modalities:
         parts.append(
-            "- supports both text-to-video (omit image_url) and "
-            "image-to-video (pass image_url) — routes automatically"
-        )
-
-    if caps.get("aspect_ratios"):
-        parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
-    if caps.get("resolutions"):
-        parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
-    if caps.get("min_duration") and caps.get("max_duration"):
-        parts.append(
-            f"- duration range: {caps['min_duration']}-{caps['max_duration']}s"
-        )
-    if caps.get("supports_audio"):
-        parts.append("- audio: pass `audio=true` to enable native audio (pricing tier)")
-    if caps.get("supports_negative_prompt"):
-        parts.append("- negative_prompt: supported")
-    max_refs = caps.get("max_reference_images") or 0
-    if max_refs:
-        parts.append(f"- reference_image_urls: up to {max_refs} images")
+            "- this model is image-to-video only — image_url is REQUIRED; "
+            "text-only calls will be rejected")
+    elif "text" in model_modalities and "image" not in model_modalities:
+        parts.append("- this model is text-to-video only — image_url is not supported")
+    effective_modalities = model_modalities or set(caps.get("modalities") or [])
+    can_i2v = "image" in effective_modalities
+    t2v = "text" in effective_modalities
+    if can_i2v and not t2v:
+        parts.append("- image-to-video only: image_url is REQUIRED")
+    elif not can_i2v:
+        parts.append("- text-to-video only (no image input)")
     if provider.name == "xai":
         parts.append(
             "- chaining: for edit/extend pass the public HTTPS MP4 in `video` "
             "or `public_url` from the prior Imagine result (files-cdn). For "
             "image-to-video / reference-to-video pass public image URLs the "
-            "same way"
-        )
+            "same way")
         try:
             from tools.xai_http import xai_storage_notice_text
-
             notice = xai_storage_notice_text("video_gen")
         except Exception:
             notice = ""
         if notice:
             parts.append(f"- storage: {notice}")
+    properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+    if can_i2v:
+        properties["image_url"] = {
+            "type": "string",
+            "description": (
+                "Public HTTPS URL of a still image to animate "
+                "(image-to-video). Omit for text-to-video.")}
+        max_refs = int(caps.get("max_reference_images") or 0)
+        if max_refs > 0:
+            properties["reference_image_urls"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": max_refs,
+                "description": (
+                    f"Up to {max_refs} public HTTPS reference image URLs "
+                    "(style or character refs).")}
+    min_duration = model_meta.get("min_duration", caps.get("min_duration"))
+    max_duration = model_meta.get("max_duration", caps.get("max_duration"))
+    duration_param = dict(static_props["duration"])
+    if min_duration and max_duration:
+        duration_param["minimum"] = int(min_duration)
+        duration_param["maximum"] = int(max_duration)
+        duration_param["description"] = (
+            f"Video duration in seconds ({min_duration}-{max_duration}). "
+            "Omit for the provider default.")
+    properties["duration"] = duration_param
 
-    return {"description": "\n".join(parts)}
-
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
+    # Tighten enums to the active backend's actual sets when declared.
+    for key, caps_key in (("aspect_ratio", "aspect_ratios"), ("resolution", "resolutions")):
+        param = dict(static_props[key])
+        if caps.get(caps_key):
+            param["enum"] = list(caps[caps_key])
+        properties[key] = param
+    for flag, key, param in _CAPABILITY_PARAMS:
+        if caps.get(flag):
+            properties[key] = param
+    if caps.get("audio_always_on") and not caps.get("supports_audio"):
+        parts.append(
+            "- audio: native stereo audio is generated with every video "
+            "(always on; no toggle) — describe the desired sound in the "
+            "prompt")
+    properties["model"] = static_props["model"]
+    return _schema("\n".join(parts), properties)
 
 
 registry.register(
@@ -571,5 +388,4 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🎬",
-    dynamic_schema_overrides=_build_dynamic_video_schema,
-)
+    dynamic_schema_overrides=_build_dynamic_video_schema)

@@ -69,12 +69,14 @@ export function execFileNoThrow(
           timedOut = true
           child.kill('SIGTERM')
 
-          // When resolving on exit, SIGTERM-ing a child that has already
-          // exited is a no-op and `'exit'` won't fire again — settle here
-          // so the promise doesn't leak. Safe under settled-guard.
-          if (options.resolveOnExit) {
-            settle(124)
-          }
+          // Settle unconditionally: SIGTERM-ing the child does not
+          // guarantee 'close'/'exit' will fire. In the default
+          // (non-resolveOnExit) path a daemonized grandchild that
+          // inherited the stdio pipes keeps them open forever, so
+          // 'close' never fires and the promise leaked (#93134).
+          // The settled-guard makes this a no-op when the child's own
+          // 'exit'/'close' won the race.
+          settle(124)
         }, options.timeout)
       : null
 

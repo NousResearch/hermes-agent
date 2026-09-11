@@ -10,9 +10,11 @@
 
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
+import { StatusRow } from '@/app/command-palette/status-row'
 import { HUD_ITEM, HUD_TEXT } from '@/app/floating-hud'
+import { useDebounced } from '@/app/hooks/use-debounced'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -22,18 +24,6 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { $marketplaceInstalls } from '@/themes/user-themes'
 
 const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-
-function useDebounced<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), delayMs)
-
-    return () => clearTimeout(handle)
-  }, [value, delayMs])
-
-  return debounced
-}
 
 interface MarketplaceThemePageProps {
   search: string
@@ -90,17 +80,17 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
   }
 
   if (query.isLoading) {
-    return <Status icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
+    return <StatusRow icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
   }
 
   if (query.isError) {
-    return <Status text={copy.error} tone="error" />
+    return <StatusRow text={copy.error} tone="error" />
   }
 
   const results = query.data ?? []
 
   if (results.length === 0) {
-    return <Status text={copy.empty} />
+    return <StatusRow text={copy.empty} />
   }
 
   return (
@@ -153,20 +143,6 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
           </button>
         )
       })}
-    </div>
-  )
-}
-
-function Status({ icon, text, tone }: { icon?: React.ReactNode; text: string; tone?: 'error' }) {
-  return (
-    <div
-      className={cn(
-        'flex items-center justify-center gap-2 px-2 py-6 text-xs',
-        tone === 'error' ? 'text-(--ui-red)' : 'text-muted-foreground'
-      )}
-    >
-      {icon}
-      {text}
     </div>
   )
 }

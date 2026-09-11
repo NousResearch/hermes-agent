@@ -46,6 +46,7 @@ def test_closing_makes_next_user_message_alternation_safe():
     produce the ``tool → user`` shape strict providers choke on."""
     messages = _tool_tail()
     close_interrupted_tool_sequence(messages, None)
+    assert isinstance(messages[-1]["timestamp"], float)
     follow_on = messages + [{"role": "user", "content": "they do! increase the timing"}]
     _assert_no_tool_then_user(follow_on)
 
@@ -64,5 +65,4 @@ def test_user_tail_is_left_untouched():
     messages = [{"role": "user", "content": "hi"}]
     assert close_interrupted_tool_sequence(messages, None) is False
     assert len(messages) == 1
-
 

@@ -7,6 +7,10 @@ can't see a fresh install."""
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock
+import json
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -48,7 +52,7 @@ def routed(monkeypatch):
     monkeypatch.setattr(pm, "available", lambda extra: extra in state.importable)
     def fake_sync_venv(extras=None, *, explicit=False, plugin_dirs=None):
         state.sync_calls.append((extras, explicit))
-        state.materialized.extend(plugin_dirs or [])
+        state.materialized.extend(plugin_dirs() if callable(plugin_dirs) else plugin_dirs or [])
         if state.sync_error:
             raise state.sync_error
         # A successful sync makes freshly installed dists importable in-process.
@@ -101,17 +105,23 @@ class TestDeclaredExtraRouting:
 
 
 class TestLegacyPythonDependencies:
-    def test_third_party_python_dependencies_bridge(self, routed, tmp_path):
+    @pytest.mark.parametrize("extra", [None, "mem0"])
+    def test_third_party_python_dependencies_preserve_active_union(self, routed, tmp_path, monkeypatch, extra):
         routed.manifest = {"python_dependencies": ["freshpkg"]}
+        if extra:
+            routed.manifest["extra"] = extra
         routed.plugin_dir = tmp_path / "external-provider"
         routed.plugin_dir.mkdir()
         (routed.plugin_dir / "plugin.yaml").write_text("name: ext\npython_dependencies: [freshpkg]\n")
         routed.importable = set()
+        active = tmp_path / "active-provider"
+        active.mkdir()
+        monkeypatch.setattr("pm.workspace.enabled_member_dirs", lambda **kwargs: [active])
 
         rows = mp._install_memory_provider_pip_dependencies("ext", ["freshpkg"])
 
-        assert routed.materialized == [routed.plugin_dir]
-        assert routed.sync_calls == [(None, True)]
+        assert routed.materialized == [active, routed.plugin_dir]
+        assert routed.sync_calls == [([extra] if extra else None, True)]
         assert rows[0]["status"] == "installed"
 
     def test_legacy_specs_without_plugin_dir_fail_honestly(self, routed):
@@ -153,3 +163,56 @@ class TestRestartTruthfulness:
         result = mp._install_memory_provider_setup("mem0")
 
         assert result["ok"] is True
+
+
+def test_dashboard_admits_real_provider_union_and_keeps_selection_on_failure(tmp_path, monkeypatch):
+    import pm
+    from hermes_constants import venv_python_path
+    from hermes_cli.runtime_paths import selected_venv
+    from tests.pm.test_workspace_build_inputs import _wheel
+
+    uv = shutil.which("uv")
+    assert uv, "real PM admission test requires uv"
+    core, home, wheels = (tmp_path / name for name in ("core", "home", "wheels"))
+    for directory in (core, home, wheels):
+        directory.mkdir()
+    for name in ("existing_dep", "provider_dep"):
+        _wheel(wheels, name, "1.0")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.14"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n')
+    incumbent, candidate = (home / "plugins" / name for name in ("incumbent", "candidate"))
+    for directory in (incumbent, candidate):
+        directory.mkdir(parents=True)
+    (incumbent / "plugin.yaml").write_text('name: incumbent\npython_dependencies: ["existing_dep==1.0"]\n')
+    manifest = candidate / "plugin.yaml"
+    manifest.write_text('name: candidate\npython_dependencies: ["provider_dep==1.0", "provider_dep==2.0"]\n')
+    config = home / "config.yaml"
+    config.write_text('plugins:\n  enabled: [incumbent]\n')
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setattr("pm.paths.repo_root", lambda: core)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: candidate)
+    monkeypatch.setattr(mp, "_memory_provider_manifest", lambda name: {"python_dependencies": ["provider_dep"]})
+    monkeypatch.setattr(mp, "_dependency_importable", lambda dep: False)
+    pm.lock_project(core, explicit=True, offline=True)
+    pm.sync_venv(explicit=True)
+    original = selected_venv(core)
+    original_config = config.read_bytes()
+
+    failed = mp._install_memory_provider_pip_dependencies("candidate", ["provider_dep"])
+    assert failed[0]["status"] == "failed"
+    assert selected_venv(core) == original
+    assert config.read_bytes() == original_config
+
+    manifest.write_text('name: candidate\npython_dependencies: ["provider_dep==1.0"]\n')
+    success = mp._install_memory_provider_pip_dependencies("candidate", ["provider_dep"])
+    assert success[0]["status"] == "restart_required", success
+    python = venv_python_path(selected_venv(core))
+    result = subprocess.run([str(python), "-I", "-c", "import existing_dep, provider_dep; print('both')"],
+                            check=True, capture_output=True, text=True, timeout=30)
+    assert result.stdout.strip() == "both"
+    assert config.read_bytes() == original_config

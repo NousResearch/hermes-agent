@@ -701,6 +701,7 @@ class TestCheckpointGatedOnCurrentEligibility:
                         "type": "compaction",
                         "encrypted_content": "blob",
                         "_issuer_kind": "codex_backend",
+                        "_issuer_model": "gpt-5.6",
                     }
                 ],
             },

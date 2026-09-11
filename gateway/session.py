@@ -591,14 +591,16 @@ class SessionEntry:
 
 
 # Sources with no durable human thread — inbound machine callers (api_server, webhook,
-# msgraph_webhook) and system-generated event streams (Home Assistant state changes; the
-# Raft wake bridge's content-free hints).  A continuity pointer here would aim the agent at
-# unrelated history and cost tokens for nothing, so they stay silent.  Everything else is a
-# real conversation that survives a session reset and benefits from the hint — including
-# callback transports that carry per-user DMs (WeCom) and dynamic plugin platforms
-# (Platform._missing_), which an allowlist would silently exclude.  Listed by platform VALUE
-# so dynamic platforms can be classified explicitly.
+# msgraph_webhook), system-generated event streams (Home Assistant state changes; the Raft
+# wake bridge's content-free hints), and agent-peer transports (the A2A task protocol's
+# framed peer messages).  A continuity pointer here would aim the agent at unrelated history
+# and cost tokens for nothing, so they stay silent.  Everything else is a real conversation
+# that survives a session reset and benefits from the hint — including callback transports
+# that carry per-user DMs (WeCom) and dynamic plugin platforms (Platform._missing_), which
+# an allowlist would silently exclude.  Listed by platform VALUE so dynamic platforms can be
+# classified explicitly.
 _NON_HUMAN_SESSION_HINT_PLATFORMS = frozenset({
+    "a2a",
     "api_server",
     "homeassistant",
     "msgraph_webhook",

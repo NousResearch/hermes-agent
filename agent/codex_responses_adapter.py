@@ -4,8 +4,9 @@ OpenAI Responses API (OpenAI Codex, xAI, GitHub Models and other compatible endp
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
+
+import orjson
 import re
 import unicodedata
 import uuid
@@ -106,7 +107,7 @@ def _text_type_for(role: str) -> str:
 def _coerce_arguments(arguments: Any) -> str:
     """Normalize replayed tool-call arguments to a non-empty JSON string."""
     if isinstance(arguments, dict):
-        arguments = json.dumps(arguments, ensure_ascii=False)
+        arguments = orjson.dumps(arguments).decode()
     elif not isinstance(arguments, str):
         arguments = str(arguments)
     return arguments.strip() or "{}"
@@ -893,7 +894,7 @@ def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespac
     fn_name = getattr(item, "name", "") or ""
     arguments = getattr(item, "arguments" if item_type == "function_call" else "input", "{}")
     if not isinstance(arguments, str):
-        arguments = json.dumps(arguments, ensure_ascii=False)
+        arguments = orjson.dumps(arguments).decode()
     raw_item_id = getattr(item, "id", None)
     call_id = _resolve_call_id(getattr(item, "call_id", None), raw_item_id, fn_name, arguments, index, canonicalize_fc=False)
     fc_id = _derive_responses_function_call_id(call_id, raw_item_id if isinstance(raw_item_id, str) else None)

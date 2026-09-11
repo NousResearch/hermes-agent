@@ -38,7 +38,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Hermes Agent connects during startup, then:
+Restart Hermes Agent. On startup it:
 
 1. Connects to the server.
 2. Discovers available tools.
@@ -111,7 +111,7 @@ When Hermes Agent starts, `discover_mcp_tools()` is called during tool initializ
 3. Initializes the MCP session and calls `list_tools()` to discover available tools
 4. Registers each tool in the Hermes tool registry
 
-### Tool naming convention
+### Tool Naming Convention
 
 MCP tools use a double-underscore delimiter:
 
@@ -129,7 +129,7 @@ Examples:
 
 ### Auto-Injection
 
-After discovery, MCP tools are automatically injected into all `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
+After discovery, MCP tools are automatically injected into the eligible `hermes-*` platform toolsets (CLI, Discord, Telegram, etc.). This means MCP tools are available in every conversation without any additional configuration.
 
 ### Connection Lifecycle
 
@@ -142,12 +142,14 @@ After discovery, MCP tools are automatically injected into all `hermes-*` platfo
 
 `discover_mcp_tools()` is idempotent -- calling it multiple times only connects to servers that aren't already connected. Failed servers are retried on subsequent calls.
 
-### Reloading configuration
+### Reloading Configuration
 
 Hermes watches MCP configuration by default. When
-`mcp.auto_reload_on_config_change` is `true`, a saved configuration change reconnects
-the affected servers and rebuilds the MCP tool surface. When that setting is `false`,
-run `/reload-mcp` to apply the change.
+`mcp.auto_reload_on_config_change` is `true`, a saved configuration change
+disconnects and reconnects every configured server and rebuilds the MCP tool
+surface; the Added/Removed/Reconnected lines it prints are the report of that
+full rebuild, not a selective reconnection of just the changed servers. When
+that setting is `false`, run `/reload-mcp` to apply the change.
 
 Reloading changes the tool schema and invalidates the provider prompt cache for the
 active session. The next turn sends the full input prefix again.

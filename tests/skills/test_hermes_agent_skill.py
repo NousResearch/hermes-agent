@@ -81,6 +81,11 @@ def test_native_mcp_reference_documents_reload():
     assert "requires restarting the agent" not in NATIVE_MCP_TEXT
 
 
+def test_native_mcp_reference_documents_interpolation():
+    assert "${env:VAR}" in NATIVE_MCP_TEXT
+    assert "keeps its literal" in NATIVE_MCP_TEXT
+
+
 def test_native_mcp_reference_keeps_credentials_out_of_config():
     forbidden = ("ghp_x", "sk-x", 'GITHUB_PERSONAL_ACCESS_TOKEN: "ghp', "Bearer sk-")
     for token in forbidden:

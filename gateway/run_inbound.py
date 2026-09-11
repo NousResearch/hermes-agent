@@ -1210,7 +1210,10 @@ class GatewayInboundMixin:
         self._hm_evict_idle_stale_agent(_quick_key)
         if self._is_session_running(_quick_key):
             self._hm_evict_reaped_agent(_quick_key)
-        if self._is_session_running(_quick_key):
+        _is_startup_resume = bool(
+            getattr(event, "_hermes_startup_resume", False)
+        )
+        if self._is_session_running(_quick_key) and not _is_startup_resume:
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)

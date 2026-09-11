@@ -7,7 +7,10 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from hermes_state import SessionDB
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
@@ -889,6 +892,37 @@ class SessionMessagesMixin:
             f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
+
+    def has_dangling_tool_call_tail(self: SessionDB, session_id: str) -> bool:
+        """Check whether a session's last active message is an unanswered ``assistant(tool_calls)``.
+
+        This is the DB-level signature of a **wedged session** (#58891): the
+        assistant emitted a ``tool_calls`` block that was persisted, but no
+        matching ``tool`` result row was ever written — and no subsequent
+        ``user`` message exists to trigger a natural resume turn.  The gateway
+        process is still alive (so ``resume_pending`` was never set by the
+        restart watchdog), yet the session is silently stuck because nothing
+        wakes it.
+
+        The check mirrors the in-memory ``strip_dangling_tool_call_tail()``
+        predicate in ``agent/replay_cleanup.py``: the last active message must
+        be ``role='assistant'`` with a non-empty ``tool_calls`` payload.  Being
+        the last message guarantees there is no ``tool`` or ``user`` row after
+        it (otherwise it would not be last).
+
+        Returns ``True`` when the dangling tail is present, ``False`` for an
+        empty session, a session whose last message is any other role, or a
+        session whose last assistant message has no ``tool_calls``.
+        """
+        row = self._read_one(
+            "SELECT role, tool_calls FROM messages "
+            "WHERE session_id = ? AND active = 1 "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        )
+        if row is None:
+            return False
+        return row["role"] == "assistant" and bool(row["tool_calls"])
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,

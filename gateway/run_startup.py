@@ -44,6 +44,15 @@ class GatewayStartupMixin:
         """Dispatch one synthetic startup resume and wait for its agent turn (inbound stays queued
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # The scheduler reserves the runner slot before creating this task.
+        # Mark this synthetic event so the normal busy-session fast path does
+        # not queue it behind that reservation (there is no active adapter
+        # task to drain it).  A dedicated marker keeps unrelated internal
+        # completion events on their existing non-interrupting queue path.
+        try:
+            setattr(event, "_hermes_startup_resume", True)
+        except Exception:
+            pass
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -1280,7 +1289,7 @@ class GatewayStartupMixin:
     # name minus the leading underscore.
     _PRE_RECONNECT_WATCHERS = (
         "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
-        "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
+        "_kanban_notifier_watcher", "_kanban_dispatcher_watcher", "_session_health_watcher",
     )
     _POST_RECONNECT_WATCHERS = ("_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher")
 

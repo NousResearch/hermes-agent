@@ -1022,12 +1022,19 @@ def build_resume_recovery_note(
     reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
     """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
 
-    Interactive platforms report the restore and ask what next; non-interactive ones finish the work.
+    ``reason`` is the session's ``resume_reason`` (``restart_timeout``,
+    ``shutdown_timeout``, ``orphaned_tool_call``, or anything else → generic
+    interruption phrasing). ``orphaned_tool_call`` deliberately avoids restart
+    wording because the gateway stayed online while the session was wedged.
+    ``message`` is the user's NEW message text; empty means this is the
+    startup auto-resume turn synthesized by
+    ``_schedule_resume_pending_sessions`` with no human message attached.
 
     On non-interactive event platforms (webhook, API server — adapters with ``interactive_resume = False``)
     nobody can answer; the resumed turn must instead complete the interrupted work, or the task is silently
     abandoned behind a "restored" acknowledgement that goes nowhere (#57056).
     """
+    is_orphaned_tool_call = reason == "orphaned_tool_call"
     reason_phrase = (
         "a gateway restart" if reason == "restart_timeout"
         else "a gateway shutdown" if reason == "shutdown_timeout" else "a gateway interruption")
@@ -1052,13 +1059,24 @@ def build_resume_recovery_note(
             "CONTINUE the interrupted task to completion.")
         tail_guidance = (
             "Do NOT re-run tool calls whose results already "
-            "appear in the history — resume from the first step that has no recorded result.")
+            "appear in the history — resume from the first step "
+            "that has no recorded result."
+        )
+    if is_orphaned_tool_call:
+        recovery_context = (
+            "The previous turn ended with a tool call that was never completed. "
+            "The session has been automatically recovered."
+        )
+    else:
+        recovery_context = (
+            f"The previous turn was interrupted by {reason_phrase}; the gateway "
+            "is now back online. Any restart/shutdown command in the history has "
+            "already run — do NOT re-execute or verify it."
+        )
     return (
-        f"[System note: The previous turn was interrupted by "
-        f"{reason_phrase}; the gateway is now back online. "
-        f"Any restart/shutdown command in the history has already "
-        f"run — do NOT re-execute or verify it. {resume_guidance} {tail_guidance}]"
-        + (f"\n\n{message}" if message else ""))
+        f"[System note: {recovery_context} {resume_guidance} {tail_guidance}]"
+        + (f"\n\n{message}" if message else "")
+    )
 
 
 def _prepare_resume_pending_message(
@@ -3927,7 +3945,7 @@ class GatewayRunner(
 
     # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by suspend_recently_active()
     # on crash recovery (no .clean_shutdown marker). All mean "killed mid-turn" -> startup auto-resume.
-    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
+    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted", "orphaned_tool_call"})
 
     _MAX_SUPERVISED_RESTARTS = 5
     # Ran this long before crashing = HEALTHY (isolated crash, not a crash-loop); restart counter resets.

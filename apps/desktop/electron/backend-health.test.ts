@@ -12,6 +12,8 @@ import {
   isServerSideHttpError,
   makeNousCloudBackendDownError,
   makeUnsignedOauthError,
+  REMOTE_TOKEN_REJECTED_MESSAGE,
+  REMOTE_TOKEN_VERIFY_PATH,
   waitForHermesReady
 } from './backend-health'
 
@@ -541,4 +543,58 @@ test('makeNousCloudBackendDownError preserves legacy string-prefix compatibility
   assert.ok(result)
   assert.equal((result as any).isCloudBackendDown, true)
   assert.equal((result as any).statusCode, 503)
+})
+
+test('FIX #100530: a remote token connection proves its credential against a gated route after readiness', async () => {
+  // /api/health is public, so a rotated session token sails through readiness;
+  // the verify hop is the only place a token 401 can be observed before the WS
+  // upgrade (which browsers report as an anonymous handshake error).
+  const calls: string[] = []
+
+  const error = await waitForHermesReady('http://gateway.example', {
+    token: 'stale',
+    fetchPublicJson: async () => ({ ok: true }),
+    probeHealth: async url => {
+      calls.push(url)
+
+      return { ok: true }
+    },
+    probeIsCredentialed: true,
+    fetchJson: async url => {
+      calls.push(url)
+      throw new Error('401: {"detail":"Unauthorized"}')
+    },
+    verifyCredentialPath: REMOTE_TOKEN_VERIFY_PATH,
+    credentialRejectedMessage: REMOTE_TOKEN_REJECTED_MESSAGE,
+    sleep: async () => {},
+    timeoutMs: 100,
+    pollMs: 1
+  }).then(
+    () => null,
+    (err: unknown) => err
+  )
+
+  assert.deepEqual(calls, ['http://gateway.example/api/health', `http://gateway.example${REMOTE_TOKEN_VERIFY_PATH}`])
+  assert.equal(isReauthRequiredError(error), true, 'a rejected token latches like an expired OAuth session')
+  assert.equal((error as Error).message, REMOTE_TOKEN_REJECTED_MESSAGE)
+})
+
+test('FIX #100530: the credential verify hop ignores everything but a confirmed 401/403', async () => {
+  // Older backends 404 the verify route; a 5xx is the backend's problem, not
+  // the credential's. Both must leave a ready backend ready.
+  for (const failure of ['404: {"detail":"Not Found"}', '503: unavailable', 'read ECONNRESET']) {
+    await waitForHermesReady('http://gateway.example', {
+      token: 'fine',
+      fetchPublicJson: async () => ({ ok: true }),
+      probeHealth: async () => ({ ok: true }),
+      probeIsCredentialed: true,
+      fetchJson: async () => {
+        throw new Error(failure)
+      },
+      verifyCredentialPath: REMOTE_TOKEN_VERIFY_PATH,
+      sleep: async () => {},
+      timeoutMs: 100,
+      pollMs: 1
+    })
+  }
 })

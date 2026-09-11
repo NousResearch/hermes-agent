@@ -231,6 +231,24 @@ class TestDeepseekVSeriesPassThrough:
         result = normalize_model_for_provider("deepseek-v4-flash", "deepseek")
         assert result == "deepseek-v4-flash"
 
+    def test_deepseek_provider_preserves_bare_flash(self):
+        """Regression: ``deepseek-flash`` is the canonical ID DeepSeek's API
+        returns in the response body.  It must reach the API verbatim rather
+        than being folded into ``deepseek-chat`` (V3) by the catch-all
+        fallback — a silent downgrade from V4 Flash to V3."""
+        result = normalize_model_for_provider("deepseek-flash", "deepseek")
+        assert result == "deepseek-flash"
+        assert result != "deepseek-chat"
+
+    def test_bare_flash_is_canonical(self):
+        assert _normalize_for_deepseek("deepseek-flash") == "deepseek-flash"
+        # case-insensitive, like the other canonical IDs
+        assert _normalize_for_deepseek("DeepSeek-Flash") == "deepseek-flash"
+
+    def test_vendor_prefixed_flash_is_stripped(self):
+        result = normalize_model_for_provider("deepseek/deepseek-flash", "deepseek")
+        assert result == "deepseek-flash"
+
 
 # ── DeepSeek regressions (existing behaviour still holds) ──────────────
 

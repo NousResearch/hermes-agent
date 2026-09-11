@@ -13,11 +13,11 @@ Different LLM providers expect model identifiers in different formats:
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** accepts ``deepseek-chat`` (V3), ``deepseek-reasoner``
-  (R1-family), and the first-class V-series IDs (``deepseek-v4-pro``,
-  ``deepseek-v4-flash``, and any future ``deepseek-v<N>-*``).  Older
-  Hermes revisions folded every non-reasoner input into
-  ``deepseek-chat``, which on aggregators routes to V3 — so a user
-  picking V4 Pro was silently downgraded.
+  (R1-family), and the first-class V-series IDs (``deepseek-flash``,
+  ``deepseek-v4-pro``, ``deepseek-v4-flash``, and any future
+  ``deepseek-v<N>-*``).  Older Hermes revisions folded every non-reasoner
+  input into ``deepseek-chat``, which on aggregators routes to V3 — so a
+  user picking V4 Pro was silently downgraded.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -118,8 +118,11 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek's API recognises the canonical ``deepseek-chat`` /
+# ``deepseek-reasoner`` aliases plus the first-class V-series IDs
+# (``deepseek-flash``, ``deepseek-v4-pro``, ...).  Everything else is
+# folded onto an alias it accepts, so an unrecognised name never reaches
+# the API verbatim.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -132,8 +135,9 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
     "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
     "deepseek-reasoner",   # R1-family reasoning model
+    "deepseek-flash",      # V4 Flash — canonical ID returned by the API
     "deepseek-v4-pro",     # V4 Pro — first-class model ID
-    "deepseek-v4-flash",   # V4 Flash — first-class model ID
+    "deepseek-v4-flash",   # V4 Flash — accepted alias, resolves to deepseek-flash
 })
 
 # First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
@@ -150,7 +154,8 @@ def _normalize_for_deepseek(model_name: str) -> str:
 
     Rules:
     - Already a known canonical (``deepseek-chat``/``deepseek-reasoner``/
-      ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
+      ``deepseek-flash``/``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass
+      through.
     - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
       (covers future ``deepseek-v5-*`` and dated variants without a release).
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)

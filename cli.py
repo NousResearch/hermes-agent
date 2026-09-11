@@ -4430,7 +4430,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         if _query_label:
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
-        cli.chat(query, images=single_query_images or None)
+        if cli.chat(query, images=single_query_images or None) is None:
+            sys.exit(1)
         cli._print_exit_summary(clear_screen=False)
     finally:
         _finalize_single_query(cli)

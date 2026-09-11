@@ -2282,6 +2282,9 @@ DEFAULT_CONFIG = {
         # Extra allowed upstream hosts beyond the bundled major-provider defaults; wildcards
         # (`*.foo.com`) supported.
         "extra_allowed_hosts": [],
+        # Additional static-header credentials to replace at egress. Each entry names one host-side
+        # env var, bounded DNS hosts, and HTTP headers (default: Authorization).
+        "extra_secrets": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.

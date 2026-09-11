@@ -147,6 +147,12 @@ def _setup_ca_cert(console: Console):
 def _setup_mint_tokens(console: Console, args: argparse.Namespace):
     """Discover providers, merge with existing tokens (rotating on request), print the table."""
     _step(console, 3, "Mint proxy tokens for known providers")
+    proxy_cfg = (load_config().get("proxy") or {})
+    try:
+        extra_specs = ip.parse_extra_secret_specs(proxy_cfg.get("extra_secrets"))
+    except ValueError as exc:
+        console.print(f"  [red]✗ Invalid custom credential mapping: {exc}[/red]")
+        return None
     available_env_names: List[str] = []
     if args.from_bitwarden:
         available_env_names = _bitwarden_env_names(console)
@@ -155,10 +161,13 @@ def _setup_mint_tokens(console: Console, args: argparse.Namespace):
     else:
         # Operators commonly keep provider keys only in ~/.hermes/.env (loaded when the agent
         # runs, NOT exported into an interactive shell); backfill so discovery sees them.
-        loaded = _load_env_file_into_environ()
+        loaded = _load_env_file_into_environ(extra_env_names=[spec.env_var for spec in extra_specs])
         if loaded:
             console.print(f"  [dim]Loaded {loaded} provider key name(s) from ~/.hermes/.env for discovery.[/dim]")
-    discovered = ip.discover_provider_mappings(available_env_names=available_env_names or None)
+    discovered = ip.discover_provider_mappings(
+        available_env_names=available_env_names or None,
+        extra_specs=extra_specs,
+    )
     # Preserve existing tokens unless rotation was requested — re-running setup must not
     # invalidate tokens baked into already-running sandboxes.
     existing = ip.load_mappings()
@@ -191,9 +200,11 @@ def _setup_mint_tokens(console: Console, args: argparse.Namespace):
         )
     mappings = ip.merge_mappings(existing=existing, discovered=discovered, rotate=rotate)
     if not mappings:
-        console.print("  [yellow]No known provider API keys found in env/Bitwarden.[/yellow]")
+        console.print("  [yellow]No configured credential env vars found in env/Bitwarden.[/yellow]")
         console.print("  Set at least one of these and rerun setup:")
-        for env_name in sorted(ip._BEARER_PROVIDERS):
+        known_env_names = set(ip._BEARER_PROVIDERS) | set(ip._HEADER_AUTH_PROVIDERS)
+        known_env_names.update(spec.env_var for spec in extra_specs)
+        for env_name in sorted(known_env_names):
             console.print(f"    - {env_name}")
         return None
     # Providers we recognise but can't proxy (SigV4, service-account OAuth) still work — they
@@ -569,15 +580,15 @@ def _bitwarden_env_names(console: Console) -> Optional[List[str]]:
         return None
 
 
-def _load_env_file_into_environ() -> int:
-    """Backfill known provider keys from ``~/.hermes/.env`` into ``os.environ``; returns the count.
-    Never overrides an exported value; only known provider names, so unrelated secrets stay out."""
+def _load_env_file_into_environ(*, extra_env_names: Optional[List[str]] = None) -> int:
+    """Backfill configured credential keys from ``~/.hermes/.env`` into ``os.environ``."""
     try:
         file_env = load_env()
     except Exception:  # noqa: BLE001 — best-effort convenience, never fatal
         return 0
     added = 0
-    known = set(ip._BEARER_PROVIDERS) | set(ip._NON_BEARER_PROVIDERS)
+    known = set(ip._BEARER_PROVIDERS) | set(ip._HEADER_AUTH_PROVIDERS) | set(ip._NON_BEARER_PROVIDERS)
+    known.update(extra_env_names or ())
     for name in known:
         if name in os.environ and os.environ[name].strip():
             continue

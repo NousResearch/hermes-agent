@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -27,7 +28,7 @@ import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,14 @@ _HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
 
 # Creds that static header replacement can't swap (SigV4, SDK-minted OAuth): warning only.
 _NON_BEARER_PROVIDERS: Tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
+
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_FORBIDDEN_MATCH_HEADERS = frozenset({
+    "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+})
 
 # Default SSRF deny list (docs promise: cloud metadata IPs refused regardless of allowlist);
 # callers pass [] to disable (hermetic tests only).
@@ -152,6 +161,94 @@ class TokenMapping:
     upstream_hosts: Tuple[str, ...]
     match_headers: Tuple[str, ...] = ("Authorization",)
     alias_env_names: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CredentialMappingSpec:
+    """Validated operator-defined static-header credential mapping."""
+
+    env_var: str
+    hosts: Tuple[str, ...]
+    match_headers: Tuple[str, ...]
+
+
+def _validate_extra_secret_host(value: object, *, path: str) -> str:
+    if not isinstance(value, str) or not (host := value.strip()):
+        raise ValueError(f"{path} must be a non-empty hostname")
+    if host != host.rstrip(".") or "://" in host or any(c in host for c in "/:@?#"):
+        raise ValueError(f"{path} must be a hostname without a scheme, port, path, or trailing dot")
+    wildcard = host.startswith("*.")
+    hostname = host[2:] if wildcard else host
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"{path} must be a DNS hostname, not an IP address")
+    labels = hostname.split(".")
+    if len(labels) < 2 or len(hostname) > 253 or any(not _DNS_LABEL_RE.fullmatch(label) for label in labels):
+        raise ValueError(f"{path} must be a valid fully-qualified DNS hostname")
+    return ("*." if wildcard else "") + hostname.lower()
+
+
+def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
+    """Validate ``proxy.extra_secrets`` without ever reading secret values.
+
+    Hosts are deliberately limited to DNS names (with an optional left-most wildcard), and
+    hop-by-hop/routing headers are rejected so a typo cannot turn token replacement into request
+    routing or framing mutation.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("proxy.extra_secrets must be a list")
+
+    builtins = set(_BEARER_PROVIDERS) | set(_HEADER_AUTH_PROVIDERS)
+    seen_env_names = set()
+    specs: List[CredentialMappingSpec] = []
+    for index, item in enumerate(raw):
+        path = f"proxy.extra_secrets[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{path} must be a mapping")
+        unknown = set(item) - {"env_var", "hosts", "match_headers"}
+        if unknown:
+            raise ValueError(f"{path} has unsupported field(s): {', '.join(sorted(unknown))}")
+
+        env_var = item.get("env_var")
+        if not isinstance(env_var, str) or not _ENV_NAME_RE.fullmatch(env_var):
+            raise ValueError(f"{path}.env_var must be an uppercase environment variable name")
+        if env_var in builtins:
+            raise ValueError(f"{path}.env_var duplicates built-in mapping {env_var}")
+        if env_var in seen_env_names:
+            raise ValueError(f"{path}.env_var duplicates an earlier custom mapping")
+
+        raw_hosts = item.get("hosts")
+        if not isinstance(raw_hosts, list) or not raw_hosts:
+            raise ValueError(f"{path}.hosts must be a non-empty list")
+        hosts = tuple(dict.fromkeys(
+            _validate_extra_secret_host(host, path=f"{path}.hosts[{host_index}]")
+            for host_index, host in enumerate(raw_hosts)
+        ))
+
+        raw_headers = item.get("match_headers", ["Authorization"])
+        if not isinstance(raw_headers, list) or not raw_headers:
+            raise ValueError(f"{path}.match_headers must be a non-empty list")
+        headers: List[str] = []
+        seen_headers = set()
+        for header_index, header in enumerate(raw_headers):
+            header_path = f"{path}.match_headers[{header_index}]"
+            if not isinstance(header, str) or not _HEADER_NAME_RE.fullmatch(header):
+                raise ValueError(f"{header_path} must be a valid HTTP header name")
+            normalized = header.lower()
+            if normalized in _FORBIDDEN_MATCH_HEADERS:
+                raise ValueError(f"{header_path} cannot target routing, framing, or hop-by-hop header {header}")
+            if normalized not in seen_headers:
+                headers.append(header)
+                seen_headers.add(normalized)
+
+        seen_env_names.add(env_var)
+        specs.append(CredentialMappingSpec(env_var, hosts, tuple(headers)))
+    return specs
 
 
 def _hermes_bin_dir() -> Path:
@@ -620,14 +717,18 @@ def load_mappings() -> List[TokenMapping]:
     return out
 
 
-def discover_provider_mappings(*, available_env_names: Optional[List[str]] = None) -> List[TokenMapping]:
-    """One TokenMapping per known provider whose env var is set (bearer providers first).  Canonical OR any alias
+def discover_provider_mappings(
+    *,
+    available_env_names: Optional[List[str]] = None,
+    extra_specs: Sequence[CredentialMappingSpec] = (),
+) -> List[TokenMapping]:
+    """One TokenMapping per configured credential whose env var is set (built-ins first). Canonical OR any alias
     present -> ONE mapping on the canonical name (the subprocess-env builder mirrors aliases).
     ``available_env_names`` (Bitwarden adapter) overrides the non-empty names in the host env."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
     specs = [(n, h, ("Authorization",), ()) for n, h in _BEARER_PROVIDERS.items()] + [
         (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ())) for n, s in _HEADER_AUTH_PROVIDERS.items()
-    ]
+    ] + [(s.env_var, s.hosts, s.match_headers, ()) for s in extra_specs]
     return [
         TokenMapping(mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")), env_name, hosts, headers, aliases)
         for env_name, hosts, headers, aliases in specs
@@ -1030,10 +1131,10 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
-    "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
+    "CredentialMappingSpec", "ProxyStatus", "TokenMapping", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
     "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
-    "merge_mappings", "mint_proxy_token", "reload_proxy", "start_proxy", "stop_proxy",
+    "merge_mappings", "mint_proxy_token", "parse_extra_secret_specs", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]
 

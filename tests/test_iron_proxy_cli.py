@@ -200,6 +200,27 @@ def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["extra_secrets"] = [{
+        "env_var": "EBIRD_API_KEY",
+        "hosts": ["API.EBIRD.ORG", "api.ebird.org"],
+        "match_headers": ["x-ebirdapitoken"],
+    }]
+    save_config(cfg)
+    (hermes_home / ".env").write_text("EBIRD_API_KEY=real-ebird-secret\n", encoding="utf-8")
+    monkeypatch.delenv("EBIRD_API_KEY", raising=False)
+    monkeypatch.setattr(ip, "load_mappings", lambda: [])
+
+    mappings = proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args())
+
+    assert len(mappings) == 1
+    assert mappings[0].real_env_name == "EBIRD_API_KEY"
+    assert mappings[0].upstream_hosts == ("api.ebird.org",)
+    assert mappings[0].match_headers == ("x-ebirdapitoken",)
+    assert os.environ["EBIRD_API_KEY"] == "real-ebird-secret"
 
 
 

@@ -55,6 +55,17 @@ def test_mint_proxy_token_has_prefix_and_length():
     assert len(t) >= len("alpha-") + 32
 
 
+@pytest.mark.parametrize("extra_secrets, error", [
+    ([{"env_var": "github-token", "hosts": ["api.github.com"]}], "uppercase environment"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["https://api.github.com"]}], "without a scheme"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["*"]}], "fully-qualified"),
+    ([{"env_var": "GITHUB_TOKEN", "hosts": ["api.github.com"], "match_headers": ["Host"]}], "routing, framing"),
+])
+def test_extra_secret_specs_reject_unbounded_or_unsafe_targets(extra_secrets, error):
+    with pytest.raises(ValueError, match=error):
+        ip.parse_extra_secret_specs(extra_secrets)
+
+
 
 
 

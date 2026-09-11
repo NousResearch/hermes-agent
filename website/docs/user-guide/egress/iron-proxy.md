@@ -101,6 +101,17 @@ proxy:
   # OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, DeepSeek,
   # and Nous Research.
   extra_allowed_hosts: []
+
+  # Additional static-header credentials. The real value stays on the host;
+  # the sandbox receives an opaque token under env_var. Hosts must be fully
+  # qualified DNS names (an optional left-most `*.` wildcard is allowed).
+  extra_secrets:
+    - env_var: GITHUB_TOKEN
+      hosts: [github.com, api.github.com]
+      match_headers: [Authorization]  # default when omitted
+    - env_var: EBIRD_API_KEY
+      hosts: [api.ebird.org]
+      match_headers: [x-ebirdapitoken]
 ```
 
 ### Default allowed upstream hosts
@@ -115,6 +126,8 @@ api.deepseek.com        inference.nousresearch.com
 ```
 
 If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Wildcards are matched against the full hostname (`*.example.com` matches `api.example.com` and `staging.example.com` but not `example.com` itself).
+
+`extra_allowed_hosts` grants reachability only. To inject a non-provider credential without exposing its real value to the sandbox, add a `proxy.extra_secrets` entry and rerun `hermes egress setup`. Each mapping automatically allows its own `hosts`, so those hosts do not also need to appear in `extra_allowed_hosts`. Hermes rejects schemes, ports, paths, IP literals, bare or global wildcards, malformed env/header names, built-in env-var collisions, and routing/framing/hop-by-hop headers. Custom secret values may live in the process environment, `~/.hermes/.env`, or the configured Bitwarden project just like built-in provider keys.
 
 ### Default SSRF deny CIDRs
 

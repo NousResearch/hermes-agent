@@ -75,7 +75,7 @@ class TestAzureFoundryPicker:
             ids = provider_model_ids("azure-foundry")
 
         assert ids[:2] == ["gpt-5.6-sol", "kimi-k2.6"]
-        assert seen[0][1] == "" and seen[0][2] is sentinel_token_provider
+        assert seen[0][1] is sentinel_token_provider  # azure_detect mints the bearer from the callable
 
     def test_any_failure_keeps_the_static_empty_catalog(self, monkeypatch):
         from hermes_cli.models import provider_model_ids

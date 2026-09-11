@@ -1371,21 +1371,17 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
     the fallback for gateways that do not expose it. None on any miss keeps the static list.
     """
     try:
-        from agent.azure_identity_adapter import is_token_provider
         from hermes_cli.azure_detect import _probe_openai_models, probe_azure_deployments
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
 
-        runtime = _resolve_azure_foundry_runtime(requested_provider="azure-foundry", model_cfg=_get_model_config_dict())
+        runtime = _resolve_azure_foundry_runtime(requested_provider=normalized, model_cfg=_get_model_config_dict())
         base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
-        credential = runtime.get("api_key")
+        credential = runtime.get("api_key")  # str API key, or the Entra token-provider callable
         if not (base_url and credential):
             return None
-        auth = {"token_provider": credential} if is_token_provider(credential) else {}
-        api_key = "" if auth else str(credential)
-        deployments = probe_azure_deployments(base_url, api_key, **auth)
-        if deployments:
-            return deployments
-        ok, ids = _probe_openai_models(base_url, api_key, **auth)
+        ok, ids = True, probe_azure_deployments(base_url, credential)
+        if not ids:
+            ok, ids = _probe_openai_models(base_url, credential)
         return ids if ok and ids else None
     except Exception:
         return None

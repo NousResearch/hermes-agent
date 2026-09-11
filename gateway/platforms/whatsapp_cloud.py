@@ -39,7 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, _TEXT_INJECT_EXTENSIONS
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
@@ -84,7 +84,6 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 }
 
 _INBOUND_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "sticker"}
-_TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _MESSAGE_TYPE_BY_KIND = {
     "text": MessageType.TEXT, "image": MessageType.PHOTO, "video": MessageType.VIDEO,
@@ -941,10 +940,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return [local_path], [dl_mime or inbound_mime or "application/octet-stream"], body
 
     @staticmethod
-    def _inject_document_text(media_urls: list[str], body: str) -> str:
+    def _inject_document_text(media_urls: list[str], media_types: list[str], body: str) -> str:
         """Prepend text-readable document contents (≤100KB) to the body."""
-        for doc in map(Path, media_urls):
-            if doc.suffix.lower() not in _TEXT_INJECT_EXTS:
+        for doc_path, mime in zip(media_urls, media_types):
+            doc = Path(doc_path)
+            if doc.suffix.lower() not in _TEXT_INJECT_EXTENSIONS and not mime.startswith("text/"):
                 continue
             try:
                 file_size = doc.stat().st_size
@@ -985,7 +985,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
             if msg_type_str == "document" and media_urls:
-                body = self._inject_document_text(media_urls, body)
+                body = self._inject_document_text(media_urls, media_types, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text;
         # resolve from rich_sent_store so run.py can build "[Replying to: ...]".
         context = raw_message.get("context") or {}

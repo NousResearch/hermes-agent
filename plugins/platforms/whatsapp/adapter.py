@@ -173,7 +173,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
@@ -224,7 +224,6 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
-_TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
@@ -765,11 +764,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 accepted.append((url, "unknown"))
         return [u for u, _ in accepted], [m for _, m in accepted]
 
-    def _inject_document_text(self, cached_urls: list, body: str) -> str:
+    def _inject_document_text(self, cached_urls: list, media_types: list, body: str) -> str:
         """Prepend text-readable document contents (≤100KB) so the agent reads them inline."""
-        for doc_path in cached_urls:
+        for doc_path, mime in zip(cached_urls, media_types):
             p = Path(doc_path)
-            if p.suffix.lower() not in _TEXT_INJECT_EXTS:
+            if p.suffix.lower() not in _TEXT_INJECT_EXTENSIONS and not mime.startswith("text/"):
                 continue
             try:
                 file_size = p.stat().st_size
@@ -803,7 +802,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             quoted = bool(data.get("hasQuotedMessage"))
             raw_reply_id = data.get("quotedMessageId") if quoted else None
             if msg_type == MessageType.DOCUMENT and cached_urls:
-                body = self._inject_document_text(cached_urls, body)
+                body = self._inject_document_text(cached_urls, media_types, body)
             native_metadata = data.get("nativeMetadata")
             metadata: Dict[str, Any] = {k: v for k, v in (
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),

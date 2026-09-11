@@ -216,19 +216,27 @@ def _cleanup_worktree_workspace(
         pass  # best-effort — never block completion
 
 
-def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
+def _try_cleanup_parent_workspaces(
+    conn: sqlite3.Connection, task_id: str, _visited: Optional[set[str]] = None
+) -> None:
     """Run the deferred cleanup of any parent scratch/worktree workspace whose
     children are now all done/archived/failed/cancelled (called after each
     child completes).
 
+    Continue through eligible ancestors; the shared set bounds diamond-DAG visits.
     See #33774.
     """
+    if _visited is None:
+        _visited = set()
     try:
         parents = conn.execute(
             "SELECT parent_id FROM task_links WHERE child_id = ?",
             (task_id,),
         ).fetchall()
         for (parent_id,) in parents:
+            if parent_id in _visited:
+                continue
+            _visited.add(parent_id)
             row = conn.execute(_WORKSPACE_ROW_SQL, (parent_id,)).fetchone()
             if (
                 not row
@@ -239,11 +247,13 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 continue
             if row["workspace_kind"] == "worktree":
                 _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])
+                _try_cleanup_parent_workspaces(conn, parent_id, _visited)
                 continue
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+            _try_cleanup_parent_workspaces(conn, parent_id, _visited)
     except Exception:
         pass  # best-effort
 

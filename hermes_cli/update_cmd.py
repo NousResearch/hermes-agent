@@ -81,7 +81,7 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
     _rebuild_desktop_after_update, _record_npm_lockfile_hash, _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
-    _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
+    _remove_stale_legacy_venv, _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
     _sync_python_dependencies_after_pull, _update_node_dependencies,
     _upgrade_pip_before_lazy_refresh, _validate_critical_modules_import,
     _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
@@ -702,6 +702,8 @@ def _repair_current_checkout(
             "  Any running Hermes gateways, Desktop backends, or other "
             "long-lived processes still use the previous runtime.")
         print("  Restart each of them to pick up the repaired runtime.")
+    if current_checkout_complete:
+        _remove_stale_legacy_venv()
     return current_checkout_complete
 
 

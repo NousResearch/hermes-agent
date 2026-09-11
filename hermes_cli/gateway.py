@@ -2579,13 +2579,13 @@ def launchd_gateway_labels_for_install() -> list[str]:
 
 def _detect_venv_dir() -> Path | None:
     """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
-    sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    sys.prefix), then canonical ``venv`` / legacy ``.venv`` under PROJECT_ROOT; None if absent."""
     candidates: list[Path] = []
     if sys.prefix != sys.base_prefix:
         candidates.append(Path(sys.prefix))
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates += [PROJECT_ROOT / ".venv", PROJECT_ROOT / "venv"]
+    candidates += [PROJECT_ROOT / "venv", PROJECT_ROOT / ".venv"]
     return next((venv for venv in candidates if venv.is_dir()), None)
 
 

@@ -2294,7 +2294,11 @@ def _make_agent(
         service_tier_override if service_tier_override is not None else _load_service_tier()
     )
     _tier_overrides = None
-    if _effective_tier:
+    # Only a pinnable priority tier is bridged (parity with the CLI/gateway route
+    # builders): auto/cold are bounded windows applied per request by agent.fast_mode,
+    # and the resolver returns the pinned priority shape whenever the model supports
+    # it — so bridging them here would bill a fixed tier the user never chose.
+    if _effective_tier == "priority":
         from hermes_cli.models import resolve_fast_mode_overrides
 
         try:

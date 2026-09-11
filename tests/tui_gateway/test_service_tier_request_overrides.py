@@ -21,6 +21,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Imported for real (NOT via patch.dict(sys.modules)): a sys.modules patch
 # would evict every module first-imported inside its window on exit,
 # leaving later tests with split-brain duplicates of tui_gateway.entry /
@@ -107,6 +109,18 @@ def test_aggregator_route_gates_the_tier():
 def test_no_tier_sends_no_overrides():
     kwargs = _build(None)
 
+    assert not kwargs.get("request_overrides")
+
+
+@pytest.mark.parametrize("window_tier", ["auto", "cold"])
+def test_window_tiers_are_not_pinned_at_build_time(window_tier):
+    """auto/cold are bounded windows applied per request by ``agent.fast_mode`` —
+    the resolver returns the pinned priority shape whenever the model supports it,
+    so bridging them at build time would bill priority for a user who chose auto
+    (caught in review on #101524)."""
+    kwargs = _build(window_tier)
+
+    assert kwargs["service_tier"] == window_tier
     assert not kwargs.get("request_overrides")
 
 

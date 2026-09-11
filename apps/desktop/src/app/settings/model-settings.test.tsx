@@ -38,8 +38,8 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
-  getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  getHermesConfigRecord: (profile?: string) => getHermesConfigRecord(profile),
+  saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   setApiRequestProfile: () => {}
 }))
 
@@ -122,6 +122,19 @@ describe('ModelSettings profile scope', () => {
     expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
     expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
     expect(getMoaModels).toHaveBeenCalledWith('research')
+  })
+
+  it('loads reasoning_effort from the scoped profile config (#100732)', async () => {
+    getHermesConfigRecord.mockImplementation(async (profile?: string) => ({
+      agent: {
+        reasoning_effort: profile === 'research' ? 'high' : 'medium',
+        service_tier: 'normal'
+      }
+    }))
+    await renderModelSettings('research')
+
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('research'))
+    await waitFor(() => expect(screen.getAllByRole('combobox')[2].textContent).toContain('High'))
   })
 })
 
@@ -295,7 +308,8 @@ describe('ModelSettings', () => {
 
     await waitFor(() =>
       expect(saveHermesConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
+        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) }),
+        undefined
       )
     )
   })

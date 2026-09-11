@@ -49,11 +49,11 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     monkeypatch.setattr(
         cli_mod,
         "build_preloaded_skills_prompt",
-        lambda skills, task_id=None, excluded_loaded_names=None: ("skill prompt", ["hermes-agent-dev", "github-auth"], []),
+        lambda skills, task_id=None, excluded_loaded_names=None: ("skill prompt", ["hermes-agent", "github-auth"], []),
     )
 
     with pytest.raises(SystemExit):
-        cli_mod.main(skills="hermes-agent-dev,github-auth", list_tools=True)
+        cli_mod.main(skills="hermes-agent,github-auth", list_tools=True)
 
     cli_obj = created["cli"]
     # The preload now runs in a background thread and is folded in at agent
@@ -61,7 +61,7 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     # the finalize explicitly — the same call _init_agent makes.
     _real_finalize(cli_obj)
     assert cli_obj.system_prompt == "base prompt\n\nskill prompt"
-    assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
+    assert cli_obj.preloaded_skills == ["hermes-agent", "github-auth"]
 
 
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
@@ -87,5 +87,3 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
-
-

@@ -105,7 +105,7 @@ Examples:
     hermes gateway status         Show gateway status
     hermes -p <profile> <cmd>     Run any command against a named profile's
                                   home (also --profile) — e.g. hermes -p coder gateway stop
-    hermes -s hermes-agent-dev,github-auth
+    hermes -s hermes-agent,github-auth
     hermes -w                     Start in isolated git worktree
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker

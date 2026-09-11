@@ -12,9 +12,7 @@ import {
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setTurnStartedAt,
@@ -41,8 +39,12 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // NOTE: setCurrentModel / setCurrentProvider are intentionally omitted here.
+  // Composer model/provider is sticky UI state (localStorage + manual picks).
+  // The session runtime model flows to the model pill via primaryField(state =>
+  // state.model, $currentModel) in session-view.tsx — no composer-atom write needed.
+  // Writing the session runtime model here made fallback providers sticky across
+  // new sessions (defeating per-turn primary restoration). See #75320.
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

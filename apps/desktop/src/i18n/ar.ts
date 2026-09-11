@@ -2493,6 +2493,7 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
+      favorites: 'المفضلة',
       fast: 'سريع'
     },
     modelOptions: {
@@ -2507,6 +2508,8 @@ export const ar = defineLocale({
       high: 'عالٍ',
       max: 'أقصى',
       updateFailed: 'فشل تحديث خيار النموذج',
+      addFavorite: 'إضافة إلى المفضلة',
+      removeFavorite: 'إزالة من المفضلة',
       fastFailed: 'فشل تحديث الوضع السريع'
     },
     gatewayMenu: {

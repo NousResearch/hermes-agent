@@ -3352,6 +3352,7 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit models…',
       refreshModels: 'Refresh models',
+      favorites: 'Favorites',
       fast: 'Fast'
     },
     modelOptions: {
@@ -3368,6 +3369,8 @@ export const en: Translations = {
       max: 'Max',
       ultra: 'Ultra',
       updateFailed: 'Model option update failed',
+      addFavorite: 'Add to favorites',
+      removeFavorite: 'Remove from favorites',
       fastFailed: 'Fast mode update failed'
     },
     gatewayMenu: {

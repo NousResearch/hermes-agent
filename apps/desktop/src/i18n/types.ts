@@ -2883,6 +2883,7 @@ export interface Translations {
       noModels: string
       editModels: string
       refreshModels: string
+      favorites: string
       fast: string
     }
     modelOptions: {
@@ -2899,6 +2900,8 @@ export interface Translations {
       max: string
       ultra: string
       updateFailed: string
+      addFavorite: string
+      removeFavorite: string
       fastFailed: string
     }
     gatewayMenu: {

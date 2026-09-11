@@ -8314,7 +8314,11 @@ async function mintGatewayWsTicket(baseUrl, headers = {}) {
           throw error
         }
 
-        const rotatedAt = await ensureNativeAccessToken(baseUrl, { forceRefresh: true }).catch(() => null)
+        // A dead refresh token returns null (tokens dropped) and the original
+        // 401 stands. A refresh that could not be evaluated at all (5xx,
+        // timeout, ECONNRESET) is a transport blip, not a verdict on the
+        // session — let it propagate so the boot stays retryable.
+        const rotatedAt = await ensureNativeAccessToken(baseUrl, { forceRefresh: true })
 
         if (!rotatedAt || rotatedAt === nativeAt) {
           throw error

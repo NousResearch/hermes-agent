@@ -120,6 +120,37 @@ class TestMinimaxAuxModelNotHighspeed:
         )
 
 
+class TestMinimaxOauthDocumentedAliases:
+    """``minimax-oauth`` must resolve every alias advertised in the user guide.
+
+    ``website/docs/guides/minimax-oauth.md`` documents four resolvable provider
+    ids: the canonical ``minimax-oauth``, the underscore form
+    ``minimax_oauth``, and two friendlier aliases ``minimax-portal`` and
+    ``minimax-global``. The profile's ``aliases=`` tuple previously only
+    registered the underscore form (plus an undocumented ``minimax-oauth-io``),
+    so ``--provider minimax-portal`` / ``--provider minimax-global`` failed
+    with "unknown provider" despite being documented as working.
+
+    Refs: Issue #107928.
+    """
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["minimax-oauth", "minimax_oauth", "minimax-oauth-io", "minimax-portal", "minimax-global"],
+    )
+    def test_documented_and_legacy_aliases_resolve_to_minimax_oauth(self, alias):
+        import model_tools  # noqa: F401
+        import providers
+
+        canonical = providers.get_provider_profile("minimax-oauth")
+        resolved = providers.get_provider_profile(alias)
+        assert resolved is not None, f"{alias!r} does not resolve to any provider profile"
+        assert resolved is canonical, (
+            f"{alias!r} resolved to a different profile than the canonical "
+            "'minimax-oauth' id — aliases must point at the same registered profile"
+        )
+
+
 class TestMinimaxM3OpenAIReasoningWireShape:
     """MiniMax-M3 on api.minimax.io/v1 gets MiniMax's OpenAI-compatible knobs."""
 

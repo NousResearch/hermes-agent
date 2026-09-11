@@ -49,7 +49,8 @@ minimax_cn = MiniMaxProfile(
 )
 
 minimax_oauth = MiniMaxProfile(
-    name="minimax-oauth", aliases=("minimax_oauth", "minimax-oauth-io"), api_mode="anthropic_messages",
+    name="minimax-oauth", aliases=("minimax_oauth", "minimax-oauth-io", "minimax-portal", "minimax-global"),
+    api_mode="anthropic_messages",
     display_name="MiniMax (OAuth)", description="MiniMax via OAuth browser flow — no API key required",
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env

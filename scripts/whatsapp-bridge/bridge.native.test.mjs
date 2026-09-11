@@ -158,6 +158,49 @@ import {
   console.log('  ✓ inbound document metadata preserves MIME and filename');
 }
 
+// -- device-suffixed JID normalization (swipe-reply / mention regression) --
+{
+  // Baileys can report a device-suffixed JID (e.g. "...:46@...") for the
+  // quoting participant while the bot's own id from sock.user is normalized
+  // the same way elsewhere. Both must collapse to the same bare-id form so
+  // reply-to-bot / mention matching in gateway/platforms/whatsapp_common.py
+  // actually fires.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'incoming-2',
+        remoteJid: '15551234567@s.whatsapp.net',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'replying to the bot',
+          contextInfo: {
+            stanzaId: 'outbound-2',
+            participant: '15559998888:46@s.whatsapp.net',
+            remoteJid: '15551234567@s.whatsapp.net',
+            quotedMessage: { conversation: 'a message from the bot' },
+          },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888@s.whatsapp.net'],
+    downloadMedia: async () => Buffer.from(''),
+  });
+
+  assert.equal(
+    event.quotedParticipant,
+    '15559998888@s.whatsapp.net',
+    'device-suffixed quotedParticipant must normalize to the same bare id as botIds',
+  );
+  console.log('  ✓ device-suffixed quotedParticipant normalizes to match bare botIds');
+}
+
 {
   const cacheDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-doc-'));
   const event = await extractBridgeEvent({

@@ -990,7 +990,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
             "slug": custom_provider_slug(display_name, provider_key), "name": display_name,
             "api_url": api_url, "api_key": "", "credential_identity": cred_identity, "models": [], "has_explicit_models": False,
             "discover_models": True, "api_mode": api_mode, "extra_headers": entry_extra_headers,
-            "aliases": set()})
+            "aliases": set(), "cred_identity": cred_identity})
         grp["api_key"] = grp["api_key"] or api_key  # first member with a key wins
         grp["discover_models"] = grp["discover_models"] and discover  # one opt-out pins the whole row
         grp["aliases"].update(custom_provider_aliases(raw_name, provider_key))
@@ -1001,6 +1001,11 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     current_url_group_count = sum(
         1 for grp in groups.values()
         if b.current_base_url_norm and _norm_url(grp["api_url"]) == b.current_base_url_norm)
+    # #102552: alias-prefix entries (ds-web / deepseek-web, oc / opencode) on ONE
+    # endpoint+credential each discover the SAME full upstream catalog; emitting a row per
+    # prefix would list every model once per alias. Collapse exact duplicate discovered
+    # catalogs; rows whose declared-only lists differ (discovery off/failed) keep their rows.
+    emitted_catalogs: dict = {}
     for grp in groups.values():
         api_url, api_key, slug = grp["api_url"], grp.get("api_key", ""), grp["slug"]
         # Slug claimed by a built-in/overlay/providers: row -> skip (don't shadow).
@@ -1039,6 +1044,21 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
                         credential_identity=grp["credential_identity"])
                 except Exception:
                     pass
+        endpoint_identity = (
+            grp_url_norm, grp.get("cred_identity", api_key), grp.get("api_mode"),
+            tuple(sorted((grp.get("extra_headers") or {}).items())))
+        prior = emitted_catalogs.get(endpoint_identity)
+        if discovered is not None and prior is not None and grp["models"] == prior[0]:
+            # Same live catalog already emitted for this endpoint+credential: this alias
+            # row is a pure duplicate of the earlier one.
+            if is_current:
+                for row in b.results:
+                    if row.get("is_user_defined") and row.get("slug") == prior[1]:
+                        row["is_current"] = True
+                        break
+            continue
+        if discovered is not None:
+            emitted_catalogs[endpoint_identity] = (list(grp["models"]), slug)
         b.add_endpoint_row(slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty)
         section4_slugs.add(slug.lower())
 

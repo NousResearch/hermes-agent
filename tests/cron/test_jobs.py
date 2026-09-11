@@ -438,6 +438,37 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
+        """A one-shot budget must not survive a schedule change to a recurring kind.
+
+        create_job derives repeat from the schedule kind; update_job must honour
+        the same contract when the kind flips, otherwise a job "fixed" from a
+        one-shot to `every 15m` keeps times=1 and retires after its first fire.
+        An explicit repeat in the same update still wins over the re-derived default.
+        """
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m")
+        assert job["repeat"]["times"] == 1
+
+        updated = update_job(job["id"], {"schedule": "every 15m"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] is None
+
+        explicit = create_job(prompt="poll", schedule="in 15m")
+        assert update_job(explicit["id"], {"schedule": "every 15m", "repeat": 3})["repeat"]["times"] == 3
+
+    def test_recurring_turned_oneshot_becomes_once(self, tmp_cron_dir):
+        """The reverse flip must gain the one-shot default instead of staying forever."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="every 15m")
+        assert job["repeat"]["times"] is None
+
+        updated = update_job(job["id"], {"schedule": "in 15m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"]["times"] == 1
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -645,6 +676,8 @@ class TestMarkJobRun:
         assert updated is not None
         assert updated["state"] == "completed"
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        # A terminal completion that never reached the user is not a success.
+        assert updated["last_status"] == "delivery_failed"
 
     def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
         """list_jobs(include_disabled=True) surfaces the completed record."""
@@ -654,6 +687,7 @@ class TestMarkJobRun:
         assert job["id"] in listed
         assert listed[job["id"]]["state"] == "completed"
         assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
+        assert listed[job["id"]]["last_status"] == "delivery_failed"
         # Default (enabled-only) listing hides it, matching paused/disabled jobs.
         assert job["id"] not in {j["id"] for j in list_jobs()}
 
@@ -672,13 +706,53 @@ class TestMarkJobRun:
         assert updated["last_error"] == "timeout"
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
-        """Agent succeeds but delivery fails — both tracked independently."""
+        """Agent succeeds but delivery fails — surfaced, not hidden behind ok.
+
+        Regression guard for #83993: recording ``last_status="ok"`` made a run
+        the user never received look like a quiet success everywhere that keys
+        off "ok". The agent error stays independent of the delivery error, and
+        the delivery failure is not an agent failure (no streak).
+        """
         job = create_job(prompt="Report", schedule="every 1h")
-        mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
         updated = get_job(job["id"])
-        assert updated["last_status"] == "ok"
+        assert updated["last_status"] == "delivery_failed"
         assert updated["last_error"] is None
-        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_error"] == "send failed: 502"
+        assert updated["failure_streak"] == 0
+
+    def test_success_without_delivery_error_stays_ok(self, tmp_cron_dir):
+        """A fully successful run is still plain "ok"."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["last_status"] == "ok"
+        # An empty delivery error is no error at all.
+        mark_job_run(job["id"], success=True, delivery_error="")
+        assert get_job(job["id"])["last_status"] == "ok"
+
+    def test_agent_failure_still_error_with_delivery_error(self, tmp_cron_dir):
+        """An agent failure outranks delivery: still "error", still a streak."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=False, error="timeout",
+            delivery_error="send failed: 502",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "timeout"
+        assert updated["failure_streak"] == 1
+
+    def test_explicit_status_override_wins_over_delivery_failed(self, tmp_cron_dir):
+        """An explicit terminal status (T1-26 blocked_config) still wins."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="send failed: 502",
+            status="blocked_config",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "blocked_config"
+        assert updated["last_delivery_error"] == "send failed: 502"
 
     def test_failure_streak_increments_and_resets(self, tmp_cron_dir):
         """failure_streak counts consecutive agent failures; success resets."""

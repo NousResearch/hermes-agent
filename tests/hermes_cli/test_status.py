@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
+import subprocess
 
 
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
@@ -12,6 +13,18 @@ def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, 
 
     output = capsys.readouterr().out
     assert "Keenable" in output
+    assert sentinel not in output
+
+
+def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_TAVILY_123456"
+    monkeypatch.setenv("TAVILY_API_KEY", sentinel)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Tavily" in output
     assert sentinel not in output
 
 
@@ -36,7 +49,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     def _unexpected_systemctl(*args, **kwargs):
         raise AssertionError("systemctl should not be called in the Termux status view")
 
-    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_systemctl)
+    monkeypatch.setattr(subprocess, "run", _unexpected_systemctl)
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 

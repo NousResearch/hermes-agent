@@ -81,6 +81,30 @@ cron stay scoped to that gateway; the app-managed window backend is still chosen
 by the connection-mode controls above. **Primary** is the registry fallback and
 does not switch the current workspace.
 
+## Organizing session groups
+
+In the Sessions sidebar's view menu, choose **Gateway & profile** while viewing
+all profiles. Each gateway gets its own collapsible section, with profile
+subsections containing their sessions. Two gateways with a `default` profile
+stay separate. Gateway headers start with the saved connection name; profile
+headers show the profile name.
+
+Use a gateway or profile section's menu to **Rename group**, **Reset name**, **Move up**, or
+**Move down**. Renaming changes only the sidebar label, not the gateway or profile.
+Gateways reorder as complete sections, and profiles reorder within their own gateway.
+Drag the section's leading icon to reorder it, or focus that handle and use
+Space, arrow keys, then Space to place it. Names, order, and collapsed sections
+are remembered on this desktop. Collapsing a gateway preserves its profiles'
+individual collapse states. Each profile's new-session action targets that
+profile on its owning gateway.
+
+The Hermes Cloud panel also lists **Saved Cloud gateways** when portal discovery
+is signed out. **Use gateway** selects an existing saved connection without
+changing the default gateway; **Active in this window** identifies the current
+one. Adding a new instance uses its friendly Cloud name, while existing custom
+connection names are preserved. Saved connections still need valid gateway
+authentication; manage sign-in from the registered connection controls.
+
 ## Adding a connection, step by step
 
 1. Open **Settings → Gateways** and scroll to the connections registry (or
@@ -156,6 +180,13 @@ The union roster is what multi-gateway surfaces (and the built-in
 Each `(connection, profile)` pair gets its own backend and socket, pooled
 with the same idle-reaping as local per-profile backends — background agents
 keep streaming while you look at another gateway.
+
+Approval buttons route back to the session's owning backend, not whichever
+profile is currently selected. For a local secondary profile, Desktop can use
+the socket that delivered the request even when the cached session binding is
+missing. Saved session ownership still takes precedence, and deleting or
+renaming that local profile clears this temporary route rather than reconnecting
+an obsolete backend.
 
 ### Switching and scoping
 

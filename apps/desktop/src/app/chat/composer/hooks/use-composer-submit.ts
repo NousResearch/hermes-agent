@@ -12,6 +12,7 @@ import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
+import { sealQueuedFrame } from '../queue-frame'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
@@ -322,7 +323,13 @@ export function useComposerSubmit({
       }
 
       if (accepted !== true && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        // A rejected steer re-queues the words — seal the frame on THIS path
+        // too, or the drained send arrives without the mode the user had.
+        const queueKey = activeQueueSessionKey
+
+        void sealQueuedFrame(text, []).then(frame => {
+          enqueueQueuedPrompt(queueKey, { text, attachments: [], ...frame })
+        })
       }
     })
   }

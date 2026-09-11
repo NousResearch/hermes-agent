@@ -25,7 +25,7 @@ import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
-import { runComposerMiddleware } from '../contrib'
+import { sealQueuedFrame } from '../queue-frame'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -189,24 +189,12 @@ export function useComposerQueue({
       return false
     }
 
-    // Seal the composer-mode frame HERE, at enqueue: run the middleware chain
-    // once for this entry so the drain can hand the mode the user queued WITH
-    // to the submit options. Re-deriving at drain time would leak whatever
-    // mode is live THEN into a send the user framed earlier.
-    const sealed = await runComposerMiddleware({ text, attachments })
+    // Seal the composer-mode frame HERE, at enqueue (see sealQueuedFrame):
+    // every enqueue path must capture it so the drain hands the mode the user
+    // queued WITH back to the submit options.
+    const frame = await sealQueuedFrame(text, attachments)
 
-    if (!sealed) {
-      return false
-    }
-
-    if (
-      !enqueueQueuedPrompt(activeQueueSessionKey, {
-        text,
-        attachments,
-        ...(sealed.mode ? { mode: sealed.mode } : {}),
-        ...(sealed.note ? { note: sealed.note } : {})
-      })
-    ) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments, ...frame })) {
       return false
     }
 

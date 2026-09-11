@@ -458,6 +458,16 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    @pytest.mark.parametrize("retain_async", [True, False])
+    def test_retain_forwards_configured_async_mode(
+        self, provider_with_config, retain_async
+    ):
+        p = provider_with_config(retain_async=retain_async)
+        p.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        call_kwargs = p._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["retain_async"] is retain_async
+
     def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
         event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
         monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)

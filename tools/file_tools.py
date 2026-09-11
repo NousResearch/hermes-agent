@@ -45,21 +45,36 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
-_max_read_chars_cached: int | None = None
+_max_read_chars_by_home: dict[str, int] = {}
 
 
 def _get_max_read_chars() -> int:
-    """Return ``file_read_max_chars`` from config.yaml (cached per process; default on missing/invalid)."""
-    global _max_read_chars_cached
-    if _max_read_chars_cached is None:
-        try:
-            from hermes_cli.config import load_config
-            val = load_config().get("file_read_max_chars")
-        except Exception:
-            val = None
-        valid = isinstance(val, (int, float)) and val > 0
-        _max_read_chars_cached = int(val) if valid else _DEFAULT_MAX_READ_CHARS
-    return _max_read_chars_cached
+    """Return ``file_read_max_chars`` (cached per active profile; default on invalid)."""
+    try:
+        from hermes_constants import hermes_home_key
+        cache_key = hermes_home_key()
+    except Exception:
+        cache_key = None
+
+    if cache_key is not None:
+        cached = _max_read_chars_by_home.get(cache_key)
+        if cached is not None:
+            return cached
+    try:
+        from hermes_cli.config import load_config
+        val = load_config().get("file_read_max_chars")
+    except Exception:
+        val = None
+    valid = isinstance(val, (int, float)) and val > 0
+    resolved = int(val) if valid else _DEFAULT_MAX_READ_CHARS
+    if cache_key is not None:
+        _max_read_chars_by_home[cache_key] = resolved
+    return resolved
+
+
+def _reset_max_read_chars_cache() -> None:
+    """Clear cached read limits for every profile (tests/config hot-reload)."""
+    _max_read_chars_by_home.clear()
 
 
 def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:

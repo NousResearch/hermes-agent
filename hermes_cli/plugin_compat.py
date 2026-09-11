@@ -165,7 +165,9 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
 # ---------------------------------------------------------------------------------------------- report
 
 _report_lock = threading.Lock()
-_report_cache: Dict[Tuple[str, ...], Dict[str, List[Hit]]] = {}
+_SourceFingerprint = Tuple[str, str, Tuple[Tuple[str, int, int], ...]]
+_ReportCacheKey = Tuple[bool, Tuple[_SourceFingerprint, ...]]
+_report_cache: Dict[_ReportCacheKey, Dict[str, List[Hit]]] = {}
 
 
 def _scan_root(manifest) -> Optional[Path]:
@@ -193,6 +195,20 @@ def _scan_root(manifest) -> Optional[Path]:
     return p if p.is_dir() else None
 
 
+def _source_fingerprint(manifest, root: Optional[Path]) -> _SourceFingerprint:
+    """Cheaply identify the Python source set scanned for one plugin."""
+    files: List[Tuple[str, int, int]] = []
+    if root is not None:
+        for path in _iter_py(root):
+            try:
+                stat = path.stat()
+                files.append((str(path.relative_to(root)), stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                continue
+    return (str(getattr(manifest, "name", "")), str(getattr(manifest, "path", "")),
+            tuple(sorted(files)))
+
+
 def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]]:
     """``{plugin_name: hits}`` for every ENABLED external (non-bundled) plugin with at least one hit.
 
@@ -207,14 +223,17 @@ def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]
         except Exception:
             return {}
     external = [m for m in manifests if getattr(m, "source", "") != "bundled" and getattr(m, "path", None)]
-    key = tuple(sorted(f"{m.name}@{m.path}" for m in external))
+    scan_targets = [(m, _scan_root(m)) for m in external]
+    fingerprints = tuple(sorted((_source_fingerprint(m, root) for m, root in scan_targets),
+                                key=lambda item: (item[0], item[1])))
+    key = (removal_in_effect(), fingerprints)
     with _report_lock:
         if not force and key in _report_cache:
             return _report_cache[key]
     manifest = load_manifest()
     out: Dict[str, List[Hit]] = {}
-    for m in external:
-        hits = scan_plugin(_scan_root(m), manifest)
+    for m, root in scan_targets:
+        hits = scan_plugin(root, manifest)
         if hits:
             out[m.name] = hits
     with _report_lock:

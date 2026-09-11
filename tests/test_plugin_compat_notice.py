@@ -58,6 +58,31 @@ def test_compat_report_only_external_plugins_with_hits(tmp_path, monkeypatch):
     assert list(report) == ["bad"] and report["bad"][0].old == "tools.web_tools.prefers_gateway"
 
 
+def test_compat_report_reuses_unchanged_scan_and_invalidates_for_source_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(pc, "load_manifest", lambda: MANIFEST)
+    monkeypatch.setattr(pc, "_write_report_file", lambda r: None)
+    plugin = tmp_path / "plugin"; plugin.mkdir()
+    source = plugin / "__init__.py"
+    source.write_text("from tools.web_tools import prefers_gateway\n")
+    manifest = _manifest("plugin", plugin)
+    real_scan_plugin = pc.scan_plugin
+    scans = 0
+
+    def counting_scan_plugin(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return real_scan_plugin(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "scan_plugin", counting_scan_plugin)
+    first = pc.compat_report([manifest])
+    second = pc.compat_report([manifest])
+    assert first == second and scans == 1
+
+    source.write_text("from tools.tool_backend_helpers import prefers_gateway\n# fixed\n")
+    assert pc.compat_report([manifest]) == {}
+    assert scans == 2
+
+
 def test_disable_only_after_the_date_and_not_when_allowed(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "load_manifest", lambda: MANIFEST)
     bad = tmp_path / "bad"; bad.mkdir(); (bad / "__init__.py").write_text("from tools.web_tools import prefers_gateway\n")

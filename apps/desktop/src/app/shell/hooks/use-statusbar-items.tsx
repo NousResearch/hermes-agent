@@ -463,14 +463,14 @@ export function useStatusbarItems({
         // The model id is the quiet part; the sign-in is the action, so it is
         // solid and set off by a gap instead of touching the label.
         detail: (
-          <>
+          <span className="inline-flex items-center gap-2">
             <span className="font-mono text-[0.625rem] text-muted-foreground/70">
               {freeTier?.model ?? FREE_TIER_MODEL}
             </span>
-            <Badge className="ml-2" size="xs" variant="solid">
+            <Badge size="xs" variant="solid">
               {freeTierCopy.signIn}
             </Badge>
-          </>
+          </span>
         ),
         // Shown while a free-tier identity exists and the tier is on: it names the
         // identity that carries the connectors (and inference when nothing else

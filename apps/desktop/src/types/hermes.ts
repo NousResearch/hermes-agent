@@ -1309,6 +1309,8 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** User/LLM-assigned title of the matched conversation, when present. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

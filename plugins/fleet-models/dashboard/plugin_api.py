@@ -25,14 +25,29 @@ router = APIRouter()
 _HERE = Path(__file__).resolve().parent
 
 
+_CORE_LOCK = threading.Lock()
+
+
 def _core():
+    """core.py, loaded once per process. The dashboard serves /state and /usage on parallel threads, and the
+    page asks for both at once: without the lock, the second thread found the half-executed module in
+    sys.modules and failed with "no attribute 'fleet_root'" (a 500 on the first load after every restart)."""
     name = "fleet_models_core"
     mod = sys.modules.get(name)
-    if mod is None:
-        spec = importlib.util.spec_from_file_location(name, _HERE.parent / "core.py")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
+    if mod is not None and getattr(mod, "_fleet_models_ready", False):
+        return mod
+    with _CORE_LOCK:
+        mod = sys.modules.get(name)
+        if mod is None or not getattr(mod, "_fleet_models_ready", False):
+            spec = importlib.util.spec_from_file_location(name, _HERE.parent / "core.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except BaseException:
+                sys.modules.pop(name, None)
+                raise
+            mod._fleet_models_ready = True
     return mod
 
 

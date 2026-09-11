@@ -444,3 +444,28 @@ def test_usage_route_keeps_the_old_daily_shape_for_open_104_tabs(api, tmp_path, 
     old = api.get_usage(days=7)
     assert "daily" in old and sum(d["calls"] for d in old["daily"]) == sum(r["calls"] for r in old["rows"]) == 3
     assert "daily" not in api.get_usage(window=3600, bucket=300, tz="Pacific/Auckland")
+
+
+def test_core_loads_once_under_concurrent_first_requests(api, monkeypatch):
+    """1.0.6 live: /state and /usage arrive together after a restart; one thread saw the half-loaded core."""
+    import threading, time as _t
+    real = api.importlib.util.spec_from_file_location
+    def slow_spec(*a, **k):
+        spec = real(*a, **k)
+        orig = spec.loader.exec_module
+        def exec_slow(m):
+            _t.sleep(0.2)            # widen the window a racing thread used to fall into
+            orig(m)
+        spec.loader.exec_module = exec_slow
+        return spec
+    monkeypatch.setattr(api.importlib.util, "spec_from_file_location", slow_spec)
+    monkeypatch.delitem(sys.modules, "fleet_models_core", raising=False)
+    got, errs = [], []
+    def hit():
+        try:
+            got.append(api._core().fleet_root)
+        except Exception as e:  # noqa: BLE001
+            errs.append(e)
+    ts = [threading.Thread(target=hit) for _ in range(6)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not errs and len(got) == 6

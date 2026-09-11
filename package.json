@@ -42,6 +42,12 @@
     "eslint-plugin-unused-imports": "4.4.1",
     "globals": "17.7.0"
   },
+  "allowScripts": {
+    "agent-browser@0.26.0": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "unicode-animations@1.0.3": true
+  },
   "overrides": {
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",

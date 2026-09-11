@@ -757,7 +757,7 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            from hermes_cli.plugins_pre_tool_call import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )

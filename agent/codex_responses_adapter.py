@@ -367,9 +367,9 @@ def _replay_reasoning_items(
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
-    another issuer/model route. Legacy items without model provenance drop when the current model
-    is known; ordinary assistant text remains replayable. ``id`` (store=False lookups 404) and Hermes
-    provenance fields are stripped."""
+    another issuer/model route. Legacy endpoint-stamped items without model provenance drop when the
+    current model is known; ordinary assistant text remains replayable. ``id`` (store=False lookups
+    404) and Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -384,7 +384,10 @@ def _replay_reasoning_items(
             current_issuer_kind is not None and item_issuer is not None
             and _canonical_issuer_kind(item_issuer) != _canonical_issuer_kind(current_issuer_kind)
         )
-        foreign_model = current_issuer_model is not None and item_model != current_issuer_model
+        foreign_model = current_issuer_model is not None and (
+            (item_model is not None and item_model != current_issuer_model)
+            or (item_model is None and item_issuer is not None)
+        )
         if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:
                 logger.warning(
@@ -467,7 +470,7 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; foreign-stamped items drop,
-    as do legacy items without model provenance when the current model is known.
+    as do endpoint-stamped legacy items without model provenance when the current model is known.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:

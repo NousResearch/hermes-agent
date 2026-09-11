@@ -115,7 +115,58 @@ class TestResolverPlumbing:
 
         assert desktop is not None and tui is not None
         assert "desktop_ui" in desktop
+
+    def test_config_path_resolves_the_session_platform(self, no_desktop_env):
+        """A toolset granted under platform_toolsets.<session platform> but
+        not under cli must reach that session's agent (#89547): the resolver
+        hardcoded "cli" at the resolution call, silently filtering every
+        non-cli grant from the per-turn tool definitions."""
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
+        no_desktop_env.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "platform_toolsets": {
+                    "cli": ["terminal"],
+                    "desktop": ["terminal", "memory"],
+                }
+            },
+        )
+
+        desktop = server._load_enabled_toolsets("desktop")
+        tui = server._load_enabled_toolsets("tui")
+
+        # desktop resolves against platform_toolsets.desktop: memory rides.
+        assert desktop is not None and "memory" in desktop
+        # tui has no platform_toolsets.tui row and no registry entry, so it
+        # falls back to the cli row (review follow-up on #89550): the
+        # unknown-platform composite hermes-tui resolves to nothing.
+        assert tui is not None and "memory" not in tui
+        assert "terminal" in tui
         assert "desktop_ui" not in tui
+
+    def test_bare_tui_session_still_receives_core_toolsets(self, no_desktop_env):
+        """Review follow-up on #89550: with default config (no
+        platform_toolsets rows at all), _get_platform_tools("tui") derives
+        the unknown-platform composite hermes-tui → zero toolsets. The
+        resolver must fall back to the cli row so a bare `hermes --tui` /
+        desktop session keeps terminal/file/web instead of going empty."""
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
+        no_desktop_env.setattr(config_mod, "load_config", lambda: {})
+
+        tui = server._load_enabled_toolsets("tui")
+        desktop = server._load_enabled_toolsets("desktop")
+
+        assert tui is not None and desktop is not None
+        for surface in (tui, desktop):
+            assert "terminal" in surface
+            assert "web" in surface
 
     def test_explicit_env_pin_still_wins(self, no_desktop_env):
         """HERMES_TUI_TOOLSETS is an operator override; surface can't re-add."""

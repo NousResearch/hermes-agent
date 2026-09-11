@@ -262,6 +262,10 @@ class TestSpawnEnvIsolation:
             in cmd
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
+        assert any("mcp_servers.hermes-tools.command" in part for part in cmd)
+        assert any("mcp_servers.hermes-tools.args" in part for part in cmd)
+        assert any("mcp_servers.hermes-tools.env.HERMES_KANBAN_TASK" in part for part in cmd)
+        assert not any("mcp_servers.hermes-mcp" in part for part in cmd)
         assert all("danger" not in part for part in cmd)
 
 

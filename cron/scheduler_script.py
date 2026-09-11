@@ -18,7 +18,6 @@ import subprocess
 import sys
 import threading
 import time
-from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
@@ -258,7 +257,7 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
     traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
     scripts_dir = _sched._get_hermes_home() / "scripts"
-    _ensure_cron_dir(scripts_dir)
+    scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
     # Reject NUL eagerly: on Windows Path ops raise ValueError *after* expanduser so the try below

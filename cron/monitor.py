@@ -76,10 +76,11 @@ def _read_last_output(job_id: str) -> str:
 
 def _write_last_output(job_id: str, output: str) -> None:
     try:
-        from cron.jobs import _ensure_cron_dir
+        from cron.jobs import ensure_dirs
 
         path = _snapshot_path(job_id)
-        _ensure_cron_dir(path.parent)
+        ensure_dirs()
+        path.parent.mkdir(exist_ok=True)
         path.write_text(output, encoding="utf-8")
     except Exception as exc:
         logger.warning("Monitor: failed to persist last output for %r: %s", job_id, exc)

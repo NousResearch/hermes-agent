@@ -13,6 +13,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -72,10 +73,20 @@ class CodexAppServerClient:
         # environment, never by granting the whole executor process ownership.
         owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
         if owned_task:
+            # Kanban workers may run with a profile HOME that has no Codex
+            # config.toml. Provide a complete Hermes MCP server override, not
+            # only env subkeys, so Codex does not synthesize an env-only server
+            # and reject it as an invalid MCP transport.
+            cmd += [
+                "-c", f"mcp_servers.hermes-tools.command={json.dumps(sys.executable)}",
+                "-c", "mcp_servers.hermes-tools.args=[\"-m\",\"agent.transports.hermes_tools_mcp_server\"]",
+                "-c", "mcp_servers.hermes-tools.startup_timeout_sec=30.0",
+                "-c", "mcp_servers.hermes-tools.tool_timeout_sec=600.0",
+            ]
             for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
                 if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
-            cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+                    cmd += ["-c", f"mcp_servers.hermes-tools.env.{key}={json.dumps(os.environ[key])}"]
+            cmd += ["-c", f'mcp_servers.hermes-tools.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.

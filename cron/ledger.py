@@ -11,9 +11,10 @@ from typing import Callable, Iterator
 
 def open_ledger(path: Path) -> sqlite3.Connection:
     """Open a profile-local ledger DB, creating its cron directory securely."""
-    from cron.jobs import _ensure_cron_dir
+    from cron.jobs import ensure_dirs
 
-    _ensure_cron_dir(path.parent)
+    ensure_dirs()
+    path.parent.mkdir(exist_ok=True)
     return sqlite3.connect(path, timeout=5)
 
 

@@ -13,6 +13,39 @@ import sys
 from types import SimpleNamespace
 
 
+def test_cron_consumers_do_not_depend_on_removed_private_directory_helper(monkeypatch, tmp_path):
+    """A gateway can retain ``cron.jobs`` while newer cron consumers load from disk.
+
+    ``_ensure_cron_dir`` was a private helper and disappeared during a cron
+    refactor. Consumers must use the public ``ensure_dirs`` contract or local
+    Path creation, so a partial update cannot brick every cron job at import or
+    first write.
+    """
+    from cron import jobs, ledger, monitor, scheduler_script
+
+    monkeypatch.delattr(jobs, "_ensure_cron_dir", raising=False)
+    calls = []
+    monkeypatch.setattr(jobs, "ensure_dirs", lambda: calls.append("ensure_dirs"))
+
+    connection = ledger.open_ledger(tmp_path / "ledger" / "runs.db")
+    connection.close()
+    assert (tmp_path / "ledger" / "runs.db").exists()
+
+    monitor_snapshot = tmp_path / "monitor" / "last-output.txt"
+    monkeypatch.setattr(monitor, "_snapshot_path", lambda _job_id: monitor_snapshot)
+    monitor._write_last_output("job-1", "snapshot")
+    assert monitor_snapshot.read_text(encoding="utf-8") == "snapshot"
+
+    (tmp_path / "scripts").mkdir()
+    expected_script = tmp_path / "scripts" / "relative.py"
+    expected_script.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(scheduler_script._sched, "_get_hermes_home", lambda: tmp_path)
+    script, error = scheduler_script._resolve_script_path("relative.py")
+    assert script == expected_script.resolve()
+    assert error is None
+    assert calls == ["ensure_dirs", "ensure_dirs"]
+
+
 def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
     from agent import agent_runtime_helpers, auxiliary_client
 

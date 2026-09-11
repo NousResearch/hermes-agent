@@ -15,7 +15,7 @@ Managed vector DB for production RAG and search.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/pinecone` |
-| Path | `optional-skills/mlops/pinecone` |
+| Path | `optional-skills/mlops\pinecone` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |

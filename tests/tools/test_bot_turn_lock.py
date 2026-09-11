@@ -247,13 +247,17 @@ def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):
 
 def test_local_delivery_command_never_reenters_the_lock():
     """The gateway deliver handler runs local_delivery_command ALREADY holding
-    the profile lock. That argv must stay a raw `hermes -p … chat` invocation:
+    the profile lock. That argv must stay a raw hermes CLI invocation:
     routing it through the --run-delivery wrapper would make the child hit
-    _delivery_lock (argv[0]=='hermes' and argv[1]=='-p'), burn the full wait
+    _delivery_lock (hermes CLI + '-p'), burn the full wait
     budget against its parent's flock, and fail every relay delivery with
-    target_busy."""
+    target_busy. argv[0] may be a resolved venv path (#93590) — the lock
+    matcher and this assertion both go by basename."""
+    from pathlib import Path
+
     argv = bot_relay.local_delivery_command("ops", "/tmp/q.txt")
-    assert argv[:3] == ["hermes", "-p", "ops"]
+    assert argv[1:3] == ["-p", "ops"]
+    assert Path(argv[0]).name in ("hermes", "hermes.exe")
     assert "--run-delivery" not in argv
     assert not any("bot_mode_dm" in part for part in argv)
 

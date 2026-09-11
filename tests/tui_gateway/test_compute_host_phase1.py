@@ -48,6 +48,40 @@ def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     assert _default_workers() == 8
 
 
+def test_compute_host_routes_clarify_response_to_child_pending_registry(monkeypatch):
+    """Interactive answers are handled in the process that owns `_pending`."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "host-clarify"
+    server._sessions[sid] = {"history_lock": threading.Lock()}
+    calls = []
+    monkeypatch.setitem(
+        server._methods,
+        "clarify.respond",
+        lambda rid, params: calls.append((rid, dict(params))) or {"result": {"status": "ok"}},
+    )
+
+    try:
+        host._handle_respond(
+            {
+                "sid": sid,
+                "request_id": "relay-response",
+                "params": {"request_id": "clarify-request", "answer": "yes"},
+            }
+        )
+        assert calls == [("relay-response", {"request_id": "clarify-request", "answer": "yes"})]
+        frame = _json_lines(out)[-1]
+        assert frame == {
+            "type": "respond.ack",
+            "sid": sid,
+            "request_id": "relay-response",
+            "response": {"result": {"status": "ok"}},
+            "host_ns": frame["host_ns"],
+        }
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
 def test_mutator_route_table_matches_prd_inventory():
     assert MUTATOR_ROUTE_TABLE == {
         "prompt.submit": "turn-path",

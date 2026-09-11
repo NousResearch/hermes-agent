@@ -5,6 +5,12 @@ import fs from 'node:fs'
 // works against both the headless backend and old/dashboard runtimes.
 const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 
+// Same sentinel inside a MERGED stdout+stderr buffer (the spawn-time output tail, a remote
+// `>> log 2>&1` file): uvicorn's stderr chunks end without a newline, so the sentinel can be
+// spliced onto them (`...process [4711]HERMES_BACKEND_READY port=65238`) and `^` never lines up
+// (#103792). Match on a token boundary instead; `port=<digits>` keeps prose mentions out.
+export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/
+
 // The announcement clock starts the instant the backend process is spawned —
 // before uvicorn binds its socket. On a cold install the child must first
 // compile and import the whole `hermes_cli.main` → `web_server` → FastAPI/
@@ -51,8 +57,21 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs()) {
+function waitForDashboardPort(
+  child,
+  timeoutMs = resolvePortAnnounceTimeoutMs(),
+  describeOutputTail = () => '',
+  bufferedOutput: () => string = () => ''
+) {
   return new Promise((resolve, reject) => {
+    // Seed the line buffer with any output the spawn-time tail already
+    // consumed (#60323): main.ts attaches its output tail at spawn, then
+    // awaits claimBackendChild + advanceBootProgress BEFORE this listener
+    // attaches. child.stdout is in flowing mode from the tail's listener, so
+    // a READY line flushed during that window is emitted once and never
+    // replayed to late listeners — the wait then times out at 90s and a
+    // healthy backend is killed. Scanning the tail's buffer (and seeding any
+    // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
     let done = false
 
@@ -88,7 +107,7 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
 
     function onExit(code, signal) {
       cleanup()
-      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})`))
+      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})${describeOutputTail()}`))
     }
 
     function onError(err) {
@@ -104,6 +123,22 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
     child.stdout.on('data', onData)
     child.on('exit', onExit)
     child.on('error', onError)
+
+    // Listener is live — now recover a sentinel that was already flushed and
+    // consumed before this promise existed. The snapshot is taken AFTER the
+    // listener attaches, so no chunk can fall between snapshot and listener.
+    // Merged-buffer regex here (the tail interleaves both streams). Currently dormant: both
+    // main.ts callers attach the tail and build this wait in one synchronous block, so the
+    // snapshot is empty; any await reintroduced between them makes this the live path again.
+    if (!done) {
+      const alreadyBuffered = bufferedOutput()
+      const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
+
+      if (m) {
+        cleanup()
+        resolve(parseInt(m[1], 10))
+      }
+    }
   })
 }
 
@@ -122,7 +157,12 @@ function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
   }
 }
 
-function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnnounceTimeoutMs()) {
+function waitForDashboardReadyFile(
+  readyFile,
+  child,
+  timeoutMs = resolvePortAnnounceTimeoutMs(),
+  describeOutputTail = () => ''
+) {
   return new Promise((resolve, reject) => {
     let done = false
     let interval = null
@@ -154,7 +194,7 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
 
     function onExit(code, signal) {
       cleanup()
-      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})`))
+      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})${describeOutputTail()}`))
     }
 
     function onError(err) {
@@ -182,17 +222,28 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
 function waitForDashboardPortAnnouncement(
   child,
   options: {
-    readyFile?: fs.PathOrFileDescriptor
+    /**
+     * Returns the child's output buffered since SPAWN (the output tail's
+     * accumulated text, #60323). Scanned for an already-emitted READY
+     * sentinel so attaching this wait AFTER other awaits (backend claim,
+     * boot-progress IPC) can never lose the announcement: flowing-mode
+     * stdout never replays chunks to late listeners.
+     */
+    bufferedOutput?: () => string
+    /** Returns a formatted stdout/stderr tail suffix for exit errors (#93608). */
+    describeOutputTail?: () => string
+    readyFile?: fs.PathOrFileDescriptor | null
     timeoutMs?: number
   } = {}
 ) {
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
+  const describeOutputTail = options.describeOutputTail ?? (() => '')
 
   if (options.readyFile) {
-    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs)
+    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs, describeOutputTail)
   }
 
-  return waitForDashboardPort(child, timeoutMs)
+  return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.bufferedOutput ?? (() => ''))
 }
 
 export {

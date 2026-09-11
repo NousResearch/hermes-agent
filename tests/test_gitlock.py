@@ -26,10 +26,7 @@ import pytest
 from hermes_cli.gitlock import (
     LOCK_NAMES,
     STALE_LOCK_MIN_AGE_SECONDS,
-    STALE_TEMP_PACK_MIN_AGE_SECONDS,
-    clear_stale_git_artifacts,
     clear_stale_git_locks,
-    is_ancestor_of_head,
 )
 
 
@@ -116,87 +113,3 @@ def test_clear_noop_on_non_repo(tmp_path: Path) -> None:
 
 def test_clear_noop_with_no_locks(repo: Path) -> None:
     assert clear_stale_git_locks(repo) == []
-
-
-def test_clear_artifacts_removes_stale_fetch_temp_packs(
-    repo: Path, no_git_running: None
-) -> None:
-    pack_dir = repo / ".git" / "objects" / "pack"
-    pack_dir.mkdir(parents=True, exist_ok=True)
-    stale = pack_dir / "tmp_pack_abandoned"
-    young = pack_dir / "tmp_pack_active"
-    real_pack = pack_dir / "pack-deadbeef.pack"
-    _touch(stale, STALE_TEMP_PACK_MIN_AGE_SECONDS + 60)
-    _touch(young, 1)
-    _touch(real_pack, STALE_TEMP_PACK_MIN_AGE_SECONDS + 60)
-
-    removed = clear_stale_git_artifacts(repo)
-
-    assert str(stale) in removed
-    assert not stale.exists()
-    assert young.exists()
-    assert real_pack.exists()
-
-
-def test_clear_artifacts_can_remove_fresh_pack_after_failed_fetch(
-    repo: Path, no_git_running: None
-) -> None:
-    pack_dir = repo / ".git" / "objects" / "pack"
-    pack_dir.mkdir(parents=True, exist_ok=True)
-    abandoned = pack_dir / "tmp_pack_failed_fetch"
-    _touch(abandoned, 0)
-
-    removed = clear_stale_git_artifacts(repo, temp_pack_min_age_seconds=0)
-
-    assert removed == [str(abandoned)]
-    assert not abandoned.exists()
-
-
-def test_clear_artifacts_keeps_temp_packs_while_git_runs(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import hermes_cli.gitlock as gitlock
-
-    monkeypatch.setattr(gitlock, "_git_proc_running", lambda: True)
-    pack_dir = repo / ".git" / "objects" / "pack"
-    pack_dir.mkdir(parents=True, exist_ok=True)
-    abandoned = pack_dir / "tmp_pack_abandoned"
-    _touch(abandoned, STALE_TEMP_PACK_MIN_AGE_SECONDS + 60)
-
-    assert clear_stale_git_artifacts(repo) == []
-    assert abandoned.exists()
-
-
-def test_process_probe_failure_is_conservative(monkeypatch: pytest.MonkeyPatch) -> None:
-    import hermes_cli.gitlock as gitlock
-
-    monkeypatch.setattr(
-        gitlock.subprocess,
-        "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("probe unavailable")),
-    )
-
-    assert gitlock._git_proc_running() is True
-
-
-def test_is_ancestor_true_for_first_commit(repo: Path) -> None:
-    first = subprocess.run(
-        ["git", "rev-list", "--max-parents=0", "HEAD"],
-        cwd=repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert is_ancestor_of_head(repo, first) is True
-
-
-def test_is_ancestor_true_for_head_itself(repo: Path) -> None:
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert is_ancestor_of_head(repo, head) is True
-
-
-def test_is_ancestor_false_for_unknown_rev(repo: Path) -> None:
-    assert is_ancestor_of_head(repo, "deadbeef" * 5) is False
-
-
-def test_is_ancestor_false_for_nonexistent_repo(tmp_path: Path) -> None:
-    assert is_ancestor_of_head(tmp_path / "missing", "HEAD") is False

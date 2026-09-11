@@ -351,7 +351,7 @@ _FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFIL
                        "persists, restart the gateway to recover scheduling.")
 
 
-def _print_ticker_health(pids: list) -> None:
+def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
     The ticker THREAD can die silently or stay alive while every tick fails, so check both
@@ -377,11 +377,11 @@ def _print_ticker_health(pids: list) -> None:
         _warn("⚠ Gateway is running but the cron ticker has not reported a heartbeat.")
         print("  Cron jobs will NOT fire until the ticker writes its first heartbeat.\n"
               "  If the gateway just started, wait ~60s and re-run `hermes cron status`.\n"
-              "  If heartbeat never appears, restart: hermes gateway restart")
+              f"  If heartbeat never appears, restart: {restart_command}")
     elif hb_age > STALE_AFTER:  # ticker thread is gone
         _warn("⚠ Gateway is running but the cron ticker looks STALLED — "
               f"no heartbeat for {int(hb_age)}s (expected every ~60s).")
-        print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        print(f"  Cron jobs may NOT be firing. Restart: {restart_command}")
     elif ok_age is not None and ok_age > STALE_AFTER:  # loop alive but every tick fails
         _warn("⚠ Gateway and cron ticker are running, but no tick has "
               f"succeeded in {int(ok_age)}s — ticks may be failing.")
@@ -448,7 +448,9 @@ def cron_status():
         if pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
-            _print_ticker_health(pids)
+                _print_ticker_health(pids, restart_command="hermes --profile default gateway restart")
+            else:
+                _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
             # Desktop scheduling requires an open app and an awake machine.

@@ -49,6 +49,8 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
     output = capsys.readouterr().out
     assert ("Scheduler host: default-profile multiplexer" in output) == (mode in {"missing", "fresh", "stale"})
     assert ("will fire automatically" in output) == (mode in {"fresh", "local"})
+    if mode in {"missing", "stale"}:
+        assert "hermes --profile default gateway restart" in output
     if mode == "missing":
         assert "has not reported a heartbeat" in output
     if mode == "stale":

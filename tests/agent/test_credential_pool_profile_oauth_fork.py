@@ -314,6 +314,79 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
+def test_independent_codex_profile_credential_shadows_root_singleton(fleet):
+    """A profile-owned Codex grant must not re-import root's device-code grant."""
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    root_before = (root / "auth.json").read_bytes()
+
+    kid = _profile(fleet, "independent-codex")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "id": "own-codex",
+            "label": "profile-account",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "profile-AT",
+            "refresh_token": "profile-RT",
+        }]},
+    }))
+
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    selected = pool.peek()
+
+    assert [(entry.id, entry.refresh_token) for entry in pool.entries()] == [
+        ("own-codex", "profile-RT"),
+    ]
+    assert selected is not None
+    assert (selected.id, selected.refresh_token) == ("own-codex", "profile-RT")
+    profile_store = json.loads((kid / "auth.json").read_text())
+    assert [row["id"] for row in profile_store["credential_pool"]["openai-codex"]] == [
+        "own-codex",
+    ]
+    assert (root / "auth.json").read_bytes() == root_before
+
+
+def test_independent_codex_profile_refresh_sync_does_not_adopt_root_tokens(fleet):
+    """Pre-refresh sync must not replace a profile-owned grant from root state."""
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    root_before = (root / "auth.json").read_bytes()
+
+    kid = _profile(fleet, "independent-codex-sync")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "id": "own-codex",
+            "label": "profile-account",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": "profile-AT",
+            "refresh_token": "profile-RT",
+        }]},
+    }))
+
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    profile_entry = pool.entries()[0]
+    synced = pool._sync_entry_from_auth_store(profile_entry)
+
+    assert (synced.id, synced.refresh_token) == ("own-codex", "profile-RT")
+    assert (root / "auth.json").read_bytes() == root_before
+
+
 def test_classic_mode_persist_is_unchanged(fleet):
     from agent.credential_pool import load_pool
 

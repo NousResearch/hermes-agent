@@ -1236,8 +1236,20 @@ class CredentialPool(CredentialPoolAdminMixin):
             return entry
         try:
             with _auth_store_lock():
-                state = _load_provider_state(_load_auth_store(), self.provider)
-            tokens = state.get("tokens") if isinstance(state, dict) else None
+                auth_store = _load_auth_store()
+                state, source_path = _load_provider_state_with_source(auth_store, self.provider)
+            if (
+                is_codex
+                and entry.source == SOURCE_MANUAL_DEVICE_CODE
+                and source_path is not None
+                and not _same_path(source_path, auth_mod._auth_file_path())
+            ):
+                # An independently added profile grant has no singleton shadow. Root fallback
+                # state belongs to another owner and must never replace this entry before refresh.
+                return entry
+            if not isinstance(state, dict):
+                return entry
+            tokens = state.get("tokens")
             if not isinstance(tokens, dict):
                 return entry
             store_access = tokens.get("access_token", "")
@@ -2483,8 +2495,17 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     Codex CLI / VS Code causes refresh_token_reused races. Adoption is an
     explicit one-time prompt via `hermes auth openai-codex`.
     """
-    state = _load_provider_state(auth_store, seed.provider)
-    tokens = state.get("tokens") if isinstance(state, dict) else None
+    # A profile-owned pool shadows the root pool for this provider. Its singleton state must
+    # obey the same boundary; otherwise root's device-code grant is re-seeded into the profile
+    # and persisted beside an independently added credential, recreating a refresh-token fork.
+    state = (
+        auth_mod._provider_state_in(auth_store, seed.provider)
+        if _profile_owns_pool_provider(seed.provider)
+        else _load_provider_state(auth_store, seed.provider)
+    )
+    if not isinstance(state, dict):
+        return
+    tokens = state.get("tokens")
     if not (isinstance(tokens, dict) and tokens.get("access_token")):
         return
     if seed.provider == "openai-codex":

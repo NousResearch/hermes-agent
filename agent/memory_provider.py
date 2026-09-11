@@ -167,7 +167,10 @@ class MemoryProvider(ABC):
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
-        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name)."""
+        memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).
+        The tool's ``patch`` action arrives as 'replace' with
+        ``metadata['source_action'] == 'patch'`` and the regex in ``metadata['pattern']``;
+        ``content`` is then the full rewritten entry, not just the replaced span."""
 
     def backup_paths(self) -> List[str]:
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``

@@ -197,7 +197,8 @@ def recommended_entry(budget: HardwareBudget,
     (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
     the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
     candidate); fastest-resident (nothing resident clears the floor); least-painful-spilled
-    (nothing runs resident; fastest from host memory — MoE by construction).
+    (nothing runs resident; fastest from host memory — MoE by construction), or best-cpu-only
+    (the same host-memory comparison on a machine with no GPU device).
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -215,7 +216,8 @@ def recommended_entry(budget: HardwareBudget,
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
     if resident:
         return (max(resident, key=speed)[0], "fastest-resident")
-    return (max(fitting, key=lambda t: speed(t, spilled=True))[0], "least-painful-spilled")
+    reason = "best-cpu-only" if budget.total_device_bytes <= 0 else "least-painful-spilled"
+    return (max(fitting, key=lambda t: speed(t, spilled=True))[0], reason)
 
 
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─

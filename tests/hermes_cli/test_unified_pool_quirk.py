@@ -163,18 +163,41 @@ def test_budget_discrete_unchanged_when_probe_unavailable(monkeypatch):
     assert b.ram_available_bytes == UMA_RAM
 
 
+def test_budget_discrete_driver_survives_smi_failure(monkeypatch):
+    """A positive CUDA discrete verdict must not become a CPU-only budget when smi fails."""
+    _no_cache(monkeypatch)
+    total = 32 * GIB
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (64 * GIB, 48 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (total, False))
+
+    planning = hw.probe_budget(planning=True, platform_name="win32")
+    margin = max(hw._MARGIN_FLOOR, int(total * hw._MARGIN_FRACTION))
+    assert planning.total_device_bytes == total
+    assert planning.usable_vram_bytes == total - margin
+    assert planning.ram_available_bytes == 64 * GIB
+    assert planning.uma is False
+
+    live = hw.probe_budget(planning=False, platform_name="win32")
+    assert live.total_device_bytes == total
+    assert live.usable_vram_bytes == 0
+    assert live.ram_available_bytes == 48 * GIB
+    assert live.uma is False
+
+
 def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     """Engine-fallback view (no INTEGRATED verdict) + no smi numbers: the
     disagreement gate has nothing to compare against, so the quirk stays
-    off and budgeting falls to the conservative RAM-as-UMA path — an
-    attribute-less pool claim alone must never flip the verdict."""
+    off and budgeting falls to the CPU path — an attribute-less pool claim
+    alone must never invent GPU or unified-memory capacity."""
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, None))
-    b = hw.probe_budget(planning=True)
-    assert b.uma is True
-    assert b.total_device_bytes == UMA_RAM  # RAM path, not the pool
+    b = hw.probe_budget(planning=True, platform_name="win32")
+    assert b.uma is False
+    assert b.total_device_bytes == 0
+    assert b.ram_available_bytes == int(UMA_RAM * (1 - hw._UMA_HEADROOM_FRACTION))
 
 
 def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):

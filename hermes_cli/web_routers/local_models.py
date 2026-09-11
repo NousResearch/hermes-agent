@@ -522,10 +522,12 @@ _QUANT_REASONS = {
                   "runs fully on your GPU"),
 }
 _QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larger than GPU memory, runs slower"
+_QUANT_REASON_CPU = "Best CPU build for this machine ({quant}) — runs from system RAM"
 
 
 def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
     choice = catalog.select_variant(entry, budget)
+    cpu_only = budget.total_device_bytes <= 0
     # Any variant of this family on disk counts as downloaded.
     dl = next((v for v in entry.variants if v.model_id in staged_ids), None)
     row: Dict[str, Any] = {
@@ -547,7 +549,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
             "fits": False, "size_bytes": smallest_total, "size_label": _human_gb(smallest_total),
             "fit_summary": "Needs more memory than this machine has",
             "fit_detail": (f"even the most compact build ({smallest.quant}, {_human_gb(smallest_total)}) "
-                           "exceeds GPU + system memory"),
+                           + ("exceeds available system memory" if cpu_only else "exceeds GPU + system memory")),
         })
         return row
 
@@ -563,7 +565,8 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         "fits": True, "model_id": variant.model_id, "quant": variant.quant,
         "quant_validated": variant.validated, "size_bytes": download_total,
         "size_label": _human_gb(download_total), "variant_count": len(entry.variants),
-        "quant_reason": _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT).format(quant=variant.quant),
+        "quant_reason": (_QUANT_REASON_CPU if cpu_only else
+                         _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT)).format(quant=variant.quant),
     })
     if isinstance(decision, estimator.PhysicsRefusal):
         row["fit_summary"] = row["quant_reason"]
@@ -573,7 +576,10 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         shape = f"runs at its full {row['native_context_label']} context"
     else:
         shape = f"starts at {row['start_window_label']} and grows toward {row['native_context_label']} as you use it"
-    row["fit_summary"] = shape + (" (larger than your GPU memory — runs slower)" if decision.spilled else "")
+    if decision.spilled:
+        shape += (" (runs from system RAM — CPU inference is slower)" if cpu_only
+                  else " (larger than your GPU memory — runs slower)")
+    row["fit_summary"] = shape
     return row
 
 

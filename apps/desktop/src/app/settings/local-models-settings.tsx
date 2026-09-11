@@ -530,10 +530,12 @@ export function LocalModelsSettings() {
               </span>
             )}
 
-            <span className="inline-flex items-center gap-1.5">
-              <Cpu className="size-3.5" />
-              {copy.vram(gbLabel(hardware.vram_total_bytes))}
-            </span>
+            {hardware.vram_total_bytes > 0 && (
+              <span className="inline-flex items-center gap-1.5">
+                <Cpu className="size-3.5" />
+                {copy.vram(gbLabel(hardware.vram_total_bytes))}
+              </span>
+            )}
 
             <span className="inline-flex items-center gap-1.5">
               <Package className="size-3.5" />

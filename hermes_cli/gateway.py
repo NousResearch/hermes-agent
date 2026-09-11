@@ -2603,6 +2603,33 @@ def get_python_path() -> str:
         venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
             return str(venv_python)
+        # Issue #95169: when the venv directory was detected but its
+        # ``python[.exe]`` is absent (e.g. Hermes' managed
+        # ``.hermes-runtime/python`` store is missing or the venv symlink
+        # target was deleted), pre-fix code silently fell through to
+        # ``sys.executable`` — typically a uv-managed Python under
+        # ``~/.local/bin`` with a *different* SQLite version than Hermes'
+        # design/tested one. That drift corrupts WAL state.db because the
+        # same DB is opened by two different SQLite builds.
+        #
+        # Surface the gap explicitly so the operator repairs the runtime
+        # (rebuild the venv, reinstall ``.hermes-runtime/python``, or
+        # ``hermes update``) instead of inheriting an unreported version
+        # drift. Falling back to ``sys.executable`` here would silently
+        # re-introduce the bug.
+        raise RuntimeError(
+            f"Hermes venv detected at {venv} but its Python interpreter is "
+            f"missing at {venv_python}. The venv symlink target or "
+            f"``.hermes-runtime/python`` is gone; Hermes will NOT silently "
+            f"fall back to {sys.executable} because doing so can open "
+            f"state.db with a different SQLite version and corrupt the WAL "
+            f"(issue #95169). This can also fire when the project-root probe "
+            f"merely found a stray or partial ``.venv``/``venv`` directory "
+            f"while Hermes runs from a different interpreter — if that "
+            f"directory is unrelated to your runtime, remove or repair it. "
+            f"Repair the runtime: run ``hermes update`` or recreate the venv "
+            f"via ``scripts/install.ps1 -Stage venv``."
+        )
     return sys.executable
 
 

@@ -14,7 +14,7 @@ def test_is_zeroed_state_db_and_quarantine(tmp_path):
     db.write_bytes(bytes(1024))
     assert hs.is_zeroed_state_db(db) is True
 
-    q = hs.quarantine_zeroed_state_db(db)
+    q = hs.quarantine_invalid_state_db(db)
     assert q is not None
     assert q.exists()
     assert not db.exists()
@@ -61,6 +61,41 @@ def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
         sdb.close()
 
 
+def test_sessiondb_quarantines_page_zero_clobber_before_open(tmp_path, monkeypatch):
+    """#102198: preserve a non-SQLite page 0 instead of opening degraded."""
+    import sqlite3
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    clobbered = (b"bg_032237_0e4ce7A" * 256)[:4096]
+    db.write_bytes(clobbered)
+    (tmp_path / "state.db-wal").write_bytes(b"wal evidence")
+    (tmp_path / "state.db-shm").write_bytes(b"shm evidence")
+
+    assert hs.has_invalid_sqlite_header_preopen(db) is True
+    assert hs.is_zeroed_state_db(db) is False
+
+    sdb = hs.SessionDB(db_path=db)
+    try:
+        backups = list(tmp_path.glob("state.db.notadb-*.bak"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == clobbered
+        assert Path(str(backups[0]) + "-wal").read_bytes() == b"wal evidence"
+        assert Path(str(backups[0]) + "-shm").read_bytes() == b"shm evidence"
+        assert db.read_bytes().startswith(b"SQLite format 3\x00")
+        sdb.create_session(session_id="after-quarantine", source="test")
+    finally:
+        sdb.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        conn.close()
+
+
 def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):
     """#97568: a 0-byte file must be detected as zeroed and quarantined."""
     import hermes_state as hs
@@ -90,7 +125,6 @@ def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):
         assert row_created is not None and row_created[0]
     finally:
         sdb.close()
-
 
 
 def test_concurrent_quarantine_no_clobber(tmp_path):
@@ -181,19 +215,23 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
         try:
             if platform.system() == "Windows":
                 import msvcrt
+
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             lock_held.set()
             release_lock.wait(timeout=15)
             if platform.system() == "Windows":
                 import msvcrt
+
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:
             lock_held.clear()
@@ -207,11 +245,11 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
     # Reduce the quarantine lock timeout to keep the test fast. We patch
     # the deadline by calling quarantine directly — it uses a 5s timeout,
     # but we only need to verify it returns None without moving the file.
-    result = hs.quarantine_zeroed_state_db(db)
+    result = hs.quarantine_invalid_state_db(db)
 
     # Must fail closed: return None without moving the zeroed file
     assert result is None, (
-        f"quarantine_zeroed_state_db returned {result} — expected None "
+        f"quarantine_invalid_state_db returned {result} — expected None "
         f"(fail-closed when lock is held)"
     )
     assert db.exists(), "Zeroed state.db was moved despite lock being held"
@@ -298,4 +336,3 @@ def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch
         conn.commit()
     finally:
         conn.close()
-

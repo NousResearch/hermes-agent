@@ -39,7 +39,7 @@ export function isCardTool(toolName: string): boolean {
 // dedicated panel above the message content, and a reaction's UI is the emoji
 // landing on the bubble. Both still render when they FAIL, which is a bounded
 // error row either way.
-const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo'])
+const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo', 'todo_list'])
 
 export function isSilentTool(toolName: string): boolean {
   return SILENT_TOOL_NAMES.has(toolName)

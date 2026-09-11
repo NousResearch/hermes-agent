@@ -7,7 +7,7 @@
  * that Appearance settings and ⌘K should be able to drive too, while the
  * statusbar picker is an authoring tool most users never need.
  *
- * Ships OFF (`defaultEnabled: false`): it inventories in Settings ▸ Plugins and
+ * Ships OFF (`defaultEnabled: false`): it inventories in Capabilities ▸ Plugins and
  * registers nothing until the switch is flipped. With it off, `$accentOverride`
  * stays null and `retintTheme` is never called — themes paint exactly as
  * authored.

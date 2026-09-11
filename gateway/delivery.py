@@ -43,6 +43,7 @@ class DeliveryTransport:
     adapter: Any
     config: Optional[PlatformConfig]
     transport_platform: Platform
+    forwarded: bool = False
 
     @property
     def is_relay(self) -> bool:
@@ -52,7 +53,7 @@ class DeliveryTransport:
                    metadata: Optional[Dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
-                      if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
+                      if self.forwarded else self.adapter.send(chat_id, content, metadata=metadata))
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
@@ -71,7 +72,14 @@ def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
     fronts_platform = getattr(relay, "fronts_platform", None)
     if (relay is not None and (relay_config is None or relay_config.enabled)
             and callable(fronts_platform) and fronts_platform(platform)):
-        return DeliveryTransport(relay, relay_config, Platform.RELAY)
+        return DeliveryTransport(relay, relay_config, Platform.RELAY, forwarded=True)
+    for transport_platform, adapter in live_adapters.items():
+        fronts_platform = getattr(adapter, "fronts_platform", None)
+        if not callable(fronts_platform) or not fronts_platform(platform):
+            continue
+        transport_config = config.platforms.get(transport_platform)
+        if transport_config is None or transport_config.enabled:
+            return DeliveryTransport(adapter, transport_config, transport_platform, forwarded=True)
     return None
 
 

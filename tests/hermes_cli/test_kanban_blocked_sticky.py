@@ -77,6 +77,41 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_post_hoc_explicit_block_pins_a_dispatcher_parked_card(kanban_home: Path) -> None:
+    """#102545: an explicit post-hoc block (operator ``kanban block
+    --kind capability``) must pin a card the dispatcher already parked —
+    breaker/crash auto-blocks sit in ``blocked`` behind only a ``gave_up``
+    event (NOT sticky) and dependency waits sit in ``todo``. Before the fix
+    ``block_task`` refused both, so the operator's gate was never recorded
+    and the next ``recompute_ready`` (first tick after a gateway restart)
+    auto-released the card with no explicit unblock."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="gate across restart")
+        # Simulate the breaker after a restart crash wave: status='blocked',
+        # only a gave_up event -> auto-recoverable, NOT sticky.
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = 0 "
+            "WHERE id = ?", (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)", (tid, int(time.time())),
+        )
+        conn.commit()
+
+        # Operator's post-hoc explicit gate must land as a sticky blocked event.
+        assert kb.block_task(conn, tid, reason="hold until merge lands", kind="capability")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        # First dispatcher tick after the restart must not release the gate.
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert kinds[-1] == "blocked"
+
+
 
 
 # ---------------------------------------------------------------------------

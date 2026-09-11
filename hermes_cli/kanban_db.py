@@ -2909,7 +2909,18 @@ def block_task(
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
-    so a forever-flaky task escalates. True on any transition."""
+    so a forever-flaky task escalates. True on any transition.
+
+    A post-hoc explicit block (operator CLI / dashboard, or a worker on its
+    own card) may also PIN a card the dispatcher already parked: breaker /
+    crash auto-blocks sit in ``blocked`` behind only a ``gave_up`` event (NOT
+    sticky, so they auto-recover) and dependency waits sit in ``todo`` —
+    refusing those left the operator's gate unrecorded, and the next
+    ``recompute_ready`` (first tick after a gateway restart) auto-released the
+    card with no explicit unblock (#102545). Human kinds (``None`` included)
+    re-block from ``blocked``/``todo`` so the gate lands as a sticky
+    ``blocked`` event; ``dependency`` still routes only from ``running``/
+    ``ready`` — a worker must not silently demote an operator's gate."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -2923,6 +2934,11 @@ def block_task(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
         )
+        if kind == "dependency":
+            source_statuses = ("running", "ready")
+        else:
+            source_statuses = ("running", "ready", "blocked", "todo")
+        in_list = ", ".join("'" + s + "'" for s in source_statuses)
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -2931,7 +2947,7 @@ def block_task(
                        worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ({in_list})
                 """
         params = (*params, task_id)
         if expected_run_id is not None:

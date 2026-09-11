@@ -514,6 +514,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
+    if is_shallow:
+        # Each depth-1 fetch appends the fetched tip to .git/shallow and never removes
+        # the tip it replaced, so an installer checkout grows the graft list by one line
+        # per check (#105951). Bound it: drop grafts no live ref points at anymore.
+        pruned = _prune_stale_shallow_grafts(git_cmd)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by earlier depth-1 fetches)")
+
     # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
     verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
     if verify_result.returncode != 0:
@@ -546,6 +554,56 @@ def _base_git_cmd() -> list[str]:
 
 def _is_shallow_checkout(git_cmd) -> bool:
     return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+
+
+def _prune_stale_shallow_grafts(git_cmd, cwd=None) -> int:
+    """Bound ``.git/shallow`` growth on shallow checkouts (#105951); returns lines removed.
+
+    Every ``fetch --depth 1`` appends the fetched tip to ``.git/shallow`` as a graft and
+    never removes the tip it replaced, so an installer checkout accumulates one graft line
+    per update check. Keep only the boundaries that still protect referenced tips (HEAD,
+    FETCH_HEAD, and every ref tip); the dropped commits are already unreachable. Never
+    raises, and restores the original file when the post-trim walk self-check fails — a
+    growing file beats a broken repo.
+    """
+    def _lines(args: list[str]) -> list[str]:
+        result = _git_run(git_cmd, args, cwd=cwd)
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    try:
+        shallow_rel = _lines(["rev-parse", "--git-path", "shallow"])
+        if not shallow_rel:
+            return 0
+        shallow_path = Path(shallow_rel[0])
+        if not shallow_path.is_absolute():
+            shallow_path = Path(cwd) if cwd is not None else _m().PROJECT_ROOT
+            shallow_path = shallow_path / shallow_rel[0]
+        if not shallow_path.is_file():
+            return 0
+        lines = [ln for ln in shallow_path.read_text(encoding="utf-8").splitlines() if ln]
+        if not lines:
+            return 0
+        keep = set(lines) & {
+            *_lines(["rev-parse", "HEAD"]),
+            *_lines(["rev-parse", "--verify", "--quiet", "FETCH_HEAD"]),
+            *_lines(["for-each-ref", "--format=%(objectname)"]),
+        }
+        if len(keep) == len(lines):
+            return 0
+        original = shallow_path.read_text(encoding="utf-8")
+        tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-prune")
+        tmp_path.write_text("\n".join(sorted(keep)) + "\n", encoding="utf-8")
+        os.replace(tmp_path, shallow_path)
+        if not (_lines(["rev-list", "--count", "HEAD"]) and _lines(["rev-list", "--count", "--all"])):
+            shallow_path.write_text(original, encoding="utf-8")
+            logger.debug("shallow graft prune self-check failed; grafts restored")
+            return 0
+        return len(lines) - len(keep)
+    except Exception:
+        logger.debug("shallow graft prune failed", exc_info=True)
+        return 0
 
 
 def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:

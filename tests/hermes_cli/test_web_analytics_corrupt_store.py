@@ -44,7 +44,12 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "state_db_corrupt"
         assert "hermes doctor" in resp.json()["detail"]["message"]
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    # Only the dashboard's own warning counts: hermes_state logs an unrelated
+    # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
+    warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.startswith("hermes_cli.web_server")
+    ]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
     assert not any(r.exc_info for r in caplog.records), "no tracebacks for a known corrupt store"
     assert db_path.exists() and db_path.stat().st_size > 0, "dashboard must never quarantine the file"
@@ -54,4 +59,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
         assert client.get("/api/analytics/usage?days=7").status_code == 503
-    assert sum(r.levelno >= logging.WARNING for r in caplog.records) == 1
+    assert sum(
+        r.levelno >= logging.WARNING and r.name.startswith("hermes_cli.web_server")
+        for r in caplog.records
+    ) == 1

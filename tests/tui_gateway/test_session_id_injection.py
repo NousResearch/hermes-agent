@@ -37,7 +37,14 @@ class _FakeAgent:
         self.session_id = session_id
 
 
-def _install_session(monkeypatch, *, session_key, agent_session_id, source="cli"):
+def _install_session(
+    monkeypatch,
+    *,
+    session_key,
+    agent_session_id,
+    source="cli",
+    profile_home=None,
+):
     """Register a fake session in server._sessions for the duration of a test."""
     sess = {
         "session_key": session_key,
@@ -45,6 +52,8 @@ def _install_session(monkeypatch, *, session_key, agent_session_id, source="cli"
         "agent": _FakeAgent(agent_session_id) if agent_session_id is not None else None,
         "cwd": "/home/user",
     }
+    if profile_home is not None:
+        sess["profile_home"] = str(profile_home)
     monkeypatch.setattr(server, "_sessions", {session_key: sess}, raising=False)
     return sess
 
@@ -70,3 +79,30 @@ def test_set_session_context_falls_back_to_session_key(monkeypatch):
     assert get_session_env("HERMES_SESSION_ID") == "skey-xyz"
 
 
+def test_set_session_context_injects_session_profile(tmp_path, monkeypatch):
+    """A non-launch Desktop session exports its own profile name to tools."""
+    profile_home = tmp_path / "profiles" / "work"
+    _install_session(
+        monkeypatch,
+        session_key="skey-work",
+        agent_session_id="session-work",
+        profile_home=profile_home,
+    )
+
+    server._set_session_context("skey-work")
+
+    assert get_session_env("HERMES_SESSION_PROFILE") == "work"
+
+
+def test_set_session_context_uses_launch_profile_without_override(monkeypatch):
+    """Launch-profile sessions also receive a non-empty profile identity."""
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    _install_session(
+        monkeypatch,
+        session_key="skey-default",
+        agent_session_id="session-default",
+    )
+
+    server._set_session_context("skey-default")
+
+    assert get_session_env("HERMES_SESSION_PROFILE") == "default"

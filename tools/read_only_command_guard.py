@@ -254,74 +254,101 @@ def _validate_systemctl(argv: list[str]) -> GuardResult:
     return _deny(f"systemctl {sub}", f"systemctl verb '{sub}' is not in the read-only allowlist")
 
 
-_JOURNALCTL_DENIED_FLAGS = {
-    "--rotate",
-    "--vacuum-time",
-    "--vacuum-size",
-    "--vacuum-files",
-    "--flush",
-    "--sync",
-    "--relinquish-var",
-    "--setup-keys",
-}
+_JOURNALCTL_ALLOWED_BOOLEAN_FLAGS = frozenset({"--no-pager"})
+_JOURNALCTL_ALLOWED_VALUE_FLAGS = frozenset({
+    "-u", "--unit", "--since", "--until", "-p", "--priority",
+})
 
 
 def _validate_journalctl(argv: list[str]) -> GuardResult:
-    for tok in argv[1:]:
-        flag = tok.split("=", 1)[0]
-        if flag in _JOURNALCTL_DENIED_FLAGS:
-            return _deny("journalctl", f"'{flag}' is an administrative (mutating) journalctl flag — denied")
+    """Allowlist-first, not a denylist: an earlier version denied a fixed
+    set of administrative flags (--rotate, --vacuum-*, --flush, --sync,
+    --relinquish-var, --setup-keys) by exact string match. journalctl uses
+    GNU getopt_long, which accepts any UNAMBIGUOUS PREFIX of a long option
+    (confirmed against the real binary: `journalctl --vacuum-tim=1s` is
+    accepted as `--vacuum-time=1s`) — so `--rotat`, `--vacuum-s=1M`,
+    `--flus`, `--sy`, `--relinquish-va` all slipped past an exact-match
+    denylist while still resolving to the exact denied flag at runtime.
+    An allowlist of the handful of flags the tool actually needs has no
+    such gap: an abbreviation of an unlisted flag still isn't a match for
+    anything in the allowed set, denied or not."""
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        flag, sep, value = tok.partition("=")
+        if flag in _JOURNALCTL_ALLOWED_BOOLEAN_FLAGS:
+            pass
+        elif flag in _JOURNALCTL_ALLOWED_VALUE_FLAGS:
+            if not sep and i + 1 < len(args) and not args[i + 1].startswith("-"):
+                i += 1  # space-separated value form, e.g. `-u NAME`
+        elif len(tok) > 2 and tok[:2] in ("-u", "-p") and not tok.startswith("--"):
+            pass  # attached short form, e.g. `-uNAME`
+        else:
+            return _deny("journalctl", f"'{flag}' is not in the read-only journalctl allowlist")
+        i += 1
     return _allow()
 
 
-_CURL_DENIED_LONG_FLAGS = {
-    "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii",
-    "--form", "--form-string",
-    "--upload-file",
-    "--output",
-    "--config",
-    "--remote-name", "--remote-name-all",
-    "--cookie-jar",  # writes cookies to a file — a write primitive, same class as --output
-    "--dump-header",  # writes response headers to a file — same class
-    "--json",  # implies --data + POST, curl >= 7.82 (not on this host today, but denied regardless)
-}
+# Boolean curl short flags with no security-relevant effect at all — none
+# of these read, write, or execute anything; they only affect what curl
+# itself prints or how it negotiates the connection.
+_CURL_ALLOWED_SHORT_LETTERS = frozenset("sSfIiLkv46")
 
-# Single-character curl short flags mapped to their long form, for
-# per-character scanning of a clustered short-option token (see
-# `_validate_curl`'s docstring for why a whole-token `tok[:2]` check is not
-# enough).
-_CURL_DENIED_SHORT_LETTERS = {
-    "d": "--data",
-    "F": "--form",
-    "T": "--upload-file",
-    "o": "--output",
-    "O": "--remote-name",
-    "K": "--config",
-    "c": "--cookie-jar",
-    "D": "--dump-header",
-}
+# Boolean curl long flags, same criteria as the short set above.
+_CURL_ALLOWED_LONG_BOOLEAN_FLAGS = frozenset({
+    "--silent", "--show-error", "--fail", "--head", "--include",
+    "--location", "--insecure", "--verbose", "--ipv4", "--ipv6",
+    "--compressed",
+})
+
+# Value-taking flags that are safe to allow: -H only shapes the outbound
+# request (never reads/writes a file, never sets a mutating HTTP method).
+_CURL_ALLOWED_VALUE_LONG_FLAGS = frozenset({"--header"})
 
 
 def _validate_curl(argv: list[str]) -> GuardResult:
-    """curl allows bundling boolean short flags together (`-sS`) and lets
-    the LAST relevant flag in a cluster consume the remainder of that same
-    token as its value — `-sSXPOST` is exactly `-s -S -X POST`. An earlier
-    version of this validator only ever looked at a token's first flag
-    character (`tok[:2]`), so any innocuous flag prefix (`-s`, `-S`, `-f`,
-    ...) hid every denied flag or `-X` placed after it in the same token —
-    `curl -sSXPOST url` and `curl -so/tmp/pwned url` both slipped through
-    fully allowed. This scans every character of a short-option cluster,
-    not just the first."""
+    """Allowlist-first, not a denylist. Three consecutive fix attempts at
+    denylisting dangerous curl flags were each bypassed by a new spelling
+    of the same flag:
+
+    1. A whole-token `tok[:2]` check missed every denied flag placed after
+       a harmless flag in the same clustered short-option token
+       (`-sSXPOST` == `-s -S -X POST` to curl, but denylisted only
+       `tok[:2]` == "-s").
+    2. Per-character cluster scanning closed that, but curl's OWN long-
+       option parser is case-insensitive AND accepts any unambiguous
+       PREFIX of a long flag (confirmed against the real binary: `curl
+       --dat` errors "is ambiguous", but `curl --data-b` resolves cleanly
+       to `--data-binary`) — neither was handled, so `--DATA`, `--data-b`,
+       `--uploa`, `--confi`, `--remote-n`, etc. all bypassed an
+       exact-string denylist while curl still executed them as the flag
+       they abbreviate.
+    3. The denied set also only ever covered the flags anticipated at the
+       time — `--trace`, `--libcurl`, `--stderr`, `--hsts`, `--alt-svc`
+       (all real file-write primitives) were simply never enumerated.
+
+    An allowlist has none of these problems by construction: a flag is
+    permitted only if it EXACTLY matches one of a small, fully-enumerated
+    safe set below. Any case variant, any abbreviation, and any flag added
+    to curl after this code was written are all denied the same way —
+    by not being an exact match — with no need to track curl's own
+    expansion/case rules at all. This mirrors `_validate_openssl` in this
+    same module, which already used an allowlist rather than a denylist.
+    """
     args = argv[1:]
     method = "GET"
     i = 0
     while i < len(args):
         tok = args[i]
         if tok.startswith("--"):
-            flag, _, value = tok.partition("=")
-            if flag in _CURL_DENIED_LONG_FLAGS:
-                return _deny("curl", f"'{flag}' is not permitted (body-bearing/config/output-file curl option)")
-            if flag == "--request":
+            flag, sep, value = tok.partition("=")
+            if flag in _CURL_ALLOWED_LONG_BOOLEAN_FLAGS:
+                pass
+            elif flag in _CURL_ALLOWED_VALUE_LONG_FLAGS:
+                if not sep and i + 1 < len(args):
+                    i += 1  # space-separated value form
+            elif flag == "--request":
                 if value:
                     method = value
                 elif i + 1 < len(args):
@@ -329,17 +356,21 @@ def _validate_curl(argv: list[str]) -> GuardResult:
                     i += 1
                 else:
                     return _deny("curl", "--request with no value")
+            else:
+                return _deny("curl", f"'{flag}' is not in the read-only curl allowlist")
         elif tok.startswith("-") and len(tok) > 1:
             chars = tok[1:]
             j = 0
             while j < len(chars):
                 c = chars[j]
-                if c in _CURL_DENIED_SHORT_LETTERS:
-                    return _deny(
-                        "curl",
-                        f"'-{c}' ({_CURL_DENIED_SHORT_LETTERS[c]}) is not permitted "
-                        "(body-bearing/config/output-file curl option)",
-                    )
+                if c in _CURL_ALLOWED_SHORT_LETTERS:
+                    j += 1
+                    continue
+                if c == "H":
+                    inline_value = chars[j + 1 :]
+                    if not inline_value and i + 1 < len(args):
+                        i += 1
+                    break  # rest of the cluster (or the next token) is -H's value
                 if c == "X":
                     inline_value = chars[j + 1 :]
                     if inline_value:
@@ -349,8 +380,8 @@ def _validate_curl(argv: list[str]) -> GuardResult:
                         i += 1
                     else:
                         return _deny("curl", "-X with no value")
-                    break  # the rest of the cluster is -X's value, not more flags
-                j += 1
+                    break  # rest of the cluster is -X's value, not more flags
+                return _deny("curl", f"'-{c}' is not in the read-only curl allowlist")
         i += 1
     if method.upper() not in ("GET", "HEAD"):
         return _deny("curl", f"method '{method}' is not GET/HEAD")

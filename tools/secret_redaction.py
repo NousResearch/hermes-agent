@@ -51,6 +51,31 @@ _NAME_KEY_SEP_PATTERN = re.compile(
 )
 
 
+def _find_unescaped_char(line: str, char: str, start: int) -> int:
+    """Find the first occurrence of ``char`` at/after ``start`` that is NOT
+    escaped by a preceding backslash (an odd number of consecutive
+    preceding backslashes means it IS escaped, matching standard JSON/shell
+    escaping — ``\\"`` is an escaped quote, ``\\\\"`` is an escaped
+    backslash followed by a real quote). A naive ``str.find`` would treat
+    the first literal quote character as the closing one even when it's
+    escaped inside a JSON string, cutting the value short and leaving
+    everything after it — including the rest of the secret — in plaintext.
+    Returns -1 if no unescaped occurrence exists."""
+    idx = start
+    while True:
+        idx = line.find(char, idx)
+        if idx == -1:
+            return -1
+        backslashes = 0
+        j = idx - 1
+        while j >= 0 and line[j] == "\\":
+            backslashes += 1
+            j -= 1
+        if backslashes % 2 == 0:
+            return idx
+        idx += 1
+
+
 def _redact_name_value_pairs(line: str) -> str:
     """Redact every secret-shaped ``NAME=value`` / ``"NAME": "value"``
     occurrence in ``line``, choosing how far the value extends based on
@@ -58,7 +83,7 @@ def _redact_name_value_pairs(line: str) -> str:
     character:
 
     - ``"NAME": "value"`` / ``NAME: 'value'`` — value ends at the matching
-      quote that opened right after the separator.
+      (unescaped) quote that opened right after the separator.
     - ``"NAME=value"`` (the docker-inspect env-array shape: the whole
       ``KEY=value`` pair sits inside one JSON string) — value ends at the
       same quote that opened right before the key, i.e. the redaction is
@@ -77,7 +102,7 @@ def _redact_name_value_pairs(line: str) -> str:
         value_start = m.end()
         terminator = m.group("value_quote") or m.group("lead_quote")
         if terminator:
-            close_idx = line.find(terminator, value_start)
+            close_idx = _find_unescaped_char(line, terminator, value_start)
             value_end = close_idx if close_idx != -1 else len(line.rstrip("\n"))
         else:
             value_end = len(line.rstrip("\n"))

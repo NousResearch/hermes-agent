@@ -157,6 +157,38 @@ class TestDelimiterContainingSecretValues:
         assert "part2" not in redact_text("APP_SESSION_SECRET=part1;part2")
         assert "abc" not in redact_text("TOKEN={abc}")
 
+
+class TestEscapedQuoteInValueFullyRedacted:
+    """Regression: the quote-boundary fix above used a naive `str.find` for
+    the closing quote, which matches an ESCAPED quote (`\\"` inside a JSON
+    string) exactly as if it were the real terminator — cutting the
+    redaction short and leaving everything after it, including the rest of
+    the secret, in plaintext. `docker inspect` emits valid JSON, so any
+    real secret containing a literal double-quote arrives in exactly this
+    escaped form. Same bug class as TestDelimiterContainingSecretValues
+    above, different trigger character."""
+
+    def test_docker_inspect_shape_with_escaped_quote_in_value(self):
+        line = '        "DB_PASSWORD=pa\\"ssTAILLEAK123",'
+        result = redact_text(line)
+        assert "TAILLEAK123" not in result
+        assert "pa" not in result or "[REDACTED]" in result
+
+    def test_json_value_with_escaped_quote(self):
+        line = '{"PASSWORD": "it\\"s complicated xyz789"}'
+        result = redact_text(line)
+        assert "xyz789" not in result
+        assert "complicated" not in result
+
+    def test_double_escaped_backslash_before_quote_is_a_real_terminator(self):
+        # Two backslashes means the backslash itself is escaped, so the
+        # quote that follows it IS a real, unescaped closing quote — this
+        # must still bound the value correctly, not be misread as escaped.
+        line = '{"API_KEY": "value\\\\"}extra_after_close'
+        result = redact_text(line)
+        assert "value" not in result
+        assert "extra_after_close" in result
+
     def test_benign_substring_not_falsely_flagged_by_boundary(self):
         # "SOMETOKENISH" contains "TOKEN" but isn't secret-shaped on its
         # own without a following separator+value — nothing here should

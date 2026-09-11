@@ -21,19 +21,13 @@ import {
   useNavigate,
 } from "react-router";
 import {
-  Activity,
   BarChart3,
   BookOpen,
   Clock,
-  Code,
   Cpu,
-  Database,
   Download,
-  Eye,
   FolderOpen,
   FileText,
-  Globe,
-  Heart,
   KeyRound,
   Menu,
   MessageSquare,
@@ -45,16 +39,12 @@ import {
   Radio,
   RotateCw,
   Settings,
-  Shield,
   ShieldCheck,
-  Sparkles,
-  Star,
   Terminal,
   Users,
   Webhook,
   Wrench,
   X,
-  Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -223,9 +213,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
 ];
 
+// Plugin-tab icons resolve from the statically-imported built-in set so
+// the shell doesn't drag in the full lucide catalog for rarely-used
+// glyphs. Unknown names fall back to Puzzle.
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
-  Activity,
   BarChart3,
+  BookOpen,
   Clock,
   Cpu,
   FileText,
@@ -235,18 +228,9 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Package,
   Settings,
   Puzzle,
-  Sparkles,
   Terminal,
-  Globe,
-  Database,
-  Shield,
   Users,
   Wrench,
-  Zap,
-  Heart,
-  Star,
-  Code,
-  Eye,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {

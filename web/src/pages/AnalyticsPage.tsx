@@ -180,8 +180,11 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 key={d.day}
                 className="flex-1 min-w-0 group relative flex flex-col justify-end"
                 style={{ height: CHART_HEIGHT_PX }}
+                tabIndex={0}
+                role="img"
+                aria-label={`${formatDate(d.day)}: ${t.analytics.input} ${formatTokens(d.input_tokens)}, ${t.analytics.output} ${formatTokens(d.output_tokens)}, ${t.analytics.total} ${formatTokens(total)}`}
               >
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
+                <div role="tooltip" className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block group-focus-within:block z-10 pointer-events-none">
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>

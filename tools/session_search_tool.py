@@ -91,17 +91,116 @@ def _is_compaction_summary(content: str) -> bool:
 def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
     """Walk parent_session_id to the root -> ``(root_id, has_compression_hop)``; the flag
     separates a compression-split lineage (parent summarised away) from a delegation
-    lineage (child still visible to the parent)."""
+    lineage (child still visible to the parent). Depth-bounded (25 hops)."""
     visited: set[str] = set()
     cur, has_compression = session_id, False
-    while cur and cur not in visited:
+    depth = 0
+    while cur and cur not in visited and depth < 25:
         visited.add(cur)
+        depth += 1
         s = _get_session_meta(db, cur)
         has_compression = has_compression or s.get("end_reason") == "compression"
         if not s.get("parent_session_id"):
             break
         cur = s["parent_session_id"]
     return cur, has_compression
+
+
+def _batch_parent_map(db, session_ids) -> Optional[Dict[str, Any]]:
+    """``{id: parent_session_id}`` via a single ``WHERE id IN`` query; None when
+    the fast path is unavailable (non-SQL store) so callers fall back to
+    per-id lookups."""
+    ids = [s for s in dict.fromkeys(session_ids) if s]
+    if not ids:
+        return {}
+    try:
+        conn = getattr(db, "_conn", None)
+        if conn is None:
+            return None
+        placeholders = ",".join("?" for _ in ids)
+        lock = getattr(db, "_lock", None)
+        stmt = "SELECT id, parent_session_id FROM sessions WHERE id IN (%s)" % placeholders
+        if lock is not None:
+            with lock:
+                rows = conn.execute(stmt, ids).fetchall()
+        else:
+            rows = conn.execute(stmt, ids).fetchall()
+        return {r["id"]: r["parent_session_id"] for r in rows}
+    except Exception:
+        logging.debug("Batched lineage lookup failed, falling back", exc_info=True)
+        return None
+
+
+def _resolve_many_to_parents(db, seed_ids) -> Dict[str, str]:
+    """Resolve each seed id to its lineage root, batched: parent links for the
+    whole result set are fetched with one ``WHERE id IN`` per frontier level
+    instead of one ``get_session`` per chain link per result. Falls back to a
+    memoized per-id walk when the fast path is unavailable."""
+    seeds = [s for s in dict.fromkeys(seed_ids) if s]
+    parent_of: Dict[str, Any] = {}
+    frontier = list(seeds)
+    depth, batched_ok = 0, True
+    while frontier and depth < 25:
+        batch = _batch_parent_map(db, frontier)
+        if batch is None:
+            batched_ok = False
+            break
+        nxt: list = []
+        missing: list = []
+        for sid in frontier:
+            if sid in parent_of:
+                continue
+            if sid in batch:
+                parent = batch[sid]
+                parent_of[sid] = parent
+                if parent and parent not in parent_of and parent not in nxt:
+                    nxt.append(parent)
+            else:
+                missing.append(sid)
+        for sid in missing:  # unknown session or non-SQL store: one memoized lookup per id
+            s = _get_session_meta(db, sid)
+            parent = s.get("parent_session_id") if s else None
+            parent_of[sid] = parent
+            if parent and parent not in parent_of and parent not in nxt:
+                nxt.append(parent)
+        frontier = nxt
+        depth += 1
+    if batched_ok:
+        roots: Dict[str, str] = {}
+        for sid in seeds:
+            seen: set = set()
+            cur = sid
+            while cur and cur not in seen:
+                seen.add(cur)
+                parent = parent_of.get(cur)
+                if not parent:
+                    break
+                cur = parent
+            roots[sid] = cur
+        return roots
+    shared_cache: Dict[str, str] = {}  # fallback: memoized per-id walk, one cache across seeds
+
+    def _walk(sid: str) -> str:
+        if sid in shared_cache:
+            return shared_cache[sid]
+        visited: set = set()
+        cur, trail = sid, []
+        while cur and cur not in visited:
+            if cur in shared_cache:
+                cur = shared_cache[cur]
+                break
+            visited.add(cur)
+            trail.append(cur)
+            s = _get_session_meta(db, cur)
+            parent = s.get("parent_session_id") if s else None
+            if not parent:
+                break
+            cur = parent
+        for t in trail:
+            shared_cache[t] = cur
+        return cur
+
+    return {sid: _walk(sid) for sid in seeds}
 
 
 def _resolve_lineage(db, session_id: str) -> str:
@@ -283,6 +382,14 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
+    # Batched lineage pre-resolution: one WHERE id IN per frontier level for
+    # the whole FTS set instead of one get_session per chain link per row.
+    lineage_seeds = [r.get("session_id") for r in raw_results if r.get("session_id")]
+    if current_session_id and current_session_id not in lineage_seeds:
+        lineage_seeds.append(current_session_id)
+    _resolved_roots = _resolve_many_to_parents(db, lineage_seeds)
+    if current_session_id:
+        current_lineage_root = _resolved_roots.get(current_session_id, current_session_id)
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
@@ -291,7 +398,8 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     for r in raw_results:
         if len(seen_sessions) >= limit:
             break
-        raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
+        raw_sid = r["session_id"]
+        resolved_sid = _resolved_roots.get(raw_sid, raw_sid)
         # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
         # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
         # end_reason='compression'. That session's content has been replaced by a summary in the
@@ -374,11 +482,14 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                       session_id)
     if err:
         return err
-    shaped = [_shape_message(m) for m in rows]
-    total, truncated = len(shaped), len(shaped) > head + tail
+    total, truncated = len(rows), len(rows) > head + tail
+    # Cap BEFORE formatting so a giant session doesn't shape thousands of
+    # rows just to slice them away below.
+    shown = rows[:head] + rows[-tail:] if truncated else rows
+    shaped = [_shape_message(m) for m in shown]
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
-               messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
+               messages=shaped,
                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 

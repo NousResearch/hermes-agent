@@ -47,21 +47,44 @@ _LIKE_COALESCED_COLUMN_SQL = (
 )
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
-# Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
+# One batched neighbor lookup for every search hit: LAG/LEAD OVER
+# (PARTITION BY session_id ORDER BY timestamp, id) resolve prev/self/next in a
+# single round-trip under one short read hold, instead of one CTE per match
+# (N+1 read txns that serialize gateway readers).
 _CONTEXT_WINDOW_SQL = """WITH target AS (
-    SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
-)
-SELECT t.id AS match_id, m.role, m.content
-FROM target t JOIN messages m ON m.id IN (
-    t.id,
-    (SELECT p.id FROM messages p
-     WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
-     ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
-    (SELECT n.id FROM messages n
-     WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
-     ORDER BY n.timestamp, n.id LIMIT 1)
-)
-ORDER BY t.id, m.timestamp, m.id"""
+                            SELECT m.session_id AS session_id,
+                                   m.id AS id,
+                                   m.role AS role,
+                                   m.content AS content,
+                                   LAG(m.id) OVER (
+                                       PARTITION BY m.session_id
+                                       ORDER BY m.timestamp, m.id
+                                   ) AS prev_id,
+                                   LEAD(m.id) OVER (
+                                       PARTITION BY m.session_id
+                                       ORDER BY m.timestamp, m.id
+                                   ) AS next_id
+                            FROM messages m
+                            WHERE m.session_id IN ({sids})
+                        ),
+                        mw AS (
+                            SELECT id, prev_id, next_id FROM target
+                            WHERE id IN ({mids})
+                        )
+                        SELECT target.session_id AS session_id,
+                               target.id AS id,
+                               target.role AS role,
+                               target.content AS content,
+                               mw.id AS match_id,
+                               CASE WHEN target.id = mw.id THEN 0
+                                    WHEN target.id = mw.prev_id THEN -1
+                                    ELSE 1
+                               END AS pos
+                        FROM target
+                        JOIN mw ON target.id = mw.id
+                                OR target.id = mw.prev_id
+                                OR target.id = mw.next_id
+                        ORDER BY match_id, pos"""
 # Unified Ideographs, Extension A, Extension B, CJK Symbols, Hiragana, Katakana, Hangul Syllables.
 _CJK_RANGES = (
     (0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF), (0x3000, 0x303F), (0x3040, 0x309F),
@@ -966,24 +989,28 @@ class SessionSearchMixin:
         self, matches: List[Dict[str, Any]], result_fields: Optional[Collection[str]] = None) -> List[Dict[str, Any]]:
         """Attach neighboring messages in bounded batches, only when context is requested."""
         if result_fields is None or "context" in result_fields:
+            by_match: Dict[Any, list] = {}
             for start in range(0, len(matches), 500):
                 batch = matches[start:start + 500]
-                contexts = {match["id"]: [] for match in batch}
+                match_ids = [m["id"] for m in batch]
+                match_sids = list({m["session_id"] for m in batch})
+                sql = _CONTEXT_WINDOW_SQL.format(
+                    sids=",".join("?" for _ in match_sids),
+                    mids=",".join("?" for _ in match_ids),
+                )
                 try:
-                    sql = _CONTEXT_WINDOW_SQL.format(ids=",".join("?" for _ in contexts))
-                    with self._read_ctx() as conn:
-                        rows = conn.execute(sql, list(contexts)).fetchall()
-                    for row in rows:
-                        contexts[row["match_id"]].append(row)
+                    rows = self._read_all(sql, match_sids + match_ids)
                 except Exception:
-                    contexts = {}
-                for match in batch:
-                    try:
-                        match["context"] = [
-                            {"role": row["role"], "content": _flatten_text(self._decode_content(row["content"]))[:200]}
-                            for row in contexts.get(match["id"], [])]
-                    except Exception:
-                        match["context"] = []
+                    rows = []
+                for row in rows:
+                    by_match.setdefault(row["match_id"], []).append(row)
+            for match in matches:
+                try:
+                    match["context"] = [
+                        {"role": r["role"], "content": _flatten_text(self._decode_content(r["content"]))[:200]}
+                        for r in sorted(by_match.get(match["id"], []), key=lambda r: r["pos"])]
+                except Exception:
+                    match["context"] = []
         # No route selects full content; the pop guards any future one that does.
         for match in matches:
             match.pop("content", None)

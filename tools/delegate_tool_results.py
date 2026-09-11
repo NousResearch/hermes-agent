@@ -10,6 +10,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+# Bounded scan window for _extract_output_tail: only the tail of the
+# child's conversation is ever inspected (overlay shows last N results).
+_TAIL_SCAN_WINDOW = 400
+
 def _stringify_tool_content(content: Any) -> str:
     """Stable text for tool-result content. Some OpenAI-compatible paths return
     content-block lists; observability must never crash on them."""
@@ -51,17 +55,24 @@ def _extract_output_tail(result: Dict[str, Any], *, max_entries: int = 12, max_c
     """Last N tool-call results ``{tool, preview, is_error}`` from a child's conversation (the overlay's "Output"
     section), chronological order. Content blocks are flattened first so a block-wrapped "Error: ..." is still
     flagged; line structure is preserved (capped at ``max_chars``) so the overlay shows real output rather than a
-    whitespace-collapsed blob."""
+    whitespace-collapsed blob.
+
+    Bounded reverse-window scan: only the last _TAIL_SCAN_WINDOW messages are
+    ever inspected (the overlay shows the last N results, so scanning the whole
+    history is waste); the name-resolution forward pass walks that same window."""
     messages = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(messages, list):
         return []
+    # Bounded window from the tail — the overlay only shows the last
+    # max_entries tool results, so scanning the whole history is waste.
+    window = messages[-_TAIL_SCAN_WINDOW:] if len(messages) > _TAIL_SCAN_WINDOW else messages
     name_by_call_id = {
         tc["id"]: str((tc.get("function") or {}).get("name") or "tool")
-        for msg in messages if isinstance(msg, dict) and msg.get("role") == "assistant"
+        for msg in window if isinstance(msg, dict) and msg.get("role") == "assistant"
         for tc in msg.get("tool_calls") or [] if tc.get("id")
     }
     tail: List[Dict[str, Any]] = []
-    for msg in reversed(messages):  # newest first, then restore order below
+    for msg in reversed(window):  # newest first, then restore order below
         if len(tail) >= max_entries:
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":

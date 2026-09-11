@@ -180,6 +180,44 @@ class TestAncestorPrefix:
         assert _texts(display) == [("user", "branch turn")]
 
 
+class TestLogicalDisplayLineage:
+    def test_direct_delegate_excludes_parent_transcript(self, db):
+        db.create_session("root", source="telegram")
+        db.append_message("root", "user", "root turn")
+        db.create_session(
+            "delegate",
+            source="delegate",
+            parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.append_message("delegate", "user", "delegate turn")
+
+        display = db.get_display_messages("delegate")
+
+        assert _texts(display) == [("user", "delegate turn")]
+
+    def test_compressed_branch_continuation_keeps_branch_local_prefix(self, db):
+        db.create_session("root", source="desktop")
+        db.append_message("root", "user", "root turn")
+        db.create_session(
+            "branch",
+            source="desktop",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch", "user", "branch turn")
+        db.end_session("branch", "compression")
+        db.create_session("branch-tip", source="desktop", parent_session_id="branch")
+        db.append_message("branch-tip", "assistant", "branch-tip turn")
+
+        display = db.get_display_messages("branch-tip")
+
+        assert _texts(display) == [
+            ("user", "branch turn"),
+            ("assistant", "branch-tip turn"),
+        ]
+
+
 class TestResumeGuardBoundsWhatResumeLoads:
     def test_guard_counts_the_rows_the_display_read_materializes(self, db):
         """The guard must not undercount: it bounds an in-memory materialization."""

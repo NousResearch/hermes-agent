@@ -820,7 +820,7 @@ class SessionMessagesMixin:
         the active-only model replay.  ``display_identity`` collapses protected-tail copies
         before LIMIT/OFFSET, and ``display_order`` retains their original chronology.
         """
-        session_ids = self._resume_lineage_ids(session_id)
+        session_ids = self.get_compression_lineage(session_id) or [session_id]
         if len(session_ids) == 1:
             return self.get_messages(
                 session_id, include_compacted=True, limit=limit, offset=offset, latest=latest)

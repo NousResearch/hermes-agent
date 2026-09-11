@@ -28,13 +28,14 @@ from tools.transcription_common import (
 logger = logging.getLogger("tools.transcription_tools")
 
 
-def _get_local_command_template() -> Optional[str]:
+def _get_local_command_template(*, language: Optional[str] = None) -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
     whisper_binary = _find_whisper_binary()
+    language_arg = " --language {language}" if language else ""
     return (f"{shlex.quote(whisper_binary)} {{input_path}} --model {{model}} --output_format txt "
-            "--output_dir {output_dir} --language {language}") if whisper_binary else None
+            f"--output_dir {{output_dir}}{language_arg}") if whisper_binary else None
 
 
 def _has_local_command() -> bool:
@@ -222,15 +223,14 @@ def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
 def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Run the configured local STT command template and read back a .txt transcript."""
+    """Run local STT; discovered Whisper preserves auto-detection, custom templates keep their fallback."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'local_command'")
-    command_template = _get_local_command_template()
+    language = language or _resolve_stt_language("local")
+    command_template = _get_local_command_template(language=language)
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
-    # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
@@ -239,7 +239,8 @@ def _transcribe_local_command(
                 return _error_result(prep_error)
             command = command_template.format(
                 input_path=shlex.quote(prepared_input), output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language), model=shlex.quote(normalized_model))
+                # Only custom templates can still contain {language} when no hint was resolved.
+                language=shlex.quote(language or DEFAULT_LOCAL_STT_LANGUAGE), model=shlex.quote(normalized_model))
             # Scrub Hermes secrets from the child env (same policy as _run_command_stt).
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).

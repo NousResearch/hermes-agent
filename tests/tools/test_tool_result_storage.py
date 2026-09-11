@@ -933,13 +933,21 @@ class TestEnforceTurnBudgetEdgeCases:
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
 
     def test_all_already_persisted(self):
-        """When all results are already persisted, no changes."""
+        """Already persisted results stay unchanged even above the turn budget."""
+        content = (
+            f"{PERSISTED_OUTPUT_TAG}\n"
+            + "already done\n" * 20
+            + PERSISTED_OUTPUT_CLOSING_TAG
+        )
+        config = BudgetConfig(turn_budget=100)
+        assert len(content) > config.turn_budget
         msgs = [
             {"role": "tool", "tool_call_id": "t1",
-             "content": f"{PERSISTED_OUTPUT_TAG}\nalready done\n{PERSISTED_OUTPUT_CLOSING_TAG}"},
+             "content": content},
         ]
-        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=100))
-        assert result[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
+        result = enforce_turn_budget(msgs, env=None, config=config)
+        assert result is msgs
+        assert result[0]["content"] == content
 
     def test_budget_enforcement_logs_persisted(self):
         """The budget-enforcement log line itself must fire.

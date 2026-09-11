@@ -364,8 +364,34 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     import json
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
-        audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
-                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+        # NOTE (Windows hang fix): subprocess.run(timeout=...) is NOT a real bound here — when the
+        # timeout fires, run() kills only npm.cmd, but the node.exe grandchildren keep the stdout/stderr
+        # pipe handles open, so the internal communicate() deadlocks until they exit. Observed on a
+        # Windows host with a slow npm registry: a 30s-bounded audit stalled doctor for 300s+ (the
+        # registry query itself needed ~5 minutes). Spawn with Popen and, on timeout, kill the whole
+        # process tree (taskkill /F /T on Windows), then drain with a bounded communicate so the pipe
+        # handles are released and the 30s bound is actually enforced.
+        audit_proc = subprocess.Popen([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, encoding='utf-8', errors='replace')
+        try:
+            audit_stdout, audit_stderr = audit_proc.communicate(timeout=30)
+            audit_result = subprocess.CompletedProcess(audit_proc.args, audit_proc.returncode,
+                                                       audit_stdout, audit_stderr)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(audit_proc.pid)],
+                                   capture_output=True, timeout=10)
+                except Exception:
+                    audit_proc.kill()
+            else:
+                audit_proc.kill()
+            try:
+                audit_proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))

@@ -97,6 +97,52 @@ class TestFetchModelsBaseUrlOverride:
         finally:
             server.shutdown()
 
+    def test_catalog_excludes_explicit_image_only_models(self):
+        """Shared picker discovery must not offer a non-chat Token Plan model."""
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({"data": [
+            {"id": "wan2.7-image-pro", "capabilities": {"type": "image"}},
+            {"id": "qwen3.7-plus", "capabilities": {"type": "chat"}},
+        ]}).encode()
+        profile = ProviderProfile(
+            name="alibaba-token-plan",
+            base_url="https://token-plan.example.test/v1",
+        )
+
+        with (
+            patch("hermes_cli.urllib_security.open_credentialed_url", return_value=response),
+            patch("providers.get_provider_profile", return_value=profile),
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "test-key", "base_url": profile.base_url,
+            }),
+            patch("hermes_cli.models._load_provider_models_cache", return_value={}),
+            patch("hermes_cli.models._store_cache_entry"),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {}, clear=True),
+        ):
+            from hermes_cli.models import cached_provider_model_ids
+
+            assert cached_provider_model_ids("alibaba-token-plan") == ["qwen3.7-plus"]
+
+    def test_catalog_keeps_models_with_ambiguous_capabilities(self):
+        """Missing, malformed, or unknown metadata cannot prove a model is image-only."""
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({"data": [
+            {"id": "missing-capabilities"},
+            {"id": "malformed-capabilities", "capabilities": "image"},
+            {"id": "unknown-capability-type", "capabilities": {"type": "future-kind"}},
+        ]}).encode()
+        profile = ProviderProfile(
+            name="alibaba-token-plan",
+            base_url="https://token-plan.example.test/v1",
+        )
+
+        with patch("hermes_cli.urllib_security.open_credentialed_url", return_value=response):
+            assert profile.fetch_models(api_key="test-key") == [
+                "missing-capabilities",
+                "malformed-capabilities",
+                "unknown-capability-type",
+            ]
+
 
 
 

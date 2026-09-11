@@ -168,12 +168,11 @@ def _resolve_restart_drain_timeout() -> float:
 
 
 def _eager_reconcile_own_session_db() -> None:
-    """Heal a stale schema in this process's own state.db at startup, without becoming a second
-    writable owner. The gateway already owns the store; ``read_only=True`` takes the dashboard's
-    normal read path, which bootstraps a missing store or heals a stale schema through ONE writable
-    open only when its read probe fails, and otherwise never opens writable (a writable open ran
-    the full schema init plus a close-time checkpoint beside the gateway's own writer). Never
-    raises: an unfixable store still gets the per-poll read-probe heal.
+    """Heal a stale schema in this process's own state.db at startup — read-only, so the dashboard
+    never becomes a second writable owner beside the gateway (a writable open ran full schema init
+    plus a close-time checkpoint against its writer). Access-mode semantics: see
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never raises: an unfixable
+    store still gets the per-poll read-probe heal.
     """
     try:
         from hermes_cli.web_server_sessions import _open_session_db_for_profile

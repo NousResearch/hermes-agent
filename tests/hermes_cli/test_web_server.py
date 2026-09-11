@@ -583,7 +583,7 @@ class TestWebServerEndpoints:
 
     def test_startup_eager_reconcile_opens_read_only(self, monkeypatch):
         """A healthy store gets a read-only open (no second writable owner) and the handle is
-        released; the read path still heals a stale schema through its own single writable open."""
+        released. The stale-schema heal is covered by test_startup_eager_reconcile_heals_stale_store."""
         from pathlib import Path
 
         import hermes_state

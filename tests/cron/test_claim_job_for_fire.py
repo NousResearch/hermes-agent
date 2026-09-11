@@ -325,3 +325,46 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
     job["fire_claim"]["by"] = f"{socket.gethostname()}:{child.pid}:tok"
     save_jobs(jobs)
     assert claim_job_for_fire(jid) is True
+
+
+def test_heartbeat_fire_claim_succeeds_concurrently_while_fire_fence_held(temp_home):
+    """Heartbeating a fire claim from a background thread while a worker thread holds the
+    per-job fire fence must succeed immediately without deadlocking or timing out on the fence."""
+    import threading
+    from cron.jobs import claim_job_for_fire, create_job, fire_claim_fence, get_job, heartbeat_fire_claim
+
+    job = create_job(prompt="x", schedule="every 5m", name="heartbeat-fence")
+    job_id = job["id"]
+    assert claim_job_for_fire(job_id) is True
+    claimed = dict(get_job(job_id)["fire_claim"])
+    owner = claimed["by"]
+
+    heartbeat_result = None
+    heartbeat_error = None
+    fence_entered = threading.Event()
+    heartbeat_done = threading.Event()
+
+    def _worker():
+        with fire_claim_fence(job_id, expected_owner=owner) as acquired:
+            assert acquired is True
+            fence_entered.set()
+            assert heartbeat_done.wait(timeout=10.0)
+
+    worker_thread = threading.Thread(target=_worker)
+    worker_thread.start()
+    assert fence_entered.wait(timeout=5.0)
+
+    try:
+        # Separate thread attempts heartbeat while worker holds fire fence
+        heartbeat_result = heartbeat_fire_claim(job_id, expected_owner=owner)
+    except Exception as e:
+        heartbeat_error = e
+    finally:
+        heartbeat_done.set()
+        worker_thread.join(timeout=5.0)
+
+    assert heartbeat_error is None
+    assert heartbeat_result is True
+    updated = get_job(job_id)["fire_claim"]
+    assert updated["by"] == owner
+

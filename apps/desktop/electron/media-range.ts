@@ -100,7 +100,10 @@ export interface LocalMediaResponseInit {
 }
 
 /** Build the 200 / 206 / 404 / 416 response for a local media file (HEAD gets headers only). */
-export async function buildLocalMediaResponse(resolvedPath: string, init: LocalMediaResponseInit = {}): Promise<Response> {
+export async function buildLocalMediaResponse(
+  resolvedPath: string,
+  init: LocalMediaResponseInit = {}
+): Promise<Response> {
   let handle: fsp.FileHandle
 
   try {
@@ -133,7 +136,9 @@ export async function buildLocalMediaResponse(resolvedPath: string, init: LocalM
   const stream = (opts: { end?: number; start?: number }) =>
     // Hand the FileHandle itself (not the raw fd) to the stream: it owns and closes it on end, so
     // the handle is never closed twice (EBADF on garbage collection).
-    Readable.toWeb(createReadStream(resolvedPath, { ...opts, autoClose: true, fd: handle })) as unknown as ReadableStream
+    Readable.toWeb(
+      createReadStream(resolvedPath, { ...opts, autoClose: true, fd: handle })
+    ) as unknown as ReadableStream
 
   if (range === 'unsatisfiable') {
     await handle.close()
@@ -154,6 +159,7 @@ export async function buildLocalMediaResponse(resolvedPath: string, init: LocalM
   }
 
   const length = range.end - range.start + 1
+
   const headers = {
     ...baseHeaders,
     'Content-Length': String(length),

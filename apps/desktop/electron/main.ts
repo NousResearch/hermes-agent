@@ -281,6 +281,7 @@ import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallba
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
+import { dirToRemember, nextPickerDefaultPath, readLastPickerDir, writeLastPickerDir } from './picker-state'
 import {
   pendingNotice as pendingPluginCompatNotice,
   recordDismissed as recordPluginCompatDismissed
@@ -861,6 +862,7 @@ const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-in
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_UPDATE_CHECK_CACHE_PATH = path.join(app.getPath('userData'), 'update-check-cache.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+const DESKTOP_PICKER_STATE_PATH = path.join(app.getPath('userData'), 'picker-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -16900,6 +16902,15 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
     }
   }
 
+  // #92925: when the caller has no opinion (no composer cwd — e.g. detached
+  // pickers), fall back to the directory the user last picked from. An
+  // explicit defaultPath wins: it expresses the current working context.
+  if (!resolvedDefaultPath) {
+    resolvedDefaultPath = nextPickerDefaultPath(undefined, readLastPickerDir(DESKTOP_PICKER_STATE_PATH), dir =>
+      directoryExists(dir)
+    )
+  }
+
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || 'Add context',
     defaultPath: resolvedDefaultPath,
@@ -16909,6 +16920,12 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
 
   if (result.canceled) {
     return []
+  }
+
+  const toRemember = dirToRemember(result.filePaths)
+
+  if (toRemember) {
+    writeLastPickerDir(DESKTOP_PICKER_STATE_PATH, toRemember)
   }
 
   return result.filePaths

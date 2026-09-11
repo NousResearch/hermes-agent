@@ -194,10 +194,19 @@ export function WisdomPublicationReview({
             {copy.viewInPortal}
           </a>
           {allowDecline && result.publication_state === 'pending_moderation' && (
-            <Button disabled={busy} onClick={() => void run(async () => {
-              await decideWisdomDraft(result.draft_id, 'decline', profile)
-              onClose()
-            })} size="sm" variant="outline">{copy.decline}</Button>
+            <Button
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  await decideWisdomDraft(result.draft_id, 'decline', profile)
+                  onClose()
+                })
+              }
+              size="sm"
+              variant="outline"
+            >
+              {copy.decline}
+            </Button>
           )}
         </div>
       ) : review ? (

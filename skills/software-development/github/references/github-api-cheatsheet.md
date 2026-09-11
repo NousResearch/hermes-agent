@@ -2,7 +2,13 @@
 
 Base URL: `https://api.github.com`
 
-All requests need: `-H "Authorization: token $GITHUB_TOKEN"`
+All requests need: `-H "$GH_AUTH"`
+
+Set it from your local token before using curl examples:
+
+```bash
+GH_AUTH="Authorization: token <token>"
+```
 
 Use the `gh-env.sh` helper to set `$GITHUB_TOKEN`, `$GH_OWNER`, `$GH_REPO` automatically:
 ```bash
@@ -130,30 +136,31 @@ Most list endpoints support:
 ## Rate Limits
 
 - Authenticated: 5,000 requests/hour
-- Check remaining: `curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/rate_limit`
+- Check remaining: `curl -s -H "$GH_AUTH" https://api.github.com/rate_limit`
 
 ## Common curl Patterns
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # GET
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+curl -s -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO
 
 # POST with JSON body
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues \
   -d '{"title": "...", "body": "..."}'
 
 # PATCH (update)
 curl -s -X PATCH \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues/42 \
   -d '{"state": "closed"}'
 
 # DELETE
 curl -s -X DELETE \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues/42/labels/bug
 
 # Parse JSON response with python3

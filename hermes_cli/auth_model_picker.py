@@ -219,10 +219,13 @@ def _prompt_model_selection(
             model_search_labels.append(label if haystack == mid else f"{label} {haystack}")
         model_search_labels += [_CUSTOM_LABEL, _SKIP_LABEL]
 
+        # Current model is reordered to index 0. With no current match, default
+        # to Skip — a stray Enter must not silently adopt the paid flagship (#102943).
+        default_idx = 0 if (current_model and current_model in model_ids) else n + 1
         idx = curses_radiolist(
             "Select default model:",
             choices,
-            selected=0,  # cursor on the current model (index 0 if it was reordered to top)
+            selected=default_idx,
             cancel_returns=-1,
             description="\n".join(desc_lines) if desc_lines else None,
             searchable=True,

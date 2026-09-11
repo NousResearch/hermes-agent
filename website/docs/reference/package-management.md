@@ -356,6 +356,7 @@ Use the public `pm` module for Python dependency work:
 | `pm.sync_venv(extras, explicit=True)` | Prepare and select the complete application dependency union, including enabled plugins. |
 | `pm.sync_venv(repair=True, explicit=True)` | Replay the recorded dependency set in a new application generation. |
 | `pm.build_environment(source=..., out=..., explicit=True)` | Build and validate a fresh caller-owned output. No plugin discovery or application selection. |
+| `pm.build_environment(source=..., out=..., groups=[...], only_groups=True, explicit=True)` | Build only the selected locked dependency groups, without application dependencies. Used by icon builds. |
 | `pm.lock_project(source, explicit=True)` | Refresh an explicit project's lock without selecting an environment. |
 | `pm.ensure_environment(name, requirements, explicit=True)` | Prepare and select an isolated dependency generation. Return its Python path. |
 | `pm.ensure_python_tool(name, requirements, executable, explicit=True)` | Prepare an isolated tool and return its executable path. |

@@ -199,6 +199,22 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     assert not Path(env["HERMES_HOME"]).exists()
 
 
+def test_group_only_build_excludes_application_dependencies(locked_project, tmp_path):
+    import pm
+
+    source, _, env = locked_project
+    metadata = source / "pyproject.toml"
+    metadata.write_text(metadata.read_text() + '\n[dependency-groups]\nicons=["chosen-dep==1.0"]\n')
+    pm.lock_project(source, python=Path(sys.executable), cache=tmp_path / "cache", env=env,
+                    offline=True, explicit=True)
+    python = pm.build_environment(source=source, out=tmp_path / "icons", groups=["icons"],
+                                  only_groups=True, python=Path(sys.executable), cache=tmp_path / "cache",
+                                  env=env, offline=True, explicit=True)
+    assert _run([str(python), "-I", "-c", "import chosen_dep, importlib.util; "
+                 "assert importlib.util.find_spec('base_dep') is None; print(chosen_dep.__version__)"],
+                cwd=tmp_path, env=env) == "1.0"
+
+
 def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
     import io
     from pm.environment import PythonEnvironment

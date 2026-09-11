@@ -448,8 +448,8 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
             missing.append(dep)
     if missing:
         print("\n  The selected backends need extra packages:")
-        print(f"    uv pip install {' '.join(missing)}")
-        print("  Run that inside the hermes venv, then re-run setup.")
+        print(f"    Missing: {', '.join(missing)}")
+        print("  Declare these requirements in the plugin's pyproject.toml, then run `hermes pm install` and restart Hermes.")
 
 
 def _probe(fn, ok: str, fail: str, exc=Exception) -> tuple[bool, str]:
@@ -510,7 +510,7 @@ def post_setup(hermes_home: str, config: dict) -> None:
         import mem0
         installed_ver = getattr(mem0, "__version__", None)
         if installed_ver and tuple(int(x) for x in installed_ver.split(".")[:3]) < (2, 0, 7):
-            print(f"\n  ⚠ mem0ai {installed_ver} installed but >=2.0.7 required.\n  Run: uv pip install --python {sys.executable} 'mem0ai>=2.0.7'")
+            print(f"\n  ⚠ mem0ai {installed_ver} installed but >=2.0.7 required.\n  Run `hermes pm repair`, then restart Hermes.")
     flags = parse_flags(sys.argv[1:])
     handler = _MODE_HANDLERS.get(flags["mode"])
     flags["_mode_from_flag"] = handler is not None

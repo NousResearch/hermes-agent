@@ -17,6 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--extra", dest="extras", action="append", default=[])
     parser.add_argument("--group", dest="groups", action="append", default=[])
+    parser.add_argument("--only-groups", action="store_true", help="install selected groups without the application")
     parser.add_argument("--all-extras", action="store_true")
     parser.add_argument("--no-install-project", action="store_true")
     parser.add_argument("--resolve", action="store_true", help="resolve the source lock before building")
@@ -77,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             executable = pm.build_environment(
                 source=args.source, out=args.out, python=args.python, cache=args.cache,
-                extras=args.extras, groups=args.groups, all_extras=args.all_extras,
+                extras=args.extras, groups=args.groups, only_groups=args.only_groups, all_extras=args.all_extras,
                 no_install_project=args.no_install_project, frozen=not args.resolve,
                 sealed=args.sealed, offline=args.offline, explicit=True,
             )

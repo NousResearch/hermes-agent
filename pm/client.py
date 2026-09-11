@@ -237,7 +237,7 @@ def _python_operation(operation: str, arguments: dict):
 def build_environment(
     *, source: Path, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
-    extras: Sequence[str] = (), groups: Sequence[str] = (),
+    extras: Sequence[str] = (), groups: Sequence[str] = (), only_groups: bool = False,
     all_extras: bool = False, no_install_project: bool = False,
     frozen: bool = True, sealed: bool = False, offline: bool = False,
     explicit: bool = False, timeout: int = 1800,
@@ -245,7 +245,7 @@ def build_environment(
     """Build a validated Python environment without exposing install machinery."""
     return Path(_python_operation("build_environment", {
         "source": Path(source), "out": Path(out), "python": python, "cache": cache,
-        "env": dict(env) if env is not None else None, "extras": list(extras), "groups": list(groups),
+        "env": dict(env) if env is not None else None, "extras": list(extras), "groups": list(groups), "only_groups": only_groups,
         "all_extras": all_extras, "no_install_project": no_install_project,
         "frozen": frozen, "sealed": sealed, "offline": offline,
         "explicit": explicit, "timeout": timeout,

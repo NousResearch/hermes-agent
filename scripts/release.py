@@ -2896,6 +2896,9 @@ def main():
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
                              "Add --publish to dispatch without a tag or release.")
+    parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
+                        help="Bake a non-secret environment default into a commit desktop bundle. "
+                             "Repeat for multiple variables. Runtime environment values win.")
     parser.add_argument("--prune-canaries", action="store_true",
                         help="Delete canary releases+tags older than 14 days")
     parser.add_argument("--publish", action="store_true",
@@ -2914,6 +2917,8 @@ def main():
                         help="Skip changelog")
     args = parser.parse_args()
 
+    if args.bundle_env and args.build_commit is None:
+        parser.error("--bundle-env requires --build-commit")
     if args.canary and args.bump:
         parser.error("--canary and --bump are mutually exclusive")
     if args.build_commit is not None:

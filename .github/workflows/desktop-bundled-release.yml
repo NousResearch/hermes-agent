@@ -105,6 +105,11 @@ on:
         required: false
         type: string
         default: ''
+      bundle_env:
+        description: 'Commit desktop bundles only: JSON object of non-secret runtime environment defaults. Explicit runtime values win.'
+        required: false
+        type: string
+        default: '{}'
       termux_only:
         description: 'Build and publish only the Termux package'
         required: false
@@ -167,6 +172,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
+          BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           UPLOAD_RELEASE: ${{ inputs.upload_release }}
@@ -189,6 +195,9 @@ jobs:
             fi
             python -m scripts.releases.commit_build admit
             exit 0
+          fi
+          if [ -n "${BUNDLE_ENV_JSON:-}" ] && [ "$BUNDLE_ENV_JSON" != '{}' ]; then
+            echo '::error::bundle environment defaults require a commit build'; exit 1
           fi
           if [ -z "$TAG" ]; then
             echo "::error::either tag or build_commit is required"; exit 1
@@ -480,6 +489,7 @@ jobs:
         shell: bash
         timeout-minutes: 900
         env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           PYTHONUTF8: '1'
           CC_aarch64_pc_windows_msvc: ${{ matrix.target.label == 'win32-arm64' && 'clang' || '' }}
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
@@ -744,6 +754,7 @@ jobs:
         shell: bash
         timeout-minutes: 330
         env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           GITHUB_SHA: ${{ needs.validate.outputs.sha }}
           GITHUB_REF_NAME: ${{ inputs.tag }}
           PYTHONUTF8: '1'

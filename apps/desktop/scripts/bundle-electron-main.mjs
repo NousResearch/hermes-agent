@@ -14,6 +14,7 @@ import { createRequire } from 'node:module'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync, readFileSync } from 'node:fs'
+import { environmentDefaultsBanner } from './bundle-env.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -68,7 +69,8 @@ await build({
   outfile: mainOut,
   external,
   banner: {
-    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+      + (isDev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')),
   },
   define,
   logLevel: 'info',

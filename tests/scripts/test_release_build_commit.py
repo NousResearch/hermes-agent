@@ -29,6 +29,7 @@ def fixture_repo(tmp_path):
     git(repo, 'push', '-q', 'origin', 'main')
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture-owner/fixture-repo.git')
     for relative in ('scripts/release.py', 'scripts/releases/commit_build.py',
+                     'scripts/releases/bundle_env.py',
                      'scripts/releases/r2.py', 'scripts/release-content-types.json',
                      'hermes_cli/__init__.py', 'hermes_cli/update_channel.py',
                      'hermes_cli/runtime_paths.py', 'hermes_constants.py'):
@@ -109,6 +110,20 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(tmp_path):
     assert git(repo, 'show-ref', '--heads', '--tags') == before
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
 
+    values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_DATA_DIR_SUFFIX': 'magic-test',
+              'EMPTY': '', 'LITERAL': 'a=b "quote"\n$(not-a-command)'}
+    flags = [part for key, value in values.items() for part in ('--bundle-env', f'{key}={value}')]
+    result, calls = invoke('--build-commit', tip, '--publish', *flags)
+    assert result.returncode == 0, result.stderr
+    dispatch = next(call for call in calls if call[1:3] == ['workflow', 'run'])
+    assert json.loads(next(field.split('=', 1)[1] for field in dispatch if field.startswith('bundle_env='))) == values
+    for invalid in (['--bundle-env', 'MISSING'], ['--bundle-env', 'BAD-NAME=x'],
+                    ['--bundle-env', 'DUP=x', '--bundle-env', 'DUP=y']):
+        result, calls = invoke('--build-commit', tip, '--publish', *invalid)
+        assert result.returncode != 0 and not calls
+    result, calls = invoke('--bundle-env', 'NAME=value')
+    assert result.returncode == 2 and not calls
+
     git(repo, 'checkout', '-qb', 'feature')
     (repo / 'feature').write_text('pushed feature', encoding='utf-8')
     git(repo, 'add', 'feature')
@@ -156,7 +171,8 @@ def test_workflow_admission_checks_trust_before_publishing_outputs(tmp_path):
            'GITHUB_REF': 'refs/heads/main',
            'GITHUB_WORKFLOW_REF': 'fixture-owner/fixture-repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main',
            'GITHUB_ACTOR': 'maintainer', 'GITHUB_TRIGGERING_ACTOR': 'maintainer',
-           'GITHUB_OUTPUT': str(output), 'UPLOAD_RELEASE': 'false'}
+           'GITHUB_OUTPUT': str(output), 'UPLOAD_RELEASE': 'false',
+           'BUNDLE_ENV_JSON': '{"HERMES_GUEST_ONBOARDING":"1"}'}
     result, calls = invoke('admit', extra=env)
     assert result.returncode == 0, result.stderr
     assert dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()) == {
@@ -167,7 +183,8 @@ def test_workflow_admission_checks_trust_before_publishing_outputs(tmp_path):
                        ('RELEASE_PHASE', 'candidate'), ('TERMUX_UPGRADE_FROM_TAG', 'v1.0.0'),
                        ('GITHUB_EVENT_NAME', 'workflow_call'), ('GITHUB_REF', 'refs/heads/other'),
                        ('GITHUB_WORKFLOW_REF', 'fixture-owner/fixture-repo/.github/workflows/other.yml@refs/heads/main'),
-                       ('PROBE_PERMISSION', 'read')]:
+                       ('PROBE_PERMISSION', 'read'), ('BUNDLE_ENV_JSON', '[]'),
+                       ('BUNDLE_ENV_JSON', '{"X":1}')]:
         result, _ = invoke('admit', extra={**env, key: value})
         assert result.returncode != 0
         assert output.read_bytes() == original

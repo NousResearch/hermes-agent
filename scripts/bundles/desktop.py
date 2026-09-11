@@ -58,8 +58,12 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
           commit_build: str | None = None) -> None:
     from pm.store import current_target
     from scripts.releases.commit_build import require_commit, version_at
+    from scripts.releases.bundle_env import decode
 
     repo = repo.resolve()
+    bundle_env = decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", ""))
+    if bundle_env and not commit_build:
+        raise ValueError("Bundle environment defaults require a commit build")
     if commit_build:
         commit = require_commit(commit_build)
         if tag:
@@ -81,6 +85,7 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
     npm = npm_command(node)
     env = {**os.environ, "CI": "true", "PYTHONUTF8": "1", "GITHUB_SHA": commit,
            "HERMES_DESKTOP_VARIANT": variant}
+    env["HERMES_BUNDLE_ENV_JSON"] = json.dumps(bundle_env, sort_keys=True)
     if commit_build:
         env["HERMES_PAYLOAD_VERSION"] = version
         env["HERMES_BUILD_COMMIT"] = commit

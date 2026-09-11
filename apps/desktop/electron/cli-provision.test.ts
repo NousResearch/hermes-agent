@@ -68,6 +68,41 @@ test('repairs owned dangling CLI links without changing foreign or live entries'
   }
 })
 
+test('qualified CLI paths expose their filenames, not shared canonical command keys', context => {
+  const { root, binDir, source } = fixture()
+
+  try {
+    const plain = path.join(binDir, 'hermes')
+    fs.writeFileSync(plain, 'stable command')
+
+    try {
+      fs.symlinkSync(source, path.join(binDir, 'probe'))
+      fs.unlinkSync(path.join(binDir, 'probe'))
+    } catch (error) {
+      if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+        context.skip('Windows symlinks require Developer Mode or elevation')
+      }
+
+      throw error
+    }
+
+    for (const name of ['hermes-canary', 'hermes-abcdef1', 'hermes-1234567']) {
+      const cli = path.join(path.dirname(source), name)
+      const acp = `${cli}-acp`
+      fs.writeFileSync(cli, name)
+      fs.writeFileSync(acp, `${name}-acp`)
+      provisionCliLinks({ hermes: cli, 'hermes-acp': acp }, binDir, () => {})
+      assert.equal(fs.readlinkSync(path.join(binDir, name)), cli)
+      assert.equal(fs.readlinkSync(path.join(binDir, `${name}-acp`)), acp)
+    }
+
+    assert.equal(fs.readFileSync(plain, 'utf8'), 'stable command')
+    assert.equal(fs.existsSync(path.join(binDir, 'hermes-acp')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a failed link swap preserves its source and target, then provisions later commands', context => {
   const { root, binDir, source } = fixture()
   const target = path.join(binDir, 'hermes')

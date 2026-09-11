@@ -40,10 +40,7 @@ def _leg_for(basename: str) -> str:
 _ALL_BASENAMES = [
     "HermesBundled-0.28.0-win-x64.msix",
     "HermesBundled-0.28.0-win-arm64.msix",
-    "Store-HermesBundled-0.28.0-win-x64.msix",
-    "Store-HermesBundled-0.28.0-win-arm64.msix",
     "HermesBundled-0.28.0-win.msixbundle",
-    "Store-HermesBundled-0.28.0.0-win.msixbundle",
     "HermesBundled-0.28.0-mac-arm64.dmg",
     "HermesBundled-0.28.0-mac-x64.dmg",
     "HermesBundled-0.28.0-mac-arm64.zip",
@@ -80,13 +77,13 @@ def test_every_expected_binary_gets_a_row_built_or_not():
         assert row["state"] == "built", row
     summary = rbt.render_commit_summary(_all_built_names(), BASE, COMMIT, receipts)
     assert summary.count("✅ Built") == len(rbt._COMMIT_EXPECTED)
-    # zip/Termux/Store rows exist in the COMMIT summary (the release-body
+    # zip/Termux rows exist in the COMMIT summary (the release-body
     # table hides zips on purpose; the commit summary shows every binary).
     assert any("ZIP" in row["label"] for row in rows)
     assert any("Termux" in row["label"] for row in rows)
-    assert any("Store MSIX" in row["label"] for row in rows)
+    assert not any("Store" in row["label"] for row in rows)
     assert any("MSIXBUNDLE" in row["label"] for row in rows)
-    # The universal Store MSIXBUNDLE is commit-native now and links correctly.
+    # The universal sideload bundle links correctly.
     bundle = next(row for row in rows if "MSIXBUNDLE" in row["label"])
     assert bundle["key"].endswith(".msixbundle")
 
@@ -196,13 +193,12 @@ def test_failed_legs_from_release_needs_seam():
     assert rbt.failed_legs_from_release_needs("not json") == []
 
 
-def test_summary_uses_exact_nested_keys_and_lists_both_universal_bundles():
+def test_summary_uses_exact_nested_keys_and_lists_the_sideload_bundle():
     from scripts.releases import handoff
 
     paths = {
         "windows-universal": [
             "HermesBundled-0.28.0.0-win.msixbundle",
-            "Store-HermesBundled-0.28.0.0-win.msixbundle",
         ],
         "termux": ["deb/pool build/hermes-agent_0.28.0_aarch64.deb"],
     }
@@ -221,7 +217,7 @@ def test_summary_uses_exact_nested_keys_and_lists_both_universal_bundles():
         assert f"]({BASE}/downloads/{quote(key, safe='/')})" in summary
     built = [line for line in summary.splitlines() if "✅ Built" in line]
     assert len(built) == len(names)
-    assert any("Store" in line and "MSIXBUNDLE" in line for line in built)
+    assert not any("Store" in line for line in built)
     assert "Linux x64" in summary and "Linux ARM64" in summary
 
 

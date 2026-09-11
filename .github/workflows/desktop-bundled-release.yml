@@ -20,9 +20,7 @@ name: Desktop Bundled Release
 #   publish-win32-store                     → Windows Store submission
 #     (needs build-win32, PARALLEL with the updater feed): bundle the two
 #     Store-*.msix into one universal Store .msixbundle and submit via the
-#     MSStore CLI. Stable → production; canary → package flight ring
-#     (delete-then-replace, newest always wins). Gated on MS_STORE_PRODUCT_ID
-#     (+ MS_STORE_CANARY_FLIGHT_ID for the canary arm).
+#     MSStore CLI. Only stable is eligible, gated on MS_STORE_PRODUCT_ID.
 #   publish-darwin-updater                  → macOS electron-updater feed
 #     (needs BOTH darwin legs): scripts.releases.r2 finalize merges the per-arch
 #     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
@@ -66,11 +64,9 @@ name: Desktop Bundled Release
 # release-signing environment:
 #     secrets: MS_STORE_TENANT_ID, MS_STORE_SELLER_ID, MS_STORE_CLIENT_ID,
 #              MS_STORE_CLIENT_SECRET
-#     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID),
-#              MS_STORE_CANARY_FLIGHT_ID (package flight for canaries —
-#              optional; without it canaries skip the store)
+#     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID)
 #   msstore reconfigure → (delete pending) → msstore publish
-#   <Store-*.msixbundle> (-f <flightId> for canaries) -id <productId>
+#   <Store-*.msixbundle> -id <productId>
 # The Store bundle is UNSIGNED on purpose — Partner Center re-signs on
 # ingestion (see sign-msix.mjs).
 
@@ -486,12 +482,13 @@ jobs:
         run: |
           if [ -n "$HERMES_BUILD_COMMIT" ]; then
             python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
-            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=store
           else
             python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
-            # Repack the payload with the Partner Center identity.
-            # Store packages enter the tag archive, never an updater feed.
-            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+            # The official Store identity is stable-only. Canary must never
+            # replace it, even in a Store flight ring.
+            if [[ "$HERMES_PAYLOAD_TAG" != *-canary.* ]]; then
+              python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
+            fi
           fi
 
       - name: Save warmed Python dependencies even after a packaging failure
@@ -993,10 +990,9 @@ jobs:
         run: |
           # Candidate mode builds the bundles without writing a feed.
           # Canary mode publishes the App Installer bundle and pointer.
-          # Commit mode assembles both products without publishing feeds.
+          # Commit mode assembles only the sideload product, without a feed.
           if [ -n "$HERMES_BUILD_COMMIT" ]; then
             node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
-            node scripts/bundle-store-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION"
             exit 0
           fi
           args=()
@@ -1025,24 +1021,16 @@ jobs:
   # Bundles the two Store-*.msix into one universal Store .msixbundle and
   # submits it to the Windows Store via the MSStore CLI.
   #
-  #   stable tags  → production submission (msstore publish -id)
-  #   canary tags → package flight ring (msstore publish -f <flightId>),
-  #                  delete-then-replace: any pending flight submission is
-  #                  deleted first so the newest canary always wins the
-  #                  single-slot submission queue (chosen over skip-if-pending
-  #                  — always ship the newest, at the cost of cert churn).
-  #
-  # Gating: runs for stable whenever MS_STORE_PRODUCT_ID is set; runs for
-  # canary only when MS_STORE_CANARY_FLIGHT_ID is ALSO set (so the flight
-  # ring stays off until the flight exists in Partner Center).
+  # Only stable releases can claim the official Partner Center identity.
+  # Canary and commit builds are sideload-only, even when a flight exists.
   publish-win32-store:
-    name: Publish the Windows Store submission (production + canary flight)
+    name: Publish the stable Windows Store submission
     needs: [validate, build-win32]
     if: |
       inputs.build_commit == ''
       && inputs.upload_release == true
       && vars.MS_STORE_PRODUCT_ID != ''
-      && (contains(inputs.tag, '-canary.') == false || vars.MS_STORE_CANARY_FLIGHT_ID != '')
+      && contains(inputs.tag, '-canary.') == false
     runs-on: windows-2025
     environment: release-signing
     timeout-minutes: 60
@@ -1059,7 +1047,6 @@ jobs:
       MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
       MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
       MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
-      MS_STORE_CANARY_FLIGHT_ID: ${{ vars.MS_STORE_CANARY_FLIGHT_ID }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1165,23 +1152,12 @@ jobs:
           # publish (PackageFilesExtensionInclude: .msix/.msixbundle/.msixupload).
           # Partner Center signs on ingestion — no signing here.
           #
-          # delete-then-replace (chosen over skip-if-pending): Partner Center
-          # allows ONE pending submission per app/flight at a time, so clear
-          # any in-flight draft before publishing — the newest canary always
-          # wins the queue. A missing pending submission errors the delete,
-          # which is fine (nothing to clear) — only the publish gates the job.
+          # Partner Center allows one pending submission. Clear that draft
+          # before publishing. Only the publish result gates this step.
           bundle="${{ steps.storebundle.outputs.bundle }}"
-          if [[ "$HERMES_PAYLOAD_TAG" == *-canary.* ]]; then
-            echo "canary tag → package flight '$MS_STORE_CANARY_FLIGHT_ID'"
-            msstore flights submission delete "$MS_STORE_PRODUCT_ID" "$MS_STORE_CANARY_FLIGHT_ID" --no-confirm \
-              || echo "no pending flight submission to clear"
-            msstore publish "$bundle" -f "$MS_STORE_CANARY_FLIGHT_ID" -id "$MS_STORE_PRODUCT_ID"
-          else
-            echo "stable tag → production submission"
-            msstore submission delete "$MS_STORE_PRODUCT_ID" --no-confirm \
-              || echo "no pending submission to clear"
-            msstore publish "$bundle" -id "$MS_STORE_PRODUCT_ID"
-          fi
+          msstore submission delete "$MS_STORE_PRODUCT_ID" --no-confirm \
+            || echo "no pending submission to clear"
+          msstore publish "$bundle" -id "$MS_STORE_PRODUCT_ID"
 
   # ── macOS updater channel (REAL) ───────────────────────────────────────────
   # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml

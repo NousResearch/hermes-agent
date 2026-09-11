@@ -35,6 +35,7 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
+import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate, waitForBackendExit as waitForBackendExitImpl } from './backend-child'
 import {
@@ -187,7 +188,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { type FaviconIo, resolveFavicon } from './favicon'
-import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
+import { resolveFeatureFlags } from './feature-flags'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -321,7 +322,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
-import { PRODUCT_IDENTITY } from './product-identity'
+import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -479,6 +480,7 @@ import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './work
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
+const IDENTITY_APP_NAME: string | null = applyDesktopIdentity(app)
 const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
 if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
@@ -821,7 +823,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1234,7 +1236,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(IDENTITY_APP_NAME ? PRODUCT_IDENTITY.appId : 'com.nousresearch.hermes')
 }
 
 // The gateway version is unknown until the backend connects.
@@ -3069,7 +3071,8 @@ let packagedUpdateStrategy: UpdaterStrategy | undefined
 function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
   const mechanism = resolveUpdaterMechanism({
     platform: process.platform,
-    updateMechanism: INSTALL_STAMP?.updateMechanism
+    updateMechanism: INSTALL_STAMP?.updateMechanism,
+    source: INSTALL_STAMP?.source
   })
 
   if (mechanism === 'windows-handoff' || mechanism === 'posix-handoff') { return null }
@@ -3171,7 +3174,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
     return packagedUpdateStrategy
   }
 
-  return new ExternalStrategy()
+  return new ExternalStrategy(INSTALL_STAMP)
 }
 
 /**
@@ -3254,7 +3257,7 @@ function readUpdatesFeedBaseFromConfig(): string {
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
 function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
-  return isCanaryTag(INSTALL_STAMP?.tag) ? 'canary' : 'stable'
+  return packagedReleaseChannel(INSTALL_STAMP) ?? 'stable'
 }
 
 /** True when this artifact is the light (remote-only) variant. */
@@ -17169,8 +17172,9 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
-ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
-  const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
+ipcMain.handle('hermes:updates:branch:set', async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
+  assertSourceUpdateChannel(INSTALL_STAMP)
+  const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
   writeDesktopUpdateConfig({ branch })
 
   return { branch }
@@ -17197,13 +17201,15 @@ async function detectRendererSkew() {
 // just before showing it, so an in-place `hermes update` is reflected without
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
-function showAboutPanelFresh() {
+function showAboutPanelFresh(): void {
   void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+    const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
+    const display: string = info.channel ? `${info.appVersion} (${info.channel})` : info.appVersion
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync
-        ? `${version} — app build out of date, update the desktop app`
-        : version,
+        ? `${display} — app build out of date, update the desktop app`
+        : display,
       copyright: 'Copyright © 2026 Nous Research'
     })
     app.showAboutPanel()
@@ -17214,7 +17220,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
   const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
 
   return {
-    ...resolveHermesVersionInfo(version),
+    ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -17277,30 +17283,6 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
 }
 
 ipcMain.handle('hermes:sync-status', () => readLatestSyncReceipt())
-
-/** Runtime version comes from the gateway; build provenance stays with the app stamp. */
-function resolveHermesVersionInfo(version: string) {
-  // The baked build-time constant is typed more narrowly than a full stamp
-  // loaded from disk; cast to the full shape so every provenance field is
-  // readable on either source.
-  const stamp = INSTALL_STAMP as InstallStamp | null
-
-  if (stamp) {
-    return {
-      appVersion: version,
-      baseVersion: stamp.baseVersion ?? undefined,
-      distance: stamp.distance ?? undefined,
-      commit: stamp.commit,
-      branch: stamp.branch,
-      source: stamp.source ?? undefined,
-      distribution: stamp.distribution ?? undefined,
-      updateMechanism: stamp.updateMechanism,
-      dirty: stamp.dirty
-    }
-  }
-
-  return { appVersion: version, baseVersion: app.getVersion() }
-}
 
 // Python's Path.resolve() equivalent for install-id derivation: realpath when
 // the path exists, plain resolve otherwise. Must stay byte-compatible with

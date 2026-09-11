@@ -23,7 +23,8 @@ const {
   light,
   store,
   displayName,
-  appNamePascal
+  appNamePascal,
+  artifactNamePascal
 } = require('../product-identity.cjs')
 
 export default async function beforeBuild() {
@@ -72,7 +73,15 @@ function writeMsixExtensions() {
   const launchers = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT || '')
     ? JSON.parse(fs.readFileSync(manifest, 'utf8')).launchers : []
   if (!Array.isArray(launchers)) throw new Error('Bundled payload has no declared launchers')
-  const aliases = appExecutionAliasExtensions(launchers)
+  const nonstable = appNamePascal !== artifactNamePascal
+  const aliases = nonstable ? '' : appExecutionAliasExtensions(launchers)
+  if (nonstable) {
+    const template = fs.readFileSync(path.join(desktop, 'assets/msix-manifest.xml'), 'utf8')
+    const applications = appExecutionAliasApplications(launchers, { appNamePascal, displayName })
+    fs.mkdirSync(path.join(desktop, 'build'), { recursive: true })
+    fs.writeFileSync(path.join(desktop, 'build/msix-manifest.xml'),
+      template.replace('</Applications>', `${applications}\n  </Applications>`))
+  }
   // The uap3:AppExtension fragment that registers the app as a Windows
   // Copilot hardware key provider. The press activates hermes://copilot-key/start.
   //
@@ -88,7 +97,7 @@ function writeMsixExtensions() {
     Category="windows.appExtension">
   <uap3:AppExtension
       Name="com.microsoft.windows.copilotkeyprovider"
-      Id="${appNamePascal}CopilotKeyProvider"
+      Id="${artifactNamePascal}CopilotKeyProvider"
       DisplayName="${displayName}"
       Description="Launch ${displayName} with the Copilot key"
       PublicFolder="Public">
@@ -110,14 +119,28 @@ ${aliases}`
  * Exported pure for tests.
  * @param {string[]} launchers exe stems under bin/
  */
+export function appExecutionAliasApplications(launchers, identity) {
+  // Each distlib launcher has a different embedded Python entrypoint. A single
+  // multi-alias extension executes only its first launcher (including for ACP).
+  // Give each CLI its own hidden application, with one extension per app.
+  return launchers.map((name, index) => {
+    const executable = ['app', 'resources', 'agent-payload', 'bin', `${name}.exe`].join(String.fromCharCode(92))
+    return `<Application Id="${identity.appNamePascal}Cli${index}" Executable="${executable}" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="${identity.displayName}" Description="${identity.displayName} CLI"
+        Square150x150Logo="assets\\Square150x150Logo.png" Square44x44Logo="assets\\Square44x44Logo.png"
+        BackgroundColor="transparent" AppListEntry="none" />
+      <Extensions>${appExecutionAliasExtensions([name])}</Extensions>
+    </Application>`
+  }).join('\n')
+}
+
 export function appExecutionAliasExtensions(launchers) {
   if (launchers.length === 0) return ''
   const bs = String.fromCharCode(92)
   const executable = (name) => ['app', 'resources', 'agent-payload', 'bin', `${name}.exe`].join(bs)
-  // ONE windows.appExecutionAlias extension per package — makeappx rejects a
-  // second one with the opaque 0x80080204 (A/B-verified against the 26100
-  // kit). Every launcher alias rides in the same extension's AppExecutionAlias;
-  // the Executable attribute names the exe that serves the aliases.
+  // One windows.appExecutionAlias extension per application. The Executable
+  // attribute serves every alias in that extension. Separate distlib entrypoints
+  // use separate hidden applications (validated with Windows SDK 26100).
   return `<uap5:Extension
     xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
     Category="windows.appExecutionAlias"

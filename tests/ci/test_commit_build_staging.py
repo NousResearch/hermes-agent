@@ -65,9 +65,9 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     release.mkdir(parents=True)
     producers = [
         ('build-win32', 'Stage Windows packages to R2', 'win32-x64', [
-            'HermesBundled-0.33.0-win-x64.msix', 'Store-HermesBundled-0.33.0-win-x64.msix']),
+            'HermesBundled-0.33.0-win-x64.msix']),
         ('build-win32', 'Stage Windows packages to R2', 'win32-arm64', [
-            'HermesBundled-0.33.0-win-arm64.msix', 'Store-HermesBundled-0.33.0-win-arm64.msix']),
+            'HermesBundled-0.33.0-win-arm64.msix']),
         ('build-darwin', 'Stage macOS packages and feed inputs to R2', 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
@@ -75,7 +75,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
             'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
             'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         ('publish-win32-updater', 'Stage universal bundles to R2', 'windows-universal', [
-            'HermesBundled-0.33.0.0-win.msixbundle', 'Store-HermesBundled-0.33.0.0-win.msixbundle']),
+            'HermesBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
     for job, name, target, names in producers:

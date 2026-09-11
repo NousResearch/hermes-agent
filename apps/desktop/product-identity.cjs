@@ -42,11 +42,8 @@ const name = variants[store ? 'bundled' : (variant || '')]
 // never overwrite the stable feed file, and vice versa.
 const canary = /-canary\.20\d{6}(?:\d{6})?$/.test(process.env.HERMES_PAYLOAD_TAG || '')
 
-// Display-name qualifiers, display-only by design: appId/appNamePascal/
-// msixAppIdWithOrg stay fixed so a canary MSIX still updates in place
-// over stable and userData/single-instance sharing is unaffected. A
-// commit build names the exact SHA it was built from (Hermes Agent abc1234);
-// a canary tags itself so side-by-side installs are readable at a glance.
+// Nonstable installs own their package family and local desktop state. The
+// seven-character commit suffix also names the CLI and fits MSIX's name cap.
 const buildCommitEnv = process.env.HERMES_BUILD_COMMIT || ''
 const buildCommit = /^[a-f0-9]{40}$/.test(buildCommitEnv) ? buildCommitEnv.slice(0, 7) : null
 const displayName = buildCommit
@@ -55,6 +52,13 @@ const displayName = buildCommit
     ? `${name.display} Canary`
     : name.display
 
+const kebabSuffix = buildCommit ? `-${buildCommit}` : canary ? '-canary' : ''
+const pascalSuffix = buildCommit ? `Commit${buildCommit}` : canary ? 'Canary' : ''
+const cliName = `${light ? 'hermes-light' : 'hermes'}${kebabSuffix}`
+if (store && (canary || buildCommit)) {
+  throw new Error('Store packaging is only eligible for stable releases')
+}
+
 /** @typedef {import("./product-identity.d.cts")} ProductIdentity */
 
 /** @type {ProductIdentity} */
@@ -62,12 +66,14 @@ const identity = {
   store,
   light,
   displayName,
-  appId: `com.nousresearch.${name.kebab}`,
-  // The store build never publishes to a release feed (the Store owns its
-  // updates); null means "no feed" for its publish config.
-  channel: store ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
-  appNamePascal: name.pascal,
-  msixAppIdWithOrg: `NousResearch.${name.pascal}`,
+  appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
+  // Store and commit builds do not publish a release feed.
+  channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
+  appNamePascal: `${name.pascal}${pascalSuffix}`,
+  artifactNamePascal: name.pascal,
+  windowsExecutableName: kebabSuffix ? cliName : displayName,
+  cliName,
+  msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
   ...(store
     ? {
         storeMsix: {

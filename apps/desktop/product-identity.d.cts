@@ -9,12 +9,18 @@ interface ProductIdentity {
   appId: string
   /** app name in pascal case. e.g. "HermesLight" */
   appNamePascal: string
+  /** Artifact prefix stays compatible with release archive consumers. */
+  artifactNamePascal: string
+  /** Windows GUI executable stem; not the payload CLI launcher path. */
+  windowsExecutableName: string
+  /** Exposed payload CLI command. */
+  cliName: string
   /** OS-level app identity w/ org prefix. e.g. "NousResearch.HermesLight" */
   msixAppIdWithOrg: string
   /** electron-updater feed channel this build publishes to. Stable tags:
    *  "latest" | "light"; canary tags: "canary" | "light-canary". Null
-   *  for a store build (the Store owns its updates; no release feed). */
-  channel: string | null
+   *  for Store and commit builds (no release feed). */
+  readonly channel: string | null
   /** Store-submission MSIX packaging identity. Present only when `store`. */
   storeMsix?: {
     identityName: string

@@ -135,6 +135,20 @@ describe('Sessions/Bots strip — #91223', () => {
     expect(tabEl('hermes-bots:pane')).toBeTruthy()
   })
 
+  it('does not offer zone minimization for standing sidebar navigation', () => {
+    render(<LiveTreeGroup parentAxis="row" />)
+
+    expect(globalThis.document.querySelector('button[aria-label="Minimize"]')).toBeNull()
+  })
+
+  it('puts the standing navigation strip below crowded titlebar controls', () => {
+    render(<TreeGroup leftEdge node={zoneAt(0)} parentAxis="row" topEdge />)
+
+    expect(globalThis.document.querySelector<HTMLElement>('[data-panel-header]')?.style.height).toBe('62px')
+    expect(tabEl('sessions')).toBeTruthy()
+    expect(tabEl('hermes-bots:pane')).toBeTruthy()
+  })
+
   it('an explicit never hides the sessions/Bots strip', () => {
     setTreeGroupTabStrip('g-side', 'never')
     expect(tabStripVisibleForGroup(zoneAt(0))).toBe(false)

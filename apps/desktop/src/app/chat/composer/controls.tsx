@@ -5,7 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
@@ -13,6 +13,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceMenu } from './voice-menu'
 
@@ -127,21 +128,7 @@ export function ComposerControls({
         </Tip>
       ) : null}
       {showVoicePrimary ? (
-        <Tip label={c.startVoice}>
-          <Button
-            aria-label={c.startVoice}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled}
-            onClick={() => {
-              triggerHaptic('open')
-              conversation.onStart()
-            }}
-            size="icon"
-            type="button"
-          >
-            <AudioLines className={iconSize.sm} />
-          </Button>
-        </Tip>
+        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
       ) : (
         <Tip
           label={

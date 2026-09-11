@@ -46,6 +46,17 @@ class UnsegmentableStripError(ValueError):
     """
 
 
+class CollapsedRowError(ValueError):
+    """Sliced frames are slivers of the body rather than whole poses.
+
+    Deliberately distinct from :class:`UnsegmentableStripError`: the strip *was*
+    sliceable, so a fresh roll deserves a normal retry. Sharing the type would
+    silently give a collapsed row the skip-strict-retries policy, which saves a
+    paid call but never re-rolls the art that caused the collapse.
+    """
+
+
+
 _ALPHA_FLOOR = 16  # alpha at/below which a pixel is "background"
 _CELL_PAD = 10  # padding kept around a fitted sprite
 _NORMALIZE_PAD = 14  # normalized cells fill like real petdex pets (~5px from the edges)
@@ -453,7 +464,8 @@ def row_frames_collapsed(frames: list, reference_size: tuple[int, int] | None = 
     :func:`_validate_extracted_frames` (they match each other, so no frame is a
     *relative* outlier) and only surface once compose's global-median collapse
     guard rejects the whole atlas — after every row has been paid for. Comparing
-    each frame's aspect against the reference silhouette catches that per row.
+    the row's median frame width against the width the reference silhouette
+    implies at that median height catches that per row.
     """
     boxes = [box for f in frames if (box := f.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0).getbbox()) is not None]
     if not boxes:

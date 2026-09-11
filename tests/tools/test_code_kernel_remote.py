@@ -137,6 +137,46 @@ class RemoteKernelBase(unittest.TestCase):
 
 
 class TestSpawnAndReuse(RemoteKernelBase):
+    def test_remote_cells_use_distinct_rpc_directories(self):
+        env = ScriptedEnv([])
+        kernel = RemoteKernel(
+            env=env,
+            env_type="ssh",
+            kernel_dir="/tmp/kernel",
+            pid="4242",
+            rpc_token="rpc-token",
+            owner="same-task",
+        )
+        rpc_directories = []
+
+        def poll(_env, rpc_dir, *_args):
+            rpc_directories.append(rpc_dir)
+
+        with patch("tools.code_execution_tool._rpc_poll_loop", side_effect=poll), patch(
+            "tools.code_kernel_remote._run_remote_cell",
+            return_value=("ok", {"stdout": "", "stderr": "", "traceback": ""}),
+        ):
+            for _ in range(2):
+                from tools.code_kernel_remote import _run_attached_cell
+
+                _run_attached_cell(
+                    kernel,
+                    ("same-task", "ssh", "same-task", frozenset()),
+                    "print('x')",
+                    env=env,
+                    task_env_id="same-task",
+                    sandbox_tools=frozenset(),
+                    timeout=5,
+                    max_tool_calls=1,
+                    reused=True,
+                    state_reset=False,
+                    state_lost=False,
+                )
+
+        self.assertEqual(len(rpc_directories), 2)
+        self.assertEqual(len(set(rpc_directories)), 2)
+        self.assertTrue(all(path.startswith("/tmp/kernel/rpc/") for path in rpc_directories))
+
     def test_same_kernel_cells_are_serialized(self):
         import threading
 
@@ -195,7 +235,7 @@ class TestSpawnAndReuse(RemoteKernelBase):
             first.start()
             self.assertTrue(first_entered.wait(2))
             second.start()
-            second_ran_while_first_was_active = second_entered.wait(0.2)
+            second_ran_while_first_was_active = second_entered.wait(2)
             release_first.set()
             first.join(5)
             second.join(5)

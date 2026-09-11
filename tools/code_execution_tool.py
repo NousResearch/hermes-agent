@@ -227,9 +227,19 @@ def _rpc_cell_token():
     return os.environ.get("HERMES_RPC_CELL_TOKEN", "")
 
 
-def _run_with_rpc_cell_scope(fn, cell_token, args, kwargs):
+def _rpc_cell_dir():
+    if _rpc_cell_scope is not None:
+        scoped = getattr(_rpc_cell_scope, "rpc_dir", "")
+        if scoped:
+            return scoped
+    return os.environ.get("HERMES_RPC_DIR", "")
+
+
+def _run_with_rpc_cell_scope(fn, cell_token, rpc_dir, args, kwargs):
     previous = getattr(_rpc_cell_scope, "token", None)
+    previous_rpc_dir = getattr(_rpc_cell_scope, "rpc_dir", None)
     _rpc_cell_scope.token = cell_token
+    _rpc_cell_scope.rpc_dir = rpc_dir
     try:
         return fn(*args, **kwargs)
     finally:
@@ -240,6 +250,13 @@ def _run_with_rpc_cell_scope(fn, cell_token, args, kwargs):
                 pass
         else:
             _rpc_cell_scope.token = previous
+        if previous_rpc_dir is None:
+            try:
+                del _rpc_cell_scope.rpc_dir
+            except AttributeError:
+                pass
+        else:
+            _rpc_cell_scope.rpc_dir = previous_rpc_dir
 
 
 if _rpc_cell_scope is not None and not getattr(threading.Thread.start, "_hermes_rpc_cell_scope", False):
@@ -247,10 +264,11 @@ if _rpc_cell_scope is not None and not getattr(threading.Thread.start, "_hermes_
 
     def _start_with_rpc_cell_scope(thread, *args, **kwargs):
         cell_token = _rpc_cell_token()
+        rpc_dir = _rpc_cell_dir()
         original_run = thread.run
 
         def run_with_rpc_cell_scope():
-            return _run_with_rpc_cell_scope(original_run, cell_token, (), {})
+            return _run_with_rpc_cell_scope(original_run, cell_token, rpc_dir, (), {})
 
         thread.run = run_with_rpc_cell_scope
         return _original_thread_start(thread, *args, **kwargs)
@@ -265,8 +283,9 @@ if _rpc_cell_scope is not None and not getattr(
 
     def _submit_with_rpc_cell_scope(executor, fn, /, *args, **kwargs):
         cell_token = _rpc_cell_token()
+        rpc_dir = _rpc_cell_dir()
         return _original_thread_pool_submit(
-            executor, _run_with_rpc_cell_scope, fn, cell_token, args, kwargs,
+            executor, _run_with_rpc_cell_scope, fn, cell_token, rpc_dir, args, kwargs,
         )
 
     _submit_with_rpc_cell_scope._hermes_rpc_cell_scope = True
@@ -420,8 +439,12 @@ def _call(tool_name, args):
         _seq += 1
         seq = _seq
     seq_str = f"{seq:06d}"
-    req_file = os.path.join(_RPC_DIR, f"req_{seq_str}")
-    res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
+    rpc_dir = _rpc_cell_dir() or _RPC_DIR
+    revoked_file = os.path.join(rpc_dir, ".revoked")
+    if os.path.exists(revoked_file):
+        raise RuntimeError("Cell authority expired")
+    req_file = os.path.join(rpc_dir, f"req_{seq_str}")
+    res_file = os.path.join(rpc_dir, f"res_{seq_str}")
 
     # Write request atomically (write to .tmp, then rename).
     # encoding="utf-8" is critical: on Windows-hosted remote backends
@@ -442,6 +465,12 @@ def _call(tool_name, args):
     deadline = time.monotonic() + 300  # 5-minute timeout per tool call
     poll_interval = 0.05  # Start at 50ms
     while not os.path.exists(res_file):
+        if os.path.exists(revoked_file):
+            try:
+                os.unlink(req_file)
+            except OSError:
+                pass
+            raise RuntimeError("Cell authority expired")
         if time.monotonic() > deadline:
             raise RuntimeError(f"RPC timeout: no response for {tool_name} after 300s")
         time.sleep(poll_interval)

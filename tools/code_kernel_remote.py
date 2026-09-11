@@ -284,7 +284,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int,
-                     rpc_cell_token: str = "") -> Tuple[str, Dict[str, Any]]:
+                     rpc_cell_token: str = "", rpc_dir: str = "") -> Tuple[str, Dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
     from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
@@ -295,6 +295,7 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int,
                              "id": seq,
                              "code": code,
                              "rpc_cell_token": rpc_cell_token,
+                             "rpc_dir": rpc_dir,
                          }, ensure_ascii=False))
     kernel.sh(f"mv {q_cells}/cell_req_{seq}.json.tmp {q_cells}/cell_req_{seq}.json", timeout=10)
     deadline = time.monotonic() + timeout
@@ -364,24 +365,30 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
                        disabled_toolsets: Optional[List[str]] = None) -> Dict[str, Any]:
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
-    # The per-key cell lock guarantees one poller per kernel. Leave prior requests in place so
-    # the next cell can return a structured stale-authority error to any late caller.
+    # Each cell owns one RPC directory. A poller that is still finishing an old request can never
+    # consume another cell's request, and the revocation marker releases late callers.
     tool_call_counter, stop_event = [0], threading.Event()
     rpc_cell_token = secrets.token_urlsafe(32)
+    rpc_dir = f"{kernel.kernel_dir}/rpc/{rpc_cell_token}"
+    kernel.sh(f"mkdir -p {shlex.quote(rpc_dir)}", timeout=10)
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-        args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, [], tool_call_counter,
+        args=(env, rpc_dir, task_env_id, [], tool_call_counter,
               max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id,
               enabled_toolsets, disabled_toolsets, rpc_cell_token))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:
         cell_status, cell_payload = _run_remote_cell(
-            kernel, code, timeout, rpc_cell_token=rpc_cell_token,
+            kernel, code, timeout, rpc_cell_token=rpc_cell_token, rpc_dir=rpc_dir,
         )
     finally:
+        try:
+            kernel.sh(f"touch {shlex.quote(rpc_dir + '/.revoked')}", timeout=10)
+        except Exception:
+            pass
         stop_event.set()
         rpc_thread.join(timeout=5)
     kernel_info: Dict[str, Any] = {"reused": reused, "remote": True}

@@ -668,6 +668,28 @@ def test_remote_rpc_serializes_structured_result(monkeypatch):
     assert json.loads(environment.response) == result
 
 
+def test_remote_generated_caller_fails_fast_after_cell_revocation(monkeypatch, tmp_path):
+    rpc_dir = tmp_path / "cell-rpc"
+    rpc_dir.mkdir()
+    (rpc_dir / ".revoked").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_RPC_DIR", str(rpc_dir))
+    namespace = {}
+    exec(
+        code_execution_tool.generate_hermes_tools_module(
+            ["tool_call"], transport="file",
+        ),
+        namespace,
+    )
+    ticks = iter((0.0, 301.0))
+    namespace["time"] = SimpleNamespace(
+        monotonic=lambda: next(ticks),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(RuntimeError, match="Cell authority expired"):
+        namespace["_call"]("tool_call", {"name": "probe", "arguments": {}})
+
+
 def test_remote_rpc_replies_when_cell_authority_is_stale():
     request = {
         "token": "rpc-token",

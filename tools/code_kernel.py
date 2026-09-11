@@ -57,7 +57,9 @@ def run_cell(request, execution_count):
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
     previous_cell_token = getattr(_RPC_CELL_SCOPE, "token", None)
+    previous_rpc_dir = getattr(_RPC_CELL_SCOPE, "rpc_dir", None)
     _RPC_CELL_SCOPE.token = request.get("rpc_cell_token", "")
+    _RPC_CELL_SCOPE.rpc_dir = request.get("rpc_dir", "")
     try:
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -72,6 +74,11 @@ def run_cell(request, execution_count):
                 del _RPC_CELL_SCOPE.token
         else:
             _RPC_CELL_SCOPE.token = previous_cell_token
+        if previous_rpc_dir is None:
+            with contextlib.suppress(AttributeError):
+                del _RPC_CELL_SCOPE.rpc_dir
+        else:
+            _RPC_CELL_SCOPE.rpc_dir = previous_rpc_dir
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {

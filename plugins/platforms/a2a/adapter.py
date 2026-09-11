@@ -203,7 +203,17 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
+        client_ip = self._client_ip()
         if identity is None:
+            security.audit(
+                "inbound",
+                None,
+                None,
+                "unauthorized",
+                decision="rejected_bad_token",
+                status=401,
+                ip=client_ip,
+            )
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -233,6 +243,16 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             if failed():
                 if code == protocol.ERR_RATE_LIMITED:
                     protocol.metrics.rate_limit_triggers += 1
+                if code == protocol.ERR_UNTRUSTED_PEER:
+                    security.audit(
+                        "inbound",
+                        identity,
+                        req_id,
+                        f"peer '{identity}' not trusted",
+                        decision="rejected_untrusted_peer",
+                        status=403,
+                        ip=client_ip,
+                    )
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         if handler_name == "_rpc_message_send":

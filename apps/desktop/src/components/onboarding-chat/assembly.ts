@@ -135,6 +135,7 @@ export function endChatOnboardingSolo(): void {
     const tree = previous.tree ?? registry.getArea('layouts').find(preset => preset.id === 'default')?.data
 
     if (tree) {
+      // SAFETY: layout contributions declare LayoutNode data, like the saved tree.
       applyLayoutPreset(previous.tree ? previous.id : 'default', tree as LayoutNode)
     }
   }

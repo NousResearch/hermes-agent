@@ -8,8 +8,7 @@ import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-vi
 
 const identity = vi.hoisted(() => ({ message: 'message-1' }))
 vi.mock('@assistant-ui/react', () => ({
-  useAuiState: (select: (state: { message: { id: string } }) => unknown) =>
-    select({ message: { id: identity.message } })
+  useAuiState: <T,>(select: (state: { message: { id: string } }) => T) => select({ message: { id: identity.message } })
 }))
 
 const submit = vi.fn()

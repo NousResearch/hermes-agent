@@ -12,8 +12,7 @@ import { HandoffCard, ProgressCard } from './build'
 
 const identity = vi.hoisted(() => ({ message: 'progress-a' }))
 vi.mock('@assistant-ui/react', () => ({
-  useAuiState: (select: (state: { message: { id: string } }) => unknown) =>
-    select({ message: { id: identity.message } })
+  useAuiState: <T,>(select: (state: { message: { id: string } }) => T) => select({ message: { id: identity.message } })
 }))
 
 beforeEach(() => {

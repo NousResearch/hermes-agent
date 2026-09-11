@@ -122,15 +122,15 @@ it('offers controls for a profile-owned session without a registry connection id
     <SessionViewProvider value={view}>
       <ConnectorTool
         addResult={vi.fn()}
-        resume={vi.fn()}
-        respondToApproval={vi.fn()}
-        status={{ type: 'complete' }}
-        type="tool-call"
         args={{ action: 'status', connectors: ['gmail'] }}
         argsText=""
+        respondToApproval={vi.fn()}
         result={{ connectors: [{ connector: 'gmail' }] }}
+        resume={vi.fn()}
+        status={{ type: 'complete' }}
         toolCallId="profile-call"
         toolName="manage_connections"
+        type="tool-call"
       />
     </SessionViewProvider>
   )

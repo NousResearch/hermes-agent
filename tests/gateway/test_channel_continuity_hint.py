@@ -1,12 +1,13 @@
-"""Tests for the lightweight Slack/Discord channel session-continuity hint.
+"""Tests for the lightweight session-continuity hint on human chat surfaces.
 
 Salvaged from PR #36220 (metamon-p), ported onto the current SessionStore.
 
 Covers:
 - SessionStore records the previous session_id on auto-reset (and only then).
 - prev_session_id survives a to_dict() → from_dict() roundtrip (gateway restart).
-- build_channel_continuity_note() emits a hint only for Slack/Discord sessions
-  that were auto-reset with real prior activity, and stays silent otherwise.
+- build_channel_continuity_note() emits a hint for human chat surfaces (Slack,
+  Discord, Telegram, plugin platforms, ...) that were auto-reset with real prior
+  activity, and stays silent for machine callers and Home Assistant events.
 """
 
 from datetime import datetime, timedelta
@@ -46,6 +47,16 @@ def _slack_source(thread_id=None):
     )
 
 
+def _human_source(platform, thread_id=None, chat_type="dm"):
+    return SessionSource(
+        platform=platform,
+        chat_id="C1",
+        chat_type=chat_type,
+        user_id="U1",
+        thread_id=thread_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # SessionStore records prev_session_id on auto-reset
 # ---------------------------------------------------------------------------
@@ -72,7 +83,7 @@ class TestPrevSessionIdCapture:
 # build_channel_continuity_note
 # ---------------------------------------------------------------------------
 
-def _reset_entry(platform, prev="20260101_000000_abc", had_activity=True):
+def _reset_entry(platform, prev: str | None = "20260101_000000_abc", had_activity=True):
     return SessionEntry(
         session_key="k",
         session_id="20260101_010000_def",
@@ -95,7 +106,45 @@ class TestBuildChannelContinuityNote:
         assert entry.prev_session_id in note
         assert "channel" in note
 
+    def test_telegram_dm_emits_hint(self):
+        entry = _reset_entry(Platform.TELEGRAM)
+        note = build_channel_continuity_note(entry, _human_source(Platform.TELEGRAM))
+        assert note is not None
+        assert "session_search" in note
+        assert "20260101_000000_abc" in note
+        assert "conversation" in note  # DM wording, not Slack/Discord "channel"
+        assert "channel" not in note
+
+    def test_telegram_topic_uses_thread_wording(self):
+        entry = _reset_entry(Platform.TELEGRAM)
+        note = build_channel_continuity_note(entry, _human_source(Platform.TELEGRAM, thread_id="77"))
+        assert note is not None
+        assert "thread" in note
+
+    def test_plugin_platform_emits_hint(self):
+        # Scoped by denylist: plugin platforms created via Platform._missing_ qualify too.
+        irc = Platform("irc")
+        entry = _reset_entry(irc)
+        assert build_channel_continuity_note(entry, _human_source(irc)) is not None
+
+    @pytest.mark.parametrize(
+        "platform",
+        [
+            Platform.API_SERVER,
+            Platform.WEBHOOK,
+            Platform.MSGRAPH_WEBHOOK,
+            Platform.WECOM_CALLBACK,
+            Platform.HOMEASSISTANT,
+        ],
+    )
+    def test_non_human_sources_stay_silent(self, platform):
+        entry = _reset_entry(platform)
+        assert build_channel_continuity_note(entry, _human_source(platform)) is None
 
     def test_no_activity_returns_none(self):
         entry = _reset_entry(Platform.SLACK, had_activity=False)
         assert build_channel_continuity_note(entry, _slack_source()) is None
+
+    def test_no_prev_session_id_returns_none(self):
+        entry = _reset_entry(Platform.TELEGRAM, prev=None)
+        assert build_channel_continuity_note(entry, _human_source(Platform.TELEGRAM)) is None

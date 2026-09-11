@@ -106,8 +106,14 @@ dependencies = [
   #
   # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
-  # before you move this version.
-  "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  # before you move this version. cryptography stopped publishing Intel macOS
+  # wheels in 49.0.0; keep the last wheel-backed release on that platform so
+  # installs without a Rust/OpenSSL toolchain remain possible. This is a
+  # temporary compatibility exception: 48.0.1 lacks the PKCS#7 oracle fix in
+  # 50.0.0. Remove it when upstream restores Intel wheels or Hermes ships a
+  # trusted x86_64 wheel.
+  "cryptography==50.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  "cryptography==48.0.1; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # Last release with Intel macOS wheels
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -405,8 +411,10 @@ override-dependencies = [
   # and its three advisories (see the cryptography pin in
   # [project].dependencies). The package uses cryptography only to sign
   # requests with RSA and AES, and that API did not break in 49 or 50.
-  # Remove this line when alibabacloud-tea-openapi lifts the cap.
-  "cryptography>=50,<51",
+  # Remove this override when alibabacloud-tea-openapi lifts the cap. Keep both
+  # exact versions and their markers aligned with the direct dependencies above.
+  "cryptography==50.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "cryptography==48.0.1; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,

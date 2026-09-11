@@ -519,6 +519,17 @@ def _extract_url_query_params(url: str):
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
+# OpenAI-compatible local servers (Ollama, vLLM, llama.cpp server) are served by the
+# generic custom provider — mirroring hermes_cli.auth._PROVIDER_ALIASES. Without these
+# entries an explicit ``provider: ollama`` aux lane dead-ends in the unknown-provider arm
+# and raises a misleading ``OLLAMA_API_KEY`` error instead of using the lane's base_url
+# (#106010). Their OpenAI wire surface lives under /v1, so a bare host base_url needs
+# the /v1 tail (#106010).
+_LOCAL_SERVER_ALIASES = {
+    "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+    "llama.cpp": "custom", "llama-cpp": "custom",
+}
+
 _PROVIDER_ALIASES = {
     "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
     "x-ai": "xai", "x.ai": "xai", "grok": "xai",
@@ -534,7 +545,16 @@ _PROVIDER_ALIASES = {
     "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub", "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
     "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
+    **_LOCAL_SERVER_ALIASES,
 }
+
+
+def _bare_host_base_url(base_url: str) -> bool:
+    """True when a base URL is a bare host[:port] with no path component."""
+    try:
+        return urlparse(str(base_url or "").strip()).path.strip("/") == ""
+    except Exception:
+        return False
 
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
@@ -4647,6 +4667,8 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     custom_base = custom_key = wrap_base = ""
     if req.explicit_base_url:
         custom_base = _to_openai_base_url(req.explicit_base_url).strip()
+        if req.original_provider in _LOCAL_SERVER_ALIASES and _bare_host_base_url(custom_base):
+            custom_base = custom_base.rstrip("/") + "/v1"
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (

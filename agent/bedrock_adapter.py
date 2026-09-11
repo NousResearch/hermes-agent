@@ -321,6 +321,33 @@ def bedrock_guardrail_config(config: Optional[Dict[str, Any]] = None) -> Optiona
     return out
 
 
+def bedrock_guardrail_headers(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """InvokeModel/Messages-wire form of the configured guardrail. The AnthropicBedrock SDK speaks
+    InvokeModel, which has no ``guardrailConfig`` body field; Bedrock reads the guardrail from these
+    headers instead (same enforcement, keeps prompt caching / thinking / 1M context)."""
+    gr = bedrock_guardrail_config(config)
+    if not gr:
+        return {}
+    headers = {
+        "X-Amzn-Bedrock-GuardrailIdentifier": str(gr["guardrailIdentifier"]),
+        "X-Amzn-Bedrock-GuardrailVersion": str(gr["guardrailVersion"]),
+    }
+    if str(gr.get("trace", "")).lower() in {"enabled", "enabled_full", "true"}:
+        headers["X-Amzn-Bedrock-Trace"] = "ENABLED"
+    return headers
+
+
+GUARDRAIL_ACTION_FIELD = "amazon-bedrock-guardrailAction"
+
+
+def anthropic_response_guardrail_intervened(response: Any) -> bool:
+    """True when Bedrock substituted the InvokeModel reply with guardrail messaging. Unlike Converse
+    (``stopReason=guardrail_intervened``), InvokeModel keeps ``stop_reason=end_turn`` and signals the
+    block only via an unmodelled body field the Anthropic SDK keeps in ``model_extra``."""
+    extra = getattr(response, "model_extra", None) or {}
+    return str(extra.get(GUARDRAIL_ACTION_FIELD, "")).upper() == "INTERVENED"
+
+
 def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     """Point *agent* at a non-Mantle Bedrock wire: ``bedrock_converse`` (boto3 direct, no SDK client) or
     ``anthropic_messages`` (AnthropicBedrock SDK, SigV4 via the boto3 chain). ``aws-sdk`` is a sentinel,

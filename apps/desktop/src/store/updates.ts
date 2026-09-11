@@ -20,6 +20,7 @@ import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -212,6 +213,13 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   if (!status || status.supported === false || status.error || !status.targetSha) {
+    return
+  }
+
+  // A toast would interrupt the cinematic or guided chat. Drop this poll's
+  // offer: the poller checks again later and normal snooze handling still
+  // applies, so there is no need to queue a notification.
+  if (onboardingSurfaceActive()) {
     return
   }
 

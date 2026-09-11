@@ -460,10 +460,20 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
+        // The model id is the quiet part; the sign-in is the action, so it is
+        // solid and set off by a gap instead of touching the label.
         detail: (
-          <Badge size="xs" variant="default">
-            {freeTierCopy.signIn}
-          </Badge>
+          <span className="inline-flex items-center gap-2">
+            <span className="font-mono text-[0.625rem] text-muted-foreground/70">
+              {freeTier?.model ?? FREE_TIER_MODEL}
+            </span>
+            {/* The class merger drops Badge's own leading-none behind the size's
+                font-size class, so the badge grows to the inherited 1.5 leading and
+                overhangs an 11px label. Restating it here keeps it 11.6px tall. */}
+            <Badge className="leading-none" size="xs" variant="solid">
+              {freeTierCopy.signIn}
+            </Badge>
+          </span>
         ),
         // Shown while a free-tier identity exists and the tier is on: it names the
         // identity that carries the connectors (and inference when nothing else
@@ -471,8 +481,9 @@ export function useStatusbarItems({
         hidden: !freeTier?.available,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',
-        label: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
+        label: freeTierCopy.providerName,
         onSelect: () => openFreeTierSignIn(),
+        title: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
         toggleLabel: copy.toggleFreeTier,
         variant: 'action'
       },

@@ -2228,9 +2228,9 @@ class BasePlatformAdapter(ABC):
 
     def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
                               chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
+                              thread_id: Optional[str] = None, command: Optional[str] = None) -> Optional[bool]:
         """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
+        legacy). ``is_bot``/``thread_id``/``command`` are forwarded only when set so legacy
         three-positional callbacks keep working. Only literal booleans propagate: a truthy
         non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
         if not user_id or self._authorization_check is None:
@@ -2240,6 +2240,8 @@ class BasePlatformAdapter(ABC):
             extra["is_bot"] = True
         if thread_id is not None:
             extra["thread_id"] = thread_id
+        if command is not None:
+            extra["command"] = command
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
         except Exception:
@@ -3440,6 +3442,27 @@ class BasePlatformAdapter(ABC):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
         return True
+
+    async def run_idle_activity(self, session_key: str, callback) -> bool:
+        """Run an internal consumer at an idle boundary without a human message.
+
+        Wisdom uses the same guard as regular turns. Real messages queue behind
+        it; stop/reset can cancel it using the ordinary session task registry.
+        """
+        if session_key in self._active_sessions:
+            return False
+        guard = asyncio.Event()
+        task = asyncio.current_task()
+        self._active_sessions[session_key] = guard
+        self._session_tasks[session_key] = task
+        try:
+            await callback()
+            return True
+        finally:
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+            if self._active_sessions.get(session_key) is guard:
+                await self._drain_pending_after_session_command(session_key, guard)
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:

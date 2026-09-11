@@ -440,6 +440,167 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_recreated_upserts_without_delete():
+    """Regression (#104399): the recreated path must not delete before upserting.
+
+    A delete-then-upsert sequence strands the command deleted when Discord's
+    small command-management bucket 429s the upsert (the sync aborts; nothing
+    re-creates the command until a later fully-clean sync). POST-by-name is
+    itself an overwrite (Discord docs: "Creating a command with the same name
+    as an existing command for your application will overwrite the old
+    command"), so a lone upsert recreates the command while it stays available.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_model = {
+        "name": "model",
+        "description": "Switch the model",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    # Non-patchable field differs from the live command: the safe-sync
+    # "recreated" path (patchable payload equal, canonical payload unequal).
+    existing_model = _ExistingCommand(
+        21,
+        {**desired_model, "dm_permission": False},
+    )
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_model)],
+        fetch_commands=AsyncMock(return_value=[existing_model]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 1,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired_model)
+    # The overwrite already replaced the old command — a trailing delete is
+    # both unnecessary and another rate-limit-consuming mutation.
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.edit_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
+    """Regression (#104399): a 429 landing mid-recreate must not leave the
+    command deleted. With delete-first, the delete succeeds and the upsert
+    429s — the command vanishes from the slash picker until a later fully-clean
+    sync. With upsert-first, the 429 leaves the old command live (worst case:
+    stale non-patchable fields) — never deleted."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_model = {
+        "name": "model",
+        "description": "Switch the model",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+    }
+    existing_model = _ExistingCommand(21, {**desired_model, "dm_permission": False})
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_model)],
+        fetch_commands=AsyncMock(return_value=[existing_model]),
+    )
+    calls = []
+
+    async def _upsert(app_id, payload):
+        calls.append("upsert")
+        raise RuntimeError("429 Too Many Requests")
+
+    async def _delete(app_id, command_id):
+        calls.append(f"delete:{command_id}")
+
+    fake_http = SimpleNamespace(
+        upsert_global_command=_upsert,
+        edit_global_command=AsyncMock(),
+        delete_global_command=_delete,
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    with pytest.raises(RuntimeError, match="429"):
+        await adapter._safe_sync_slash_commands()
+
+    # The only mutation attempted was the upsert — the command is never
+    # deleted, so it remains available despite the aborted sync.
+    assert calls == ["upsert"]
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)

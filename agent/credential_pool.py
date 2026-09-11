@@ -784,6 +784,40 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     return isinstance(entries, list) and bool(entries)
 
 
+def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
+    """Local routing identity for comparing already-loaded Codex credentials.
+
+    JWT claims are decoded without signature verification. They are used only to prevent
+    cross-principal singleton synchronization, never as authentication or authorization proof.
+    """
+    claims = _decode_jwt_claims(access_token)
+    if not isinstance(claims, dict):
+        return None
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if not isinstance(auth_claims, dict):
+        return None
+    account_id, subject = auth_claims.get("chatgpt_account_id"), claims.get("sub")
+    if not isinstance(account_id, str) or not isinstance(subject, str):
+        return None
+    identity = account_id.strip(), subject.strip()
+    return identity if all(identity) else None
+
+
+def _codex_entry_tracks_singleton(
+    entry: PooledCredential, singleton_tokens: Dict[str, Any], source_path: Optional[Path],
+) -> bool:
+    """Whether a Codex row may adopt token state from this singleton source."""
+    if entry.source == "device_code":
+        return True
+    if entry.source != SOURCE_MANUAL_DEVICE_CODE:
+        return False
+    if source_path is None or not _same_path(source_path, auth_mod._auth_file_path()):
+        return False
+    entry_identity = _codex_principal_identity(entry.access_token)
+    singleton_identity = _codex_principal_identity(singleton_tokens.get("access_token"))
+    return bool(entry_identity and singleton_identity and entry_identity == singleton_identity)
+
+
 def _borrowed_single_use_pool_root() -> Optional[Path]:
     """Global-root auth.json when persisting a BORROWED single-use pool, else None.
 
@@ -1106,12 +1140,13 @@ class CredentialPool(CredentialPoolAdminMixin):
         *,
         persist: bool = True,
         failure_reason: Optional[str] = None,
+        force_terminal: bool = False,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
         # fails immediately until the user removes it (#32849).
-        terminal = self._is_terminal_auth_failure(status_code, normalized_error)
+        terminal = force_terminal or self._is_terminal_auth_failure(status_code, normalized_error)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1238,19 +1273,12 @@ class CredentialPool(CredentialPoolAdminMixin):
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 state, source_path = _load_provider_state_with_source(auth_store, self.provider)
-            if (
-                is_codex
-                and entry.source == SOURCE_MANUAL_DEVICE_CODE
-                and source_path is not None
-                and not _same_path(source_path, auth_mod._auth_file_path())
-            ):
-                # An independently added profile grant has no singleton shadow. Root fallback
-                # state belongs to another owner and must never replace this entry before refresh.
-                return entry
             if not isinstance(state, dict):
                 return entry
             tokens = state.get("tokens")
             if not isinstance(tokens, dict):
+                return entry
+            if is_codex and not _codex_entry_tracks_singleton(entry, tokens, source_path):
                 return entry
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")
@@ -1675,6 +1703,30 @@ class CredentialPool(CredentialPoolAdminMixin):
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
             if getattr(auth_mod, terminal_fn_name)(exc):
+                if self.provider == "openai-codex" and entry.source == SOURCE_MANUAL_DEVICE_CODE:
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state, source_path = _load_provider_state_with_source(
+                                auth_store, self.provider,
+                            )
+                        singleton_tokens = state.get("tokens") if isinstance(state, dict) else None
+                    except Exception:
+                        singleton_tokens = None
+                        source_path = None
+                    if not isinstance(singleton_tokens, dict) or not _codex_entry_tracks_singleton(
+                        entry, singleton_tokens, source_path,
+                    ):
+                        self._mark_exhausted(
+                            entry,
+                            401,
+                            {
+                                "reason": getattr(exc, "code", None),
+                                "message": str(exc),
+                            },
+                            force_terminal=True,
+                        )
+                        return None
                 logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})

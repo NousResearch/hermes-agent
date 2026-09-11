@@ -8,6 +8,7 @@ a second POST returns ``invalid_grant``).
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -385,6 +386,160 @@ def test_independent_codex_profile_refresh_sync_does_not_adopt_root_tokens(fleet
 
     assert (synced.id, synced.refresh_token) == ("own-codex", "profile-RT")
     assert (root / "auth.json").read_bytes() == root_before
+
+
+def _codex_jwt(account_id, subject, token_id):
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "sub": subject,
+        "jti": token_id,
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+    }, separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"header.{payload}.signature"
+
+
+def test_independent_codex_profile_refresh_uses_own_pair_with_local_singleton(
+    fleet, monkeypatch,
+):
+    """Local singleton A must not replace independent manual account B before refresh."""
+    from agent.credential_pool import load_pool
+
+    singleton_access = _codex_jwt("shared-workspace", "user-a", "singleton")
+    manual_access = _codex_jwt("shared-workspace", "user-b", "manual-old")
+    refreshed_access = _codex_jwt("shared-workspace", "user-b", "manual-new")
+    kid = _profile(fleet, "independent-codex-local-singleton")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {
+            "access_token": singleton_access,
+            "refresh_token": "singleton-RT",
+        }}},
+        "credential_pool": {"openai-codex": [{
+            "id": "manual-b",
+            "label": "profile-account-b",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": manual_access,
+            "refresh_token": "manual-RT",
+        }]},
+    }))
+    refresh_calls = []
+
+    def refresh(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        return {
+            "access_token": refreshed_access,
+            "refresh_token": "manual-RT-2",
+            "last_refresh": "2026-09-11T00:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", refresh)
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.id == "manual-b")
+
+    refreshed = pool._refresh_entry(manual, force=True)
+
+    assert refreshed is not None
+    assert refresh_calls == [(manual_access, "manual-RT")]
+    assert (refreshed.access_token, refreshed.refresh_token) == (
+        refreshed_access, "manual-RT-2",
+    )
+    store = json.loads((kid / "auth.json").read_text())
+    assert store["providers"]["openai-codex"]["tokens"] == {
+        "access_token": singleton_access,
+        "refresh_token": "singleton-RT",
+    }
+
+
+def test_same_principal_legacy_codex_alias_still_adopts_local_singleton(fleet):
+    """A local manual alias with the same principal retains singleton recovery."""
+    from agent.credential_pool import load_pool
+
+    stale_access = _codex_jwt("workspace-a", "user-a", "stale")
+    fresh_access = _codex_jwt("workspace-a", "user-a", "fresh")
+    kid = _profile(fleet, "legacy-codex-local-singleton")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {
+            "access_token": fresh_access,
+            "refresh_token": "fresh-RT",
+        }}},
+        "credential_pool": {"openai-codex": [{
+            "id": "legacy-alias",
+            "label": "legacy-alias",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": stale_access,
+            "refresh_token": "stale-RT",
+        }]},
+    }))
+
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    legacy = next(entry for entry in pool.entries() if entry.id == "legacy-alias")
+    synced = pool._sync_entry_from_auth_store(legacy)
+
+    assert (synced.access_token, synced.refresh_token) == (fresh_access, "fresh-RT")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["refresh_token_reused", "codex_refresh_failed", "codex_auth_missing_refresh_token"],
+)
+def test_independent_codex_terminal_refresh_marks_only_manual_account_dead(
+    fleet, monkeypatch, reason,
+):
+    """Terminal failure for manual B must not quarantine local singleton A."""
+    from hermes_cli.auth import AuthError
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    singleton_access = _codex_jwt("shared-workspace", "user-a", "singleton")
+    manual_access = _codex_jwt("shared-workspace", "user-b", "manual")
+    kid = _profile(fleet, "terminal-codex-local-singleton")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {
+            "access_token": singleton_access,
+            "refresh_token": "singleton-RT",
+        }}},
+        "credential_pool": {"openai-codex": [{
+            "id": "manual-b",
+            "label": "profile-account-b",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": manual_access,
+            "refresh_token": "manual-RT",
+        }]},
+    }))
+
+    def fail_refresh(*_args):
+        raise AuthError(
+            "synthetic terminal Codex refresh failure",
+            provider="openai-codex",
+            code=reason,
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", fail_refresh)
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.id == "manual-b")
+
+    assert pool._refresh_entry(manual, force=True) is None
+
+    by_id = {entry.id: entry for entry in pool.entries()}
+    assert by_id["manual-b"].last_status == STATUS_DEAD
+    store = json.loads((kid / "auth.json").read_text())
+    assert store["providers"]["openai-codex"]["tokens"] == {
+        "access_token": singleton_access,
+        "refresh_token": "singleton-RT",
+    }
 
 
 def test_classic_mode_persist_is_unchanged(fleet):

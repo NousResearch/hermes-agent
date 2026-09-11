@@ -24,6 +24,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await adapter.send_message(chat_id, message, media_files=media_files, thread_id=thread_id)
     return await _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=thread_id)
 
+# ---- BEGIN LOCAL FIX (Nilo, 2026-09-11): cron/scheduler_delivery.py importa
+# prepare_send_message_platforms y resolve_send_target de ESTE módulo, pero el refactor upstream
+# movió resolve_send_target a tools/send_message_targets.py y prepare_send_message_platforms se
+# quedó fuera de esta rama feature. Sin esto, TODA entrega de cron con target explícito
+# (platform:chat_id) falla con "cannot import name 'prepare_send_message_platforms'" y el output
+# se pierde. Parche reaplicable: ~/workspace/hermes-cron-standalone-send-fix.patch (skill
+# hermes-local-patches); se pierde con `hermes update`.
+from tools.send_message_targets import resolve_send_target  # noqa: E402  (re-export local)
+
+
+def prepare_send_message_platforms() -> None:
+    """Load enabled standalone plugins before tool schemas/cache keys are built."""
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+# ---- END LOCAL FIX
+
 _PLUGIN_COMPAT_LAZY = {
     'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
 }

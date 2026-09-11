@@ -175,15 +175,15 @@ export function advanceTranscriptWindow(
 export const MAX_SESSION_WINDOWS = 12
 
 /**
- * A window state plus the exact message array it was computed from.
- * The array identity is load-bearing: when a session is re-entered with the
- * IDENTICAL transcript (the warm-switch path of #95595), the stored window —
- * including the exact `window.messages` slice reference — is reused as-is.
- * The reference reuse is what stops `useRuntimeMessageRepository` from
- * rebuilding (and every row from re-rendering) on a warm switch.
+ * A window state plus a weak identity reference to the exact source array it
+ * was computed from. While the session store still owns that array, a warm
+ * switch can reuse the exact `window.messages` slice and avoid rebuilding the
+ * runtime. Once cold-session cleanup releases the store transcript, this memo
+ * must not become an independent strong owner of every old tool result; the
+ * bounded window slice in `state` is the only payload intentionally retained.
  */
 export interface SessionWindowMemo {
-  messages: readonly ChatMessage[]
+  messages: WeakRef<readonly ChatMessage[]>
   state: TranscriptWindowState
 }
 
@@ -194,18 +194,21 @@ export interface SessionWindowMemo {
  * re-entry always re-ran the weight walk and rebuilt the windowed slice —
  * which re-indexed the whole windowed transcript (markdown re-parse +
  * re-highlight per row) even though nothing had changed. This keeps one memo
- * per session:
+ * per windowed session:
  *
- * - Re-entering a session with the same transcript array returns the cached
- *   windowed slice BY REFERENCE — the runtime repository and every message
- *   row stay mounted, so the switch is O(1).
+ * - Re-entering a session with the same live transcript array returns the
+ *   cached windowed slice BY REFERENCE — the runtime repository and every
+ *   message row stay mounted, so the switch is O(1).
  * - Re-entering with a changed transcript keeps the sticky cut (anchor still
  *   present, tail within budget + slack) instead of re-walking from scratch.
  * - The anchor vanishing (compression rewrite) or a pages change falls
  *   through to `advanceTranscriptWindow`'s existing fresh-walk behaviour.
+ * - An unwindowed result is the source array itself, so caching it adds no
+ *   identity benefit and would make `state.window.messages` a second strong
+ *   owner of the complete transcript. Pass-through sessions are not memoized.
  *
- * The map is bounded (oldest session evicted) so an unbounded session list
- * cannot grow it without limit.
+ * The map is bounded (oldest session evicted) and source arrays are weakly held,
+ * so cold-session cleanup can release the full transcript independently.
  */
 export function advanceSessionTranscriptWindow(
   memos: Map<string, SessionWindowMemo>,
@@ -215,15 +218,23 @@ export function advanceSessionTranscriptWindow(
 ): TranscriptWindowState {
   const memo = memos.get(sessionKey)
 
-  // Warm re-visit with the identical transcript and page count: reuse the
+  // Warm re-visit with the identical live transcript and page count: reuse the
   // cached state wholesale, preserving the windowed slice reference.
-  if (memo && memo.messages === messages && memo.state.pages === pages) {
+  if (memo && memo.messages.deref() === messages && memo.state.pages === pages) {
     return memo.state
   }
 
   const state = advanceTranscriptWindow(memo?.state ?? null, messages, pages)
 
-  memos.set(sessionKey, { messages, state })
+  if (!state.window.windowed) {
+    // The pass-through state already returns `messages` itself. Keeping it in
+    // the component-local map would pin the complete source array after the
+    // session store intentionally releases a cold transcript.
+    memos.delete(sessionKey)
+    return state
+  }
+
+  memos.set(sessionKey, { messages: new WeakRef(messages), state })
 
   if (memos.size > MAX_SESSION_WINDOWS) {
     const oldest = memos.keys().next().value as string

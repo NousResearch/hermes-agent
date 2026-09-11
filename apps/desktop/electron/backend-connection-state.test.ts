@@ -121,3 +121,47 @@ test('distinguishes a pending connection attempt from a cached settled descripto
   assert.equal(state.getPromise(), connection.promise)
   assert.equal(state.getPendingPromise(), null)
 })
+
+test('a failed primary stop retains its child and blocks replacement until retry', async (): Promise<void> => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const child: FakeProcess = { id: 'primary' }
+  const attempt = state.startAttempt()
+  state.attachProcess(attempt, child)
+  state.setPromise(attempt, Promise.resolve('ready'))
+  const failure = new Error('still running')
+  const calls: FakeProcess[] = []
+
+  const fail = async (current: FakeProcess): Promise<void> => {
+    calls.push(current)
+    throw failure
+  }
+
+  const stopping = state.stopProcess(fail)
+  assert.equal(state.getProcess(), null)
+  assert.equal(state.getPendingPromise(), null)
+  assert.equal(state.stopProcess(fail), stopping)
+  assert.throws((): unknown => state.startAttempt(), /has not stopped/)
+  await assert.rejects(stopping, failure)
+  state.invalidate()
+  assert.throws((): unknown => state.startAttempt(), /has not stopped/)
+  await state.stopProcess(async (current: FakeProcess): Promise<void> => {
+    calls.push(current)
+  })
+  assert.deepEqual(calls, [child, child])
+  assert.doesNotThrow((): unknown => state.startAttempt())
+})
+
+test('shutdown owns a child before its persistent claim completes', async (): Promise<void> => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const child: FakeProcess = { id: 'claiming' }
+  const claim = deferred<void>()
+  const claiming = state.claimProcess(state.startAttempt(), child, (): Promise<void> => claim.promise)
+
+  assert.equal(state.getProcess(), child)
+  await state.stopProcess(async (current: FakeProcess): Promise<void> => {
+    assert.equal(current, child)
+  })
+  claim.resolve()
+  assert.equal(await claiming, null)
+  assert.equal(state.getProcess(), null)
+})

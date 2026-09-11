@@ -17,9 +17,10 @@ import {
   webContents as electronWebContents,
   globalShortcut,
   ipcMain,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
   Menu,
   nativeTheme,
-  Notification,
   powerMonitor,
   powerSaveBlocker,
   protocol,
@@ -93,8 +94,9 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
+import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
-import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
+import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -174,7 +176,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
-import { createEventDeduper } from './event-dedupe'
+import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps } from './external-open'
 import {
   buildTerminalScript,
@@ -208,6 +210,7 @@ import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gatewa
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -238,7 +241,10 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { registerMachineProfile } from './machine-profile'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -277,6 +283,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
@@ -338,6 +345,7 @@ import {
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { backendQuitNeedsWait, createQuitTeardownCoordinator, type QuitTeardownTask } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -377,6 +385,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
@@ -393,16 +402,12 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import {
-  compareApiUrl,
-  parseCompareBehindCount,
-  resolveCommitLogSelection
-} from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   resolveUpdaterMechanism,
+  type UpdaterStatusWire,
   type UpdaterStrategy
 } from './updater'
 import {
@@ -852,6 +857,8 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+// One launch decision must reach both the renderer and every backend spawn.
+const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -1352,6 +1359,32 @@ function registerMediaProtocol() {
 
 let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
+
+const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
+  stopChild: (child: ChildProcess): void => {
+    if (child.exitCode === null && child.signalCode === null) {
+      stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
+    }
+  },
+  waitForExit: (child: ChildProcess): Promise<void> => waitForBackendExit(child),
+  cancelSetup: (): void => {
+    firstRunSetupGate?.resetForRetry()
+    bootstrapAbortController?.abort()
+  }
+})
+
+function spawnOwnedBackend(...args: Parameters<typeof spawn>): ChildProcess {
+  const child = localBackendLifecycle.spawn((): ChildProcess => spawn(...args))
+  child.once('exit', (): boolean => localBackendLifecycle.release(child))
+  child.once('error', (): void => {
+    if (!child.pid) {
+      localBackendLifecycle.release(child)
+    }
+  })
+
+  return child
+}
+
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
@@ -2179,6 +2212,10 @@ function fileExists(filePath) {
   }
 }
 
+function isGitCheckout(root: string): boolean {
+  return fs.existsSync(path.join(root, '.git'))
+}
+
 function directoryExists(filePath) {
   try {
     return fs.statSync(filePath).isDirectory()
@@ -2288,6 +2325,7 @@ async function waitForUpdateToFinish() {
   let announced = false
 
   const outcome = await waitForUpdateClearance(updateGateDeps(), {
+    signal: localBackendLifecycle.signal,
     onWaitTick: async reason => {
       if (!announced) {
         announced = true
@@ -2335,6 +2373,10 @@ async function waitForUpdateToFinish() {
     }
   } catch (err) {
     rememberLog(`[updates] could not read hand-off result: ${err.message}`)
+  }
+
+  if (outcome === 'cancelled') {
+    localBackendLifecycle.assertCanStart()
   }
 
   if (outcome === 'clear') {
@@ -2948,7 +2990,7 @@ function resolveUpdateRoot() {
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
   ].filter(Boolean)
 
-  return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
+  return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -2976,7 +3018,7 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
       options.onLine?.('stderr', text)
     })
     child.once('error', reject)
-    child.once('exit', code => resolve({ code, stdout, stderr }))
+    child.once('close', (code: number): void => resolve({ code, stdout, stderr }))
   })
 }
 
@@ -3026,14 +3068,14 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
-async function checkUpdates() {
+async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
   // A packaged install delegates to the update owner named by its stamp.
   let strategy: UpdaterStrategy | null = null
 
   try {
     strategy = resolvePackagedUpdateStrategy()
 
-    if (strategy) { return await strategy.check() }
+    if (strategy) { return await strategy.check(opts) }
   } catch (error) {
     return {
       supported: true,
@@ -3047,82 +3089,20 @@ async function checkUpdates() {
   // Checkout install: dispatch through the strategy layer — one mechanism,
   // one stamp, no direct body path. The flow lives in updater/checkout.ts;
   // this is the only production door to the checkout arms.
-  return resolveCheckoutUpdateStrategy().check()
+  return resolveCheckoutUpdateStrategy().check(opts)
 }
 
-// Best-effort exact behind-count for graphs the local clone can't measure.
-// Delegates URL building + response parsing to update-count.ts (pure, unit
-// tested); this wrapper only does the bounded network call. Any failure —
-// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
-// the honest "update available, count unknown" state.
-async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
-  const url = compareApiUrl({ currentSha, originUrl, targetSha })
+async function fetchGitHubApi(url: string, accept: string = 'application/vnd.github+json'): Promise<unknown> {
+  const response = await fetch(url, {
+    headers: { Accept: accept, 'User-Agent': 'hermes-desktop-update-check' },
+    signal: AbortSignal.timeout(10_000)
+  })
 
-  if (!url) {
-    return null
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
   }
 
-  try {
-    const payload = await new Promise((resolve, reject) => {
-      const req = https.get(
-        url,
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            // GitHub requires a UA on api.github.com; requests without one 403.
-            'User-Agent': 'hermes-desktop-update-check'
-          },
-          timeout: 10_000
-        },
-        res => {
-          const chunks = []
-          res.on('error', reject)
-          res.on('data', chunk => chunks.push(chunk))
-          res.on('end', () => {
-            if ((res.statusCode || 500) >= 400) {
-              reject(new Error(`compare API ${res.statusCode}`))
-
-              return
-            }
-
-            try {
-              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-            } catch (error) {
-              reject(error)
-            }
-          })
-        }
-      )
-
-      req.on('timeout', () => req.destroy(new Error('compare API timeout')))
-      req.on('error', reject)
-    })
-
-    return parseCompareBehindCount(payload)
-  } catch {
-    return null
-  }
-}
-
-async function readCommitLog(cwd, branch, isShallow) {
-  const SEP = '\x1f'
-  const REC = '\x1e'
-  const { limit, revision } = resolveCommitLogSelection({ branch, isShallow })
-
-  const { stdout } = await runGit(
-    ['log', revision, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', String(limit)],
-    { cwd }
-  )
-
-  return stdout
-    .split(REC)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const [sha, summary, author, at] = line.split(SEP)
-
-      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
-    })
+  return accept === 'application/vnd.github.sha' ? response.text() : response.json()
 }
 
 let updateInFlight = false
@@ -3266,8 +3246,10 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     getOriginUrl,
     runGit,
     firstLine,
-    readCommitLog,
-    fetchCompareBehindCount,
+    fetchGitHubApi,
+    isGitCheckout,
+    updateCheckCachePath: path.join(app.getPath('userData'), 'update-check-cache.json'),
+    writeFileAtomic,
     pathWithVenvBin,
     venvHermesShimPath,
     emitUpdateProgress,
@@ -3998,7 +3980,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
-  const branch = directoryExists(path.join(updateRoot, '.git'))
+  const branch = isGitCheckout(updateRoot)
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
@@ -4711,7 +4693,24 @@ function resolveHermesBackend(backendArgs) {
   }
 }
 
-async function ensureRuntime(backend) {
+interface ResolvedHermesBackend {
+  kind: string
+  label: string
+  command: string | null
+  args: string[]
+  env: NodeJS.ProcessEnv
+  bootstrap: boolean
+  shell: boolean
+  local?: string
+  root?: string
+  installStamp?: Readonly<InstallStamp> | null
+  activeRoot?: string
+  readyFile?: boolean
+}
+
+async function ensureRuntime(backend: ResolvedHermesBackend): Promise<ResolvedHermesBackend> {
+  localBackendLifecycle.assertCanStart()
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -4771,6 +4770,7 @@ async function ensureRuntime(backend) {
       void 0
     }
 
+    localBackendLifecycle.assertCanStart()
     bootstrapAbortController = new AbortController()
 
     // The repair request has been honoured by reaching the installer; clear it
@@ -9903,9 +9903,7 @@ function clearManagedSshRecovery(connectionId, correlationId) {
 
 const sshBootstrapCoordinator = createBootstrapCoordinator()
 
-let sshQuitTeardownDone = false
-let sshQuitTeardownPromise: Promise<void> | null = null
-let backendQuitTeardownDone = false
+const sshTeardowns = createSshTeardownTracker()
 
 function sshScopeKey(profile) {
   return connectionScopeKey(profile) || ''
@@ -9950,7 +9948,7 @@ async function teardownSshConnection(profile) {
   // alone leaves the backend at pid 1 holding state.db (#91668).
   // Windows remotes use a different lifecycle (connectWindowsRemote) and
   // are left to a follow-up; POSIX is the leak that OOM'd gateways.
-  await teardownSshState(
+  await sshTeardowns.track(state.ssh, (): Promise<void> => teardownSshState(
     {
       ...state,
       ownershipId: state.ownershipId || sshOwnershipKey(profile)
@@ -9966,7 +9964,7 @@ async function teardownSshConnection(profile) {
             }
           : remoteLifecycle.disconnect
     }
-  )
+  ))
 }
 
 // CRITICAL: this must mirror resolveRemoteBackend's precedence, not just return
@@ -10284,6 +10282,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -10893,8 +10892,8 @@ function resetBootProgressForReconnect() {
   )
 }
 
-function stopBackendChild(child) {
-  stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
+function stopBackendChild(child: ChildProcess | null | undefined): void {
+  void localBackendLifecycle.stop(child).catch((error: unknown): void => rememberLog(`Backend teardown failed: ${error instanceof Error ? error.message : String(error)}`))
 }
 
 // Soft gateway-mode apply: tear down the primary without resetting boot UI or
@@ -10918,10 +10917,7 @@ function resetHermesConnection({ soft = false } = {}) {
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
 async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean } = {}): Promise<void> {
-  const stopping = backendConnectionState.stopProcess(async child => {
-    stopBackendChild(child)
-    await waitForBackendExit(child)
-  })
+  const stopping = backendConnectionState.stopProcess(localBackendLifecycle.stop)
 
   if (soft) {
     softRehomeInProgress = true
@@ -10966,20 +10962,27 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
   }
 }
 
-async function waitForBackendExit(child: ChildProcess | null | undefined, timeoutMs = 5000): Promise<void> {
-  await waitForBackendExitImpl(child, processToStop => {
-    if (IS_WINDOWS && Number.isInteger(processToStop.pid)) {
-      forceKillProcessTree(processToStop.pid)
-    } else if (Number.isInteger(processToStop.pid)) {
-      try {
-        process.kill(-processToStop.pid!, 'SIGKILL')
-      } catch {
-        processToStop.kill('SIGKILL')
-      }
-    } else {
-      processToStop.kill('SIGKILL')
-    }
-  }, timeoutMs)
+const backendExitWaits = new Map<ChildProcess, Promise<void>>()
+
+function waitForBackendExit(child: ChildProcess | null | undefined, timeoutMs: number = 5000): Promise<void> {
+  if (!child) {
+    return Promise.resolve()
+  }
+
+  const existing = backendExitWaits.get(child)
+
+  if (existing) {
+    return existing
+  }
+
+  const waiting = waitForBackendExitImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS }, timeoutMs)
+  backendExitWaits.set(child, waiting)
+  void waiting.then(
+    (): boolean => backendExitWaits.delete(child),
+    (): boolean => backendExitWaits.delete(child)
+  )
+
+  return waiting
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -12011,8 +12014,8 @@ function releaseLocalBackendSlot(entry: any) {
   }
 }
 
-function assertPoolEntryStillOwned(poolKey: string, entry: any) {
-  if (backendPool.get(poolKey) !== entry) {
+function assertPoolEntryStillOwned(poolKey: string, entry: any): void {
+  if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
     releaseLocalBackendSlot(entry)
     throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
   }
@@ -12104,6 +12107,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
 
+  assertPoolEntryStillOwned(poolKey, entry)
+
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
     priority: spawnPriority
@@ -12118,7 +12123,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     )
   }
 
-  entry.releaseLocalBackendSlot = await spawnRequest.acquired
+  const cancelRequest = (): void => { spawnRequest.cancel() }
+  localBackendLifecycle.signal.addEventListener('abort', cancelRequest, { once: true })
+
+  try {
+    entry.releaseLocalBackendSlot = await spawnRequest.acquired
+  } finally {
+    localBackendLifecycle.signal.removeEventListener('abort', cancelRequest)
+  }
 
   if (entry.localBackendSpawnRequest === spawnRequest) {
     entry.localBackendSpawnRequest = null
@@ -12137,6 +12149,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     let poolAnnounced = false
 
     await waitForUpdateClearance(updateGateDeps(), {
+      signal: localBackendLifecycle.signal,
+      isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
       onWaitTick: reason => {
         if (!poolAnnounced) {
           poolAnnounced = true
@@ -12176,12 +12190,12 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
   assertPoolEntryStillOwned(poolKey, entry)
 
-  const child = spawn(
+  const child = spawnOwnedBackend(
     backend.command,
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
+      env: desktopBackendSpawnEnv({
         ...process.env,
         HERMES_HOME,
         ...backend.env,
@@ -12199,7 +12213,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         ...parentIdentityEnv,
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      }, GUEST_ONBOARDING),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -12376,7 +12390,8 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
   }
 }
 
-const backendShutdown = createBackendShutdownCoordinator(async () => {
+const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void> => {
+  const localShutdown = localBackendLifecycle.shutdown()
   const primary = backendConnectionState.getProcess()
   const primaryStop = teardownPrimaryBackendAndWait()
   const pooledStops = stopAllPoolBackends()
@@ -12386,10 +12401,20 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
     poolIdleReaper = null
   }
 
-  await Promise.all([primaryStop, pooledStops])
+  await waitForTeardown([localShutdown, primaryStop, pooledStops], 7_000)
 
   reapInstallRootedStragglers(Number.isInteger(primary?.pid) ? [primary.pid] : [])
 })
+
+const quitTeardown = createQuitTeardownCoordinator((): void => app.quit())
+
+async function teardownSshForQuit(): Promise<void> {
+  for (const scope of sshConnections.keys()) {
+    void teardownSshConnection(scope || null).catch((error: unknown): void => rememberLog(`SSH teardown failed: ${error instanceof Error ? error.message : String(error)}`))
+  }
+
+  await sshTeardowns.finish(sshBootstrapCoordinator.promises(), (): Promise<void> => sshBootstrapCoordinator.forceCleanupAll())
+}
 
 async function exitAfterBackendShutdown(code) {
   await backendShutdown.run()
@@ -12459,6 +12484,7 @@ async function startHermes() {
   }
 
   await reapOrphanedBackendsOnce()
+  localBackendLifecycle.assertCanStart()
 
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -12581,6 +12607,7 @@ async function startHermes() {
     }
 
     const setup = await runPrimaryBackendStartup({
+      signal: localBackendLifecycle.signal,
       connectRemote,
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
@@ -12633,12 +12660,12 @@ async function startHermes() {
       throw new Error('Hermes backend start was superseded by a newer connection attempt.')
     }
 
-    const hermesProcess = spawn(
+    const hermesProcess = spawnOwnedBackend(
       backend.command,
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: {
+        env: desktopBackendSpawnEnv({
           ...process.env,
           // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
           // resolves to the SAME location our resolveHermesHome() picked. Without
@@ -12661,7 +12688,7 @@ async function startHermes() {
           ...parentIdentityEnv,
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
+        }, GUEST_ONBOARDING),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -12692,7 +12719,7 @@ async function startHermes() {
     // surface as an unhandled rejection before the Promise.race below attaches.
     portAnnouncement.catch(() => {})
 
-    const processOwner = await backendConnectionState.claimProcess(connectionAttempt, hermesProcess, child => claimBackendChild(
+    const processOwner = await backendConnectionState.claimProcess(connectionAttempt, hermesProcess, (child: ChildProcess): ReturnType<typeof claimBackendChild> => claimBackendChild(
       child,
       `${backend.command} ${backend.args.join(' ')}`,
       profile,
@@ -12838,10 +12865,7 @@ async function startHermes() {
       throw error
     }
 
-    await backendConnectionState.stopProcess(async failedProcess => {
-      stopBackendChild(failedProcess)
-      await waitForBackendExit(failedProcess)
-    })
+    await backendConnectionState.stopProcess(localBackendLifecycle.stop)
 
     if (error instanceof FirstRunSetupResetError) {
       throw error
@@ -13292,6 +13316,25 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   rendererIndex: resolveRendererIndex,
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
+
+const introRevealController: ReturnType<typeof createIntroRevealWindowController> = createIntroRevealWindowController({
+  devServer: DEV_SERVER,
+  enabled: GUEST_ONBOARDING,
+  isMac: IS_MAC,
+  loadWindowUrl,
+  log: rememberLog,
+  mainWindow: (): BrowserWindow | null => mainWindow,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  showMain: (): void => {
+    mainWindow.show()
+    mainWindow.focus()
+  },
+  wireWindow: (window: BrowserWindow): void => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
+})
+
+registerChatOnboardingWindow({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
+registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
 // hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
@@ -14274,6 +14317,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     closePetOverlay()
     wakeIndicatorController.close()
+    introRevealController.destroy()
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null
@@ -16388,92 +16432,11 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   }
 })
 
-// One deduper per cross-window cue — the choke point every window shares. Main
-// handles IPC serially, so the first window to claim a key wins with no race.
-const isDuplicateNotification = createEventDeduper()
-const claimedAmbientCue = createEventDeduper()
+// Speech claims outlive instant cues so throttled peer windows cannot replay a reply.
+const ownsAmbientCue: ReturnType<typeof createAmbientClaimArbiter> = createAmbientClaimArbiter()
+ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown): boolean => ownsAmbientCue(String(key ?? '')))
 
-// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
-// The first caller within the window gets true; peers get false and stay quiet.
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
-
-ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) {
-    return false
-  }
-
-  // Multiple full windows each run their own renderer throttle, so the same
-  // kind+session can arrive here twice. Collapse it at this single choke point.
-  // Return true (not false): a notification for the event IS being shown by the
-  // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
-    return true
-  }
-
-  // Action buttons render only on signed macOS builds; elsewhere they're dropped
-  // and the body click still works.
-  const actions = Array.isArray(payload?.actions) ? payload.actions : []
-  const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
-
-  const notification = new Notification({
-    title: payload?.title || 'Hermes',
-    body: payload?.body || '',
-    silent: Boolean(payload?.silent),
-    ...(icon ? { icon } : {}),
-    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
-  })
-
-  notification.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    focusWindow(mainWindow)
-
-    if (payload?.sessionId) {
-      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
-    }
-
-    // Plugin / session-less activation — serializable path (+ optional notifyId
-    // for renderer callbacks). Same vocabulary as hermes://index-network/….
-    if (payload?.activate || payload?.notifyId) {
-      mainWindow.webContents.send('hermes:notification-activate', {
-        activate: payload?.activate,
-        notifyId: payload?.notifyId,
-        tag: payload?.tag
-      })
-    }
-  })
-  notification.on('action', (_actionEvent, index) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return
-    }
-
-    const action = actions[index]
-
-    if (!action?.id) {
-      return
-    }
-
-    // Approvals keep the existing session-scoped channel.
-    if (payload?.sessionId && !payload?.notifyId && !payload?.activate) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload.sessionId, actionId: action.id })
-
-      return
-    }
-
-    focusWindow(mainWindow)
-    mainWindow.webContents.send('hermes:notification-activate', {
-      actionId: action.id,
-      activate: action.activate || payload?.activate,
-      notifyId: payload?.notifyId,
-      tag: payload?.tag
-    })
-  })
-  notification.show()
-
-  return true
-})
+registerNativeNotifications({ getMainWindow: (): BrowserWindow | null => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
@@ -16871,11 +16834,14 @@ ipcMain.on('hermes:translucency:support', event => {
 // stable builds, and canary builds get the same surfaces by default. Launch
 // flags survive self-relaunches because collectRelaunchArgs only strips
 // internal flags.
-ipcMain.on('hermes:feature-flags', event => {
-  event.returnValue = resolveFeatureFlags({
-    argv: process.argv,
-    canary: resolveUpdaterChannelFromStamp() === 'canary'
-  })
+ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
+  event.returnValue = {
+    ...resolveFeatureFlags({
+      argv: process.argv,
+      canary: resolveUpdaterChannelFromStamp() === 'canary'
+    }),
+    guestOnboarding: GUEST_ONBOARDING
+  }
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
@@ -17232,8 +17198,8 @@ const terminalIpc = registerTerminalIpc({
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
-ipcMain.handle('hermes:updates:check', async () =>
-  checkUpdates().catch(error => ({
+ipcMain.handle('hermes:updates:check', async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> =>
+  checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error): UpdaterStatusWire => ({
     supported: true,
     branch: readDesktopUpdateConfig().branch,
     error: 'check-failed',
@@ -18037,50 +18003,22 @@ app.on('before-quit', event => {
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
 
-  if (!backendQuitTeardownDone) {
-    event.preventDefault()
-    void backendShutdown.run().finally(() => {
-      backendQuitTeardownDone = true
-      app.quit()
-    })
+  const backendNeedsWait = backendQuitNeedsWait({
+    connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
+    poolPending: poolStopper.hasPending(),
+    processAttached: backendConnectionState.getProcess() !== null,
+    shutdownPending: backendShutdown.isPending()
+  })
+
+  const sshNeedsWait = sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
+  const teardownTasks: QuitTeardownTask[] = [{ run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait }]
+
+  if (sshNeedsWait) {
+    teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
   }
 
-  // backendShutdown.finally() re-enters before-quit. teardownSshConnection
-  // already deleted the map entries, so size===0 would skip the kill wait
-  // and let window-X quit finish while SSH exec is still running (#91668).
-  if (
-    sshQuitShouldBlock({
-      teardownDone: sshQuitTeardownDone,
-      connectionCount: sshConnections.size,
-      bootstrapPending: sshBootstrapCoordinator.promises().length,
-      inFlight: sshQuitTeardownPromise
-    })
-  ) {
+  if (quitTeardown.begin(teardownTasks)) {
     event.preventDefault()
-
-    if (!sshQuitTeardownPromise) {
-      const scopes = [...sshConnections.keys()]
-
-      const pending = Promise.allSettled([
-        ...scopes.map(scope => teardownSshConnection(scope || null)),
-        ...sshBootstrapCoordinator.promises()
-      ])
-
-      // cleanupStale waits up to 5s for the owned pid to exit (50 * 100ms).
-      // The previous 4s race could close SSH first and leave serve --isolated
-      // reparented to pid 1. Latch this promise BEFORE those deletes land so
-      // a re-entrant quit still waits.
-      sshQuitTeardownPromise = Promise.race([pending, new Promise<void>(resolve => setTimeout(resolve, 6_000))]).then(
-        async () => {
-          await sshBootstrapCoordinator.forceCleanupAll()
-        }
-      )
-    }
-
-    void sshQuitTeardownPromise.then(() => {
-      sshQuitTeardownDone = true
-      app.quit()
-    })
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
@@ -18099,6 +18037,7 @@ app.on('before-quit', event => {
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
   wakeIndicatorController.close()
+  introRevealController.destroy()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a
   // floating composer with nothing behind it. Close it directly rather than via

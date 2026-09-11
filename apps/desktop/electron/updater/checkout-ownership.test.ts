@@ -4,6 +4,10 @@ import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
 
 function dependencies(): CheckoutStrategyDeps {
   return {
+    isGitCheckout: (): boolean => true,
+    updateCheckCachePath: 'unused-cache.json',
+    writeFileAtomic: vi.fn(),
+    fetchGitHubApi: vi.fn(),
     hermesHome: 'home',
     isWindows: process.platform === 'win32',
     isMac: process.platform === 'darwin',
@@ -18,8 +22,7 @@ function dependencies(): CheckoutStrategyDeps {
     getOriginUrl: async () => '',
     runGit: vi.fn(async () => { throw new Error('unexpected git invocation') }),
     firstLine: text => text.split('\n')[0],
-    readCommitLog: async () => [],
-    fetchCompareBehindCount: async () => null,
+
     pathWithVenvBin: () => '',
     venvHermesShimPath: () => '',
     emitUpdateProgress: vi.fn(),
@@ -36,7 +39,7 @@ function dependencies(): CheckoutStrategyDeps {
 }
 
 describe('checkout update admission', () => {
-  it.each(['external', 'app-installer', 'electron-updater'])('refuses %s-owned code without fetching or stopping the backend', async updateMechanism => {
+  it.each(['external', 'app-installer', 'electron-updater'] as const)('refuses %s-owned code without fetching or stopping the backend', async updateMechanism => {
     const deps = dependencies()
     deps.readCanonicalInstallStamp = () => ({ updateMechanism })
     const strategy = createCheckoutStrategy(deps)
@@ -51,7 +54,7 @@ describe('checkout update admission', () => {
 
   it('rejects a missing source checkout without attempting git', async () => {
     const deps = dependencies()
-    deps.directoryExists = () => false
+    deps.isGitCheckout = (): boolean => false
     const result = await createCheckoutStrategy(deps).check()
 
     expect(result.reason).toBe('not-a-git-checkout')

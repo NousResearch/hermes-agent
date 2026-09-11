@@ -1,7 +1,10 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { MachineProfile } from '../electron/machine-profile'
+import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -13,6 +16,8 @@ import type {
 import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
 
 export {}
+
+export type DesktopMachineProfile = MachineProfile
 
 declare global {
   interface Window {
@@ -93,6 +98,18 @@ declare global {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
+      }
+      chatOnboarding?: {
+        grow: (request: GrowRequest) => void
+        soloBoot: () => void
+      }
+      introReveal?: {
+        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
+        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
+        skip: () => void
+        ready: () => void
+        onSkip: (callback: () => void) => () => void
+        onClosed: (callback: () => void) => () => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
@@ -321,6 +338,8 @@ declare global {
       translucencySupported?: boolean
       /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
+      /** Launch flag shared with every backend the app starts. */
+      guestOnboardingEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
@@ -378,6 +397,8 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
+      /** Refresh unified packages' desktop halves and return the touched paths. */
+      reconcileDesktopPlugins?: () => Promise<string[]>
       /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
       logsRoot?: () => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
@@ -522,6 +543,7 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: (scope?: { connectionId?: string; profile?: string }) => Promise<DesktopVersionInfo>
+      getMachineProfile?: () => Promise<DesktopMachineProfile>
       /** The latest pm/venv/plugin-operation receipt (machine-readable):
        *  bisect disables, failed rebuilds, update-check results. null when
        *  no venv operation has run yet. */
@@ -530,7 +552,7 @@ declare global {
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
-        check: () => Promise<DesktopUpdateStatus>
+        check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
@@ -1345,23 +1367,6 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-}
-
-export interface HermesNotification {
-  title?: string
-  body?: string
-  silent?: boolean
-  kind?: string
-  sessionId?: string
-  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
-  tag?: string
-  /** Absolute icon path for Electron `Notification`. */
-  icon?: string
-  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
-  activate?: string
-  /** Renderer handle for onActivate / onAction callbacks. */
-  notifyId?: string
-  actions?: { id: string; text: string; activate?: string }[]
 }
 
 export interface HermesPreviewTarget {

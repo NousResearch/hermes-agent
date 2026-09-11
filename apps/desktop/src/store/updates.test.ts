@@ -86,6 +86,7 @@ const {
   $desktopVersion,
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
+  checkUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
@@ -325,7 +326,7 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  it('maps the backend /update/check onto the backend status, including commits', async () => {
+  it('maps the backend /update/check onto the backend status, including commits', async (): Promise<void> => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
@@ -340,12 +341,15 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(false)
     expect(result?.behind).toBe(2)
     expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+
+    await checkBackendUpdates({ force: true })
+    expect(checkHermesUpdateSpy).toHaveBeenLastCalledWith(true)
   })
 
   it('preserves backend update_available when the backend cannot count commits', async () => {
@@ -1459,6 +1463,11 @@ describe('startUpdatePoller', () => {
 
     await vi.advanceTimersByTimeAsync(1)
     expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes an explicit manual check through to the main process', async (): Promise<void> => {
+    await checkUpdates({ force: true })
+    expect(checkMock).toHaveBeenCalledWith({ force: true })
   })
 
   it('window focus only re-checks once the daily cadence has elapsed', async () => {

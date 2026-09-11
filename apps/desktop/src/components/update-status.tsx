@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useState } from 'react'
+import { type ReactElement, type ReactNode, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -210,20 +210,20 @@ export function UpdateStatusCard({
 }: {
   showReleaseNotes?: boolean
   target: UpdateTarget
-}) {
+}): ReactElement {
   const { t } = useI18n()
   const u = t.updates
   const isBackend = target === 'backend'
   const status = useStore(isBackend ? $backendUpdateStatus : $updateStatus)
   const checking = useStore(isBackend ? $backendUpdateChecking : $updateChecking)
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
-  const [justChecked, setJustChecked] = useState(false)
+  const [justChecked, setJustChecked] = useState<boolean>(false)
 
   const view = deriveUpdateStatus({ apply, checking, status, target, u })
 
   const handleCheck = async (): Promise<void> => {
     setJustChecked(false)
-    const next = await (isBackend ? checkBackendUpdates() : checkUpdates())
+    const next = await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
     setJustChecked(Boolean(next))
   }
 

@@ -13,6 +13,7 @@ import type { PreviewFileChangedPayload, PreviewWatchImpl } from './preview-watc
 interface FakeWatcher extends EventEmitter {
   close: () => void
   closed: boolean
+  dir: string
   emitChange: (filename: Buffer | null | string) => void
   emitRename: (filename: Buffer | null | string) => void
 }
@@ -20,10 +21,11 @@ interface FakeWatcher extends EventEmitter {
 function fakeWatchImpl() {
   const created: FakeWatcher[] = []
 
-  const impl: PreviewWatchImpl = (_dirPath, listener) => {
+  const impl: PreviewWatchImpl = (dirPath, listener) => {
     const watcher = new EventEmitter() as FakeWatcher
 
     watcher.closed = false
+    watcher.dir = dirPath
 
     watcher.close = () => {
       watcher.closed = true
@@ -168,6 +170,14 @@ describe('createPreviewWatchRegistry — file watches', () => {
     ])
   })
 
+  it('registers the watch on the parent directory (save-by-rename contract)', () => {
+    const { created, registry } = makeRegistry()
+
+    registry.watch('/tmp/preview/note.md', fakeOwner())
+
+    expect(created[0].dir).toBe('/tmp/preview')
+  })
+
   it('rename events (atomic save-by-rename) trigger a reload', () => {
     const { created, registry } = makeRegistry()
     const owner = fakeOwner()
@@ -258,6 +268,20 @@ describe('createPreviewWatchRegistry — file watches', () => {
     expect(registry.size()).toBe(0)
     expect(created[0].closed).toBe(true)
     expect(created[1].closed).toBe(true)
+  })
+
+  it('closeAll cancels a pending debounce — a closed watch never reloads', () => {
+    const { created, registry } = makeRegistry()
+    const owner = fakeOwner()
+
+    registry.watch('/tmp/preview/note.md', owner)
+    created[0].emitChange('note.md')
+
+    registry.closeAll()
+    vi.advanceTimersByTime(1000)
+
+    expect(owner.sent).toHaveLength(0)
+    expect(registry.size()).toBe(0)
   })
 })
 

@@ -443,7 +443,9 @@ class GatewaySessionCommandsMixin:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         try:
-            self._evict_cached_agent(build_session_key(source))
+            # The cache is keyed by the profile-namespaced key; a bare build_session_key(source)
+            # yields ``agent:main:…`` and misses for every secondary profile.
+            self._evict_cached_agent(self._session_key_for_source(source))
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]

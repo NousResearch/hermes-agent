@@ -38,25 +38,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) {throw new Error(`${label} must be an object`)}
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`)
+  }
 
   return value
 }
 
 function text(value: unknown, label: string): string {
-  if (typeof value !== 'string') {throw new Error(`${label} must be text`)}
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be text`)
+  }
 
   return value
 }
 
 function nullableText(value: unknown, label: string): null | string {
-  if (value === null) {return null}
+  if (value === null) {
+    return null
+  }
 
   return text(value, label)
 }
 
 function boolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') {throw new Error(`${label} must be true or false`)}
+  if (typeof value !== 'boolean') {
+    throw new Error(`${label} must be true or false`)
+  }
 
   return value
 }
@@ -74,9 +82,13 @@ function exactKeys(value: Record<string, unknown>, keys: string[], label: string
   const unexpected = Object.keys(value).filter(key => !expected.has(key))
   const missing = keys.filter(key => !(key in value))
 
-  if (unexpected.length) {throw new Error(`${label} contains unsupported fields: ${unexpected.join(', ')}`)}
+  if (unexpected.length) {
+    throw new Error(`${label} contains unsupported fields: ${unexpected.join(', ')}`)
+  }
 
-  if (missing.length) {throw new Error(`${label} is missing fields: ${missing.join(', ')}`)}
+  if (missing.length) {
+    throw new Error(`${label} is missing fields: ${missing.join(', ')}`)
+  }
 }
 
 export function parseWisdomSystemSpecification(value: unknown): WisdomSystemSpecification {
@@ -116,13 +128,17 @@ export function parseWisdomSystemSpecification(value: unknown): WisdomSystemSpec
   const runtime = record(specification.runtime, 'Runtime requirement')
   exactKeys(runtime, ['shell', 'browser', 'code', 'sandbox'], 'Runtime requirement')
 
-  if (!Array.isArray(specification.tools)) {throw new Error('Tools must be a list')}
+  if (!Array.isArray(specification.tools)) {
+    throw new Error('Tools must be a list')
+  }
 
   const tools = specification.tools.map((raw, index) => {
     const tool = record(raw, `Tool ${index + 1}`)
     exactKeys(tool, ['name', 'minimum_version', 'auto_install', 'requires_admin'], `Tool ${index + 1}`)
 
-    if (tool.auto_install !== false) {throw new Error(`Tool ${index + 1} cannot request automatic installation`)}
+    if (tool.auto_install !== false) {
+      throw new Error(`Tool ${index + 1} cannot request automatic installation`)
+    }
 
     return {
       name: text(tool.name, `Tool ${index + 1} name`),
@@ -132,7 +148,9 @@ export function parseWisdomSystemSpecification(value: unknown): WisdomSystemSpec
     }
   })
 
-  if (!Array.isArray(specification.plugins)) {throw new Error('Plugins must be a list')}
+  if (!Array.isArray(specification.plugins)) {
+    throw new Error('Plugins must be a list')
+  }
 
   const plugins = specification.plugins.map((raw, index) => {
     const plugin = record(raw, `Plugin ${index + 1}`)
@@ -177,7 +195,9 @@ export function parseWisdomManifest(value: string): WisdomManifestV1 {
   const manifest = record(JSON.parse(value) as unknown, 'Manifest')
   exactKeys(manifest, ['schema_version', 'name', 'requirements'], 'Manifest')
 
-  if (manifest.schema_version !== 1) {throw new Error('Only manifest schema version 1 is supported')}
+  if (manifest.schema_version !== 1) {
+    throw new Error('Only manifest schema version 1 is supported')
+  }
 
   return {
     schema_version: 1,
@@ -187,20 +207,28 @@ export function parseWisdomManifest(value: string): WisdomManifestV1 {
 }
 
 function boundedTextError(value: string, label: string): null | string {
-  if (!value.trim()) {return `${label} is required.`}
+  if (!value.trim()) {
+    return `${label} is required.`
+  }
 
-  if (new TextEncoder().encode(value).length > 512) {return `${label} must be 512 UTF-8 bytes or fewer.`}
+  if (new TextEncoder().encode(value).length > 512) {
+    return `${label} must be 512 UTF-8 bytes or fewer.`
+  }
 
   return null
 }
 
 function listError(values: string[], label: string): null | string {
-  if (values.length > 64) {return `${label} can contain at most 64 entries.`}
+  if (values.length > 64) {
+    return `${label} can contain at most 64 entries.`
+  }
 
   for (const value of values) {
     const error = boundedTextError(value, `${label} entry`)
 
-    if (error) {return error}
+    if (error) {
+      return error
+    }
   }
 
   return null
@@ -230,7 +258,9 @@ export function wisdomSystemSpecificationValidationError(value: WisdomSystemSpec
   for (const [index, tool] of value.tools.entries()) {
     errors.push(boundedTextError(tool.name, `Tool ${index + 1} name`))
 
-    if (tool.minimum_version !== null) {errors.push(boundedTextError(tool.minimum_version, `Tool ${index + 1} version`))}
+    if (tool.minimum_version !== null) {
+      errors.push(boundedTextError(tool.minimum_version, `Tool ${index + 1} version`))
+    }
   }
 
   for (const [index, plugin] of value.plugins.entries()) {
@@ -248,7 +278,9 @@ export function wisdomManifestValidationError(value: string): null | string {
   try {
     const manifest = parseWisdomManifest(value)
 
-    return boundedTextError(manifest.name, 'Skill name') ?? wisdomSystemSpecificationValidationError(manifest.requirements)
+    return (
+      boundedTextError(manifest.name, 'Skill name') ?? wisdomSystemSpecificationValidationError(manifest.requirements)
+    )
   } catch (reason) {
     return reason instanceof Error ? reason.message : String(reason)
   }

@@ -227,6 +227,68 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
 
 
+# MarkdownV2 inline formatting delimiters, longest first so ``||`` is matched
+# before a bare ``|``.  These are the markers ``format_message`` emits: bold
+# ``*``, italic ``_``, strikethrough ``~`` and spoiler ``||``.  Code spans and
+# fenced blocks are handled separately (their contents are literal).
+_INLINE_MARKERS = ("||", "*", "_", "~")
+
+
+def _open_inline_entities(text: str, initial: "Optional[List[str]]" = None) -> "List[str]":
+    """Return the MarkdownV2 inline markers left unclosed at the end of *text*.
+
+    Walks *text* honouring backslash escapes (``\\*`` is a literal asterisk,
+    not a delimiter) and skipping fenced blocks and inline code spans, where
+    these characters carry no formatting meaning.
+
+    The result is ordered outermost-first, so closing it in reverse order and
+    reopening it in forward order round-trips the original nesting.  Used by
+    :meth:`BasePlatformAdapter.truncate_message` to keep every emitted chunk
+    independently parseable: an unpaired delimiter makes Telegram reject the
+    whole message with "can't parse entities" and fall back to plain text,
+    silently stripping all formatting.
+
+    Note: ``__underline__`` is seen as two ``_`` toggles and therefore nets to
+    balanced, which is correct for a whole span.  ``format_message`` never
+    emits underline, so a split inside one is not reachable in practice.
+    """
+    stack = list(initial or [])
+    i, n = 0, len(text)
+    in_fence = False
+    in_code = False
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2                       # escaped delimiter: not formatting
+            continue
+        if text.startswith("```", i):
+            in_fence = not in_fence
+            in_code = False
+            i += 3
+            continue
+        if in_fence:
+            i += 1
+            continue
+        if ch == "`":
+            in_code = not in_code
+            i += 1
+            continue
+        if in_code:
+            i += 1
+            continue
+        for mark in _INLINE_MARKERS:
+            if text.startswith(mark, i):
+                if stack and stack[-1] == mark:
+                    stack.pop()
+                else:
+                    stack.append(mark)
+                i += len(mark)
+                break
+        else:
+            i += 1
+    return stack
+
+
 def is_network_accessible(host: str) -> bool:
     """True if *host* would expose the server beyond loopback (incl. IPv4-mapped
     ::ffff:127.0.0.1); hostnames are resolved and DNS failure fails closed (True)."""
@@ -4212,27 +4274,44 @@ class BasePlatformAdapter(ABC):
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional["Callable[[str], int]"] = None) -> List[str]:
         """Split a long message into chunks preserving code blocks: a split inside a fence closes it
-        at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
+        at the chunk end and reopens it (same language tag) in the next. MarkdownV2 inline
+        entities are also closed and reopened so each chunk stays independently parseable.
+        Multi-chunk output gets ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
         _len = len_fn or len
         if _len(content) <= max_length:
             return [content]
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
+        INLINE_RESERVE = 8  # room for nested inline closers
         chunks: List[str] = []
         remaining = content
         carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
+        carry_inline: List[str] = []
         while remaining:
+            # Do not reopen an entity only to close it immediately: Telegram
+            # rejects empty entities left by a boundary before the original closer.
+            while carry_inline and remaining.startswith(carry_inline[-1]):
+                remaining = remaining[len(carry_inline.pop()):]
+            if not remaining:
+                break
             prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
+            prefix += "".join(carry_inline)
+            # Body budget after prefix/fence/inline closers/indicator; floored so a tiny max_length can't stall.
+            headroom = (max_length - INDICATOR_RESERVE - _len(prefix)
+                        - _len(FENCE_CLOSE) - INLINE_RESERVE)
             if headroom < 1:
                 headroom = max(1, max_length // 2)
             # Remainder fits in one final chunk; close a reopened fence if still open.
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
                 final_chunk = prefix + remaining
-                if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
-                    final_chunk += FENCE_CLOSE
+                if carry_lang is not None:
+                    if fence_state_after(remaining, True, carry_lang)[0]:
+                        final_chunk += FENCE_CLOSE
+                else:
+                    # Balanced input closes itself; also close unbalanced source text.
+                    final_open = _open_inline_entities(final_chunk)
+                    if final_open:
+                        final_chunk += "".join(reversed(final_open))
                 chunks.append(final_chunk)
                 break
             # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
@@ -4265,8 +4344,15 @@ class BasePlatformAdapter(ABC):
             # Walk only chunk_body (not the prepended prefix) for the fence state.
             in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
             carry_lang = lang if in_code else None
-            # Close the orphaned fence so the chunk stands alone.
-            chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
+            if in_code:
+                full_chunk += FENCE_CLOSE
+                carry_inline = []
+            else:
+                # Closing and reopening also handles entities longer than one chunk.
+                carry_inline = _open_inline_entities(full_chunk)
+                if carry_inline:
+                    full_chunk += "".join(reversed(carry_inline))
+            chunks.append(full_chunk)
         if len(chunks) > 1:
             chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
         return chunks

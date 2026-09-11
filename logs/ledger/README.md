@@ -254,6 +254,21 @@ rebuild `D:\logs\` + `D:\logs.zip`, and drop a plain-language write-up at
 `D:\logs\<TOPIC>_<YYYY-MM-DD>.md` alongside the ledger entries. The script's
 completeness check will warn if a run left ledger entries but no such report.
 
+Every such report **ends with the mandatory line**
+
+```
+Handoff bundle: HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) - created / NOT created (reason if not).
+```
+
+filled with the **real** name and hash of the `HANDOFF_<...>.zip` + `.sha256`
+this session wrote to the drive root — never the literal word `PLACEHOLDER`.
+`scripts/lib/report_completeness.py` **FAILs** a report (dated `2026-09-10` or
+later) whose line is missing or still a template, so it is not "complete" until
+the real values are in. The chicken-and-egg (the zip contains the report) is
+resolved by hashing the finished zip and writing the value back into the
+`D:\logs\` copy of the report — that standalone copy and the `.sha256` sidecar
+are authoritative over the older copy captured inside the zip.
+
 ---
 
 ## Optional automation

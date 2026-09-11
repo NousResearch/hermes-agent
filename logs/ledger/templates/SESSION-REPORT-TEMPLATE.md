@@ -39,3 +39,14 @@ Source-Of-Truth: in-bundle   <!-- or an absolute path / URL if this file is a re
 ## For the owner / North Forge GPT
 
 1. <open items, follow-ups, decisions still owed>
+
+---
+
+<!--
+REQUIRED last line. Fill in the REAL bundle name and hash from the
+HANDOFF_<...>.zip + .sha256 this session wrote to the drive root — never leave
+the word PLACEHOLDER in it. If no bundle was made, say so with a reason:
+"... - NOT created (read-only pass)". The completeness check in
+scripts/lib/report_completeness.py FAILs a report whose line is still a template.
+-->
+Handoff bundle: HANDOFF_YYYY-MM-DD_HHMM.zip (sha256: <64-hex from the .sha256 sidecar>) - created / NOT created (reason if not).

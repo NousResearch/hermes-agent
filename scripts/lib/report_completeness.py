@@ -54,6 +54,73 @@ ROW_RE = re.compile(
 
 LEDGER_ONLY_TOKENS = {"ledger-only", "ledgeronly", "—", "-", "n/a", "none"}
 
+# The owner's standing rule: every session report ends with a literal closing line
+#   Handoff bundle: HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) - created.
+# or, when no bundle was made, "... - NOT created (reason)". That line has to carry
+# the REAL zip name and hash before the report counts as complete — a report handed
+# over still reading "HANDOFF_..._PLACEHOLDER.zip (sha256: PLACEHOLDER)" is an
+# unfilled template, not a finished report. Only the zip-name and sha capture groups
+# are inspected, so an explanatory parenthetical that happens to use the word
+# "placeholder" in prose does not trip the check.
+HANDOFF_LINE_RE = re.compile(r"^Handoff bundle:.*$", re.MULTILINE)
+HANDOFF_PARSE_RE = re.compile(
+    r"^Handoff bundle:\s*(?P<zip>[^\s(]+)\s*"
+    r"\(sha256:\s*(?P<sha>[^)]*?)\)\s*-\s*(?P<status>NOT created|created)",
+    re.MULTILINE,
+)
+HEX64_RE = re.compile(r"\A[0-9a-fA-F]{64}\Z")
+HANDOFF_ZIPNAME_RE = re.compile(r"\AHANDOFF_\d{4}-\d\d-\d\d_\d{4}\.zip\Z")
+# Reports written before the owner introduced the mandatory line (2026-09-10) carry
+# no such line and are not retroactively failed for its absence.
+HANDOFF_LINE_ENFORCED_FROM = (2026, 9, 10)
+
+
+def check_handoff_line(run: str, report_name: str, rtext: str, f: "Findings") -> None:
+    """Verify the mandatory closing 'Handoff bundle: …' line is present and *filled*."""
+    try:
+        y, mo, d = (int(x) for x in run.split("-")[1:4])
+        enforced = (y, mo, d) >= HANDOFF_LINE_ENFORCED_FROM
+    except ValueError:
+        enforced = True
+
+    if not HANDOFF_LINE_RE.search(rtext):
+        if enforced:
+            f.fail(
+                f"{run}: report '{report_name}' is missing the mandatory closing "
+                f"'Handoff bundle: HANDOFF_<...>.zip (sha256: <hash>) - created / "
+                f"NOT created' line"
+            )
+        return
+
+    m = HANDOFF_PARSE_RE.search(rtext)
+    if not m:
+        f.fail(
+            f"{run}: report '{report_name}' has a 'Handoff bundle:' line that does "
+            f"not parse — expected 'HANDOFF_<YYYY-MM-DD_HHMM>.zip (sha256: <64 hex>) "
+            f"- created' or '- NOT created (reason)'"
+        )
+        return
+
+    zipname, sha, status = m.group("zip"), m.group("sha").strip(), m.group("status")
+    if status == "NOT created":
+        f.ok(f"{run}: closing handoff line present (bundle NOT created)", routine=True)
+        return
+
+    bad = []
+    if "PLACEHOLDER" in zipname or not HANDOFF_ZIPNAME_RE.match(zipname):
+        bad.append(f"zip name '{zipname}'")
+    if not HEX64_RE.match(sha):
+        bad.append(f"sha256 '{sha[:24]}'")
+    if bad:
+        f.fail(
+            f"{run}: report '{report_name}' closing handoff line is an unfilled "
+            f"template — {', '.join(bad)} is not a real value; put the actual "
+            f"HANDOFF_*.zip name and its 64-hex sha256 on the line before the "
+            f"report is handed over"
+        )
+        return
+    f.ok(f"{run}: closing handoff line filled ({zipname})", routine=True)
+
 
 class Findings:
     def __init__(self, quiet: bool = False) -> None:
@@ -196,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"{run}: report '{report}' sha256 {got[:16]}… != manifest {want[:16]}… "
                     f"(report changed — refresh the manifest row)"
                 )
+
+        check_handoff_line(run, report, rtext, f)
         covered += 1
         f.ok(f"{run}: covered by {report}", routine=True)
 

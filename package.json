@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
+    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -36,11 +36,11 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "typescript-eslint": "8.64.0",
     "eslint-plugin-perfectionist": "5.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0"
+    "globals": "17.7.0",
+    "typescript-eslint": "8.64.0"
   },
   "overrides": {
     "lodash": "4.18.1",
@@ -56,7 +56,9 @@
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
     "postcss": "8.5.23",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "browserslist": "^4.28.7",
+    "baseline-browser-mapping": "^2.11.0"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

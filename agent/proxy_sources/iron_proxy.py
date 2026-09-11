@@ -239,7 +239,12 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         for provider in _HEADER_AUTH_PROVIDERS.values()
         for alias in provider.get("aliases", ())
     }
-    reserved_env_names = builtins | builtin_aliases | set(_EGRESS_CONTROL_ENV_NAMES)
+    reserved_env_names = (
+        builtins
+        | builtin_aliases
+        | set(_EGRESS_CONTROL_ENV_NAMES)
+        | set(_PROXY_SUBPROCESS_ENV_ALLOWLIST)
+    )
     claimed_hosts = [
         (env_name, host)
         for env_name, hosts in _BEARER_PROVIDERS.items()

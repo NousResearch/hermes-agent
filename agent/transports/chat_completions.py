@@ -192,34 +192,105 @@ def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None,
 # for reasoning models with reasoning explicitly disabled or effort "none".
 _REASONING_MIN_OUTPUT_TOKENS = 1024
 
+# Per-family floors. A single global constant is not a demonstrated safe floor for every
+# reasoning model: the answer is only emitted after reasoning finishes, so the floor must
+# clear the family's observed reasoning spend, not the smallest number that happens to work
+# for one of them. Keyed by lowercase model substring; first match wins (longest-first).
+# Families absent here fall back to _REASONING_MIN_OUTPUT_TOKENS.
+_REASONING_MIN_OUTPUT_TOKENS_BY_FAMILY: tuple[tuple[str, int], ...] = (
+    ("glm", 4000),      # GLM 5.3 emits empty content at 1000; needs ~4000 for a full answer
+    ("kimi", 2000),     # Kimi K2.x needs ~2000
+    ("moonshot", 2000),
+)
 
-def _reasoning_output_budget_active(reasoning_config: dict | None) -> bool:
+
+def _reasoning_min_output_tokens(model: str) -> int:
+    """Per-family reasoning output floor for ``model`` (falls back to the generic constant)."""
+    m = (model or "").lower()
+    for needle, floor in _REASONING_MIN_OUTPUT_TOKENS_BY_FAMILY:
+        if needle in m:
+            return floor
+    return _REASONING_MIN_OUTPUT_TOKENS
+
+
+def _reasoning_output_budget_active(reasoning_config: Any) -> bool:
     """True when the outgoing call will actually spend output tokens on reasoning.
 
-    Reasoning is off (and output tokens are all available for the answer) when the config is
-    absent, reasoning is disabled, or the explicit effort is ``none``. These must not be raised.
+    An *absent* config does NOT mean reasoning is off. Several providers enable
+    ``thinking`` by default when the config is ``None`` — the DeepSeek V4 profile
+    returns ``{"thinking": {"type": "enabled"}}`` for a missing/empty config, and
+    the Kimi/OpenCode profiles do the same. Returning False here would skip the
+    floor on exactly the default-on reasoning calls this fix targets (review P1).
+
+    So the caller passes the EFFECTIVE wire state (``reasoning_effective`` —
+    whether a provider-native reasoning block is actually emitted for this
+    request), and only an *explicit* disable or ``effort: none`` suppresses the
+    floor.
     """
-    if not isinstance(reasoning_config, dict):
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return False
+        if str(reasoning_config.get("effort") or "").strip().lower() == "none":
+            return False
+    return True
+
+
+def _profile_reasoning_effective(
+    reasoning_config: Any, supports_reasoning: bool,
+    extra_body_from_profile: Any, top_level_from_profile: Any,
+) -> bool:
+    """Whether a provider profile will actually put a reasoning block on the wire.
+
+    The profile's own extras are the authority: the DeepSeek V4 profile returns
+    ``{"thinking": {"type": "enabled"}}`` for an ABSENT config (default-on), so
+    reading ``reasoning_config is None`` as "reasoning off" would skip the floor on
+    exactly the calls this fix targets. (review P1)
+
+    Explicitly disabled reasoning, or ``effort: none``, still wins.
+    """
+    if not supports_reasoning:
         return False
-    if reasoning_config.get("enabled") is False:
-        return False
-    if str(reasoning_config.get("effort") or "").strip().lower() == "none":
-        return False
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return False
+        if str(reasoning_config.get("effort") or "").strip().lower() == "none":
+            return False
+    for block in (extra_body_from_profile, top_level_from_profile):
+        if not isinstance(block, dict):
+            continue
+        thinking = block.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+            return False
+        reasoning = block.get("reasoning")
+        if isinstance(reasoning, dict) and reasoning.get("enabled") is False:
+            return False
     return True
 
 
 def _apply_reasoning_output_floor(
-    requested: Any, reasoning_config: dict | None, *, supports_reasoning: bool,
+    requested: Any, reasoning_config: Any, *, supports_reasoning: bool,
+    reasoning_effective: bool | None = None, model: str = "",
 ) -> Any:
     """Raise an explicit sub-floor output cap on a reasoning-capable call.
 
-    Guards the first attempt so a tight ``max_tokens`` cannot be exhausted by reasoning before
-    the answer starts — the empty-returning / false-DEGRADED failure class from #46131.
-    Complementary to (not a duplicate of) the response-side recovery in #9452: that PR compacts
-    and retries *after* a reasoning-only response; this raises the budget *before* the request so
-    probes and chat turns stop producing reasoning-only responses in the first place.
+    Guards the first attempt so a tight ``max_tokens`` cannot be exhausted by
+    reasoning before the answer starts — the empty-returning / false-DEGRADED
+    failure class from #46131.
+
+    ``reasoning_effective`` is the authoritative signal: when supplied it decides
+    whether reasoning is on the wire (covering the default-on case); when it is
+    ``None`` we fall back to the config-only reading.
+
+    The floor is per-family (``_reasoning_min_output_tokens``) because a single
+    constant is not safe for every reasoning model — GLM needs ~4000 before
+    content starts, Kimi ~2000.
     """
-    if not supports_reasoning or not _reasoning_output_budget_active(reasoning_config):
+    if not supports_reasoning:
+        return requested
+    if reasoning_effective is not None:
+        if not reasoning_effective:
+            return requested
+    elif not _reasoning_output_budget_active(reasoning_config):
         return requested
     try:
         requested_i = int(requested)
@@ -227,7 +298,7 @@ def _apply_reasoning_output_floor(
         return requested
     if requested_i <= 0:
         return requested  # None / provider-default cap — no floor to enforce
-    return max(requested_i, _REASONING_MIN_OUTPUT_TOKENS)
+    return max(requested_i, _reasoning_min_output_tokens(model))
 
 
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
@@ -297,6 +368,7 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
 
 def _apply_max_tokens(
     api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None,
+    reasoning_effective: bool | None = None,
 ) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
@@ -308,14 +380,33 @@ def _apply_max_tokens(
         # cannot exhaust a tight cap before the answer starts (#46131).
         if _build_gemini_thinking_config(model, reasoning_config) is not None:
             return _raise_gemini_thinking_max_tokens(model, reasoning_config, requested)
-        return _apply_reasoning_output_floor(requested, reasoning_config, supports_reasoning=supports_reasoning)
+        return _apply_reasoning_output_floor(
+            requested, reasoning_config, supports_reasoning=supports_reasoning,
+            reasoning_effective=(
+                reasoning_effective if reasoning_effective is not None
+                else params.get("reasoning_effective")
+            ),
+            model=model,
+        )
 
-    for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
+    # ``ephemeral_max_output_tokens`` is a ONE-SHOT UPPER BOUND computed by output-cap
+    # recovery from the provider's own reported ``available_tokens`` minus a margin
+    # (agent/turn_overflow.py). It is provider-authoritative: raising it back above the
+    # bound immediately recreates the same "max_tokens too large" 400 we are recovering
+    # from, turning a bounded repair into a retry wedge. NEVER floor it — the same
+    # one-shot contract is pinned by tests/test_ctx_halving_fix.py. (review P1)
+    #
+    # Reasoning starvation is still prevented on that path: recovery only ever fires on an
+    # over-cap error, where the retry re-enters this builder with a LOWER budget, and
+    # #9452's response-side recovery handles a reasoning-only reply on the way back out.
+    ephemeral = params.get("ephemeral_max_output_tokens")
+    if ephemeral is not None and max_tokens_fn:
+        api_kwargs.update(max_tokens_fn(ephemeral))
+        return
+    for candidate in (params.get("max_tokens"), profile_max):
         if candidate is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(_guard(candidate)))
             return
-    if profile_max and max_tokens_fn:
-        api_kwargs.update(max_tokens_fn(_guard(profile_max)))
 
 
 
@@ -508,15 +599,28 @@ class ChatCompletionsTransport(ProviderTransport):
         api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)
 
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
-        # Profiles fronting several backends override get_max_tokens() per model.
-        _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
+        # Profile extras MUST be built before the output floor. The profile is what actually
+        # decides whether a reasoning block goes on the wire (e.g. the DeepSeek V4 profile
+        # emits ``thinking: {type: enabled}`` for an ABSENT config), and an absent config is
+        # not evidence that reasoning is off. Building extras first lets the floor consult the
+        # effective wire state instead of guessing from the config alone. (review P1)
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
             session_id=params.get("session_id"),
         )
+
+        # Profiles fronting several backends override get_max_tokens() per model.
+        _apply_max_tokens(
+            api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model),
+            reasoning_effective=_profile_reasoning_effective(
+                reasoning_config, params.get("supports_reasoning", False),
+                extra_body_from_profile, top_level_from_profile,
+            ),
+        )
+
         api_kwargs.update(top_level_from_profile)
 
         extra_body: dict[str, Any] = {}

@@ -502,6 +502,87 @@ class TestReasoningOutputFloor:
 
         assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
 
+    # ── Regression: review P1s on the original revision ──────────────────────
+
+    def test_ephemeral_recovery_cap_stays_provider_authoritative(self, transport):
+        """The one-shot recovery bound must NOT be raised back to the floor.
+
+        ``ephemeral_max_output_tokens`` comes from output-cap recovery, which
+        derives it from the provider's own reported ``available_tokens`` minus a
+        margin (agent/turn_overflow.py). Flooring it to 1024 would resend a
+        request the provider just rejected as over-cap — a retry wedge. The
+        regression the reviewer asked for: a provider bound BELOW the generic
+        floor must reach the wire unchanged.
+        """
+        kw = self._build(
+            transport,
+            ephemeral_max_output_tokens=436,
+            max_tokens=None,
+            model="nousresearch/deepseek-r1",
+        )
+        assert kw["max_tokens"] == 436
+
+        # Reasoning is active here, so this only passes if the ephemeral bound
+        # genuinely bypasses the floor rather than being guarded like max_tokens.
+        from agent.transports.chat_completions import _REASONING_MIN_OUTPUT_TOKENS
+
+        assert 436 < _REASONING_MIN_OUTPUT_TOKENS
+
+    def test_floor_applies_to_higher_family_floor(self, transport):
+        """Per-family floors: GLM needs ~4000, Kimi ~2000, not a global 1024."""
+        glm = self._build(transport, model="glm-5.3-flash", max_tokens=10)
+        assert glm["max_tokens"] == 4000
+
+        kimi = self._build(transport, model="kimi-k2.7-code", max_tokens=10)
+        assert kimi["max_tokens"] == 2000
+
+        other = self._build(transport, model="nousresearch/deepseek-r1", max_tokens=10)
+        assert other["max_tokens"] == 1024
+
+    def test_floor_applies_when_profile_enables_reasoning_by_default(self, transport):
+        """Absent config is NOT 'reasoning off' — DeepSeek V4 defaults to enabled.
+
+        Builds through the real DeepSeek profile with ``reasoning_config=None``;
+        the profile emits ``thinking: {type: enabled}``. The floor must still
+        apply (review P1 #2).
+        """
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="deepseek",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config=None,
+            max_tokens=10,
+            max_tokens_fn=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 1024
+        assert (kw.get("extra_body") or {}).get("thinking") == {"type": "enabled"}
+
+    def test_no_floor_when_profile_disables_reasoning(self, transport):
+        """An explicit profile-level disable still suppresses the floor."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="deepseek",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            max_tokens=10,
+            max_tokens_fn=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 10
+
 
 
 

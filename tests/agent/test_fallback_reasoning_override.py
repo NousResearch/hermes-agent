@@ -91,7 +91,6 @@ class TestFallbackReasoningOverride:
         agent._fallback_model = None
         agent._transport_cache = {}
         agent._config_context_length = None
-        agent._rate_limited_until = 0
         # During fallback, reasoning was changed to xhigh (fallback model's override)
         agent.model = "claude-opus-4.5"
         agent.provider = "anthropic"

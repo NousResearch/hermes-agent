@@ -2222,14 +2222,17 @@ class TestWebServerEndpoints:
         db = SessionDB()
         try:
             db.create_session(session_id="rotation-parent", source="telegram")
-            db.append_message("rotation-parent", role="user", content="old q")
-            db.append_message("rotation-parent", role="assistant", content="old a")
+            db.append_message("rotation-parent", role="user", content="old q", timestamp=1.0)
+            db.append_message("rotation-parent", role="assistant", content="old a", timestamp=2.0)
             db.end_session("rotation-parent", "compression")
             db.create_session(
                 session_id="rotation-child", source="telegram",
                 parent_session_id="rotation-parent")
-            db.append_message("rotation-child", role="user", content="summary")
-            db.append_message("rotation-child", role="assistant", content="recent a")
+            db.append_message("rotation-child", role="user", content="summary", timestamp=3.0)
+            # Rotation carries a protected tail into the child. It must not consume a
+            # second pagination slot or move from its original chronological position.
+            db.append_message("rotation-child", role="assistant", content="old a", timestamp=2.0)
+            db.append_message("rotation-child", role="assistant", content="recent a", timestamp=4.0)
         finally:
             db.close()
 

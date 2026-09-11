@@ -500,6 +500,53 @@ Complex cases are documented under `{glob_reference}`.
 
 
 class TestCheckForSkillUpdates:
+    @pytest.mark.parametrize('disk_text', ['remote content', 'different local content'])
+    def test_update_uses_profile_disk_hash_when_lock_is_stale(self, tmp_path, monkeypatch, disk_text):
+        from tools.skills_guard import content_hash
+
+        profile = tmp_path / 'profiles' / 'coder'
+        skill = profile / 'skills' / 'demo-skill'
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_bytes(disk_text.encode())
+        monkeypatch.setenv('HERMES_HOME', str(profile))
+        bundle = SkillBundle(name='demo-skill', files={'SKILL.md': b'remote content'},
+                             source='official', identifier='official/demo-skill', trust_level='builtin')
+        lock = MagicMock()
+        lock.list_installed.return_value = [{'name': 'demo-skill', 'source': 'official',
+            'identifier': 'official/demo-skill', 'content_hash': 'sha256:stale-lock',
+            'install_path': 'demo-skill'}]
+        source = MagicMock()
+        source.source_id.return_value = 'official'
+        source.fetch.return_value = bundle
+
+        result = check_for_skill_updates(lock=lock, sources=[source])[0]
+
+        assert result['current_hash'] == content_hash(skill)
+        assert result['latest_hash'] == bundle_content_hash(bundle)
+        assert result['lock_hash'] == 'sha256:stale-lock'
+        assert result['status'] == ('up_to_date' if disk_text == 'remote content' else 'update_available')
+        lock.record_install.assert_not_called()
+
+
+    def test_unreadable_installed_skill_is_unavailable(self, tmp_path, monkeypatch):
+        import tools.skills_hub_install as install
+
+        skill = tmp_path / 'skills' / 'demo-skill'
+        skill.mkdir(parents=True)
+        monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+        lock = MagicMock()
+        lock.list_installed.return_value = [{'name': 'demo-skill', 'source': 'official',
+            'identifier': 'official/demo-skill', 'content_hash': 'sha256:old',
+            'install_path': 'demo-skill'}]
+        source = MagicMock()
+        source.source_id.return_value = 'official'
+        source.fetch.return_value = SkillBundle(name='demo-skill', files={'SKILL.md': b'new'},
+            source='official', identifier='official/demo-skill', trust_level='builtin')
+        with patch.object(install, 'content_hash', side_effect=PermissionError('unreadable')):
+            result = check_for_skill_updates(lock=lock, sources=[source])[0]
+        assert result['status'] == 'unavailable'
+        lock.record_install.assert_not_called()
+
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
         from tools.skills_guard import content_hash
 

@@ -126,11 +126,12 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> None:
+                    turn_author: dict | None = None, turn_note: str = "", turn_mode: str = "") -> None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
-    streams to its sender."""
+    streams to its sender. A per-turn ``note``/``mode`` (composer mode framing) rides its OWN envelope: a
+    note must never merge into a plain slot (`content` is the user's words) nor be dropped in the merge."""
     image_paths = list(image_paths or [])
     # Scrub live-turn self-duplicates first so the text merge below can't glue "{original}\n\n{later}" and re-fire the
     # original after a correction settles.
@@ -141,10 +142,13 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+              **({"turn_author": turn_author} if turn_author else {}),
+              **({"note": turn_note} if turn_note else {}), **({"mode": turn_mode} if turn_mode else {})}
     existing = session.get("queued_prompt")
-    if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
+    if (existing and text_only and not turn_author and not turn_note and not turn_mode
+            and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
+            and not existing.get("note") and not existing.get("mode")
             and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
@@ -166,7 +170,8 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
+    if not original or entry.get("image_paths") or entry.get("turn_author") or entry.get("note") \
+            or entry.get("mode") or not isinstance(text, str):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -221,12 +226,19 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
-def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str) -> dict | None:
+def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str,
+                       turn_note: str = "", turn_mode: str = "") -> dict | None:
     """Apply ``agent.<method>(plain_text)`` (steer/redirect); on acceptance record the correction, scrub stale
     self-duplicates so the live turn's original text is not re-fired after settle, and return the ``status`` reply.
-    None → caller falls through to the queue path."""
+    None → caller falls through to the queue path. The per-turn ``note``/``mode`` ride the correction itself:
+    the runtime stamps the note into the correction row's ``api_content`` and the label into display_metadata."""
+    extra: dict = {}
+    if turn_note:
+        extra["note"] = turn_note
+    if turn_mode:
+        extra["mode"] = turn_mode
     try:
-        if not getattr(agent, method)(plain_text):
+        if not getattr(agent, method)(plain_text, **extra):
             return None
     except Exception:
         return None
@@ -238,7 +250,7 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None) -> dict | None:
+                        turn_author: dict | None = None, turn_note: str = "", turn_mode: str = "") -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -260,7 +272,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}
         method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
         if (method and supported[mode]
-                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
+                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status,
+                                                turn_note=turn_note, turn_mode=turn_mode)) is not None):
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
@@ -269,7 +282,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
+        _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                        turn_note=turn_note, turn_mode=turn_mode)
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
@@ -312,6 +326,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    if queued.get("note"):
+        kwargs["turn_note"] = queued["note"]
+    if queued.get("mode"):
+        kwargs["turn_mode"] = queued["mode"]
     # The compute-host frame has no author field, so only the inline runner receives it.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False

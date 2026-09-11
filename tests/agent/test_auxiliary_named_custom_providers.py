@@ -338,6 +338,36 @@ class TestCustomProviderAliasCollision:
         assert client.api_key == "my-kimi-key"
         assert model == "my-kimi-model"
 
+    def test_vision_fallback_preserves_custom_provider_named_kimi(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "kimi", "default": "my-kimi-model"},
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                    "models": {
+                        "my-kimi-model": {
+                            "context_length": 200000,
+                            "supports_vision": True,
+                        },
+                    },
+                },
+            ],
+        })
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        client, model, label = _try_main_agent_model_fallback(
+            "nous",
+            task="vision",
+            reason="upstream capacity",
+        )
+
+        assert client is not None
+        assert "my-custom-kimi.example.com" in str(client.base_url)
+        assert model == "my-kimi-model"
+        assert label == "main-agent(kimi)"
+
     def test_bare_kimi_without_custom_still_routes_to_builtin(self, tmp_path, monkeypatch):
         """Regression guard: bare 'kimi' with no custom entry must still
         reach the built-in kimi-coding provider."""

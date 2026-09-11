@@ -5091,11 +5091,26 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     return True if supports is None else bool(supports)
 
 
+def _fallback_provider_is_named_custom(provider: str) -> bool:
+    """True when fallback routing will resolve this identity as a named custom provider."""
+    raw_provider = (provider or "").strip().lower()
+    if raw_provider.startswith("custom:"):
+        return True
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        return _get_named_custom_provider(raw_provider) is not None
+    except Exception:
+        return False
+
+
 def _fallback_supports_task(task: Optional[str], provider: str, model: Optional[str]) -> bool:
     """Reject fallback candidates known not to accept a vision request."""
     if task != "vision":
         return True
-    if _normalize_aux_provider(provider) in _PROVIDERS_WITHOUT_VISION:
+    if (
+        _normalize_aux_provider(provider) in _PROVIDERS_WITHOUT_VISION
+        and not _fallback_provider_is_named_custom(provider)
+    ):
         return False
     return _main_model_supports_vision(provider, model)
 

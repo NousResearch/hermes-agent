@@ -80,4 +80,50 @@ describe('the moment the browser has the sign-in', () => {
 
     expect(onWaiting).not.toHaveBeenCalled()
   })
+
+  it('sends the agent back in when the user keeps waiting after a timeout', async () => {
+    let clock = 0
+    const open = vi.fn(async () => {})
+    const onWaiting = vi.fn()
+    const request = vi.fn(async (method: string) =>
+      method === 'connectors.list'
+        ? listed(false)
+        : { results: [{ connector: 'gmail', status: 'initiated', connect_url: 'https://auth.test/x' }] }
+    )
+    const flow = createConnectorFlow('session', [{ connector: 'gmail' }], {
+      request: request as never,
+      open,
+      onWaiting,
+      // Each poll tick burns the whole window so the first wait times out.
+      delay: async () => {
+        clock += 120001
+      },
+      now: () => clock
+    })
+
+    await flow.refresh()
+    await flow.connect('gmail')
+
+    expect(flow.state.get().rows[0].phase).toBe('timeout')
+    expect(onWaiting).toHaveBeenCalledTimes(1)
+
+    await flow.keepWaiting('gmail')
+
+    expect(onWaiting).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks the gateway to reconnect, not connect, when the grant is expired or revoked', async () => {
+    const { flow, request } = flowWith({
+      list: () => ({
+        available: true,
+        connectors: [{ connector: 'gmail', connected: false, enabled: true, connectionStatus: 'expired' }]
+      }),
+      connect: () => ({ results: [{ connector: 'gmail', status: 'active' }] })
+    })
+
+    await flow.refresh()
+    await flow.connect('gmail')
+
+    expect(request).toHaveBeenCalledWith('connectors.connect', expect.objectContaining({ reconnect: true }))
+  })
 })

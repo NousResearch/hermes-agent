@@ -307,7 +307,9 @@ class TestGeneratedSystemdUnits:
         monkeypatch.setattr(gateway_cli, "_get_cron_drain_timeout", lambda: 0.0)
 
         unit = gateway_cli.generate_systemd_unit(system=False)
-        assert "TimeoutStopSec=60" in unit
+        # Cron opted out, but the shutdown watchdog still hard-exits at 0+60s;
+        # systemd's leash must sit past it (+10s exit reserve), not at the 60s floor.
+        assert "TimeoutStopSec=70" in unit
 
     def test_restart_exit_code_is_also_declared_a_success_status(self):
         """#104251: a planned restart (gateway/restart.py's exit 75) is force-restarted
@@ -1425,7 +1427,8 @@ class TestSystemUnitRefreshSyncsHermesHome:
         # Correct installed unit (operator's HERMES_HOME + drain timeout).
         monkeypatch.setenv("HERMES_HOME", str(alice_hermes))
         good_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
-        assert "TimeoutStopSec=210" in good_unit
+        # alice's 180s drain: watchdog hard-exits at 240s, so the leash is 250s.
+        assert "TimeoutStopSec=250" in good_unit
         unit_path.write_text(good_unit, encoding="utf-8")
 
         # Simulate sudo without inherited HERMES_HOME (falls back to root).
@@ -2721,12 +2724,10 @@ class TestTimeoutStopSecCoversCronFloor:
             monkeypatch,
             "agent:\n  restart_drain_timeout: 60\n",
         )
-        # An explicit restart drain above the default cron floor (30+10=40)
-        # keeps the old formula's result — no regression for
-        # restart-drain-dominated installs. (Default installs differ from
-        # main: restart_drain_timeout defaults to 0, so the cron floor 40+30
-        # raises the leash from 60 to 70 — see the PR description.)
-        assert "TimeoutStopSec=90" in unit
+        # An explicit restart drain above the default cron floor (30+10=40) makes the
+        # restart drain the dominant stop-path term; the leash is then sized off the
+        # shutdown watchdog it must outlast: 60 drain + 60 grace + 10 exit reserve.
+        assert "TimeoutStopSec=130" in unit
 
     def test_env_override_extends_the_leash(self, tmp_path, monkeypatch):
         unit = self._unit_with_config(

@@ -39,6 +39,15 @@ CRON_DRAIN_CLEANUP_RESERVE_S = 10.0
 # See #94759.
 SYSTEMD_STOP_HEADROOM_S = 30.0
 SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
+# Extra leash the out-of-loop shutdown watchdog holds beyond the drain budget before it dumps
+# stacks and ``os._exit``s (``gateway.shutdown_watchdog.resolve_shutdown_watchdog_delay``). Lives
+# here, not in ``shutdown_watchdog``, because ``shutdown_watchdog`` imports this module and
+# ``TimeoutStopSec`` must be sized against the SAME number: systemd cutting in first turns a
+# diagnosable hard-exit into a blind SIGKILL.
+DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
+# Slack systemd leaves the watchdog after its deadline to write the faulthandler dump and
+# ``os._exit``. That work is sub-second; this only has to keep systemd from racing it.
+SHUTDOWN_WATCHDOG_EXIT_RESERVE_S = 10.0
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -139,17 +148,29 @@ def resolve_systemd_timeout_stop_sec(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, *,
     cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S, headroom_s: float = SYSTEMD_STOP_HEADROOM_S,
     floor_s: float = SYSTEMD_TIMEOUT_STOP_SEC_FLOOR,
+    watchdog_grace_s: float = DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S,
+    watchdog_exit_reserve_s: float = SHUTDOWN_WATCHDOG_EXIT_RESERVE_S,
 ) -> int:
     """Seconds systemd ``TimeoutStopSec`` must cover: the stop path may first wait
     ``cron_drain_timeout`` + ``cleanup_reserve_s`` for cron work, so sizing from the chat drain
     alone lets systemd SIGKILL an in-budget drain.  A zero cron timeout is an opt-out.
 
     ``restart_drain_timeout`` is only the chat-turn interrupt budget (default 0). See #94759.
+
+    It must ALSO outlast the in-process shutdown watchdog, which hard-exits at
+    ``drain_timeout + watchdog_grace_s``. Sizing from ``headroom_s`` alone inverts the two budgets
+    whenever ``watchdog_grace_s`` exceeds the cron/headroom term (e.g. drain 180s ⇒ watchdog at
+    240s but ``TimeoutStopSec`` 210s): systemd SIGKILLs first, so the watchdog's faulthandler dump
+    never runs and every hung stop is diagnosis-free. The watchdog is the intended last resort —
+    systemd is the backstop behind it.
     """
     drain = _seconds(drain_timeout)
     cron = _seconds(cron_drain_timeout)
     cron_budget = (cron + _seconds(cleanup_reserve_s)) if cron > 0.0 else 0.0
-    return int(max(_seconds(floor_s), max(drain, cron_budget) + _seconds(headroom_s)))
+    stop_budget = max(drain, cron_budget) + _seconds(headroom_s)
+    watchdog_budget = (drain + _seconds(watchdog_grace_s, DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S)
+                       + _seconds(watchdog_exit_reserve_s, SHUTDOWN_WATCHDOG_EXIT_RESERVE_S))
+    return int(max(_seconds(floor_s), stop_budget, watchdog_budget))
 
 
 def resolve_restart_exit_wait_budget(drain_timeout: float, after_turn_timeout: float, *, headroom: float = 15.0) -> float:

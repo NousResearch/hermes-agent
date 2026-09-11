@@ -22,15 +22,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from gateway.restart import (
+    DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S as _DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE,
+)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 # Extra leash beyond ``agent.restart_drain_timeout`` so a slow-but-progressing drain survives.
-# Matches the issue #66892 suggested hardening.
-DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
+# Matches the issue #66892 suggested hardening. Defined in ``gateway.restart`` so
+# ``resolve_systemd_timeout_stop_sec`` sizes ``TimeoutStopSec`` against the same value and systemd
+# cannot SIGKILL before this watchdog dumps stacks; re-exported here for existing importers.
+DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = _DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0

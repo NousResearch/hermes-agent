@@ -28,6 +28,7 @@ def _deliver_to_desktop_session(
     job: dict,
     content: str,
     session_db=None,
+    session_name_hint: Optional[str] = None,
 ) -> Optional[str]:
     """Deliver cron output to the job's persistent Desktop delivery session.
 
@@ -35,6 +36,11 @@ def _deliver_to_desktop_session(
     When *session_db* is None (the common case — delivery happens after the
     agent's SessionDB has been closed), opens its own short-lived SessionDB
     instance for the write.
+
+    *session_name_hint* overrides the session title when set (from a
+    ``desktop-session:<name>`` delivery target).  The session id is always
+    derived from the job id, so multiple runs of the same job always append
+    to the same delivery session regardless of the name hint.
 
     Returns None on success, error string on failure.
     """
@@ -65,7 +71,8 @@ def _deliver_to_desktop_session(
         # collision with a different job (extremely unlikely given the
         # deterministic ID prefix) is non-fatal.
         try:
-            title = f"Cron Delivery: {job_name}"
+            display_name = session_name_hint or job_name
+            title = f"Cron Delivery: {display_name}"
             session_db.set_session_title(session_id, title)
         except Exception:
             pass

@@ -1775,8 +1775,14 @@ def _deliver_result(
         # pseudo-platform. The target's chat_id holds the session name hint
         # (the job id by default).
         if target["platform"] == "desktop-session":
+            # The target's chat_id holds the name hint from
+            # ``desktop-session:<name>``, or the job id for bare
+            # ``desktop-session``.  Pass it so the session title
+            # reflects the user's naming choice.
+            session_name = target.get("chat_id") or None
             desktop_error = _deliver_to_desktop_session(
                 job, delivery_content, session_db,
+                session_name_hint=session_name,
             )
             if desktop_error:
                 delivery_errors.append(desktop_error)

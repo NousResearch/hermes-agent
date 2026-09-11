@@ -484,7 +484,7 @@ class TestSubprocessCompatHelpers:
         CREATE_BREAKAWAY_FROM_JOB with ERROR_ACCESS_DENIED.  Callers
         catch ``OSError`` and retry with this payload (see
         ``gateway_windows._spawn_detached`` for the canonical pattern).
-        It must drop ONLY the breakaway bit — DETACHED_PROCESS et al.
+        It must drop ONLY the breakaway bit -- DETACHED_PROCESS et al.
         are still required for the child to survive the parent's exit.
         """
         from hermes_cli import _subprocess_compat as sc
@@ -493,10 +493,65 @@ class TestSubprocessCompatHelpers:
         # Fallback equals full minus the breakaway bit, nothing else changed.
         assert fallback == full & ~0x01000000
         # And the detach bits we still need are present (hidden console, own
-        # process group — NOT console-less DETACHED_PROCESS, see
+        # process group -- NOT console-less DETACHED_PROCESS, see
         # test_windows_detach_flags_exclude_detached_process).
         assert fallback & 0x00000200, "fallback missing CREATE_NEW_PROCESS_GROUP"
         assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
+
+    @pytest.mark.windows_only
+    def test_windows_hide_flags_includes_breakaway_from_job(self):
+        """CREATE_BREAKAWAY_FROM_JOB is load-bearing for windows_hide_flags()
+        too, not just windows_detach_flags() -- same root cause, different
+        caller shape.
+
+        windows_hide_flags() backs every short-lived synchronous helper
+        (subprocess.run for git/gh/taskkill/version probes, the local
+        terminal backend's bash spawn in tools/environments/local.py, ...).
+        The Desktop app (Electron) wraps ALL of its child processes --
+        including the terminal tool's bash.exe -- in a Windows Job Object.
+        Win32 silently ignores CREATE_NO_WINDOW for a process inside a job
+        it does not own unless that process also carries
+        CREATE_BREAKAWAY_FROM_JOB: the console still allocates and is
+        visible for a frame before the app's own job teardown catches up,
+        reproducing the exact flash windows_hide_flags() exists to prevent.
+
+        windows_detach_flags() already carries this bit (see
+        test_windows_detach_flags_includes_breakaway_from_job above,
+        PR #40909) -- windows_hide_flags() was never updated to match, and
+        this exact one-line gap was reported multiple times (#54323,
+        #55604) but never actually landed on this function. Regression
+        guard against re-dropping it once fixed.
+        """
+        from hermes_cli import _subprocess_compat as sc
+        assert sc.windows_hide_flags() & 0x01000000, (
+            "CREATE_BREAKAWAY_FROM_JOB (0x01000000) must be present in "
+            "windows_hide_flags() so short-lived hidden spawns (git, gh, "
+            "the local terminal backend's bash.exe, ...) don't flash a "
+            "console for a frame when the parent is inside an Electron/"
+            "Tauri Windows Job Object (Hermes Desktop)."
+        )
+
+    @pytest.mark.windows_only
+    def test_windows_hide_flags_excludes_detached_process(self):
+        """windows_hide_flags() must never include DETACHED_PROCESS.
+
+        Unlike windows_detach_flags(), this helper is documented (its own
+        docstring) as hiding the console WITHOUT detaching -- callers using
+        subprocess.run() need stdio inherited/piped and the child to stay
+        in the parent's process group so Ctrl+C and job teardown still
+        propagate. DETACHED_PROCESS would also silently neutralize
+        CREATE_NO_WINDOW (MSDN: ignored when combined with
+        CREATE_NEW_CONSOLE or DETACHED_PROCESS), re-creating the exact
+        console-flash bug class this helper exists to prevent.
+        """
+        from hermes_cli import _subprocess_compat as sc
+        assert not sc.windows_hide_flags() & 0x00000008, (
+            "DETACHED_PROCESS must not be in windows_hide_flags(): it "
+            "both breaks the documented non-detaching contract and makes "
+            "CREATE_NO_WINDOW a no-op (#54220/#56747)."
+        )
+
+
 
 
 # ---------------------------------------------------------------------------

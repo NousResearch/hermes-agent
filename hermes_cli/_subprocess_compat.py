@@ -173,8 +173,23 @@ def windows_hide_flags() -> int:
     For short-lived synchronous helpers (``taskkill``, ``where``, version probes): no flash, but the
     child stays in the parent's process group and job so Ctrl+C and job teardown still propagate.
     Stdio is inherited, so ``capture_output=True`` works.
+
+    Includes ``CREATE_BREAKAWAY_FROM_JOB``. Electron/Tauri desktop wrappers (Hermes Desktop) put
+    every child process -- including the local terminal backend's ``bash.exe`` spawn
+    (``tools/environments/local.py``) -- inside a Windows Job Object. Win32 silently ignores
+    ``CREATE_NO_WINDOW`` for a child inside a job it does not own unless the child also carries
+    ``CREATE_BREAKAWAY_FROM_JOB``: the console still allocates and is briefly visible before the
+    app's own job teardown catches up, reproducing the exact flash this helper exists to prevent.
+    ``windows_detach_flags()`` above already carries this bit for the same reason (PR #40909); this
+    function was never updated to match, and the gap was reported multiple times (#54323, #55604)
+    without ever landing here. Job objects created without ``JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK``
+    (or via legacy job nesting) can reject breakaway with ``PermissionError`` in rare cases --
+    callers of this hide-only helper already tolerate a failed spawn via their own exception
+    handling, same as ``windows_detach_flags()`` callers do.
     """
-    return _CREATE_NO_WINDOW if IS_WINDOWS else 0
+    if not IS_WINDOWS:
+        return 0
+    return _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
 
 
 def suppress_platform_ver_console() -> None:

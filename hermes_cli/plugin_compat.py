@@ -26,7 +26,8 @@ import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 COMPAT_REMOVAL_DATE = _dt.date(2026, 9, 14)
 COMPAT_REMOVAL = COMPAT_REMOVAL_DATE.isoformat()
@@ -193,6 +194,39 @@ def _scan_root(manifest) -> Optional[Path]:
     return p if p.is_dir() else None
 
 
+def category_plugin_manifest(name: str, path: object, source: str) -> Any:
+    """Build the minimal manifest shape used by compatibility scanning and gates.
+
+    Category loaders own their discovery and deliberately do not construct a
+    general ``PluginManifest`` (doing so would couple their import paths back
+    to the manager). The compat layer only needs these three fields.
+    """
+    return SimpleNamespace(name=name, path=str(path), source=source)
+
+
+def external_plugin_disable_reason(
+    name: str, path: object, source: str, *, today: Optional[_dt.date] = None
+) -> Optional[str]:
+    """Apply the shared post-removal decision to a category-owned plugin."""
+    return disable_reason(category_plugin_manifest(name, path, source), today=today)
+
+
+def _category_compat_manifests() -> List[Any]:
+    """Return category-owned plugin references without importing plugin code."""
+    manifests: List[Any] = []
+    try:
+        from providers import _external_provider_compat_manifests
+        manifests.extend(_external_provider_compat_manifests())
+    except Exception:
+        pass
+    try:
+        from plugins.memory import _external_memory_compat_manifests
+        manifests.extend(_external_memory_compat_manifests())
+    except Exception:
+        pass
+    return manifests
+
+
 def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]]:
     """``{plugin_name: hits}`` for every ENABLED external (non-bundled) plugin with at least one hit.
 
@@ -206,6 +240,22 @@ def compat_report(manifests=None, *, force: bool = False) -> Dict[str, List[Hit]
             manifests = [lp.manifest for lp in mgr._plugins.values()]
         except Exception:
             return {}
+    manifests = list(manifests or [])
+    # The manager deliberately leaves exclusive/model-provider lifecycles to
+    # their category loaders. Ask those loaders for metadata-only references so
+    # reporting does not import the same plugin a second time.
+    known = {
+        (getattr(m, "source", ""), str(getattr(m, "path", "")))
+        for m in manifests
+    }
+    for category_manifest in _category_compat_manifests():
+        identity = (
+            getattr(category_manifest, "source", ""),
+            str(getattr(category_manifest, "path", "")),
+        )
+        if identity not in known:
+            manifests.append(category_manifest)
+            known.add(identity)
     external = [m for m in manifests if getattr(m, "source", "") != "bundled" and getattr(m, "path", None)]
     key = tuple(sorted(f"{m.name}@{m.path}" for m in external))
     with _report_lock:

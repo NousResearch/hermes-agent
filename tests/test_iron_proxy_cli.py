@@ -223,6 +223,18 @@ def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, mo
     assert os.environ["EBIRD_API_KEY"] == "real-ebird-secret"
 
 
+def test_setup_rejects_non_string_custom_mapping_keys(monkeypatch):
+    monkeypatch.setattr(proxy_cli, "load_config", lambda: {
+        "proxy": {"extra_secrets": [{
+            "env_var": "SERVICE_SECRET",
+            "hosts": ["api.example.com"],
+            1: "unsupported",
+        }]},
+    })
+
+    assert proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args()) is None
+
+
 def test_load_env_file_backfills_header_auth_alias(hermes_home, monkeypatch):
     (hermes_home / ".env").write_text("GOOGLE_API_KEY=google-secret\n", encoding="utf-8")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)

@@ -225,10 +225,11 @@ def _host_scopes_overlap(left: str, right: str) -> bool:
 def _validate_extra_secret_host(value: object, *, path: str) -> str:
     if not isinstance(value, str) or not (host := value.strip()):
         raise ValueError(f"{path} must be a non-empty hostname")
+    if host.startswith("*."):
+        raise ValueError(f"{path} must be an exact DNS hostname; wildcard credential scopes are not allowed")
     if host != host.rstrip(".") or "://" in host or any(c in host for c in "/:@?#"):
         raise ValueError(f"{path} must be a hostname without a scheme, port, path, or trailing dot")
-    wildcard = host.startswith("*.")
-    hostname = host[2:] if wildcard else host
+    hostname = host
     try:
         ipaddress.ip_address(hostname)
     except ValueError:
@@ -238,13 +239,13 @@ def _validate_extra_secret_host(value: object, *, path: str) -> str:
     labels = hostname.split(".")
     if len(labels) < 2 or len(hostname) > 253 or any(not _DNS_LABEL_RE.fullmatch(label) for label in labels):
         raise ValueError(f"{path} must be a valid fully-qualified DNS hostname")
-    return ("*." if wildcard else "") + hostname.lower()
+    return hostname.lower()
 
 
 def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
     """Validate ``proxy.extra_secrets`` without ever reading secret values.
 
-    Hosts are deliberately limited to DNS names (with an optional left-most wildcard), and
+    Hosts are deliberately limited to exact DNS names, and
     hop-by-hop/routing headers are rejected so a typo cannot turn token replacement into request
     routing or framing mutation.
     """
@@ -282,6 +283,8 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         path = f"proxy.extra_secrets[{index}]"
         if not isinstance(item, dict):
             raise ValueError(f"{path} must be a mapping")
+        if any(not isinstance(key, str) for key in item):
+            raise ValueError(f"{path} keys must be strings")
         unknown = set(item) - {"env_var", "hosts", "match_headers"}
         if unknown:
             raise ValueError(f"{path} has unsupported field(s): {', '.join(sorted(unknown))}")

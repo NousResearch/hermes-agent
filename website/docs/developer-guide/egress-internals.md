@@ -168,7 +168,7 @@ All write paths use `os.open(O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)` + `os.fsta
 
 Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env_strips_proxy_recursion_vars`, `test_subprocess_env_keeps_infrastructure_vars`.
 
-Operator-defined `proxy.extra_secrets` entries pass through `parse_extra_secret_specs()` before discovery. The parser accepts only uppercase env-var names, fully-qualified DNS hosts (optionally `*.`), and RFC-token header names; it rejects IP literals, global wildcards, URL components, built-in/duplicate env names, and routing/framing/hop-by-hop headers. This validation is the security boundary that prevents a broad or malformed mapping from sending one credential to unintended requests.
+Operator-defined `proxy.extra_secrets` entries pass through `parse_extra_secret_specs()` before discovery. The parser accepts only uppercase env-var names, exact fully-qualified DNS hosts, and RFC-token header names; it rejects IP literals, wildcard scopes, URL components, built-in/duplicate env names, and routing/framing/hop-by-hop headers. Exact hosts are required because wildcard scopes can include attacker-controlled tenants under public or private suffixes. This validation is the security boundary that prevents a broad or malformed mapping from sending one credential to unintended requests.
 
 ### Bind policy
 

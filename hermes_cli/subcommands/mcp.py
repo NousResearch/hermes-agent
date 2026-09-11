@@ -55,6 +55,9 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_login_p = mcp_sub.add_parser(
         "login", help="Force re-authentication for an OAuth-based MCP server")
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+    mcp_login_p.add_argument("--gateway", action="store_true", help="Authorize through the originating messaging chat")
+    mcp_login_p.add_argument("--url", help="Register a new OAuth MCP URL through the messaging gateway")
+    mcp_login_p.add_argument("--cancel", action="store_true", help="Cancel this chat's pending gateway OAuth login")
     mcp_login_p.add_argument(
         "--flow", choices=["browser", "device"], default=None,
         help="OAuth flow (overrides oauth.flow): browser PKCE or RFC 8628 device code")

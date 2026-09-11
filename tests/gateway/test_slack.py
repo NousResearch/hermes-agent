@@ -3368,6 +3368,15 @@ class TestAssistantThreadLifecycle:
         msg_event = assistant_adapter.handle_message.call_args[0][0]
         assert msg_event.metadata["slack_team_id"] == "T_TEAM"
 
+    @pytest.mark.asyncio
+    async def test_callback_is_not_copied_to_assistant_thread_title(self, assistant_adapter):
+        assistant_adapter._app.client.assistant_threads_setTitle = AsyncMock()
+        await assistant_adapter._set_assistant_thread_title(
+            "D123", "171.111", "http://localhost/callback?code=PRIVATE&state=SECRET", team_id="T_TEAM")
+        calls = assistant_adapter._app.client.assistant_threads_setTitle.call_args_list
+        assert "PRIVATE" not in str(calls)
+        assert "SECRET" not in str(calls)
+
 
 # ---------------------------------------------------------------------------
 # TestUserNameResolution

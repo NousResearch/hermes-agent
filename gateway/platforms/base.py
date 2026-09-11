@@ -3505,6 +3505,9 @@ class BasePlatformAdapter(ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
+        from gateway.mcp_oauth import intercept_callback
+        if await intercept_callback(getattr(self, "gateway_runner", None), event):
+            return
         if not self._message_handler:
             return
         if event.allow_gateway_control:

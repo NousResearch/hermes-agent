@@ -44,6 +44,70 @@ If your provider isn't in the table, you don't need a tunnel.
 
 ## MCP Servers
 
+### Connect from a messaging chat
+
+Ask the agent in Slack, Telegram, or another gateway chat to run:
+
+```bash
+hermes mcp login reports --gateway --url https://mcp.example.com/mcp
+# For a server already configured in this profile:
+hermes mcp login reports --gateway
+```
+
+The command returns immediately. The gateway owns the attempt independently of
+the agent turn and sends an authorization link to the originating chat/thread.
+Open it, sign in, and approve. If the browser cannot load the loopback redirect,
+copy the **entire URL from the address bar** and paste it into the same chat/thread
+as the same user. No SSH tunnel, public callback service, or new model tool is needed.
+The gateway consumes the callback before normal message queues or agent processing.
+It sends success/failure directly; callback codes never enter the conversation.
+
+The SDK still performs protected-resource/authorization-server discovery, dynamic
+client registration, PKCE S256, resource binding, and token exchange. This follows
+the [MCP 2025-06-18 authorization flow](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
+and changes only the transport of the browser callback. Existing client registrations
+and configured loopback redirect URIs are preserved. HTTPS/public callback URIs and
+device-code flows should use their existing CLI/dashboard paths.
+Adapters without individual sender identities cannot start a login. Multiplexed
+profiles must use distinct server names when their live MCP connections differ;
+the relay refuses to replace a connection owned by another profile.
+
+New server configuration is saved through Hermes' config API after authentication;
+tokens stay in the originating profile. Discovery reloads the MCP registry. **Start
+a new session to use new tools**; the relay does not rebuild active agents, rewrite
+their system prompts, or inject synthetic conversation messages.
+
+An attempt expires five minutes after it starts. Duplicate attempts for the same
+profile/server are refused (including another user sharing that credential slot).
+Wrong users, chats, threads, workspaces, profiles, states, redirect URIs, duplicate
+query parameters, and replayed callbacks are rejected. Only complete callback URLs
+are accepted, with lossless chat autolink formatting allowed. Codes/states are
+redacted from Hermes logs; the authorization link itself necessarily carries state
+when delivered to the user. Chat-provider retention of the user's pasted message is
+outside Hermes' control.
+
+To cancel, ask the agent to run:
+
+```bash
+hermes mcp login reports --gateway --cancel
+```
+
+Cancellation/expiry before credential commit discards staged credentials and leaves
+existing tokens intact. Cancellation after a successful commit does not revoke the
+completed authorization. Gateway shutdown cancels pending attempts; after restart,
+old callbacks are rejected and a new login is required. Pending codes/state are never
+persisted. A failed notification is not delivered through an LLM fallback.
+
+The terminal must run on the gateway host with its inherited session context and
+access to the existing local gateway control socket. The gateway resolves the
+destination from its own session store and validates the user and profile; CLI
+arguments cannot select another chat. This socket trusts the local OS account, as
+the existing terminal/config surface does. Shared installations should configure
+`allow_admin_from` / `group_allow_admin_from`: MCP credentials are shared within a
+profile, and the relay honors those existing administration policies.
+
+### Connect from a desktop or terminal
+
 **Desktop Skills → MCP:** the native app receives the callback on your computer
 and relays it to the selected connection and profile, so this flow does not need
 an SSH callback tunnel or `dashboard.public_url`. Tokens stay on the owning

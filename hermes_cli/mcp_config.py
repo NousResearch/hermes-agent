@@ -708,6 +708,14 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
+    if getattr(args, "gateway", False):
+        if getattr(args, "flow", None) not in (None, "browser"):
+            raise ValueError("Messaging OAuth uses the browser authorization-code flow")
+        from hermes_cli.mcp_gateway_oauth import gateway_oauth_login
+        gateway_oauth_login(args)
+        return
+    if getattr(args, "cancel", False) or getattr(args, "url", None):
+        raise ValueError("--url and --cancel require --gateway")
     cfg = _lookup_server(args.name, _get_mcp_servers())
     if cfg is not None:
         _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))

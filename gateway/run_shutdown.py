@@ -1561,6 +1561,12 @@ class GatewayShutdownMixin:
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
         ctx.started_at = time.monotonic()
         self._running = False
+        relay = getattr(self, "_mcp_oauth_relay", None)
+        if relay is not None:
+            try:
+                await relay.close()
+            except Exception:
+                logger.warning("MCP OAuth shutdown failed")
         self._clear_plugin_message_injector()
         self._draining = True
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.

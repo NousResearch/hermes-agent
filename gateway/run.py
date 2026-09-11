@@ -5060,8 +5060,11 @@ async def _start_gateway_start_control_socket(runner):
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
+        from gateway.mcp_oauth import MessagingOAuthRelay
+        runner._mcp_oauth_relay = MessagingOAuthRelay(runner)
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler})
+            verb_handlers={"pause-for-update": _pause_for_update_handler},
+            request_handlers={"mcp-oauth": runner._mcp_oauth_relay.request})
         if not await _control_server.start():
             _control_server = None
         else:

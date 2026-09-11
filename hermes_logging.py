@@ -115,9 +115,22 @@ def _install_session_record_factory() -> None:
     current_factory = logging.getLogRecordFactory()
     if getattr(current_factory, "_hermes_session_injector", False):
         return
+    from tools.mcp_oauth_redact import redact_oauth_log
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
+        message = record.getMessage()
+        redacted = redact_oauth_log(message)
+        if redacted != message:
+            record.msg, record.args = redacted, ()
+        if record.exc_info:
+            import traceback
+            exception = "".join(traceback.format_exception(*record.exc_info))
+            redacted_exception = redact_oauth_log(exception)
+            if redacted_exception != exception:
+                # Retain benign exception metadata for filters; a secret-bearing
+                # traceback must not remain available to third-party handlers.
+                record.exc_text, record.exc_info = redacted_exception, None
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
         # QueueListener formats on its own thread, after the profile-scoped

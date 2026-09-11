@@ -3420,7 +3420,8 @@ class SlackAdapter(BasePlatformAdapter):
         key = self._workspace_thread_key(team_id, channel_id, thread_ts)
         if not key or key in self._titled_assistant_threads:
             return
-        title = re.sub(r"\s+", " ", title_source).strip()
+        from tools.mcp_oauth_redact import redact_oauth_log
+        title = re.sub(r"\s+", " ", redact_oauth_log(title_source)).strip()
         if not title or title.startswith("/"):
             return
         title = title[:77].rstrip() + "..." if len(title) > 80 else title

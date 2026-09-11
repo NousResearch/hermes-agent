@@ -115,6 +115,9 @@ class GatewayInboundMixin:
         """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
         (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
         from gateway.run import _is_slack_ignored_channel
+        from gateway.mcp_oauth import intercept_callback
+        if await intercept_callback(self, event):
+            return None
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
         _config = getattr(self, "config", None)

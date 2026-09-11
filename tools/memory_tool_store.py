@@ -400,13 +400,26 @@ class MemoryStore:
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
+    # A parsed entry with this many internal newlines reads as several
+    # undelimited statements squashed together, not one legitimate multiline
+    # entry — see the squashed-entry signal in _detect_external_drift (#56464).
+    _SQUASHED_ENTRY_NEWLINES = 4
+
     def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
         """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. Signals:
-        round-trip mismatch, or one entry over the whole-file limit (no tool-written
-        entry can be — an external writer appended free-form text)."""
+        round-trip mismatch; one entry over the whole-file limit (no tool-written entry
+        can be — an external writer appended free-form text); or a squashed-entry blob —
+        a single parsed entry carrying many internal newlines and no ``§`` delimiter. A
+        file that predates the ``§`` delimiter (or was hand-edited outside the tool) can
+        stay UNDER the char limit while still being dozens of undelimited statements;
+        because replace()/remove() match by substring, any one absorbed statement would
+        match and overwrite/remove the WHOLE blob, destroying the rest in one call
+        (#56464)."""
         parsed = self._parse_entries(raw)
+        has_squashed_entry = any(e.count("\n") >= self._SQUASHED_ENTRY_NEWLINES for e in parsed)
         if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
+                               and max(map(len, parsed), default=0) <= self._char_limit(target)
+                               and not has_squashed_entry):
             return None
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")

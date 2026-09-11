@@ -1,5 +1,5 @@
 name: fleet-models
-version: 1.0.4
+version: 1.0.5
 kind: backend
 author: WeRoll fleet (Cowork, on Richie's instruction 2026-09-11)
 description: >-
@@ -9,4 +9,4 @@ description: >-
   model change is one write instead of a dozen hand edits. At runtime this plugin closes two gaps Hermes
   leaves: auxiliary calls (vision, compression, titles, decomposer) get the destination model's host pins,
   reasoning pin and data_collection deny even when they fall back, and cron honours cron.fallback_providers.
-  The dashboard's Models tab (dashboard/) is the control surface. Bundled + kind:backend: loads everywhere.
+  The dashboard's Fleet Models page (dashboard/) is the control surface, with usage over any window from 15 minutes to 30 days. Bundled + kind:backend: loads everywhere.

@@ -1,5 +1,5 @@
 /**
- * Hermes fleet — Models tab.
+ * Hermes fleet — Fleet Models page.
  *
  * The control surface for ~/.hermes/fleet/models.yaml: every agent's waterfalls, the model registry with
  * OpenRouter-level host control, live prices/uptime, real usage and billed cost, decisions and history.
@@ -41,6 +41,62 @@ const ago = (ts) => {
 };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const hostSlug = (t) => String(t || "").split("/")[0];
+
+// ── time windows ─────────────────────────────────────────────────────────────────────────
+// One window drives every usage figure on the page. The chart's bucket comes from the window AND the width it
+// has: each window has a natural bucket (24 h → hourly) that coarsens until every bar gets MIN_PITCH px; tick
+// labels are then thinned to clean local-clock steps (every 3rd hour on a phone). The server spreads each ledger
+// row across its active span, so sub-hour figures are close estimates.
+const PERIODS = [["15m", 900, "15 minutes"], ["30m", 1800, "30 minutes"], ["1h", 3600, "hour"], ["2h", 7200, "2 hours"],
+  ["3h", 10800, "3 hours"], ["6h", 21600, "6 hours"], ["12h", 43200, "12 hours"], ["24h", 86400, "24 hours"],
+  ["7d", 604800, "7 days"], ["30d", 2592000, "30 days"]];
+const NICE = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800];
+const LABEL_STEPS = NICE.concat([1209600]);
+const MIN_PITCH = 12;      // px per bar, at least
+const MIN_LABEL_GAP = 36;  // px between tick labels, at least
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; } })();
+const naturalBucket = (w) => {
+  const m = [[900, 60], [1800, 60], [3600, 120], [7200, 300], [10800, 300], [21600, 900], [43200, 1800], [86400, 3600], [604800, 21600]];
+  const hit = m.find(([x]) => w <= x); return hit ? hit[1] : 86400;
+};
+const pickBucket = (w, width) => {
+  const maxBars = Math.max(6, Math.floor(width / MIN_PITCH));
+  let b = naturalBucket(w);
+  while (w / b > maxBars) { const nx = NICE.find((x) => x > b); if (!nx) break; b = nx; }
+  return b;
+};
+const periodName = (w) => { const p = PERIODS.find((x) => x[1] === w); return p ? p[2] : Math.round(w / 3600) + " hours"; };
+const periodShort = (w) => { const p = PERIODS.find((x) => x[1] === w); return p ? p[0] : Math.round(w / 3600) + "h"; };
+const lastLabel = (w) => (w === 3600 ? "Last hour" : "Last " + periodName(w));
+const bucketName = (b) => (b < 3600 ? b / 60 + "-minute" : b < 86400 ? (b / 3600 === 1 ? "hourly" : b / 3600 + "-hour") : b === 86400 ? "daily" : b / 86400 + "-day");
+const WIN_KEY = "fleet-models.window";
+const readWin = () => { try { const v = Number(window.localStorage.getItem(WIN_KEY)); return PERIODS.some((p) => p[1] === v) ? v : 604800; } catch (e) { return 604800; } };
+const saveWin = (v) => { try { window.localStorage.setItem(WIN_KEY, String(v)); } catch (e) { /* private mode */ } };
+const hhmm = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const dayMon = (d) => d.toLocaleDateString([], { day: "numeric", month: "short" });
+const wday = (d) => d.toLocaleDateString([], { weekday: "short" });
+function tickLabel(t, b, step) {
+  const d = new Date(t * 1000);
+  if (step >= 86400 || b >= 86400) return dayMon(d);
+  if (d.getHours() === 0 && d.getMinutes() === 0) return wday(d);
+  return hhmm(d);
+}
+function isTick(t, step) {
+  const d = new Date(t * 1000);
+  if (step >= 86400) {
+    if (d.getHours() !== 0 || d.getMinutes() !== 0) return false;
+    const ord = Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+    return ord % (step / 86400) === 0;
+  }
+  const sec = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+  return sec % step === 0;
+}
+function rangeLabel(s, b, since, now) {
+  const a = new Date(Math.max(s.t, since) * 1000), z = new Date(Math.min(s.end, now) * 1000);
+  if (b >= 86400) return wday(a) + " " + dayMon(a) + (b > 86400 ? " – " + dayMon(new Date((s.end - 1) * 1000)) : "") + (s.end > now ? " (so far)" : "");
+  const pre = new Date(now * 1000).toDateString() === a.toDateString() ? "" : wday(a) + " ";
+  return pre + hhmm(a) + "–" + (s.end > now ? "now" : hhmm(z));
+}
 
 function cls(...xs) { return xs.filter(Boolean).join(" "); }
 
@@ -122,6 +178,89 @@ function Section({ title, right, children, className }) {
   );
 }
 
+// ── time charts ──────────────────────────────────────────────────────────────────────────
+function PeriodBar({ win, setWin, usage, loading }) {
+  const ref = useRef(null);
+  // keep the active chip in view on a phone — scroll the chip row only, never the page
+  useEffect(() => {
+    const box = ref.current, el = box && box.querySelector(".is-active");
+    if (!el) return;
+    const l = el.offsetLeft - box.offsetLeft, r = l + el.offsetWidth;
+    if (l < box.scrollLeft) box.scrollLeft = l - 8; else if (r > box.scrollLeft + box.clientWidth) box.scrollLeft = r - box.clientWidth + 8;
+  }, [win]);
+  return (
+    <div className="fm-period">
+      <div className="fm-period-chips" role="group" aria-label="Time window" ref={ref}>
+        {PERIODS.map(([k, w, name]) => (
+          <button key={k} className={cls("fm-chip fm-chip--sm", w === win && "is-active")} aria-pressed={w === win}
+            title={lastLabel(w)} onClick={() => setWin(w)}>{k}</button>
+        ))}
+      </div>
+      <span className="fm-muted fm-small fm-period-note">
+        {loading ? "updating…" : usage ? `${bucketName(usage.bucket)} bars · ${ago(usage.generated_at)}` : ""}
+      </span>
+    </div>
+  );
+}
+
+function Spark({ values, label, height }) {
+  const v = values || [];
+  const max = Math.max(0, ...v);
+  if (!v.length) return null;
+  return (
+    <span className="fm-spark" style={{ height: (height || 22) + "px" }} aria-label={label} title={label}>
+      {v.map((x, i) => <span key={i} style={{ height: max ? Math.max(x > 0 ? 8 : 0, (100 * x) / max) + "%" : "0%" }} />)}
+    </span>
+  );
+}
+
+function TimeChart({ usage, width }) {
+  const s = (usage && usage.series) || [];
+  const [sel, setSel] = useState(null);
+  useEffect(() => { setSel(null); }, [usage && usage.window, usage && usage.bucket]);
+  if (!s.length) return null;
+  const b = usage.bucket, n = s.length;
+  const pitch = Math.max(1, (width || 600) / n);
+  const need = Math.ceil(MIN_LABEL_GAP / pitch) * b;
+  const step = LABEL_STEPS.find((x) => x >= need && x % b === 0) || need;
+  const maxB = Math.max(0, ...s.map((x) => x.billed_usd));
+  const maxC = Math.max(0, ...s.map((x) => x.calls));
+  const tot = s.reduce((a, x) => ({ b: a.b + x.billed_usd, c: a.c + x.calls, m: a.m + x.modelark_calls }), { b: 0, c: 0, m: 0 });
+  const cur = sel != null && s[sel] ? s[sel] : null;
+  const readout = cur
+    ? { when: rangeLabel(cur, b, usage.since, usage.now), b: cur.billed_usd, c: cur.calls, m: cur.modelark_calls }
+    : { when: lastLabel(usage.window), b: tot.b, c: tot.c, m: tot.m };
+  const gap = pitch < 7 ? 1 : pitch < 14 ? 2 : 3;
+  return (
+    <div className="fm-tc" onPointerLeave={(e) => { if (e.pointerType === "mouse") setSel(null); }}>
+      <div className="fm-tc-readout" aria-live="polite">
+        <b>{readout.when}</b>
+        <span><span className="fm-lg fm-lg--money" /> {money(readout.b, 3)} billed</span>
+        <span><span className="fm-lg fm-lg--calls" /> {num(Math.round(readout.c))} calls</span>
+        <span><span className="fm-lg fm-lg--sub" /> {num(Math.round(readout.m))} on subscription</span>
+      </div>
+      <div className="fm-tc-plot" style={{ gap: gap + "px" }}>
+        <span className="fm-tc-max fm-tc-max--money">{maxB ? money(maxB, 3) : "$0"}</span>
+        <span className="fm-tc-max fm-tc-max--calls">{maxC ? num(Math.round(maxC)) + " calls" : "0 calls"}</span>
+        {s.map((x, i) => {
+          const tick = isTick(x.t, step) && !(i === 0 && x.t < usage.since && n > 3);
+          return (
+            <button key={x.t} type="button" className={cls("fm-tc-col", x.partial && "is-partial", sel === i && "is-sel")}
+              onPointerEnter={(e) => { if (e.pointerType === "mouse") setSel(i); }} onFocus={() => setSel(i)} onClick={() => setSel(i)}
+              aria-label={`${rangeLabel(x, b, usage.since, usage.now)}: ${money(x.billed_usd, 3)} billed, ${Math.round(x.calls)} calls`}>
+              <span className="fm-tc-m"><span style={{ height: maxB ? (100 * x.billed_usd) / maxB + "%" : "0%" }} /></span>
+              <span className="fm-tc-c"><span style={{ height: maxC ? (100 * x.calls) / maxC + "%" : "0%" }}>
+                <span style={{ height: x.calls ? (100 * x.modelark_calls) / x.calls + "%" : "0%" }} /></span></span>
+              <span className="fm-tc-lbl">{tick ? tickLabel(x.t, b, step) : ""}</span>
+            </button>
+          );
+        })}
+      </div>
+      {!tot.c ? <div className="fm-muted fm-small fm-tc-empty">No calls in this window.</div> : null}
+    </div>
+  );
+}
+
 // ── Fleet view ───────────────────────────────────────────────────────────────────────────
 function helperGroups(aux) {
   const groups = {};
@@ -133,7 +272,7 @@ function helperGroups(aux) {
   return Object.values(groups);
 }
 
-function AgentCard({ doc, p, drift, use, onOpen }) {
+function AgentCard({ doc, p, drift, use, spark, win, onOpen }) {
   const a = doc.agents[p];
   const aux = a.aux || {};
   const top = use.hosts.sort((x, y) => y[1] - x[1])[0];
@@ -163,6 +302,8 @@ function AgentCard({ doc, p, drift, use, onOpen }) {
         ))}
       </dl>
       <footer className="fm-card-foot">
+        {spark ? <Spark values={spark} label={`${a.name || p}: calls over the last ${periodName(win)}`} /> : null}
+        <span className="fm-card-win">{periodShort(win)}</span>
         <span><b>{num(use.calls)}</b> calls</span>
         <span><b>{money(use.billed, 3)}</b> billed</span>
         <span><b>{num(use.ma)}</b> on subscription</span>
@@ -183,7 +324,7 @@ function usageByProfile(usage) {
   return out;
 }
 
-function FleetView({ state, doc, usage, onOpen }) {
+function FleetView({ state, doc, usage, win, onOpen }) {
   const byP = usageByProfile(usage);
   const empty = { calls: 0, billed: 0, ma: 0, hosts: [] };
   const tot = Object.values(byP).reduce((a, u) => ({ calls: a.calls + u.calls, billed: a.billed + u.billed, ma: a.ma + u.ma }), { calls: 0, billed: 0, ma: 0 });
@@ -191,15 +332,16 @@ function FleetView({ state, doc, usage, onOpen }) {
   return (
     <Fragment>
       <div className="fm-stats">
-        <Stat label={`Calls · ${usage ? usage.days : 7}d`} value={num(tot.calls)} />
-        <Stat label="Billed (OpenRouter)" value={money(tot.billed, 2)} sub="real invoices" tone="money" />
+        <Stat label={`Calls · ${periodShort(win)}`} value={num(tot.calls)} sub={lastLabel(win).toLowerCase()} />
+        <Stat label={`Billed · ${periodShort(win)}`} value={money(tot.billed, 2)} sub="OpenRouter, real invoices" tone="money" />
         <Stat label="ModelArk subscription" value={num(tot.ma) + " calls"} sub={tot.calls ? Math.round((100 * tot.ma) / tot.calls) + "% of all calls · $0" : "$0"} tone="sub" />
         <Stat label="Registry" value={Object.keys(models).length + " models"} sub={Object.values(models).filter((m) => m.provider === "modelark").length + " subscription · " + Object.values(models).filter((m) => m.provider === "openrouter").length + " OpenRouter"} />
         <Stat label="Sync" value={Object.keys(state.drift || {}).length ? Object.keys(state.drift).length + " drifted" : "all 9 in sync"} tone={Object.keys(state.drift || {}).length ? "warn" : "ok"} sub={"revision " + state.revision} />
       </div>
       <div className="fm-grid">
         {state.profiles.map((p) => (
-          <AgentCard key={p} doc={doc} p={p} drift={(state.drift || {})[p]} use={byP[p] || empty} onOpen={() => onOpen(p)} />
+          <AgentCard key={p} doc={doc} p={p} drift={(state.drift || {})[p]} use={byP[p] || empty} win={win}
+            spark={usage && usage.by_profile ? ((usage.by_profile[p] || {}).calls || (usage.series || []).map(() => 0)) : null} onOpen={() => onOpen(p)} />
         ))}
       </div>
     </Fragment>
@@ -315,7 +457,7 @@ function AgentView({ state, draft, setDraft, p, setP }) {
             <select value={a.reasoning || ""} onChange={(e) => set((x) => { x.reasoning = e.target.value || null; })}>
               {REASONING.map((r) => <option key={r} value={r}>{r || "Hermes default"}</option>)}
             </select>
-            <small>Per-model pins (Models tab) win — e.g. v4.1 always runs high.</small>
+            <small>Per-model pins (Models & hosts) win — e.g. v4.1 always runs high.</small>
           </label>
           <label className="fm-field">
             <span>Why this setup</span>
@@ -327,7 +469,7 @@ function AgentView({ state, draft, setDraft, p, setP }) {
           ) : null}
         </Section>
         <Section title="Profile default OpenRouter routing">
-          <p className="fm-muted fm-small">Applies to this agent's OpenRouter calls for models without their own host pins. Models with pins (Models tab) override it wherever they run. <b>data_collection: deny</b> is always on.</p>
+          <p className="fm-muted fm-small">Applies to this agent's OpenRouter calls for models without their own host pins. Models with pins (Models & hosts) override it wherever they run. <b>data_collection: deny</b> is always on.</p>
           <label className="fm-field"><span>Prefer hosts (order)</span>
             <input defaultValue={listInput((a.routing || {}).order)} key={"o" + p + draft.revision}
               onBlur={(e) => set((x) => { x.routing = { ...(x.routing || {}), order: parseList(e.target.value) }; })} /></label>
@@ -423,7 +565,7 @@ function HostTable({ model, market, onChange, onProbe, probes, minUptime }) {
   );
 }
 
-function ModelDetail({ draft, alias, setDraft, usage }) {
+function ModelDetail({ draft, alias, setDraft, usage, win }) {
   const m = draft.models[alias];
   const [mk, setMk] = useState(null);
   const [probes, setProbes] = useState({});
@@ -443,6 +585,9 @@ function ModelDetail({ draft, alias, setDraft, usage }) {
   const hostUse = {};
   rows.forEach((r) => { const k = r.host || "?"; hostUse[k] = hostUse[k] || { calls: 0, billed: 0 }; hostUse[k].calls += r.calls; hostUse[k].billed += r.billed_usd; });
   const totalCalls = rows.reduce((a, r) => a + r.calls, 0);
+  const ids = [m.id].concat(m.served_as || []);
+  const bm = (usage && usage.by_model) || {};
+  const spark = usage && usage.series ? usage.series.map((_, i) => ids.reduce((a, id) => a + (((bm[id] || {}).calls || [])[i] || 0), 0)) : null;
   const ce = m.cap_equivalent || {};
   return (
     <div className="fm-model">
@@ -474,7 +619,8 @@ function ModelDetail({ draft, alias, setDraft, usage }) {
           </div>
           <label className="fm-field"><span>Notes</span><textarea rows={3} value={m.notes || ""} onChange={(e) => set((x) => { x.notes = e.target.value; })} /></label>
         </Section>
-        <Section title={m.provider === "modelark" ? "Pricing — cap-equivalent" : "Usage · " + ((usage && usage.days) || 7) + "d"}>
+        <Section title={m.provider === "modelark" ? "Pricing — cap-equivalent" : "Usage · " + periodShort(win)}
+          right={spark && totalCalls ? <span className="fm-muted fm-small">{num(totalCalls)} calls · {lastLabel(win).toLowerCase()}</span> : null}>
           {m.provider === "modelark" ? (
             <Fragment>
               <p className="fm-muted fm-small">The Coding Plan reports no cost, so calls record <b>$0 "modelark subscription"</b>. The $1 card cap still counts these rates per million tokens, so a runaway worker trips it. Changes reach the cap on the next call — no deploy.</p>
@@ -487,6 +633,8 @@ function ModelDetail({ draft, alias, setDraft, usage }) {
               </div>
             </Fragment>
           ) : null}
+          {m.provider === "modelark" ? <div className="fm-subhead">Usage · {periodShort(win)}{totalCalls ? " · " + num(totalCalls) + " calls" : ""}</div> : null}
+          {spark && totalCalls ? <Spark values={spark} height={30} label={`${m.short || alias}: calls over the last ${periodName(win)}`} /> : null}
           <div className="fm-hostuse">
             {Object.entries(hostUse).sort((a, b) => b[1].calls - a[1].calls).map(([host, u]) => (
               <div key={host} className="fm-bar-row">
@@ -550,76 +698,62 @@ function AddModel({ draft, setDraft, onAdded }) {
   );
 }
 
-function ModelsView({ draft, setDraft, usage, sel, setSel }) {
+function ModelsView({ draft, setDraft, usage, win, sel, setSel }) {
   const aliases = Object.keys(draft.models || {});
   const cur = sel && draft.models[sel] ? sel : aliases[0];
   return (
     <div className="fm-models">
       <aside className="fm-model-list">
+        <div className="fm-model-items" role="tablist" aria-label="Models">
         {aliases.map((a) => {
           const m = draft.models[a];
           return (
-            <button key={a} className={cls("fm-model-item", a === cur && "is-active")} onClick={() => setSel(a)}>
+            <button key={a} role="tab" aria-selected={a === cur} className={cls("fm-model-item", a === cur && "is-active")} onClick={() => setSel(a)}>
               <span className={cls("fm-pill-dot", "fm-dot--" + m.provider)} />
               <span className="fm-model-item-name">{m.short || a}</span>
               <span className="fm-muted fm-small">{usedBy(draft, a).length} slots</span>
             </button>
           );
         })}
-        <div className="fm-model-list-foot"><AddModel draft={draft} setDraft={setDraft} onAdded={setSel} /></div>
+        </div>
+        <details className="fm-model-list-foot"><summary>+ Add a model</summary><AddModel draft={draft} setDraft={setDraft} onAdded={setSel} /></details>
       </aside>
-      <div className="fm-model-main">{cur ? <ModelDetail key={cur} draft={draft} alias={cur} setDraft={setDraft} usage={usage} /> : null}</div>
+      <div className="fm-model-main">{cur ? <ModelDetail key={cur} draft={draft} alias={cur} setDraft={setDraft} usage={usage} win={win} /> : null}</div>
     </div>
   );
 }
 
 // ── Costs view ───────────────────────────────────────────────────────────────────────────
-function CostsView({ doc, usage, days, setDays }) {
+function CostsView({ doc, usage, win, width }) {
   if (!usage) return <div className="fm-muted">Loading usage…</div>;
   const rows = usage.rows || [];
   const byAgent = {};
   rows.forEach((r) => { (byAgent[r.profile] = byAgent[r.profile] || []).push(r); });
   const tot = rows.reduce((a, r) => ({ billed: a.billed + r.billed_usd, calls: a.calls + r.calls, ma: a.ma + (r.modelark ? r.calls : 0), cap: a.cap + r.cap_equivalent_usd, tin: a.tin + r.input, tout: a.tout + r.output }), { billed: 0, calls: 0, ma: 0, cap: 0, tin: 0, tout: 0 });
-  const maxDay = Math.max(0.000001, ...usage.daily.map((d) => d.billed_usd));
-  const maxCalls = Math.max(1, ...usage.daily.map((d) => d.calls));
   const idToShort = {};
   Object.values(doc.models || {}).forEach((m) => { idToShort[m.id] = m.short; (m.served_as || []).forEach((s) => { idToShort[s] = m.short; }); });
   return (
     <Fragment>
-      <div className="fm-row fm-costs-bar">
-        {[1, 7, 30].map((d) => <button key={d} className={cls("fm-chip", d === days && "is-active")} onClick={() => setDays(d)}>{d === 1 ? "24 h" : d + " days"}</button>)}
-        <span className="fm-muted fm-small">from all nine state.db ledgers · {ago(usage.generated_at)}</span>
-      </div>
       <div className="fm-stats">
-        <Stat label="Billed (OpenRouter)" value={money(tot.billed, 2)} tone="money" sub="what actually gets invoiced" />
+        <Stat label={`Billed · ${periodShort(win)}`} value={money(tot.billed, 2)} tone="money" sub="OpenRouter — what actually gets invoiced" />
         <Stat label="ModelArk subscription" value={num(tot.ma) + " calls"} tone="sub" sub={"$0 · cap-equivalent " + money(tot.cap, 2)} />
         <Stat label="All calls" value={num(tot.calls)} sub={num(tot.tin) + " in · " + num(tot.tout) + " out tokens"} />
         <Stat label="Subscription share" value={tot.calls ? Math.round((100 * tot.ma) / tot.calls) + "%" : "—"} sub="of calls served on the flat plan" />
       </div>
-      <Section title="Per day">
-        <div className="fm-days">
-          {usage.daily.map((d) => (
-            <div key={d.day} className="fm-day" title={`${new Date(d.day * 86400000).toDateString()}\nbilled ${money(d.billed_usd)}\n${d.calls} calls (${d.modelark_calls} on subscription)`}>
-              <div className="fm-day-bars">
-                <span className="fm-day-money" style={{ height: (100 * d.billed_usd) / maxDay + "%" }} />
-                <span className="fm-day-calls" style={{ height: (100 * d.calls) / maxCalls + "%" }}><span style={{ height: (d.calls ? (100 * d.modelark_calls) / d.calls : 0) + "%" }} /></span>
-              </div>
-              <div className="fm-day-label">{new Date(d.day * 86400000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</div>
-            </div>
-          ))}
-        </div>
-        <div className="fm-legend"><span className="fm-lg fm-lg--money" /> billed $ <span className="fm-lg fm-lg--calls" /> calls <span className="fm-lg fm-lg--sub" /> of which subscription</div>
+      <Section title="Over time" right={<span className="fm-muted fm-small">{bucketName(usage.bucket)} bars · tap or hover a bar</span>}>
+        <TimeChart usage={usage} width={width} />
+        <p className="fm-muted fm-small fm-tc-foot">From all nine ledgers. Each session's usage is spread evenly between its first and last call, so short windows are close estimates. Faded bars are part-way through.</p>
       </Section>
       <div className="fm-two">
-        <Section title={`Spend by agent · ${usage.days === 1 ? "24 h" : usage.days + " days"}`} right={<span className="fm-muted fm-small">bar = billed $ · teal = subscription calls</span>}>
+        <Section title={`Spend by agent · ${periodShort(win)}`} right={<span className="fm-muted fm-small">bar = billed $ · teal = subscription calls</span>}>
           <BarList rows={Object.entries(byAgent).map(([p, rs]) => ({ label: (doc.agents[p] || {}).name || p,
             billed: rs.reduce((a, r) => a + r.billed_usd, 0), calls: rs.reduce((a, r) => a + r.calls, 0), ma: rs.reduce((a, r) => a + (r.modelark ? r.calls : 0), 0) }))} />
         </Section>
-        <Section title="Spend by model" right={<span className="fm-muted fm-small">old OpenRouter DeepSeek ids are history from before 09-11</span>}>
+        <Section title={`Spend by model · ${periodShort(win)}`} right={<span className="fm-muted fm-small">old OpenRouter DeepSeek ids are history from before 09-11</span>}>
           <BarList rows={Object.values(rows.reduce((acc, r) => { const k = idToShort[r.model] || r.model; const a = (acc[k] = acc[k] || { label: k, billed: 0, calls: 0, ma: 0 }); a.billed += r.billed_usd; a.calls += r.calls; if (r.modelark) a.ma += r.calls; return acc; }, {}))} />
         </Section>
       </div>
-      <Section title="By agent, model and host">
+      <Section title={`By agent, model and host · ${periodShort(win)}`}>
         <div className="fm-table-wrap">
           <table className="fm-table">
             <thead><tr><th>Agent</th><th>Model</th><th>Served by</th><th>Where</th><th className="r">Calls</th><th className="r">In</th><th className="r">Out</th><th className="r">Cache read</th><th className="r">Billed</th><th className="r">Cap-equiv.</th></tr></thead>
@@ -760,7 +894,11 @@ function ModelsPage() {
   const [err, setErr] = useState(null);
   const [draft, setDraft] = useState(null);
   const [usage, setUsage] = useState(null);
-  const [days, setDays] = useState(7);
+  const [win, setWinState] = useState(readWin);
+  const [rootEl, setRootEl] = useState(null);
+  const [width, setWidth] = useState(900);
+  const [uLoading, setULoading] = useState(false);
+  const useq = useRef(0);
   const [tab, setTab] = useState("fleet");
   const [agent, setAgent] = useState("root");
   const [modelSel, setModelSel] = useState(null);
@@ -780,10 +918,26 @@ function ModelsPage() {
     });
     return s;
   }).catch((e) => setErr(String(e.message || e))), []);
-  const loadUsage = useCallback(() => fetchJSON(`${API}/usage?days=${days}`).then(setUsage).catch(() => {}), [days]);
+  const setWin = (w) => { saveWin(w); setWinState(w); };
+  // the chart's drawing width ≈ the page width less a section's padding and borders
+  useEffect(() => {
+    if (!rootEl || typeof ResizeObserver === "undefined") return undefined;
+    let t = null;
+    const ro = new ResizeObserver((es) => { const w = Math.round(es[0].contentRect.width); clearTimeout(t); t = setTimeout(() => setWidth(w), 150); });
+    ro.observe(rootEl); setWidth(Math.round(rootEl.getBoundingClientRect().width));
+    return () => { ro.disconnect(); clearTimeout(t); };
+  }, [rootEl]);
+  const chartW = Math.max(240, width - 36);
+  const bucket = pickBucket(win, chartW);
+  const loadUsage = useCallback(() => {
+    const q = ++useq.current; setULoading(true);
+    return fetchJSON(`${API}/usage?window=${win}&bucket=${bucket}&tz=${encodeURIComponent(TZ)}`)
+      .then((u) => { if (q === useq.current) { setUsage(u); setULoading(false); } })
+      .catch(() => { if (q === useq.current) setULoading(false); });
+  }, [win, bucket]);
 
   useEffect(() => { load(); }, []);
-  useEffect(() => { loadUsage(); const t = setInterval(loadUsage, 60000); return () => clearInterval(t); }, [days]);
+  useEffect(() => { loadUsage(); const t = setInterval(() => { if (!document.hidden) loadUsage(); }, win <= 10800 ? 30000 : 60000); return () => clearInterval(t); }, [loadUsage]);
   useEffect(() => { const t = setInterval(() => { if (!document.hidden) load(); }, 15000); return () => clearInterval(t); }, [load]);
 
   const base = baseRef.current;
@@ -812,12 +966,14 @@ function ModelsPage() {
       .then((r) => { if (r.ok) { baseRef.current = null; setDraft(null); load(); say("Reverted — recorded as " + r.id, "ok"); } else say((r.errors || []).join("; "), "bad"); });
   };
 
-  if (err && !state) return <div className="fm-root"><div className="fm-note fm-note--bad">Models tab can't load: {err}</div></div>;
-  if (!state || !draft) return <div className="fm-root"><div className="fm-muted fm-loading">Loading the fleet's model settings…</div></div>;
+  if (err && !state) return <div className="fm-root" ref={setRootEl}><div className="fm-note fm-note--bad">Fleet Models can't load: {err}</div></div>;
+  if (!state || !draft) return <div className="fm-root" ref={setRootEl}><div className="fm-muted fm-loading">Loading the fleet's model settings…</div></div>;
+  const stale = !!(usage && usage.window !== win);
+  const shown = usage;
   const doc = draft;
   const TABS = [["fleet", "Fleet"], ["agent", "Agents"], ["models", "Models & hosts"], ["costs", "Costs"], ["decisions", "Rules & history"]];
   return (
-    <div className="fm-root">
+    <div className="fm-root" ref={setRootEl}>
       <header className="fm-head">
         <div>
           <h1>Fleet Models</h1>
@@ -834,11 +990,12 @@ function ModelsPage() {
         {TABS.map(([k, l]) => <button key={k} className={cls("fm-tab", tab === k && "is-active")} onClick={() => setTab(k)}>{l}</button>)}
       </nav>
       {movedUnder ? <div className="fm-note fm-note--warn">Someone applied a change while you were editing (now revision {state.revision}). Preview will refuse a stale edit — discard and redo it.</div> : null}
-      <main className="fm-main">
-        {tab === "fleet" ? <FleetView state={state} doc={doc} usage={usage} onOpen={(p) => { setAgent(p); setTab("agent"); }} /> : null}
+      {tab === "fleet" || tab === "models" || tab === "costs" ? <PeriodBar win={win} setWin={setWin} usage={shown} loading={uLoading} /> : null}
+      <main className={cls("fm-main", stale && "is-stale")}>
+        {tab === "fleet" ? <FleetView state={state} doc={doc} usage={shown} win={shown ? shown.window : win} onOpen={(p) => { setAgent(p); setTab("agent"); }} /> : null}
         {tab === "agent" ? <AgentView state={state} draft={draft} setDraft={setDraft} p={agent} setP={setAgent} /> : null}
-        {tab === "models" ? <ModelsView draft={draft} setDraft={setDraft} usage={usage} sel={modelSel} setSel={setModelSel} /> : null}
-        {tab === "costs" ? <CostsView doc={doc} usage={usage} days={days} setDays={setDays} /> : null}
+        {tab === "models" ? <ModelsView draft={draft} setDraft={setDraft} usage={shown} win={shown ? shown.window : win} sel={modelSel} setSel={setModelSel} /> : null}
+        {tab === "costs" ? <CostsView doc={doc} usage={shown} win={shown ? shown.window : win} width={chartW} /> : null}
         {tab === "decisions" ? <DecisionsView state={state} draft={draft} setDraft={setDraft} onRevert={revert} /> : null}
       </main>
       {dirty ? (

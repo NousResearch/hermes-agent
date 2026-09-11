@@ -55,6 +55,7 @@ import pytest
     ("deepseek/deepseek-reasoner", 600.0),
     ("deepseek/deepseek-v4-flash", 600.0),
     ("deepseek/deepseek-v4-pro", 600.0),
+    ("deepseek/deepseek-v4.1-flash", 600.0),
     ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
     # Version-less canonical Flash id from the 2026-09 Flash refresh —
     # ``deepseek-v4-flash`` still aliases onto it server-side.

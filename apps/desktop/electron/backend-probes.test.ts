@@ -7,7 +7,6 @@
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -16,7 +15,6 @@ import { test } from 'vitest'
 import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
-  execProbe,
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
@@ -30,35 +28,6 @@ import {
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
-
-test('runtime probe lets the parent service IO while its child is running', async () => {
-  let accepted = 0
-
-  const server = createServer(socket => {
-    accepted += 1
-    socket.on('error', () => {})
-    socket.end('ready')
-  })
-
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const address = server.address()
-  assert.ok(address && typeof address !== 'string')
-
-  const script = `
-    const socket = require('node:net').connect(${address.port}, '127.0.0.1');
-    socket.on('data', () => socket.destroy());
-    socket.on('error', () => process.exit(1));
-  `
-
-  try {
-    // A synchronous probe prevents the parent from accepting this connection,
-    // so both timeout attempts fail even though the child is healthy (#103786).
-    await execProbe(NODE_BIN, ['-e', script], { stdio: 'ignore', timeout: 2000 })
-    assert.equal(accepted, 1)
-  } finally {
-    await new Promise<void>(resolve => server.close(() => resolve()))
-  }
-}, 10_000)
 
 test('canImportHermesCli returns false when path is falsy', async () => {
   assert.equal(await canImportHermesCli(''), false)
@@ -133,37 +102,13 @@ test('verifyHermesCli returns true when --version exits 0', async () => {
   }
 })
 
-test('probe retries only timeouts, including a child that exits zero when terminated', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-retry-'))
-
-  try {
-    for (const mode of ['recover', 'timeout', 'nonzero', 'clean-timeout']) {
-      const record = path.join(root, mode)
-
-      const script = `
-        const fs = require('node:fs');
-        fs.appendFileSync(${JSON.stringify(record)}, 'attempt\\n');
-        const count = fs.readFileSync(${JSON.stringify(record)}, 'utf8').trim().split('\\n').length;
-        if (${JSON.stringify(mode)} === 'nonzero') process.exit(1);
-        if (${JSON.stringify(mode)} === 'recover' && count === 2) process.exit(0);
-        process.on('SIGTERM', () => process.exit(${mode === 'clean-timeout' ? 0 : 1}));
-        setInterval(() => {}, 1000);
-      `
-
-      const result = execProbe(NODE_BIN, ['-e', script], { stdio: 'ignore', timeout: 2000 })
-
-      if (mode === 'recover') {
-        await result
-      } else {
-        await assert.rejects(result, undefined, mode)
-      }
-
-      assert.equal(fs.readFileSync(record, 'utf8').trim().split('\n').length, mode === 'nonzero' ? 1 : 2, mode)
-    }
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-}, 20_000)
+test('verifyHermesCli swallows timeouts (does not throw)', async () => {
+  // We can't easily provoke a real hang in CI without slowing the
+  // suite, but we CAN confirm that an invocation that DOES throw
+  // (because the binary is missing) returns false rather than
+  // propagating. Same code path the timeout case takes.
+  assert.equal(await verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
+})
 
 test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
   assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)

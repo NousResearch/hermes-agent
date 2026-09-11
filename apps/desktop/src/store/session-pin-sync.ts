@@ -252,7 +252,14 @@ function reconcileInner(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+      void writePin(id, false, profileFor(id)).catch(() => {
+        // The PATCH never landed, so the server still holds the pin — dropping
+        // the id entirely would let the next pull adopt that stale row as a
+        // foreign pin and resurrect what the user just unpinned. Keeping it
+        // mirrored holds the unpin pending and retries the write on the next
+        // reconcile, the same retry a failed pin push already gets.
+        mirrored.add(id)
+      })
     }
   }
 

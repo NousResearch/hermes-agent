@@ -1,7 +1,7 @@
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { textPart } from '@/lib/chat-messages'
+import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
@@ -72,6 +72,26 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
 
     // A global toast also fired (turn-ending errors are easy to miss inline).
     expect($notifications.get().some(n => n.kind === 'error' && n.message?.includes('was not sent'))).toBe(true)
+  })
+
+  it('keeps the optimistic prompt body after a Grok-shaped provider error (#101310)', () => {
+    mountStream()
+    seedOptimisticFirstMessage()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { message: 'API call failed after 3 retries: capacity / broken pipe' },
+        session_id: SID,
+        type: 'error'
+      })
+    )
+
+    const state = stream.state()
+    const user = state.messages.find(m => m.id === 'user-123-abc')
+    expect(user).toBeTruthy()
+    expect(chatMessageText(user!)).toBe('first message of a new chat')
+    expect(state.messages.some(m => m.role === 'assistant' && m.error?.includes('API call failed'))).toBe(true)
+    expect(state.busy).toBe(false)
   })
 
   it('renders the pre-ready cancel error event (#65567 server emit) visibly', () => {

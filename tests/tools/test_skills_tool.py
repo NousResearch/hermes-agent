@@ -8,6 +8,10 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.skill_utils import (
+    extract_skill_editorial_metadata,
+    load_skill_editorial_metadata,
+)
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -84,6 +88,62 @@ class TestParseFrontmatter:
         assert fm["name"] == "test"
         assert fm["description"] == "A test."
         assert not body.startswith(bom)
+
+
+class TestEditorialMetadata:
+    def test_uses_explicit_human_facing_copy(self):
+        assert extract_skill_editorial_metadata(
+            {
+                "metadata": {
+                    "hermes": {
+                        "editorial_name": "Incident Response",
+                        "editorial_description": "Handle incidents calmly and consistently.",
+                    }
+                }
+            },
+            fallback_name="incident-response",
+            fallback_description="Use when responding to incidents.",
+        ) == {
+            "editorial_name": "Incident Response",
+            "editorial_description": "Handle incidents calmly and consistently.",
+        }
+
+    def test_legacy_and_invalid_values_fall_back(self):
+        assert extract_skill_editorial_metadata(
+            {
+                "metadata": {
+                    "hermes": {
+                        "editorial_name": "   ",
+                        "editorial_description": 42,
+                    }
+                }
+            },
+            fallback_name="incident-response",
+            fallback_description="Use when responding to incidents.",
+        ) == {
+            "editorial_name": "incident-response",
+            "editorial_description": "Use when responding to incidents.",
+        }
+
+    def test_loads_editorial_copy_from_a_skill_directory(self, tmp_path):
+        skill = tmp_path / "incident-response"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\n"
+            "name: incident-response\n"
+            "description: Use when responding to incidents.\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    editorial_name: Incident Response\n"
+            "    editorial_description: Coordinate a calm incident response.\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        assert load_skill_editorial_metadata(skill) == {
+            "editorial_name": "Incident Response",
+            "editorial_description": "Coordinate a calm incident response.",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +277,35 @@ class TestFindAllSkills:
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
 
+    def test_resolves_editorial_copy_with_legacy_fallbacks(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "polished-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    editorial_name: Polished Skill\n"
+                    "    editorial_description: A friendly explanation for people.\n"
+                ),
+            )
+            _make_skill(tmp_path, "legacy-skill")
+            skills = {
+                skill["name"]: skill
+                for skill in _find_all_skills(include_editorial=True)
+            }
+
+        assert skills["polished-skill"]["editorial_name"] == "Polished Skill"
+        assert (
+            skills["polished-skill"]["editorial_description"]
+            == "A friendly explanation for people."
+        )
+        assert skills["legacy-skill"]["editorial_name"] == "legacy-skill"
+        assert (
+            skills["legacy-skill"]["editorial_description"]
+            == skills["legacy-skill"]["description"]
+        )
+
 
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):
         no_desc = tmp_path / "no-desc"
@@ -277,6 +366,26 @@ class TestSkillsList:
         assert all_result["count"] == 2
         assert filtered["count"] == 1
         assert filtered["skills"][0]["name"] == "skill-a"
+
+    def test_does_not_expose_editorial_copy_to_the_agent(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "polished-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    editorial_name: Polished Skill\n"
+                    "    editorial_description: Human-facing copy.\n"
+                ),
+            )
+            skill = json.loads(skills_list())["skills"][0]
+
+        assert skill == {
+            "name": "polished-skill",
+            "description": "Description for polished-skill.",
+            "category": None,
+        }
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"
@@ -375,6 +484,29 @@ class TestSkillView:
         # The skill view advertises what else can be opened.
         assert skill["linked_files"] is not None
         assert "references" in skill["linked_files"]
+
+    def test_view_file_path_directory_returns_available_files(self, tmp_path):
+        """Requesting a directory (e.g. 'references') must not raise.
+
+        Regression: the local-skill file_path branch checked
+        ``target_file.exists()`` and fell through to ``read_text()`` on a
+        directory, surfacing a raw ``[Errno 21] Is a directory`` error from
+        deep inside the OS instead of the helpful not-found payload with
+        available_files that a missing file gets. The plugin-skill sibling
+        branch already gates on ``is_file()``; this aligns the local path.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+
+            result = json.loads(skill_view("my-skill", file_path="references"))
+
+        assert result["success"] is False
+        assert "not found" in result["error"]
+        # The caller gets the same helpful listing as a truly missing file.
+        assert "references/api.md" in result["available_files"]["references"]
 
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
@@ -612,6 +744,11 @@ class TestFindAllSkillsSecureSetup:
 
 
 class TestSkillViewPrerequisites:
+    @pytest.fixture(autouse=True)
+    def isolate_secret_capture(self, monkeypatch):
+        # Other suites register a live UI responder; these tests own their callbacks.
+        monkeypatch.setattr(skills_tool_module, "_secret_capture_callback", None)
+
     def test_legacy_prerequisites_expose_required_env_setup_metadata(
         self, tmp_path, monkeypatch
     ):

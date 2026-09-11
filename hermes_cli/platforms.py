@@ -1,11 +1,4 @@
-"""
-Shared platform registry for Hermes Agent.
-
-Single source of truth for platform metadata consumed by both
-skills_config (label display) and tools_config (default toolset
-resolution).  Import ``PLATFORMS`` from here instead of maintaining
-duplicate dicts in each module.
-"""
+"""Shared platform registry for Hermes Agent."""
 
 from collections import OrderedDict
 from typing import NamedTuple
@@ -44,41 +37,33 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
 ])
 
 
-def platform_label(key: str, default: str = "") -> str:
-    """Return the display label for a platform key, or *default*.
+def _plugin_label(entry) -> str:
+    return f"{entry.emoji}  {entry.label}" if entry.emoji else entry.label
 
-    Checks the static PLATFORMS dict first, then the plugin platform
-    registry for dynamically registered platforms.
-    """
+
+def platform_label(key: str, default: str = "") -> str:
+    """Return the display label for a platform key (builtin, then plugin registry), or *default*."""
     info = PLATFORMS.get(key)
     if info is not None:
         return info.label
-    # Check plugin registry
     try:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(key)
         if entry:
-            return f"{entry.emoji}  {entry.label}" if entry.emoji else entry.label
+            return _plugin_label(entry)
     except Exception:
         pass
     return default
 
 
 def get_all_platforms() -> "OrderedDict[str, PlatformInfo]":
-    """Return PLATFORMS merged with any plugin-registered platforms.
-
-    Plugin platforms are appended after builtins.  This is the function
-    that tools_config and skills_config should use for platform menus.
-    """
+    """PLATFORMS plus plugin-registered platforms (appended after builtins) — use for menus."""
     merged = OrderedDict(PLATFORMS)
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             if entry.name not in merged:
-                merged[entry.name] = PlatformInfo(
-                    label=f"{entry.emoji}  {entry.label}" if entry.emoji else entry.label,
-                    default_toolset=f"hermes-{entry.name}",
-                )
+                merged[entry.name] = PlatformInfo(_plugin_label(entry), f"hermes-{entry.name}")
     except Exception:
         pass
     return merged

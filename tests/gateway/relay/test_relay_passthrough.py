@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
@@ -44,7 +44,7 @@ def adapter():
     return RelayAdapter(PlatformConfig(), _desc(), transport=StubConnector(_desc()))
 
 
-def _interaction_forward(payload: dict) -> PassthroughForward:
+def _interaction_forward(payload: dict, *, profile: str | None = None) -> PassthroughForward:
     body = json.dumps(payload).encode("utf-8")
     return PassthroughForward(
         platform="discord",
@@ -53,6 +53,7 @@ def _interaction_forward(payload: dict) -> PassthroughForward:
         path="/interactions/discord/appShared",
         headers=[("content-type", "application/json")],
         body=body,
+        profile=profile,
     )
 
 
@@ -73,6 +74,27 @@ def test_passthrough_from_wire_byte_preserves_body():
     assert fwd.bot_id == "appShared"
     assert fwd.body == original
     assert fwd.headers == [("content-type", "application/json")]
+
+
+def test_passthrough_from_wire_stamps_routed_profile():
+    """A connector-routed profile on the wire frame lands on PassthroughForward.
+
+    Mirrors _event_from_wire's profile stamping for the ``inbound`` frame
+    (#60586) — the passthrough plane needs the same carry-through so a
+    Team-Gateway's Discord interactions route to the same profile a plain
+    message would.
+    """
+    wire = {
+        "platform": "discord",
+        "botId": "appShared",
+        "method": "POST",
+        "path": "/interactions/discord/appShared",
+        "headers": [],
+        "bodyB64": "",
+        "profile": "reviewer",
+    }
+    fwd = _passthrough_from_wire(wire)
+    assert fwd.profile == "reviewer"
 
 
 @pytest.mark.asyncio
@@ -120,9 +142,55 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     assert ev.source.chat_id == "chan-9"
     assert ev.source.scope_id == "guild-7"
     assert ev.source.user_id == "user-3"
-    assert ev.source.chat_type == "channel"
+    # LOGICAL platform + native-parity chat_type: the session key must match
+    # the connector's capability-vault binding (interactionSessionSource →
+    # buildSessionKey: platform "discord", chat_type "group") and the relay
+    # text lane. Platform.RELAY / "channel" here forked the session and made
+    # /sethome file the home channel under platforms.relay (invisible to cron).
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "group"
+    # Authenticated upstream-trust marker, parity with the relay text lane
+    # (ws_transport._event_from_wire) — /sethome's via_relay guard keys on it.
+    assert ev.source.delivered_via_upstream_relay is True
     # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
+    # The logical platform is now recorded for egress sender selection too
+    # (_capture_scope skips only the generic "relay").
+    assert adapter._platform_by_chat.get("chan-9") == "discord"
+
+
+@pytest.mark.asyncio
+async def test_discord_interaction_stamps_routed_profile(adapter, monkeypatch):
+    """A connector-routed profile on the passthrough forward lands on the
+    resulting event's SessionSource, the same way it does for a plain relayed
+    message (#60586) — so a Team-Gateway's Discord slash-command/button/modal
+    routes to the same profile a plain message would, instead of always
+    falling back to agent:main."""
+    await adapter.connect()
+    stub = adapter._transport
+
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    fwd = _interaction_forward(
+        {
+            "id": "interaction-2",
+            "type": 2,  # APPLICATION_COMMAND
+            "channel_id": "chan-9",
+            "guild_id": "guild-7",
+            "data": {"name": "summarize"},
+            "member": {"user": {"id": "user-3", "username": "ben"}},
+        },
+        profile="reviewer",
+    )
+    await stub.push_passthrough(fwd, buffer_id=None)
+
+    assert len(seen) == 1
+    assert seen[0].source.profile == "reviewer"
 
 
 @pytest.mark.asyncio
@@ -164,5 +232,37 @@ async def test_application_command_subcommand_nesting_renders_names_then_values(
     assert ev.is_command() is True
     assert ev.get_command() == "skill"
     assert ev.get_command_args() == "run deploy"
+
+
+@pytest.mark.asyncio
+async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
+    """A guild-less (DM) interaction keys as a Discord DM: logical platform,
+    chat_type 'dm', and the authenticated relay marker — the /sethome-in-DM
+    shape must file under platforms.discord, never platforms.relay."""
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-dm",
+            "type": 2,
+            "channel_id": "dm-chan-1",
+            "data": {"name": "sethome"},
+            "user": {"id": "u9", "username": "ben"},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "dm"
+    assert ev.source.scope_id is None
+    assert ev.source.user_id == "u9"
+    assert ev.source.delivered_via_upstream_relay is True
 
 

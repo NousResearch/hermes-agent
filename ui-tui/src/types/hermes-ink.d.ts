@@ -28,7 +28,7 @@ declare module '@hermes/ink' {
   export type InputEvent = {
     readonly input: string
     readonly key: Key
-    readonly keypress: { readonly isPasted?: boolean; readonly raw?: string }
+    readonly keypress: { readonly isPasted?: boolean; readonly name?: string; readonly raw?: string }
   }
 
   export type InputHandler = (input: string, key: Key, event: InputEvent) => void
@@ -107,6 +107,7 @@ declare module '@hermes/ink' {
   export const Text: React.ComponentType<any>
   export function setDimFallbackColor(color: string | undefined): void
   export const TextInput: React.ComponentType<any>
+  export const colorize: (str: string, color: string | undefined, type: 'foreground' | 'background') => string
   export const stringWidth: (s: string) => number
   export function isXtermJs(): boolean
   export function onTerminalBackground(listener: (hex: string) => void): void

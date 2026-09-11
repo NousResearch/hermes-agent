@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _register_server_tools
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_registration import _register_server_tools
 from tools.registry import ToolRegistry
 
 
@@ -34,6 +35,34 @@ class TestRegisterServerTools:
             assert "mcp__my_srv__my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
             assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
+
+    def test_colliding_static_toolset_name_merges_both_tool_sets(self, mock_registry):
+        """An MCP server named after a built-in toolset must not be shadowed.
+
+        Regression: an MCP server registered as `homeassistant` (colliding
+        with the static `homeassistant` toolset) had its tools silently
+        dropped because get_toolset() returned the static definition without
+        consulting the alias registered by _register_server_tools().
+        """
+        from toolsets import TOOLSETS, get_toolset, resolve_toolset
+
+        assert "homeassistant" in TOOLSETS  # collision premise
+        static_tools = set(TOOLSETS["homeassistant"]["tools"])
+
+        server = MCPServerTask("homeassistant")
+        server._tools = [_make_mcp_tool("get_entities", "List HA entities")]
+        server.session = MagicMock()
+
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("homeassistant", server, {})
+            assert "mcp__homeassistant__get_entities" in registered
+
+            ts = get_toolset("homeassistant")
+            # Static built-ins are still present...
+            assert static_tools <= set(ts["tools"])
+            # ...and the MCP server's tools are no longer shadowed.
+            assert "mcp__homeassistant__get_entities" in ts["tools"]
+            assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
 
 
 class TestRefreshTools:
@@ -95,9 +124,14 @@ class TestMessageHandler:
         # reaching into asyncio.create_task internals.
         with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
-            notification = ServerNotification(
-                root=ToolListChangedNotification(method="notifications/tools/list_changed")
+            notification = ToolListChangedNotification(
+                method="notifications/tools/list_changed"
             )
+            if hasattr(ServerNotification, "model_validate"):
+                # mcp < 2.0 wrapped notifications in a RootModel; 2.0 made
+                # ServerNotification a plain union of the concrete types, which
+                # has no constructor to wrap with.
+                notification = ServerNotification(root=notification)
             await handler(notification)
             mock_schedule.assert_called_once()
 

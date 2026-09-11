@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -33,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -48,6 +49,37 @@ function jsonFetchMock(body: unknown = { ok: true }) {
 }
 
 describe("fetchJSON", () => {
+  it("keeps native Wisdom mute choices scoped and preserves explicit unmute", async () => {
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("other-profile");
+    const controlId = "a".repeat(32);
+
+    await api.getWisdomMute("worker");
+    await api.prepareWisdomMute("worker");
+    await api.chooseWisdomMute(controlId, null, "worker");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/wisdom/mute?profile=worker",
+      "/api/wisdom/mute/prepare",
+      "/api/wisdom/mute/choose",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({ profile: "worker" });
+    expect(JSON.parse(fetchMock.mock.calls[2][1]?.body as string)).toEqual({
+      control_id: controlId, duration: null, profile: "worker",
+    });
+    expect(fetchMock.mock.calls[2][1]?.method).toBe("POST");
+  });
+
+  it("uses the dedicated profile-scoped local Wisdom entitlement endpoint", async () => {
+    const fetchMock = jsonFetchMock({ entitled: false, scopes: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getWisdomEntitlement("worker");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/wisdom/entitlement?profile=worker");
+  });
+
   it("tries the one-shot reload path for loopback 401s", async () => {
     vi.stubGlobal(
       "fetch",
@@ -171,5 +203,31 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+
+  it("keeps every OAuth operation on the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      flow: "device_code",
+      session_id: "oauth-session",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getOAuthProviders();
+    await api.disconnectOAuthProvider("anthropic");
+    await api.startOAuthLogin("openai-codex");
+    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
+    await api.pollOAuthSession("anthropic", "oauth-session");
+    await api.cancelOAuthSession("oauth-session");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/providers/oauth?profile=worker",
+      "/api/providers/oauth/anthropic?profile=worker",
+      "/api/providers/oauth/openai-codex/start?profile=worker",
+      "/api/providers/oauth/anthropic/submit?profile=worker",
+      "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
+      "/api/providers/oauth/sessions/oauth-session?profile=worker",
+    ]);
   });
 });

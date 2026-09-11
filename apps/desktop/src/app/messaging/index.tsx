@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -19,16 +20,18 @@ import {
   type MessagingPlatformInfo,
   type PairingUser,
   revokePairing,
+  type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
-import { runGatewayRestart } from '@/store/system-actions'
+import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -36,9 +39,11 @@ import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { ListRow } from '../settings/primitives'
+import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'
+import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -126,9 +131,15 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  // Both save/toggle toasts offer the same one-click restart.
-  const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
+  // Shared settings "Applies to" scope, request-shaped (undefined → follow
+  // the active profile; the API helpers treat null as "target primary").
+  const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // A saved credential/toggle only takes effect on the next gateway start, so a
+  // vanishing toast is not enough: the page keeps a banner up until a restart
+  // actually happens (dashboard parity). Cleared on a completed restart.
+  const [restartNeeded, setRestartNeeded] = useState(false)
+  const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
     approved: [],
@@ -144,6 +155,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
+  const restartGatewayNow = useCallback(async () => {
+    // runGatewayRestart never rejects: it toasts the failure and settles the
+    // statusbar indicator; the banner stays if the restart did not complete.
+    const ok = await runGatewayRestart()
+
+    if (ok) {
+      setRestartNeeded(false)
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+    }
+  }, [])
+
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -151,7 +173,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
 
       try {
-        const result = await getMessagingPlatforms()
+        const result = await getMessagingPlatforms(scopeProfile)
         setPlatforms(result.platforms)
       } catch (err) {
         if (!silent) {
@@ -163,8 +185,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }
     },
-    [m]
+    [m, scopeProfile]
   )
+
+  // Latest-callback ref: the deferred post-restart refresh must not capture a
+  // stale scope closure from before a profile switch.
+  const refreshPlatformsRef = useRef(refreshPlatforms)
+
+  refreshPlatformsRef.current = refreshPlatforms
 
   // Pairing has its own signal. platforms.changed tracks connect/disconnect
   // health via gateway_state.json, which a new pairing request never moves —
@@ -173,12 +201,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // should show no rows, not an error banner over a working page.
   const refreshPairing = useCallback(async () => {
     try {
-      const result = await getPairing()
+      const result = await getPairing(scopeProfile)
       setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
     } catch {
       // Leave the last known rows in place rather than blanking them.
     }
-  }, [])
+  }, [scopeProfile])
 
   const refreshAll = useCallback(
     async (silent = false) => {
@@ -192,6 +220,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   useEffect(() => {
     void refreshAll()
   }, [refreshAll])
+
+  // Scope switch: the mounted list still shows the PREVIOUS profile's
+  // platforms/pairing while the new fetch is in flight — blank it so stale
+  // rows can't be toggled against the wrong backend.
+  const scopeSeenRef = useRef(scopeProfile)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (scope-change guard)
+  useEffect(() => {
+    if (scopeSeenRef.current === scopeProfile) {
+      return
+    }
+
+    scopeSeenRef.current = scopeProfile
+    setPlatforms(null)
+    setPairing({ approved: [], pending: [] })
+    setEdits({})
+  }, [scopeProfile])
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const platformsChangeTick = useStore($platformsChangeTick)
@@ -275,7 +320,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled })
+      await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -288,11 +333,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
+      setRestartNeeded(true)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply,
-        action: restartGatewayAction
+        message: m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -311,14 +356,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env })
+      await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
+      setRestartNeeded(true)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect,
-        action: restartGatewayAction
+        message: m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -331,7 +376,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] })
+      await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -340,11 +385,45 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
+      setRestartNeeded(true)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)
+    }
+  }
+
+  // QR onboarding wrote the token + allowlist and asked the backend to restart
+  // the gateway. restart_started only means the child spawned; watch its exit
+  // so a failed restart lands in the banner instead of a silent "stopped".
+  async function handleTelegramApplied(result: TelegramOnboardingApplyResponse) {
+    await refreshPlatforms(true)
+
+    if (result.restart_started) {
+      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      setRestartNeeded(false)
+      const ok = await watchGatewayRestartOutcome()
+
+      if (!ok) {
+        setRestartNeeded(true)
+        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+      }
+
+      void refreshPlatforms(true)
+
+      return
+    }
+
+    if (result.needs_restart) {
+      // Backend could not spawn the restart (or is too old to try): fall back
+      // to the app's own restart action, same as the manual-save path.
+      await restartGatewayNow()
+
+      if (result.restart_error) {
+        notifyError(new Error(result.restart_error), m.telegramQr.savedRestartFailed(`: ${result.restart_error}`))
+        setRestartNeeded(true)
+      }
     }
   }
 
@@ -365,7 +444,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
-      await approvePairing(user.platform, user.request_id)
+      await approvePairing(user.platform, user.request_id, scopeProfile)
       notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
       await refreshPairing()
     } catch (err) {
@@ -390,7 +469,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }))
 
     try {
-      await revokePairing(user.platform, user.user_id)
+      await revokePairing(user.platform, user.user_id, scopeProfile)
       notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
       await refreshPairing()
     } catch (err) {
@@ -411,59 +490,85 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {!platforms ? (
         <PageLoader label={m.loading} />
       ) : (
-        <MasterDetail>
-          <ListColumn>
-            <ul className="space-y-1">
-              {visiblePlatforms.map(platform => (
-                <li key={platform.id}>
-                  <PlatformRow
-                    active={selected?.id === platform.id}
-                    onSelect={() => setSelectedId(platform.id)}
-                    pendingCount={pendingByPlatform[platform.id]?.length ?? 0}
-                    platform={platform}
-                  />
-                </li>
-              ))}
-            </ul>
-          </ListColumn>
+        <div className="flex h-full min-h-0 flex-col">
+          {/* Which profile's gateway this page configures (hidden for
+              single-profile users). */}
+          <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
+          <div className="min-h-0 flex-1">
+            <MasterDetail>
+              <ListColumn>
+                <ul className="space-y-1">
+                  {visiblePlatforms.map(platform => (
+                    <li key={platform.id}>
+                      <PlatformRow
+                        active={selected?.id === platform.id}
+                        onSelect={() => setSelectedId(platform.id)}
+                        pendingCount={pendingByPlatform[platform.id]?.length ?? 0}
+                        platform={platform}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </ListColumn>
 
-          <DetailColumn
-            actionBar={
-              selected && (
-                <PlatformActionBar
-                  hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
-                  onSave={() => void handleSave(selected)}
-                  onToggle={enabled => void handleToggle(selected, enabled)}
-                  platform={selected}
-                  saving={saving}
-                />
-              )
-            }
-          >
-            {selected && (
-              <PlatformDetail
-                approved={approvedByPlatform[selected.id] ?? []}
-                approving={approving}
-                edits={edits[selected.id] || {}}
-                onApprove={user => void handleApprove(user)}
-                onClear={key => void handleClear(selected, key)}
-                onEdit={(key, value) =>
-                  setEdits(current => ({
-                    ...current,
-                    [selected.id]: {
-                      ...(current[selected.id] || {}),
-                      [key]: value
-                    }
-                  }))
+              <DetailColumn
+                actionBar={
+                  selected && (
+                    <PlatformActionBar
+                      hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                      onSave={() => void handleSave(selected)}
+                      onToggle={enabled => void handleToggle(selected, enabled)}
+                      platform={selected}
+                      saving={saving}
+                    />
+                  )
                 }
-                onRevoke={setPendingRevoke}
-                pending={pendingByPlatform[selected.id] ?? []}
-                platform={selected}
-                saving={saving}
-              />
-            )}
-          </DetailColumn>
-        </MasterDetail>
+              >
+                {restartNeeded && (
+                  <Alert variant="warning">
+                    <AlertTriangle />
+                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{m.restartNeeded}</span>
+                      <Button
+                        disabled={gatewayRestarting}
+                        onClick={() => void restartGatewayNow()}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
+                        {gatewayRestarting ? m.restarting : m.restartNow}
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {selected && (
+                  <PlatformDetail
+                    approved={approvedByPlatform[selected.id] ?? []}
+                    approving={approving}
+                    edits={edits[selected.id] || {}}
+                    onApprove={user => void handleApprove(user)}
+                    onClear={key => void handleClear(selected, key)}
+                    onEdit={(key, value) =>
+                      setEdits(current => ({
+                        ...current,
+                        [selected.id]: {
+                          ...(current[selected.id] || {}),
+                          [key]: value
+                        }
+                      }))
+                    }
+                    onRevoke={setPendingRevoke}
+                    onTelegramApplied={result => void handleTelegramApplied(result)}
+                    pending={pendingByPlatform[selected.id] ?? []}
+                    platform={selected}
+                    saving={saving}
+                    scopeProfile={scopeProfile}
+                  />
+                )}
+              </DetailColumn>
+            </MasterDetail>
+          </div>
+        </div>
       )}
 
       <ConfirmDialog
@@ -535,9 +640,11 @@ function PlatformDetail({
   onClear,
   onEdit,
   onRevoke,
+  onTelegramApplied,
   pending,
   platform,
-  saving
+  saving,
+  scopeProfile
 }: {
   approved: PairingUser[]
   approving: null | string
@@ -546,9 +653,11 @@ function PlatformDetail({
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onRevoke: (user: PairingUser) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
+  scopeProfile: string | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging
@@ -569,7 +678,11 @@ function PlatformDetail({
             <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
-            {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
+            {/* The state pill already reads "gateway stopped" when that is the
+                platform's whole story; only add the hint when it is not. */}
+            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
+              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
+            )}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {platform.description}
@@ -636,6 +749,15 @@ function PlatformDetail({
                 title={pairingLabel(user)}
               />
             ))}
+          </div>
+        </section>
+      )}
+
+      {platform.id === 'telegram' && (
+        <section>
+          <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
+          <div className="mt-3">
+            <TelegramQrSetup onApplied={onTelegramApplied} platform={platform} scopeProfile={scopeProfile} />
           </div>
         </section>
       )}

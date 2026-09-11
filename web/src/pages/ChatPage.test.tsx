@@ -57,6 +57,18 @@ class FakeTerminal {
     return { dispose() {} };
   }
 
+  onScroll() {
+    return { dispose() {} };
+  }
+
+  get buffer() {
+    // Minimal active-buffer surface for the resume follow-scroll pin
+    // (isViewportPinnedToBottom reads viewportY/baseY).
+    return { active: { baseY: 0, viewportY: 0 } };
+  }
+
+  scrollToBottom() {}
+
   open() {}
 
   paste() {}
@@ -146,6 +158,30 @@ type CloseEventLike = {
 let container: HTMLDivElement;
 let root: Root;
 
+// jsdom runs without an origin here (per-file @vitest-environment jsdom on a
+// node-default config), so localStorage is undefined. Stub it so components
+// that persist UI state (side panel collapse) can be exercised.
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
+// React only routes updates through act() when this flag is set; without it
+// the isActive re-renders in the keyboard-inset gate test warn.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
+
 async function render(ui: ReactNode) {
   container = document.createElement("div");
   document.body.append(container);
@@ -208,6 +244,8 @@ beforeEach(() => {
     },
   });
   sessionStorage.clear();
+  vi.stubGlobal("localStorage", localStorageMock);
+  localStorageMock.clear();
 });
 
 afterEach(async () => {
@@ -235,6 +273,101 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
+    // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
+    // route. The keyboard-inset/scroll-pin listeners must only be live while
+    // /chat is the active tab, or the scroll pin fires when a soft keyboard
+    // opens on Settings etc.
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { addEventListener, removeEventListener, width: 1280 },
+    });
+
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive={false} />
+      </MemoryRouter>,
+    );
+    expect(addEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      ),
+    );
+    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+    expect(removeEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive={false} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+  });
+});
+
+describe("ChatPage side panel collapse", () => {
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+  }
+
+  it("collapses the desktop side panel and persists the choice", async () => {
+    localStorage.clear();
+    await renderChat();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const collapseButton = container.querySelector(
+      '[aria-label="Collapse chat side panel"]',
+    );
+    expect(collapseButton).not.toBeNull();
+
+    await act(async () => {
+      collapseButton!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Show chat side panel"]'),
+    ).not.toBeNull();
+
+    // Reopening restores the panel and clears the persisted flag.
+    await act(async () => {
+      container
+        .querySelector('[aria-label="Show chat side panel"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).not.toBeNull();
   });
 });
 

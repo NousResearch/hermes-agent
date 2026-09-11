@@ -22,9 +22,37 @@ import pytest
 def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot_factory: MagicMock) -> None:
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
+
+    class InlineKeyboardButton:
+        def __init__(self, text, *, url=None, callback_data=None):
+            self.text = text
+            self.url = url
+            self.callback_data = callback_data
+
+        def to_dict(self):
+            data = {"text": self.text}
+            if self.url is not None:
+                data["url"] = self.url
+            if self.callback_data is not None:
+                data["callback_data"] = self.callback_data
+            return data
+
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard):
+            self.inline_keyboard = inline_keyboard
+
+        def to_dict(self):
+            return {
+                "inline_keyboard": [
+                    [button.to_dict() for button in row] for row in self.inline_keyboard
+                ]
+            }
+
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
     telegram_mod = SimpleNamespace(
         Bot=bot_factory,
+        InlineKeyboardButton=InlineKeyboardButton,
+        InlineKeyboardMarkup=InlineKeyboardMarkup,
         MessageEntity=_MessageEntity,
         constants=constants_mod,
     )
@@ -48,7 +76,13 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr(sys, "platform", "linux")
+    # Neutralize macOS system-proxy auto-detection at its probe rather than by
+    # claiming the host is Linux: this keeps the test honest on the macOS
+    # runner (and on a developer's Mac), where a real scutil-configured proxy
+    # would otherwise leak into the assertion.
+    monkeypatch.setattr(
+        "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+    )
 
 
 def _tmpfile(suffix: str) -> str:

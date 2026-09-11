@@ -12,7 +12,20 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update(isolated_update_runtime, monkeypatch):
+    import shutil
+    from hermes_cli import managed_uv, update_cmd
+
+    monkeypatch.setattr(managed_uv, "resolve_uv", lambda **kw: shutil.which("uv"))
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kw: shutil.which("uv"))
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kw: None)
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
 
 
 def _make_run_side_effect(
@@ -50,8 +63,9 @@ def _make_run_side_effect(
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
-    @patch("hermes_cli.config.migrate_config")
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -64,6 +78,7 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_reload,
         capsys,
     ):
         mock_run.side_effect = _make_run_side_effect(
@@ -89,8 +104,9 @@ class TestUpdateYesConfigMigration:
         # The "Would you like to configure them now?" prompt text never appears.
         assert "Would you like to configure them now?" not in out
 
-    @patch("hermes_cli.config.migrate_config")
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -103,6 +119,7 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_reload,
         capsys,
     ):
         """Regression guard: without --yes, the TTY prompt path still fires."""
@@ -147,8 +164,9 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
     the exception escape and crash `hermes update` mid-flight.
     """
 
-    @patch("hermes_cli.config.migrate_config")
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -161,6 +179,7 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_reload,
         capsys,
     ):
         mock_run.side_effect = _make_run_side_effect(

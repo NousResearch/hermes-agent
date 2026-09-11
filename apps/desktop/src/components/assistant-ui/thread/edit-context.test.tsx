@@ -17,6 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
+import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
+
 import { Thread } from '.'
 
 interface MockComposerProps {
@@ -26,6 +28,7 @@ interface MockComposerProps {
 }
 
 const composerRenders = vi.hoisted(() => [] as MockComposerProps[])
+const wisdomSessionIds = vi.hoisted(() => [] as string[])
 
 vi.mock('./user-edit-composer', () => ({
   UserEditComposer: (props: MockComposerProps) => {
@@ -34,23 +37,17 @@ vi.mock('./user-edit-composer', () => ({
     return <div data-testid="edit-composer">{props.cwd}</div>
   }
 }))
+vi.mock('@/components/assistant-ui/wisdom-candidate-card', () => ({
+  WisdomCandidateCard: ({ sessionId }: { sessionId: string }) => {
+    wisdomSessionIds.push(sessionId)
 
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
+    return <div data-testid="wisdom-candidate-session">{sessionId}</div>
+  }
+}))
+vi.mock('@/components/assistant-ui/wisdom-notice-card', () => ({
+  WisdomNoticeCard: () => null
+}))
+stubThreadEnvironment()
 
 afterEach(() => {
   cleanup()
@@ -58,63 +55,25 @@ afterEach(() => {
 
 beforeEach(() => {
   composerRenders.length = 0
+  wisdomSessionIds.length = 0
 })
 
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
-// viewport. Fall through to client* or a sane default so virtualized
-// items render (same stub as user-message-edit.test.tsx).
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
-
-function userMessage(): ThreadMessage {
-  return {
-    id: 'user-1',
-    role: 'user',
-    content: [{ type: 'text', text: 'edit me please' }],
-    attachments: [],
-    createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
-}
-
-function assistantMessage(): ThreadMessage {
-  return {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as ThreadMessage
-}
+stubThreadViewportSize()
 
 const noopAsync = async () => {}
 
 // The repository must stay referentially stable across rerenders: a new
 // object would make the incremental runtime resync the transcript and
 // unmount the open composer, defeating the test.
-function Harness({ cwd, sessionKey }: { cwd: string; sessionKey: string }) {
+function Harness({
+  cwd,
+  runtimeSessionId,
+  sessionKey
+}: {
+  cwd: string
+  runtimeSessionId?: string
+  sessionKey: string
+}) {
   const [repository] = useState(() => ExportedMessageRepository.fromArray([userMessage(), assistantMessage()]))
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -129,12 +88,19 @@ function Harness({ cwd, sessionKey }: { cwd: string; sessionKey: string }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread cwd={cwd} sessionKey={sessionKey} />
+      <Thread cwd={cwd} sessionId={runtimeSessionId} sessionKey={sessionKey} />
     </AssistantRuntimeProvider>
   )
 }
 
 describe('thread edit context', () => {
+  it('polls Wisdom with the durable session key after a runtime reconnect', async () => {
+    render(<Harness cwd="/repo" runtimeSessionId="runtime-owner" sessionKey="stored-session" />)
+
+    expect((await screen.findByTestId('wisdom-candidate-session')).textContent).toBe('stored-session')
+    expect(wisdomSessionIds.at(-1)).toBe('stored-session')
+  })
+
   it('passes a same-session cwd change to the mounted edit composer', async () => {
     const { rerender } = render(<Harness cwd="/old" sessionKey="k1" />)
 

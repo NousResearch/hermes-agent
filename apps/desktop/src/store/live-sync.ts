@@ -3,11 +3,11 @@ import { atom } from 'nanostores'
 // Event-driven "backend data changed" signals — the workspace-events twin for
 // gateway-side state. The change watcher in tui_gateway broadcasts
 // `pet.changed` / `cron.changed` / `sessions.changed` when its on-disk
-// signatures move (see server._broadcast_watched_changes), gateway-event.ts
-// routes them here, and the surfaces that used to poll (cron sidebar/page,
-// messaging lists, pet sprite, live session statuses) subscribe to these ticks
-// and refresh — so they move exactly when the backend acts and stay idle
-// otherwise.
+// signatures move (see server._broadcast_watched_changes), the gateway-event
+// lifecycle handler routes them here, and the surfaces that used to poll (cron
+// sidebar/page, messaging lists, pet sprite, live session statuses) subscribe
+// to these ticks and refresh — so they move exactly when the backend acts and
+// stay idle otherwise.
 //
 // `$changeEventsAvailable` is the compat gate: gateway.ready advertises
 // `change_events: true` on backends that broadcast. Consumers keep their old
@@ -33,6 +33,12 @@ export interface PetChangeMeta {
 
 export const $petChange = atom<{ meta?: PetChangeMeta; tick: number }>({ tick: 0 })
 
+/** `setup.ready` — the boot bootstrap (free-tier identity + provider resolution)
+ *  finished, so inference readiness and the free-tier verdict may have just
+ *  changed. One-shot: the status snapshot re-reads both legs once instead of
+ *  waiting for its next ambient tick. */
+export const $setupReadyTick = atom(0)
+
 export function setChangeEventsAvailable(available: boolean): void {
   $changeEventsAvailable.set(available)
 }
@@ -55,6 +61,10 @@ export function notifyPlatformsChanged(): void {
 
 export function notifyPairingChanged(): void {
   $pairingChangeTick.set($pairingChangeTick.get() + 1)
+}
+
+export function notifySetupReady(): void {
+  $setupReadyTick.set($setupReadyTick.get() + 1)
 }
 
 /** Reset on gateway wipe/reconnect — a new backend re-advertises capability on

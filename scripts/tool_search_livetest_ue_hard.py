@@ -36,6 +36,22 @@ from tool_search_livetest_ue import load_epic_tools, _SANITIZE  # reuse loader
 
 N_REPS = int(os.environ.get("TS_BENCH_REPS", "2"))
 
+
+def _bridge_call_value(call: Dict[str, Any]) -> Any:
+    """Summarize current batch arguments with legacy transcript fallbacks."""
+    args = call.get("args") or {}
+    if call["name"] == "tool_search":
+        queries = args.get("queries")
+        if isinstance(queries, list):
+            return "; ".join(str(query) for query in queries)
+        return args["query"] if "query" in args else None
+    if call["name"] == "tool_describe":
+        names = args.get("names")
+        if isinstance(names, list):
+            return ", ".join(str(name) for name in names)
+    return args.get("name")
+
+
 # ---------------------------------------------------------------------------
 # Type-aware mock world
 # ---------------------------------------------------------------------------
@@ -218,7 +234,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
         agent = AIAgent(provider="openrouter", model=model, quiet_mode=True,
                         save_trajectories=False, skip_context_files=True,
                         skip_memory=True, platform="cli", max_iterations=15)
-        import agent.conversation_loop as _cl
+        import agent.turn_usage as _cl
         _orig_norm = _cl.normalize_usage
         def _norm_spy(raw, **kw):
             cu = _orig_norm(raw, **kw)
@@ -245,7 +261,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
         registry.dispatch = original_dispatch
         if _orig_norm is not None:
             try:
-                import agent.conversation_loop as _cl2
+                import agent.turn_usage as _cl2
                 _cl2.normalize_usage = _orig_norm
             except Exception:
                 pass
@@ -276,7 +292,9 @@ def run_one(scenario, mode, rep, out_dir: Path):
         "first_correct": first_correct, "final_correct": final_correct,
         "wrong_calls": wrong_calls, "success": bool(success),
         "ue_calls": [c["name"][-70:] for c in ue_calls][:20],
-        "bridge_calls": [(b["name"], (b.get("args") or {}).get("query") or (b.get("args") or {}).get("name")) for b in bridge_call_log][:20],
+        "bridge_calls": [
+            (call["name"], _bridge_call_value(call)) for call in bridge_call_log
+        ][:20],
         "error": error,
         "final_response": base._redact_secrets(final_response)[:300],
     }

@@ -50,15 +50,26 @@ class TestJobScriptField:
     def test_create_job_with_script(self, cron_env):
         from cron.jobs import create_job, get_job
 
+        script = cron_env / "scripts" / "monitor.py"
+        script.write_text("print('ok')\n")
         job = create_job(
             prompt="Analyze the data",
             schedule="every 30m",
-            script="/path/to/monitor.py",
+            script=str(script),
         )
-        assert job["script"] == "/path/to/monitor.py"
+        assert job["script"] == str(script)
+        assert job["target"] == "backend"
 
         loaded = get_job(job["id"])
-        assert loaded["script"] == "/path/to/monitor.py"
+        assert loaded["script"] == str(script)
+
+    def test_explicit_scheduler_target_uses_profile_scripts(self, cron_env):
+        from cron.jobs import create_job
+
+        script = cron_env / "scripts" / "scheduler.py"
+        script.write_text("print('ok')\n")
+        job = create_job(prompt="Analyze the data", schedule="every 30m", script="scheduler.py", target="scheduler")
+        assert job["target"] == "scheduler"
 
 
     def test_update_job_add_script(self, cron_env):
@@ -67,8 +78,11 @@ class TestJobScriptField:
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
 
-        updated = update_job(job["id"], {"script": "/new/script.py"})
-        assert updated["script"] == "/new/script.py"
+        script = cron_env / "scripts" / "new.py"
+        script.write_text("print('ok')\n")
+        updated = update_job(job["id"], {"script": str(script), "target": "backend"})
+        assert updated["script"] == str(script)
+        assert updated["target"] == "backend"
 
 
 def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
@@ -106,6 +120,120 @@ class TestRunJobScript:
         success, output = _run_job_script("relative.py")
         assert success is True
         assert output == "relative works"
+
+    def test_backend_target_uses_backend_runner_even_when_backend_is_local(self, monkeypatch):
+        """Backend-target paths are backend-native, not profile-script paths."""
+        from cron import scheduler_script
+
+        called = {}
+        monkeypatch.setattr(
+            scheduler_script,
+            "_run_job_script_in_backend",
+            lambda script, **kwargs: (called.update(script=script, **kwargs) or (True, "backend ok")),
+        )
+        monkeypatch.setattr("tools.cronjob_job_args._terminal_backend_is_local", lambda: True)
+
+        assert scheduler_script._run_job_script_for_target(
+            {"target": "backend"}, "/backend-visible/collect.py", workdir="/backend-visible"
+        ) == (True, "backend ok")
+        assert called["script"] == "/backend-visible/collect.py"
+        assert called["workdir"] == "/backend-visible"
+
+    def test_backend_runner_starts_tracked_background_process(self, monkeypatch):
+        """Backend cron scripts must not consume the terminal foreground timeout."""
+        from cron import scheduler_script
+        from tools import terminal_tool as terminal_mod
+
+        calls = []
+
+        def fake_terminal_tool(**kwargs):
+            calls.append(kwargs)
+            if kwargs["command"].startswith("test -f"):
+                return json.dumps({"exit_code": 0})
+            return json.dumps({"session_id": "cron-backend", "exit_code": 0})
+
+        class FinishedProcess:
+            def poll(self, session_id):
+                assert session_id == "cron-backend"
+                return {"status": "exited", "exit_code": 0, "output": "backend ok"}
+
+            def kill_process(self, session_id, **kwargs):
+                pytest.fail("completed backend script should not be killed")
+
+        monkeypatch.setattr(terminal_mod, "terminal_tool", fake_terminal_tool)
+        monkeypatch.setattr("tools.process_registry.process_registry", FinishedProcess())
+
+        assert scheduler_script._run_job_script_in_backend("/backend-visible/collect.py") == (True, "backend ok")
+        assert calls[1]["background"] is True
+        assert calls[1]["notify_on_complete"] is False
+
+    def test_backend_job_keeps_backend_only_workdir(self, tmp_path):
+        """The scheduler host must not discard a workdir that exists only remotely."""
+        from cron.scheduler import _resolve_job_workdir
+
+        missing_on_scheduler = str(tmp_path / "only-in-backend")
+        assert _resolve_job_workdir(
+            {"target": "backend", "workdir": missing_on_scheduler}, "backend-job"
+        ) == missing_on_scheduler
+
+    def test_backend_poll_error_is_redacted(self, monkeypatch):
+        from cron import scheduler_script
+        from tools import terminal_tool as terminal_mod
+
+        monkeypatch.setattr(
+            terminal_mod, "terminal_tool",
+            lambda **kwargs: json.dumps({"exit_code": 0}) if kwargs["command"].startswith("test -f")
+            else json.dumps({"session_id": "cron-backend"}),
+        )
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry",
+            SimpleNamespace(poll=lambda _: {"status": "error", "error": "OPENAI_API_KEY=sk-proj-test-secret"}),
+        )
+
+        ok, message = scheduler_script._run_job_script_in_backend("/backend-visible/collect.py")
+        assert ok is False
+        assert "sk-proj-test-secret" not in message
+        assert "OPENAI_API_KEY=***" in message
+
+    def test_backend_runtime_redaction_is_forced(self, monkeypatch):
+        from agent import redact
+        from cron import scheduler_script
+
+        calls = []
+        monkeypatch.setattr(
+            redact, "redact_sensitive_text",
+            lambda text, **kwargs: (calls.append(kwargs) or "OPENAI_API_KEY=***"),
+        )
+
+        assert scheduler_script._redact_backend_text("OPENAI_API_KEY=sk-proj-test-secret") == "OPENAI_API_KEY=***"
+        assert calls == [{"force": True}]
+
+    def test_backend_cancel_reports_failed_cleanup(self, monkeypatch):
+        from cron import scheduler_script
+        from tools import terminal_tool as terminal_mod
+
+        monkeypatch.setattr(
+            terminal_mod, "terminal_tool",
+            lambda **kwargs: json.dumps({"exit_code": 0}) if kwargs["command"].startswith("test -f")
+            else json.dumps({"session_id": "cron-backend"}),
+        )
+        killed = []
+        monkeypatch.setattr(
+            "tools.process_registry.process_registry",
+            SimpleNamespace(
+                poll=lambda _: pytest.fail("cancelled process must not be polled"),
+                kill_process=lambda *args, **kwargs: (killed.append((args, kwargs)) or {
+                    "status": "error", "error": "remote kill failed"}),
+            ),
+        )
+
+        ok, message = scheduler_script._run_job_script_in_backend(
+            "/backend-visible/collect.py", cancel_event=SimpleNamespace(is_set=lambda: True)
+        )
+        assert ok is False
+        assert "cleanup failed" in message
+        assert "remote kill failed" in message
+        assert killed
 
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
@@ -451,11 +579,13 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        script = cron_env / "scripts" / "some_script.py"
+        script.write_text("print('ok')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-            script="some_script.py",
+            script=str(script),
         ))
         job_id = create_result["job_id"]
 
@@ -471,17 +601,19 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        script = cron_env / "scripts" / "data_collector.py"
+        script.write_text("print('ok')\n")
         cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-            script="data_collector.py",
+            script=str(script),
         )
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
-        assert list_result["jobs"][0]["script"] == "data_collector.py"
+        assert list_result["jobs"][0]["script"] == str(script)
 
 
 class TestScriptPathContainment:

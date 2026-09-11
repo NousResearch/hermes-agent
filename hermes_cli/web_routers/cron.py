@@ -39,7 +39,9 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
-def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Path) -> Dict[str, Any]:
+def _normalize_dashboard_cron_updates(
+    updates: Dict[str, Any], profile_home: Path, target: str = "scheduler",
+) -> Dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
     Stays in the dashboard adapter layer on purpose: cron/jobs.py is the source
@@ -51,7 +53,9 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])
     if "script" in normalized:
-        normalized["script"] = _normalize_dashboard_cron_script(normalized["script"], profile_home)
+        normalized["script"] = _normalize_dashboard_cron_script(
+            normalized["script"], profile_home, str(normalized.get("target") or target)
+        )
     if "base_url" in normalized:
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
     if "deliver" in normalized:
@@ -137,7 +141,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         db.close()
 
 
-_EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}
+_EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "target", "no_agent"}
 
 
 def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
@@ -145,7 +149,9 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
     try:
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _found(_call_cron_for_profile(profile_name, "get_job", job_id))
-        updates = _normalize_dashboard_cron_updates(body.updates, profile_home)
+        updates = _normalize_dashboard_cron_updates(
+            body.updates, profile_home, str(existing.get("target") or "scheduler")
+        )
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(updates.get("context_from"), profile_name)
         if _EXECUTION_FIELDS.intersection(updates):

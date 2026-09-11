@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import json
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -406,6 +408,107 @@ def _run_job_script(
         return False, f"Script execution failed: {exc}"
 
 
+def _redact_backend_text(value: object) -> str:
+    """Redact every terminal-backend result path before cron can surface it."""
+    text = str(value or "").strip()
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception:
+        return "[REDACTED - redaction failed]"
+
+
+def _backend_cleanup_failure(process_registry, session_id: str, source: str) -> Optional[str]:
+    """Stop a tracked backend process and report an unconfirmed cleanup honestly."""
+    try:
+        result = process_registry.kill_process(session_id, source=source, consume_output=False)
+    except Exception as exc:
+        return _redact_backend_text(f"cleanup failed: {exc}")
+    status = str((result or {}).get("status") or "")
+    if status not in {"exited", "already_exited", "killed"}:
+        detail = (result or {}).get("error") or (result or {}).get("note") or status or "unknown result"
+        return _redact_backend_text(f"cleanup failed: {detail}")
+    return None
+
+
+def _run_job_script_in_backend(script_path: str, workdir: Optional[str] = None,
+                               cancel_event: Optional[_CancelEventLike] = None) -> tuple[bool, str]:
+    """Run an absolute script as a tracked terminal-backend process.
+
+    A cron fire owns its deadline and cancellation semantics.  The terminal
+    foreground path has a deliberately shorter guardrail, so it is not a safe
+    substitute here: launch background, poll the tracked session, and kill it
+    on every cron-owned cancellation or deadline exit.
+    """
+    raw = str(script_path or "").strip()
+    if not raw or "\x00" in raw:
+        return False, "Blocked: cron script path is empty or contains a NUL byte"
+    path = Path(raw)
+    if not path.is_absolute():
+        return False, f"Backend script path must be absolute: {raw!r}."
+    if any(part == ".." for part in path.parts):
+        return False, f"Backend script path must not contain traversal segments: {raw!r}."
+    command = f"{'bash' if path.suffix.lower() in {'.sh', '.bash'} else 'python3'} {shlex.quote(str(path))}"
+    try:
+        from tools.terminal_tool import terminal_tool
+        preflight_raw = terminal_tool(command=f"test -f {shlex.quote(str(path))}", timeout=30,
+                                       workdir=workdir or str(path.parent))
+        preflight = json.loads(preflight_raw) if isinstance(preflight_raw, str) else preflight_raw
+        if not isinstance(preflight, dict) or preflight.get("exit_code") != 0:
+            return False, f"Script not found in terminal backend: {path}"
+        raw_result = terminal_tool(command=command, background=True, notify_on_complete=False,
+                                   workdir=workdir or str(path.parent))
+        result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        session_id = str((result or {}).get("session_id") or "")
+        if not session_id:
+            error = _redact_backend_text(
+                (result or {}).get("error") or "terminal backend did not return a process session"
+            )
+            return False, f"Script execution through terminal backend failed: {error}"
+
+        from tools.process_registry import process_registry
+        deadline = time.monotonic() + _get_script_timeout()
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                cleanup_error = _backend_cleanup_failure(
+                    process_registry, session_id, "cron script cancellation"
+                )
+                if cleanup_error:
+                    return False, f"Script cancelled because cron fire ownership was lost; {cleanup_error}"
+                return False, "Script cancelled because cron fire ownership was lost"
+            if time.monotonic() >= deadline:
+                cleanup_error = _backend_cleanup_failure(process_registry, session_id, "cron script timeout")
+                if cleanup_error:
+                    return False, f"Script timed out after {_get_script_timeout()}s: {path}; {cleanup_error}"
+                return False, f"Script timed out after {_get_script_timeout()}s: {path}"
+            status = process_registry.poll(session_id)
+            if status.get("status") == "exited":
+                output = _redact_backend_text(status.get("output"))
+                error = _redact_backend_text(status.get("error"))
+                exit_code = status.get("exit_code")
+                if exit_code not in (0, None):
+                    return False, f"Script exited with code {exit_code}: {error or output}"
+                return True, output
+            if status.get("status") in {"not_found", "error"}:
+                return False, "Script execution through terminal backend failed: " + _redact_backend_text(
+                    status.get("error") or status["status"]
+                )
+            time.sleep(0.1)
+    except Exception as exc:
+        return False, f"Script execution through terminal backend failed: {_redact_backend_text(exc)}"
+
+
+def _run_job_script_for_target(job: dict, script_path: str, workdir: Optional[str] = None,
+                               cancel_event: Optional[_CancelEventLike] = None) -> tuple[bool, str]:
+    """Route legacy jobs to scheduler execution and declared jobs to their target."""
+    target = str(job.get("target") or "scheduler").strip().lower()
+    if target == "scheduler":
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+    if target == "backend":
+        return _run_job_script_in_backend(script_path, workdir=workdir, cancel_event=cancel_event)
+    return False, f"Unsupported cron script target: {target!r}"
+
+
 def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.Thread]:
     """Start ``loop_fn`` on a daemon thread inside a copy of the current context (multiplexed
     profile ContextVars). On failure calls ``fail_log()`` inside the except (traceback intact) and
@@ -432,7 +535,7 @@ def _run_job_script_with_claim_heartbeat(
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(job, script_path, workdir=workdir, cancel_event=cancel_event)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -450,10 +553,10 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(job, script_path, workdir=workdir, cancel_event=cancel_event)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(job, script_path, workdir=workdir, cancel_event=cancel_event)
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

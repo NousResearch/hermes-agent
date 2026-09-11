@@ -36,11 +36,16 @@ def _cron_string_list(value: Any) -> Optional[List[str]]:
     return items or None
 
 
-def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional[str]:
-    """Validate a dashboard-selected cron script against the profile sandbox."""
+def _normalize_dashboard_cron_script(value: Any, profile_home: Path, target: str) -> Optional[str]:
+    """Normalize a dashboard script according to its declared execution target."""
     text = _cron_optional_text(value)
     if not text:
         return None
+    if target == "backend":
+        raw_path = Path(text)
+        if not raw_path.is_absolute() or any(part == ".." for part in raw_path.parts):
+            raise HTTPException(status_code=400, detail="backend script must be an absolute path without traversal")
+        return str(raw_path)
     scripts_root = (profile_home / "scripts").resolve()
     raw_path = Path(text).expanduser()
     candidate = raw_path.resolve() if raw_path.is_absolute() else (scripts_root / raw_path).resolve()
@@ -236,7 +241,11 @@ def _raise_if_cron_registration_error(e: Exception) -> None:
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     try:
         profile_name, profile_home = _cron_profile_home(profile)
-        script = _normalize_dashboard_cron_script(body.script, profile_home)
+        # The dashboard has historically selected from profile scripts. Preserve
+        # that safe workflow by making its omitted target explicit; callers that
+        # need a backend-native path must opt in with target="backend".
+        target = body.target or ("scheduler" if body.script else None)
+        script = _normalize_dashboard_cron_script(body.script, profile_home, target or "scheduler")
         skills = _cron_string_list(body.skills)
         context_from = _cron_string_list(body.context_from)
         _validate_dashboard_cron_context_from(context_from, profile_name)
@@ -255,6 +264,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             provider=_cron_optional_text(body.provider),
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
             script=script,
+            target=target,
             context_from=context_from,
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),

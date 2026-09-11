@@ -1220,8 +1220,13 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
 
 
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
+    """Configured job workdir, preserving backend-native paths for backend runs."""
     workdir = (job.get("workdir") or "").strip() or None
+    # A backend workdir may exist only inside a container or remote host.  Its
+    # creation/update validation is target-aware; scheduler-host Path checks
+    # here must not silently erase it before the backend receives the command.
+    if workdir and str(job.get("target") or "scheduler").strip().lower() == "backend":
+        return workdir
     if workdir and not Path(workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",
@@ -1967,7 +1972,9 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=(job.get("workdir") or "").strip() or None,
+            cancel_event=cancel_event)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
@@ -3771,7 +3778,8 @@ from cron.scheduler_delivery import (  # noqa: E402
     _resolve_delivery_targets,
 )
 from cron.scheduler_script import (  # noqa: E402
-    _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
+    _get_session_db_timeout, _run_job_script_for_target, _run_job_script_in_backend,
+    _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
     _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,

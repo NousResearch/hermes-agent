@@ -44,6 +44,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "With --no-agent: the script IS the job and its stdout is "
             "delivered verbatim. .sh/.bash files run via bash, everything "
             "else via Python.")
+    cron_create.add_argument("--target", choices=["scheduler", "backend"],
+        help="Script target; new script jobs default to backend. Scheduler scripts stay under ~/.hermes/scripts/.")
     _flag(cron_create, "--no-agent", dest="no_agent", default=False,
         help="Skip the LLM entirely — run --script on schedule and deliver "
             "its stdout directly. Empty stdout = silent. Classic watchdog "
@@ -106,6 +108,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
             "With --no-agent the script IS the job; otherwise its stdout is "
             "injected into the agent's prompt each run.")
+    cron_edit.add_argument("--target", choices=["scheduler", "backend"],
+        help="Change the script execution target.")
     cron_edit.add_argument(
         "--no-agent", dest="no_agent", action="store_const", const=True, default=None,
         help="Enable no-agent mode on this job (requires --script or an "

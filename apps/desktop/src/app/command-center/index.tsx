@@ -8,8 +8,17 @@ import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
+import {
+  getActionStatus,
+  getLogs,
+  getStatus,
+  getUsageAnalytics,
+  restartGateway,
+  startGateway,
+  stopGateway,
+  updateHermes
+} from '@/hermes'
+import type { ActionResponse, ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
@@ -29,6 +38,7 @@ import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { confirm } from '@/store/confirm'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
 
@@ -48,6 +58,21 @@ const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
+
+type SystemActionKind = 'restart' | 'start' | 'stop' | 'update'
+
+const SYSTEM_ACTIONS: Record<SystemActionKind, () => Promise<ActionResponse>> = {
+  restart: restartGateway,
+  start: startGateway,
+  stop: stopGateway,
+  update: updateHermes
+}
+
+function actionFailureDetail(lines: readonly string[]): string {
+  const lastLine = [...lines].reverse().find(line => line.trim().length > 0)
+
+  return lastLine ? lastLine.trim().slice(0, 200) : ''
+}
 
 // Stable empty arrays so the selector returns the same reference when we're
 // not on the Sessions tab — useStoreSelector bails out on Object.is, so the
@@ -153,6 +178,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
+  const [pendingAction, setPendingAction] = useState<null | SystemActionKind>(null)
+  const actionInFlightRef = useRef(false)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -264,11 +291,25 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [logQuery, logs])
 
   const runSystemAction = useCallback(
-    async (kind: 'restart' | 'update') => {
+    async (kind: SystemActionKind) => {
+      if (actionInFlightRef.current) {
+        return
+      }
+
+      actionInFlightRef.current = true
+      setPendingAction(kind)
       setSystemError('')
 
       try {
-        const started = kind === 'restart' ? await restartGateway() : await updateHermes()
+        if (kind === 'stop') {
+          const confirmed = await confirm({ destructive: true, title: cc.stopGatewayConfirm })
+
+          if (!confirmed) {
+            return
+          }
+        }
+
+        const started = await SYSTEM_ACTIONS[kind]()
         let nextStatus: ActionStatusResponse | null = null
 
         for (let attempt = 0; attempt < 18; attempt += 1) {
@@ -279,6 +320,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           upsertDesktopActionTask(polled)
 
           if (!polled.running) {
+            if (polled.exit_code !== null && polled.exit_code !== 0) {
+              setSystemError(actionFailureDetail(polled.lines))
+            }
+
             break
           }
         }
@@ -298,6 +343,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
+        actionInFlightRef.current = false
+        setPendingAction(null)
         void refreshSystem()
       }
     },
@@ -442,16 +489,56 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                        {status.gateway_running ? (
+                          <Button
+                            aria-busy={pendingAction === 'stop'}
+                            disabled={pendingAction !== null}
+                            onClick={() => void runSystemAction('stop')}
+                            size="xs"
+                            title={pendingAction ? cc.gatewayActionPending : undefined}
+                            variant="text"
+                          >
+                            {cc.stopGateway}
+                          </Button>
+                        ) : (
+                          <Button
+                            aria-busy={pendingAction === 'start'}
+                            disabled={pendingAction !== null}
+                            onClick={() => void runSystemAction('start')}
+                            size="xs"
+                            title={pendingAction ? cc.gatewayActionPending : undefined}
+                            variant="text"
+                          >
+                            {cc.startGateway}
+                          </Button>
+                        )}
+                        <Button
+                          aria-busy={pendingAction === 'restart'}
+                          disabled={pendingAction !== null}
+                          onClick={() => void runSystemAction('restart')}
+                          size="xs"
+                          title={pendingAction ? cc.gatewayActionPending : undefined}
+                          variant="text"
+                        >
                           {cc.restartGateway}
                         </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                        <Button
+                          aria-busy={pendingAction === 'update'}
+                          disabled={pendingAction !== null}
+                          onClick={() => void runSystemAction('update')}
+                          size="xs"
+                          title={pendingAction ? cc.gatewayActionPending : undefined}
+                          variant="textStrong"
+                        >
                           {cc.updateHermes}
                         </Button>
                       </div>
                     </div>
                     {systemAction && (
-                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      <div
+                        aria-live="polite"
+                        className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+                      >
                         {systemAction.name} ·{' '}
                         {systemAction.running
                           ? cc.actionRunning

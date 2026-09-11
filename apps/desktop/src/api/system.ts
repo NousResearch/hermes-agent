@@ -143,6 +143,22 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
+export function startGateway(): Promise<ActionResponse> {
+  return hermesApi<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/start',
+    method: 'POST'
+  })
+}
+
+export function stopGateway(): Promise<ActionResponse> {
+  return hermesApi<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/stop',
+    method: 'POST'
+  })
+}
+
 export function updateHermes(): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
     ...profileScoped(),

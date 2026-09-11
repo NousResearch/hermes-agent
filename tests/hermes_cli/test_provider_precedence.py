@@ -78,6 +78,28 @@ class TestProviderPrecedence:
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto", skip_free_tier=True)
 
+    @pytest.mark.parametrize(("route_available", "enabled"), [(True, True), (False, False)])
+    def test_managed_llamacpp_route_controls_readiness(self, monkeypatch, route_available, enabled):
+        """A base-URL-free llamacpp alias is ready exactly when its managed route is available."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(
+            monkeypatch,
+            {"provider": "llamacpp", "default": "local-model"},
+            local_runtime={"enabled": enabled},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.local_runtime.endpoint.llamacpp_route_available",
+            lambda config: route_available,
+        )
+
+        if route_available:
+            assert resolve_provider("auto", skip_free_tier=True) == "llamacpp"
+        else:
+            with pytest.raises(AuthError, match="No inference provider configured"):
+                resolve_provider("auto", skip_free_tier=True)
+
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""
         _clear_provider_env(monkeypatch)

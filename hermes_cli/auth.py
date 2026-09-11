@@ -1408,6 +1408,10 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         if provider.startswith("custom:"):
             from hermes_cli.runtime_provider_custom import has_named_custom_provider
             return model_cfg, (provider if has_named_custom_provider(provider) else None)
+        if not _optional_base_url(model_cfg.get("base_url")):
+            from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES, llamacpp_route_available
+            if provider in LLAMACPP_ALIASES:
+                return model_cfg, (provider if llamacpp_route_available(config) else None)
         try:
             resolved = resolve_provider(provider)
         except AuthError:

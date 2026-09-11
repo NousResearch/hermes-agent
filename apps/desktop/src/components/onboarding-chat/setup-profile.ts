@@ -112,8 +112,12 @@ export function guideSourceConnectionId(guideStoredId: null | string | undefined
   return (guideStoredId && getSessionOwnerHint(guideStoredId)?.connectionId) || activeGatewayConnectionId() || null
 }
 
+export function guideHandoffReceiptKey(guideStoredId: string): string {
+  return handoffReceiptKey(guideSourceConnectionId(guideStoredId), guideStoredId)
+}
+
 export function readGuideHandoffReceipt(guideStoredId: string): { key: string; receipt: HandoffReceipt | null } {
-  const key = handoffReceiptKey(guideSourceConnectionId(guideStoredId), guideStoredId)
+  const key = guideHandoffReceiptKey(guideStoredId)
 
   return { key, receipt: readHandoffReceipt(key) }
 }

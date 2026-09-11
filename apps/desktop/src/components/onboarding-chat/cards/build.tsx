@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
-import { handoffReceiptKey, quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
+import { quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
@@ -19,7 +19,7 @@ import {
   $handoffError,
   $setupHandoff,
   firstTaskTitle,
-  guideSourceConnectionId,
+  guideHandoffReceiptKey,
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
@@ -172,7 +172,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
 
     try {
       if (receipt.error && storedId) {
-        quarantineHandoffReceipt(handoffReceiptKey(guideSourceConnectionId(storedId), storedId))
+        quarantineHandoffReceipt(guideHandoffReceiptKey(storedId))
       }
 
       if (!state.guide && storedId && runtimeId) {

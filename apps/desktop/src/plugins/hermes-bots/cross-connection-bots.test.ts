@@ -175,4 +175,48 @@ describe('a group room seats members from several machines', () => {
       })
     ).toMatch(/@dixie \[on Mac Mini\]/)
   })
+
+  it('does not self-attribute a same-named default on another connection (#106851)', () => {
+    // Cross-connection same profile name must not self-attribute in model prompt lines.
+    const line = formatGroupChatLine(
+      { at: 1, from: { kind: 'member', name: 'default', source: 'Connection B' }, text: 'Remote reply' },
+      { name: 'default' }
+    )
+
+    expect(line).not.toContain('(you)')
+    expect(line).toMatch(/Remote reply/)
+
+    // CONTROL: same-connection self still gets (you)
+    expect(
+      formatGroupChatLine(
+        { at: 2, from: { kind: 'member', name: 'default' }, text: 'Mine' },
+        { name: 'default' }
+      )
+    ).toContain('(you)')
+
+    // CONTROL: remote viewer seeing own remote line still gets (you)
+    expect(
+      formatGroupChatLine(
+        { at: 3, from: { kind: 'member', name: 'default', source: 'Connection B' }, text: 'Mine remote' },
+        { name: 'default', remoteSource: true, connectionLabel: 'Connection B', connectionId: 'conn-b' }
+      )
+    ).toContain('(you)')
+
+    // String viewer API is local / unsourced — a sourced peer of the same
+    // name must not pick up (you) just because the names match.
+    expect(
+      formatGroupChatLine(
+        { at: 4, from: { kind: 'member', name: 'default', source: 'Connection B' }, text: 'Still remote' },
+        'default'
+      )
+    ).not.toContain('(you)')
+
+    // User lines stay on the (user) path even when the display name collides.
+    expect(
+      formatGroupChatLine({ at: 5, from: { kind: 'user', name: 'default' }, text: 'human' }, { name: 'default' })
+    ).toContain('(user)')
+    expect(
+      formatGroupChatLine({ at: 5, from: { kind: 'user', name: 'default' }, text: 'human' }, { name: 'default' })
+    ).not.toContain('(you)')
+  })
 })

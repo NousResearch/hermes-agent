@@ -12,7 +12,7 @@ import { registry } from '@/contrib/registry'
 import { readJson, writeJson, writeKey } from '@/lib/storage'
 
 import { isLayoutNode, type LayoutNode } from './model'
-import { $layoutTree, applyTree, markActivePreset } from './store'
+import { $layoutTree, applyTree, markActivePreset, stripEphemeralPanes } from './store'
 
 export const LAYOUTS_AREA = 'layouts'
 
@@ -75,7 +75,11 @@ export function saveLayoutPresetTree(name: string, tree: LayoutNode): string | n
       .replace(/^-+|-+$/g, '') || Date.now().toString(36)
   }`
 
-  userPresets[id] = { name: trimmed, tree }
+  // Strip ephemeral tile panes at SAVE time (#94260): a preset is a durable
+  // named layout, and baking in live session-tile:/preview-tile:/route-tile:
+  // ids means applying it later remounts conversations that may be gone —
+  // session.resume against dead runtimes, ws_orphan_reap, RPCs to nothing.
+  userPresets[id] = { name: trimmed, tree: stripEphemeralPanes(tree) }
   persistUserPresets(userPresets)
   registerUserPreset(id, userPresets[id])
   markActivePreset(id)
@@ -107,5 +111,8 @@ export const isUserPreset = (id: string) => id in userPresets
 
 /** Apply a preset's tree (deep-cloned so live edits never mutate the preset). */
 export function applyLayoutPreset(id: string, tree: LayoutNode) {
-  applyTree(structuredClone(tree), id)
+  // Strip at APPLY time too (#94260): presets saved before the save-time strip
+  // (or by older builds) may still carry baked-in tile ids. Applying one must
+  // never remount live sessions — defense in depth, not just migration.
+  applyTree(stripEphemeralPanes(structuredClone(tree)), id)
 }

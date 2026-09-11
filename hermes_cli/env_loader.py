@@ -143,7 +143,11 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if not report.sources:
         return {}
 
-    _APPLIED_HOMES.add(home_key)
+    # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
+    # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
+    # mixed report are still snapshotted below and can be used while the failed source recovers.
+    if all(src.result.ok for src in report.sources):
+        _APPLIED_HOMES.add(home_key)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
         value = local_env.get(name)

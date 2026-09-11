@@ -160,7 +160,9 @@ export async function reconcileTileTranscripts({
     const signatureKey = tileTranscriptSignatureKey(tile)
 
     try {
-      const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+      // Passive: a hidden tile's refresh must never cold-start its owner
+      // backend or hold a pool slot (#103375); no warm backend = retry next tick.
+      const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
 
       if (
         requestId !== requestSequenceRef.current ||

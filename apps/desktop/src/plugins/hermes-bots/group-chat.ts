@@ -1379,12 +1379,12 @@ export interface GroupHoldStamp extends GroupHold {
 }
 
 /** The room record as the coordination engine handles it: `GroupChat` plus
- *  `turn`, the runtime-only name of the member currently mid-turn. Like
+ *  `turn`, the runtime-only descriptor of the member currently mid-turn. Like
  *  `running`/`epoch` it never persists, so it has no place in the durable
  *  shape. Holds carry the fuller live stamp. */
 export interface GroupChatRoom extends GroupChat {
   holds?: Record<string, GroupHoldStamp>
-  turn?: null | string
+  turn?: GroupMember | null
 }
 
 /** Set or clear a group chat's room picture (small data URL, normalized by

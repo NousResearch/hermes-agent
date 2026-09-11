@@ -219,15 +219,25 @@ def nous_rate_limit_guard(
         )
 
     if agent.provider == "nous":
+        # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
+        # (and the config default, when it still names the free tier's model) before the next call.
+        try:
+            from hermes_cli.anon_auth import apply_model_switch
+            apply_model_switch(agent)
+        except Exception:
+            pass
         try:
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
             _nous_remaining = nous_rate_limit_remaining()
             if _nous_remaining is not None and _nous_remaining > 0:
-                _nous_msg = (
-                    f"Nous Portal rate limit active — resets in {_fmt_nous_remaining(_nous_remaining)}."
-                )
+                from hermes_cli import anon_auth
+                reset = _fmt_nous_remaining(_nous_remaining)
+                if anon_auth.route_is_welcome_host(getattr(agent, "base_url", "")):
+                    _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=reset)
+                else:
+                    _nous_msg = f"Nous Portal rate limit active — resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():

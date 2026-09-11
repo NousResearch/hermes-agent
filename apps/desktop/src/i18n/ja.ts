@@ -499,6 +499,11 @@ export const ja = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
+      appActionsTitle: 'アプリ操作',
+      appActionsDesc:
+        '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
+      appActionsLeft: '左',
+      appActionsRight: '右',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -1177,10 +1182,13 @@ export const ja = defineLocale({
         'speed-gated-quality':
           'より高品質なモデルもこのマシンに載りますが、メモリ帯域の制約で応答が遅くなります — これは速度を保てる最良のモデルです。',
         'fastest-resident':
-          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。',
-        'least-painful-spilled':
-          'GPU メモリに完全に収まるモデルはありません — システム RAM からの実行で最も快適なモデルです。'
+          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。'
       } as Record<string, string>,
+      noRecommendationTitle: 'このマシン向けの自動推奨モデルはありません',
+      noRecommendationDetail:
+        '自動セットアップには、GPU メモリまたはユニファイドメモリに完全に収まる厳選モデルが必要です。下の一覧から選ぶか、ほかのモデルを探すこともできます。',
+      noRecommendationAction: 'モデルを探す',
+      quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
       downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
@@ -2699,6 +2707,10 @@ export const ja = defineLocale({
     }
   },
 
+  guidedGreeting: {
+    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
+    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
+  },
   install: {
     stageStates: {
       pending: '待機中',
@@ -3462,7 +3474,8 @@ export const ja = defineLocale({
     vaultCodeDesc: site =>
       `${site} がワンタイムコード（SMS、メール、または認証アプリ）を求めています。ここに入力すると Hermes がページに入力します。モデルはコードを一切見ません。`,
     vaultCodeLabel: 'コード',
-    vaultCodeFootnote: 'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
+    vaultCodeFootnote:
+      'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
     vaultCodeSkip: 'スキップ',
     vaultCodeConfirm: 'コードを入力'
   },
@@ -3501,6 +3514,9 @@ export const ja = defineLocale({
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    poolSlotTimeoutBody:
+      'すべてのローカルプロファイルバックエンドスロットが使用中です。「設定」→「詳細設定」で「Warm Bot Backends」を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
+    poolSlotTimeoutOpenSettings: '詳細設定を開く',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',

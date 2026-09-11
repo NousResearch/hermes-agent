@@ -51,6 +51,35 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  connectors: {
+    title: string
+    connect: string
+    skip: string
+    cancel: string
+    retry: string
+    grant: string
+    connected: string
+    skipped: string
+    disabled: string
+    failed: string
+    needsAuth: string
+    opening: string
+    waiting: string
+    timeout: string
+    keepWaiting: string
+    refresh: string
+    statusError: string
+    connectError: string
+    unavailable: string
+    ownerMissing: string
+    search: string
+    empty: string
+    continue: string
+    continueBusy: string
+    continueFailed: string
+    disclaimer: string
+    execution: string
+  }
   sessionImport: {
     title: string
     subtitle: string
@@ -559,6 +588,10 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      appActionsTitle: string
+      appActionsDesc: string
+      appActionsLeft: string
+      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -1107,6 +1140,9 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      noRecommendationTitle: string
+      noRecommendationDetail: string
+      noRecommendationAction: string
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
@@ -2679,6 +2715,15 @@ export interface Translations {
     }
   }
 
+  /** The guided first run's pre-written opening line — banked, not generated,
+   *  so the first paint costs no model time. Translated per locale because the
+   *  model is told to speak the user's language from its first real turn, and
+   *  an English opener above a Japanese reply reads as two different agents.
+   *  `nameSuggestion` offers the OS account name as a default. */
+  guidedGreeting: {
+    line: string
+    nameSuggestion: (name: string) => string
+  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -2798,6 +2843,55 @@ export interface Translations {
     change: string
     startChatting: string
     docs: (provider: string) => string
+  }
+
+  freeTier: {
+    /** Settings › Providers row title while the Nous identity is the free tier. */
+    providerRowTitle: string
+    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
+    providerRowPitch: string
+    // First-launch introduction (ready screen + composer strip).
+    readyTitle: string
+    readyCaption: string
+    begin: string
+    signInInstead: string
+    otherProviders: string
+    stripTitle: string
+    stripBody: string
+    openModelPicker: string
+    dismiss: string
+    // Statusbar chip.
+    /** The status-bar chip's label: the provider name alone; the model id and the sign-in follow it. */
+    providerName: string
+    statusLabel: (model: string) => string
+    // Sign-in dialog.
+    signIn: string
+    signInHeading: string
+    settingUp: string
+    codeBody: string
+    copyLink: string
+    doNotShare: string
+    waiting: string
+    finishingHeading: string
+    finishingBody: string
+    signedInAs: (email: string) => string
+    signedIn: string
+    completedBody: string
+    defaultModel: string
+    change: string
+    done: string
+    notNow: string
+    tryAgain: string
+    startAgain: string
+    didNotComplete: string
+    rejectedBody: string
+    supersededBody: string
+    timedOutHeading: string
+    timedOutBody: string
+    retiredBody: string
+    errorBody: string
+    alreadySignedInHeading: string
+    alreadySignedInBody: string
   }
 
   modelPicker: {
@@ -2924,6 +3018,7 @@ export interface Translations {
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
+      toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
@@ -3437,6 +3532,8 @@ export interface Translations {
     readOnlyTranscriptSendBlocked: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
+    poolSlotTimeoutBody: string
+    poolSlotTimeoutOpenSettings: string
     resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string

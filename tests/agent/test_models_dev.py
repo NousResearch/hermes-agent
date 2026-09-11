@@ -836,6 +836,22 @@ class TestGetModelCapabilities:
         api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
         assert api_caps == caps
 
+    def test_deepseek_flash_builtin_vision_fills_catalog_lag(self):
+        """Native Flash stays multimodal when models.dev is empty; Pro does not.
+
+        Vendor docs: deepseek-flash accepts images, deepseek-v4-pro does not.
+        A global model.supports_vision pin would lie about Pro.
+        """
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            flash = get_model_capabilities("deepseek", "deepseek-flash")
+            alias = get_model_capabilities("deepseek", "deepseek-v4-flash")
+            pro = get_model_capabilities("deepseek", "deepseek-v4-pro")
+
+        assert flash is not None and flash.supports_vision is True
+        assert flash.context_window == 1_000_000
+        assert alias is not None and alias.supports_vision is True
+        assert pro is None
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)

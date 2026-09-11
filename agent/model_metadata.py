@@ -1303,6 +1303,9 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
+    "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
+    "deepseek-chat", "deepseek-reasoner",
 })
 
 

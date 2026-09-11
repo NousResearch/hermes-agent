@@ -24,8 +24,9 @@ from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
-    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, fts_rebuild_admission,
+    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
+from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -286,6 +287,41 @@ class SessionSchemaMixin:
         their exact stored token stream; newer tool rows index only the prefix (see ``_fts_indexed_content_sql``)."""
         high_water = cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
         cursor.execute(_STATE_META_UPSERT_SQL, (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)))
+
+    @staticmethod
+    def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
+        """Run *ddl* statement by statement, skipping each ``DROP TRIGGER IF EXISTS x`` /
+        ``CREATE TRIGGER IF NOT EXISTS x …`` pair whose trigger already exists with the same body.
+
+        ``DROP TRIGGER IF EXISTS`` on an existing trigger takes SQLite's write lock (the
+        ``CREATE … IF NOT EXISTS`` forms do not), so the unconditional drop+recreate that lets a
+        changed trigger body roll out would otherwise block every open of a settled database
+        behind a sibling process's transaction. ``sqlite_master.sql`` stores the CREATE text
+        verbatim minus ``IF NOT EXISTS`` and the ``;``, so an exact comparison decides.
+        """
+        stored = dict(cursor.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall())
+        pending_drop: Optional[str] = None
+        statement = ""
+        for line in ddl.splitlines():
+            statement += line + "\n"
+            if not sqlite3.complete_statement(statement):
+                continue
+            statement, current = "", statement.strip()
+            upper = current.upper()
+            if upper.startswith("DROP TRIGGER IF EXISTS "):
+                pending_drop = current
+                continue
+            if upper.startswith("CREATE TRIGGER IF NOT EXISTS "):
+                desired = current.replace("IF NOT EXISTS ", "", 1).rstrip(";")
+                if stored.get(desired.split(None, 3)[2]) == desired:
+                    pending_drop = None
+                    continue
+            if pending_drop is not None:
+                cursor.execute(pending_drop)
+                pending_drop = None
+            cursor.execute(current)
+        if statement.strip():
+            raise sqlite3.OperationalError("incomplete DDL statement")
 
     @staticmethod
     def _execute_ddl_script_transactional(cursor: sqlite3.Cursor, ddl: str) -> None:
@@ -897,13 +933,18 @@ class SessionSchemaMixin:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
-        cursor.executescript(DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+        self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
         # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A
         # ``current_version < 12`` gate never re-ran for already-v12+ databases.
+        # Read before writing: an UPDATE takes the write lock even when it matches no rows, so
+        # the unconditional form blocked every open behind a sibling's write transaction. The
+        # probe is short-circuited on the modern NOT NULL column and index-served on legacy
+        # ones. Deliberately not INDEXED BY (raises "no query solution" on NOT NULL columns).
         with contextlib.suppress(sqlite3.OperationalError):
-            cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
+            if cursor.execute("SELECT 1 FROM messages WHERE active IS NULL LIMIT 1").fetchone() is not None:
+                cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         stale_row = cursor.execute("SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_STALE_KEY,)).fetchone()
@@ -952,14 +993,14 @@ class SessionSchemaMixin:
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
                     f"WHERE parent_session_id IS NOT NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
                     f"AND {_ephemeral_child_sql('sessions')}"
                 )
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', '__orphaned__') WHERE parent_session_id IS NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                    "AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
+                    f"AND {_sql_json_extract('model_config', '$._branched_from')} IS NULL "
                     "AND title IS NULL AND message_count <= 25 AND EXISTS (SELECT 1 FROM messages m "
                     "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
                     "AND NOT EXISTS (SELECT 1 FROM sessions ch "
@@ -1025,7 +1066,13 @@ class SessionSchemaMixin:
             and not self._has_fts_trash(cursor)
             and not self._fts_external_index_empty_with_messages(cursor)
         ):
-            self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
+            # Stamp only when it would change something: on a settled DB every condition above
+            # already holds, and re-writing the same value takes the write lock on every open.
+            if cursor.execute(
+                "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
+                (str(FTS_STORAGE_VERSION),),
+            ).fetchone() is None:
+                self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
 
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
         # every future migration for a user who never optimizes). FTS5 unavailable is the
@@ -1096,6 +1143,12 @@ class SessionSchemaMixin:
         OPT-IN v23 boundary: a legacy v22 inline install keeps its inline schema + triggers
         (the v23 DDL would create the trigram source VIEW and leave a mixed state)."""
         legacy_fts = self._db_has_legacy_inline_fts(cursor)
+        # A `.recover`-restored image keeps the shadow tables but not the vtable rows; the DDL
+        # below would fail on the first shadow. Drop only orphaned families, then rebuild the
+        # recreated (empty) index like a missing-trigger repair (#103840).
+        orphan_repaired = _drop_orphan_fts_shadow_tables(
+            cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
+        )
         if not self._fts_stale:
             self._migrate_bounded_tool_fts_triggers(cursor, legacy=legacy_fts)
         if self._fts_stale:
@@ -1109,8 +1162,10 @@ class SessionSchemaMixin:
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
             # another process write through an index whose bootstrap/repair has no owner (#105790).
             base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or getattr(
-                self, "_fts_tool_prefix_migration_requires_rebuild", False)
-            trigram_triggers_missing = self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS)
+                self, "_fts_tool_prefix_migration_requires_rebuild", False) or "messages_fts" in orphan_repaired
+            trigram_triggers_missing = (
+                self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or "messages_fts_trigram" in orphan_repaired
+            )
 
             def ensure_and_rebuild() -> None:
                 self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
@@ -1210,3 +1265,25 @@ class SessionSchemaMixin:
                     1 if entry.get("expiry_finalized") or entry.get("memory_flushed") else 0, str(session_id),
                 ),
             )
+
+
+def reconcile_state_schema(conn: sqlite3.Connection) -> None:
+    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape.
+
+    Single durable-shape authority for callers that open ``state.db``
+    outside SessionDB. The async-delegation tool used to carry its own
+    CREATE TABLE and ALTER column list for ``async_delegations``; it drifted
+    from SCHEMA_SQL (same-name columns with different nullability/defaults
+    depending on which authority touched the database first, #94691). This
+    helper instead replays the canonical DDL (every statement is
+    IF NOT EXISTS/idempotent) and reuses SessionDB's declarative column
+    reconciliation, so out-of-band openers can never grow a second
+    hand-maintained shape for the same durable tables.
+    """
+    conn.executescript(SCHEMA_SQL)
+    # _reconcile_columns only touches the staticmethod _parse_schema_columns,
+    # so a bare instance works; reusing it keeps one reconciliation
+    # implementation (one authority) instead of a near-copy on raw
+    # connections.
+    shim = object.__new__(SessionSchemaMixin)
+    shim._reconcile_columns(conn.cursor())

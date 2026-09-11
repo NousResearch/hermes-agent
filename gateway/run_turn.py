@@ -2352,9 +2352,16 @@ class GatewayTurnMixin:
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``)."""
+        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).
+        Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
+        turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
+        the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
         from gateway.run import _load_gateway_config
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
+        except UnscopedSecretError:
+            url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if not url:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
@@ -3296,7 +3303,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:

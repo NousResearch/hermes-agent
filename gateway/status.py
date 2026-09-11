@@ -398,6 +398,18 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     return profile_home.name if profile_home.parent.name == "profiles" else None
 
 
+def profile_flag_value(command: str) -> Optional[str]:
+    """The ``-p``/``--profile`` argument of a command line, or None. Token equality is the only safe
+    profile match: a substring test lets ``-p ops`` claim (and ``gateway stop`` SIGTERM) ``-p ops-2``."""
+    tokens = command.split()
+    for i, tok in enumerate(tokens):
+        if tok.startswith("--profile="):
+            return tok.partition("=")[2]
+        if tok in ("-p", "--profile") and i + 1 < len(tokens):
+            return tokens[i + 1]
+    return None
+
+
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
     ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
@@ -407,10 +419,7 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
-        profile_lc = profile_name.lower()
-        return any(needle in command_lc for needle in (
-            f"--profile {profile_lc}", f"-p {profile_lc}", f"hermes_home={home_lc}"
-        ))
+        return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
     # Default profile: accept unless argv names another profile or a conflicting explicit
     # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
     if "--profile " in command_lc or " -p " in command_lc:

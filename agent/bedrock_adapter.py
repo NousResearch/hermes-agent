@@ -298,6 +298,76 @@ def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> s
     return cfg_region or resolve_bedrock_region()
 
 
+def bedrock_region_from_runtime_url(base_url: str) -> str:
+    """AWS region from a ``bedrock-runtime.<region>.amazonaws.com`` URL (default us-east-1)."""
+    m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+    return m.group(1) if m else "us-east-1"
+
+
+def bedrock_guardrail_config(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Converse ``guardrailConfig`` from ``bedrock.guardrail`` in config.yaml (None when unset)."""
+    if config is None:
+        config = {}
+        with suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+    gr = ((config or {}).get("bedrock") or {}).get("guardrail") or {}
+    if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
+        return None
+    out = {"guardrailIdentifier": gr["guardrail_identifier"], "guardrailVersion": gr["guardrail_version"]}
+    for src, dst in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
+        if gr.get(src):
+            out[dst] = gr[src]
+    return out
+
+
+def bedrock_guardrail_headers(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """InvokeModel/Messages-wire form of the configured guardrail. The AnthropicBedrock SDK speaks
+    InvokeModel, which has no ``guardrailConfig`` body field; Bedrock reads the guardrail from these
+    headers instead (same enforcement, keeps prompt caching / thinking / 1M context)."""
+    gr = bedrock_guardrail_config(config)
+    if not gr:
+        return {}
+    headers = {
+        "X-Amzn-Bedrock-GuardrailIdentifier": str(gr["guardrailIdentifier"]),
+        "X-Amzn-Bedrock-GuardrailVersion": str(gr["guardrailVersion"]),
+    }
+    if str(gr.get("trace", "")).lower() in {"enabled", "enabled_full", "true"}:
+        headers["X-Amzn-Bedrock-Trace"] = "ENABLED"
+    return headers
+
+
+GUARDRAIL_ACTION_FIELD = "amazon-bedrock-guardrailAction"
+
+
+def anthropic_response_guardrail_intervened(response: Any) -> bool:
+    """True when Bedrock substituted the InvokeModel reply with guardrail messaging. Unlike Converse
+    (``stopReason=guardrail_intervened``), InvokeModel keeps ``stop_reason=end_turn`` and signals the
+    block only via an unmodelled body field the Anthropic SDK keeps in ``model_extra``."""
+    extra = getattr(response, "model_extra", None) or {}
+    return str(extra.get(GUARDRAIL_ACTION_FIELD, "")).upper() == "INTERVENED"
+
+
+def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
+    """Point *agent* at a non-Mantle Bedrock wire: ``bedrock_converse`` (boto3 direct, no SDK client) or
+    ``anthropic_messages`` (AnthropicBedrock SDK, SigV4 via the boto3 chain). ``aws-sdk`` is a sentinel,
+    never a credential, so the generic Anthropic/OpenAI client builders must not see it. Startup and every
+    later rebuild (/model switch, fallback restore, fallback-to-Bedrock) share this so region and guardrail
+    state never lag the active endpoint."""
+    agent._bedrock_region = bedrock_region_from_runtime_url(base_url)
+    agent._bedrock_guardrail_config = bedrock_guardrail_config()
+    agent.client = None
+    agent._client_kwargs = {}
+    agent.api_key = agent._anthropic_api_key = "aws-sdk"
+    agent._anthropic_base_url = base_url
+    agent._is_anthropic_oauth = False
+    if api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)
+    else:
+        agent._anthropic_client = None
+
+
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
     """Live-discover Bedrock model IDs; None on failure/empty so callers use the static list."""
     with suppress(Exception):

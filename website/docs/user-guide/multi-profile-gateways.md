@@ -115,19 +115,29 @@ moment the flag is off.
 
 #### 1. Secondary profiles must not start their own gateway
 
-With a multiplexer running, a named-profile `hermes gateway start` / `run` is a
-**hard error**, pointing you back at the multiplexer:
+With a multiplexer running, a named-profile `hermes gateway run`, `start`,
+`install` or `restart` is a **hard error** (exit code 78), pointing you back at
+the multiplexer:
 
 ```
 The default gateway is running as a profile multiplexer and already serves
 profile 'coder'. ...
 ```
 
+The refusal happens in the CLI before any service manager is touched, so a served
+profile never ends up with a permanently failed systemd unit or a launchd respawn
+loop. The Desktop app's per-profile "Start gateway" action is refused the same way.
+"Served" is read from the running gateway's own record (`served_profiles` in the
+default home's `gateway_state.json`), so it stays correct when the multiplexer was
+enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
+environment, or when the allowlist was edited after the gateway started.
+
 The multiplexer is the single inbound process; a second profile gateway would
-double-bind that profile's platforms. Pass `--force` only if you deliberately
-want a separate process for that profile (not recommended while the multiplexer
-is running). The cross-profile lifecycle wrapper script earlier on this page is
-therefore **not** used in multiplex mode — you only manage the default gateway.
+double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
+`install` and `restart`) only if you deliberately want a separate process for that
+profile (not recommended while the multiplexer is running). The cross-profile
+lifecycle wrapper script earlier on this page is therefore **not** used in
+multiplex mode — you only manage the default gateway.
 
 #### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
 
@@ -164,13 +174,27 @@ Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
 
 - `/p/coder/...` API-server requests must use `API_SERVER_KEY` from
-  `~/.hermes/profiles/coder/.env`; the default listener key is rejected.
+  `~/.hermes/profiles/coder/.env`; the default listener key is rejected. Under
+  the multiplexer that key only authenticates the prefix — it does not turn on a
+  second `api_server` listener in the secondary profile (which would otherwise be
+  the port-binding conflict described below), so you do not need to pin
+  `platforms.api_server.enabled: false` in the secondary's `config.yaml`.
 - A webhook route that targets `coder` must declare `profile: coder` beside
   its existing route-specific `secret` in the default profile's
   `config.yaml`. That secret is then accepted only at
   `/p/coder/webhooks/<route>` and is rejected on every other profile prefix.
 - Webhook routes without `profile` remain default-profile routes and are not
   reachable through a named profile prefix.
+- Delivery follows the same binding. A `profile: coder` route's reply (or
+  `deliver_only` message) goes out through **coder's** adapter for the
+  `deliver` platform, falls back to **coder's** home channel when
+  `deliver_extra.chat_id` is unset, and a `github_comment` delivery runs `gh`
+  with `GH_TOKEN` / `GITHUB_TOKEN` from `profiles/coder/.env`. If coder has no
+  adapter for that platform the delivery fails (502) rather than posting as
+  another profile's bot; a default route likewise never borrows a platform that
+  is enabled only on a secondary profile.
+- `/p/coder/api/platforms/<platform>/events` callbacks are verified and
+  dispatched by coder's adapter; when coder has none the callback is a 503.
 
 Keep port-binding platforms disabled in secondary profile configs. The shared
 listener and its route definitions stay on the default profile; profile
@@ -198,30 +222,82 @@ Each profile's sessions live under an `agent:<profile>:…` namespace so two
 profiles on the same platform/chat never collide in the shared session store.
 The **default** profile keeps the historical `agent:main:…` namespace
 byte-for-byte, so existing default-profile sessions are unaffected — no
-migration, no orphaned history.
+migration, no orphaned history. Every gateway path that reads a key back —
+delegation completions after a restart, shutdown notices, a per-user-thread
+`/stop` of a sibling's run, `/undo`, QQ approval buttons — accepts the
+`agent:<profile>:…` shape too, so secondary profiles get the same behaviour
+as the default one.
+
+Each profile's rows land in **its own** `state.db`: a named profile's under
+`profiles/<name>/state.db`, the default profile's under the launch home — even
+when the write happens inside another profile's routed turn or background tick.
+The Desktop/TUI backend's own store is likewise pinned to the home it launched
+under, and a Bot Chat's side agents (`prompt.background`) persist next to their
+parent conversation.
 
 #### 5. One PID/lock and one status surface
 
 There is a single process-level PID and lock (the multiplexer, under the default
-home). `hermes status` reports the multiplexer and the profiles it serves;
-`hermes status -p <name>` slices to one profile. Each profile still writes its
-own `runtime_status.json` under its own home, so existing per-profile readers
-keep working.
+home). `hermes status` on the default profile reports the multiplexer and lists
+the profiles it serves (`Serves: coder, research`); `hermes -p coder status`,
+`hermes -p coder gateway status` and `hermes -p coder cron status` all report
+"running via the default-profile multiplexer" instead of "stopped". The single
+`gateway_state.json` lives under the default home: secondary adapters appear
+there as `<profile>:<platform>` entries beside `served_profiles`; nothing is
+written under a secondary profile's home.
 
 #### What does **not** change
 
 Per-profile `.env` credential isolation is preserved and, if anything,
 stricter: a profile's keys are resolved from its own scope and are never unioned
-into a shared environment (this also means subprocesses like MCP servers and
-Kanban workers only ever see their own profile's secrets). Terminal settings
+into a shared environment. Subprocesses like MCP servers and Kanban workers only
+ever see their own profile's secrets — including credentials injected by an
+external secret source (1Password, Bitwarden, …): a stdio MCP server started for
+profile B receives B's value for such a name, or nothing if B has none, never the
+default profile's. MCP servers are connected **per profile**: two profiles that
+both name a server `github` with their own token get two connections and each
+sees only its own tools; profiles whose `mcp_servers` entry is identical (same
+route *and* credentials) share one connection, and an owner's `/reload-mcp`
+re-registers the sharing profiles' tools without them reloading. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the
 documented default, never the launch profile's value, and a profile whose
 `config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
-run under another profile's sandbox policy. Kanban,
+run under another profile's sandbox policy. The media-delivery credential
+guard (the denylist behind `MEDIA:` attachments — `.env`, `auth.json`,
+`config.yaml`, `state.db`, session transcripts, OAuth token stores) covers every
+profile under `profiles/`, so no profile's turn can attach another profile's
+secrets or chat history to a reply. Authorization is per profile too:
+`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS` and every platform allowlist
+or allow-all opt-in are read from the owning profile's `.env` — the default
+profile opting into open access never opens a secondary profile's bot, and a
+secondary that opts in only in its own `.env` is honored. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
+
+Outbound identity is per profile too. A turn running for profile `P` that calls
+the `send_message` tool (send, react, media) posts through `P`'s own bot;
+so do the "Gateway shutting down/restarted" and `/update` notices for `P`'s
+sessions, `/loop` wakeups set from `P`'s chats, and the Discord
+unauthorized-slash operator alert of `P`'s Discord bot (to `P`'s home
+channel). If `P` has no connected bot for that platform the send fails with a
+clear error — it never falls back to the default profile's bot.
+
+Tool and memory-provider credentials follow the same rule. Hosted OCR
+(`FIRECRAWL_API_KEY`), Modal / Browser Use cloud gates, the mem0 OSS OpenAI
+key, xAI video, and every memory-provider identity (`MEM0_USER_ID`,
+`SUPERMEMORY_CONTAINER_TAG`, `RETAINDB_PROJECT`, `OPENVIKING_ACCOUNT/USER`,
+`HINDSIGHT_BANK_ID`, `HERMES_HONCHO_HOST`) are read from the routed profile's
+`.env`, so a secondary profile's memories land in **its** account/bank/project
+(or the provider's per-profile default), never the default profile's. Custom
+endpoints travel with their keys — `OPENAI_BASE_URL`, `XAI_BASE_URL`,
+`NOUS_INFERENCE_BASE_URL`, `GATEWAY_PROXY_URL`, Firecrawl / Browserbase /
+RetainDB / Supermemory / Honcho / Hindsight URLs — so a profile's key is never
+sent to another profile's proxy or self-hosted server. `WEIXIN_HOME_CHANNEL`,
+`HERMES_LANGUAGE` and `display.language`, and `hooks.outbound[].secret_env` are
+likewise per profile, and end-of-session memory extraction for an evicted
+secondary session runs under that profile's scope.
 
 ### Serving selected profiles
 

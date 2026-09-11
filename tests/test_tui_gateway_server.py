@@ -8974,6 +8974,36 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
+    """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
+    its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
+    sees the identity that exists rather than racing the mint."""
+    import threading
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured",
+                        lambda **_kw: pytest.fail("setup.status must read the record, not re-probe"))
+    release = threading.Event()
+
+    def slow_bootstrap():
+        release.wait(5)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+                                        has_identity=True, other_providers=False)
+            fb._done.set()
+    with fb._lock:
+        fb._started = True
+    threading.Thread(target=slow_bootstrap, daemon=True).start()
+    try:
+        release.set()
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["inference_provider"] == "nous"
+    finally:
+        fb.reset_for_tests()
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 

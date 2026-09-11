@@ -38,6 +38,16 @@ def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def _sql_json_extract(expression: str, path: str) -> str:
+    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
+
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) "
+        f"THEN {expression} ELSE json_object() END)"
+    )
+    return f"json_extract({safe_json}, {_sql_literal(path)})"
+
+
 def _sql_ltrim_whitespace(expression: str) -> str:
     return f"LTRIM({expression}, {_SQL_WHITESPACE})"
 
@@ -112,7 +122,7 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -166,7 +176,7 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
@@ -267,6 +277,19 @@ def _ended_by_compression(row) -> bool:
 def _placeholders(items) -> str:
     """``?,?,?`` for one bound parameter per element of *items* (a sequence or an int count)."""
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
+
+
+# Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+# < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
+# died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
+_SQL_IN_CHUNK = 900
+
+
+def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
+    """Yield *ids* (any iterable) as lists of at most *size* elements."""
+    ids = list(ids)
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
@@ -503,7 +526,16 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
+    -- _initialize_schema). Keeping the canonical fresh-install shape identical
+    -- to the tool's avoids a silent schema drift: the tool's lazy
+    -- ALTER TABLE ADD COLUMN used to be the only source of this column, so two
+    -- databases at the same schema_version had different
+    -- async_delegations shapes depending on whether the delegation tool had
+    -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
+    -- from the canonical schema (#94691).
+    origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -735,22 +767,20 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
-# Predicate over a ``sessions`` row (unqualified column names) selecting
-# sessions whose rows belong in the trigram index. Shared by the view, the
-# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
-# never disagree about the index boundary.
-FTS_TRIGRAM_SESSION_SQL = (
-    "source NOT IN ("
-    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
-)
-
-
-def fts_trigram_session_sql(alias: str) -> str:
-    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
-    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
-        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+def fts_trigram_session_sql(alias: str = "") -> str:
+    """Predicate over a ``sessions`` row selecting sessions whose rows belong in
+    the trigram index; ``alias`` qualifies every column for joins. Shared by the
+    view, the sync triggers, and the deferred-backfill INSERT ... SELECTs so they
+    can never disagree about the index boundary."""
+    q = f"{alias}." if alias else ""
+    return (
+        f"{q}source NOT IN ("
+        + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+        + f") AND {_sql_json_extract(q + 'model_config', '$._delegate_from')} IS NULL"
     )
+
+
+FTS_TRIGRAM_SESSION_SQL = fts_trigram_session_sql()
 
 
 FTS_TRIGRAM_SQL = f"""

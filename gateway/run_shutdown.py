@@ -877,7 +877,9 @@ class GatewayShutdownMixin:
         return len(notified)
 
     async def _shutdown_notification_target(self, session_key: str):
-        """``(source, platform_str, chat_id, thread_id)``: persisted origin > cached source > parsed key."""
+        """``(source, platform_str, chat_id, thread_id, profile)``: persisted origin > cached source >
+        parsed key. ``profile`` is the owning profile from the source or the ``agent:<profile>:`` key
+        namespace (``None`` = default) so the notice leaves through that profile's bot."""
         from gateway.run import _parse_session_key
         source = None
         try:
@@ -890,11 +892,11 @@ class GatewayShutdownMixin:
         if source is None:
             source = self._get_cached_session_source(session_key)
         if source is not None:
-            return source, source.platform.value, str(source.chat_id), source.thread_id
+            return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
         _parsed = _parse_session_key(session_key)
         if not _parsed:
             return None
-        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id")
+        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
@@ -946,13 +948,18 @@ class GatewayShutdownMixin:
             target = await self._shutdown_notification_target(session_key)
             if target is None:
                 continue
-            source, platform_str, chat_id, thread_id = target
+            source, platform_str, chat_id, thread_id, profile = target
             dedup_key = _notice_target_key(platform_str, chat_id, thread_id)
             if dedup_key in notified:
                 continue
             try:
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The session's OWN profile's bot (transport ref → profile map), never a bare
+                # self.adapters hit: under multiplex that is the default bot, so a secondary session's
+                # "Gateway shutting down" would land in the user's chat with the wrong bot.
+                adapter = self._adapter_for_source(source) if source is not None else None
+                if adapter is None:
+                    adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     continue
                 if not self._notice_allowed(platform, "active session"):

@@ -3,6 +3,36 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import type { Translations } from './types'
 
 export const zh: Translations = {
+  connectors: {
+    title: '连接你的应用',
+    connect: '连接',
+    skip: '暂不连接',
+    cancel: '停止等待',
+    retry: '重试',
+    grant: '重新连接',
+    connected: '已连接',
+    skipped: '已跳过',
+    disabled: '不可用',
+    failed: '连接失败',
+    needsAuth: '授权已过期',
+    opening: '正在打开登录…',
+    waiting: '请在浏览器中完成连接…',
+    timeout: '仍在等待授权。',
+    keepWaiting: '继续等待',
+    refresh: '刷新状态',
+    statusError: '无法检查连接，请刷新重试。',
+    connectError: '无法开始授权，请重试。',
+    unavailable: '此会话暂时无法使用连接器。',
+    ownerMissing: '请重新打开此对话以管理连接。',
+    search: '查找应用',
+    empty: '没有匹配的应用',
+    continue: '在对话中继续',
+    continueBusy: '等待当前操作完成',
+    continueFailed: '无法继续，请重试。',
+    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    execution: '连接器工具'
+  },
+
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -656,6 +686,10 @@ export const zh: Translations = {
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
+      appActionsTitle: '应用操作',
+      appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
+      appActionsLeft: '左侧',
+      appActionsRight: '右侧',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -1451,7 +1485,7 @@ export const zh: Translations = {
         `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
       quickstartDetailReady: model => `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
       quickstartAction: '为我设置',
-      quickstartConfigure: '自定义…',
+      quickstartConfigure: '让我选择',
       quickstartDoneToast: model => `${model} 已就绪——新会话将在本机运行。`,
       quickstartFailed: '本地模型设置失败',
       quickstartStageEngine: '引擎',
@@ -1467,9 +1501,12 @@ export const zh: Translations = {
       recommendedReason: {
         'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
         'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
-        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。',
-        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。'
+        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。'
       } as Record<string, string>,
+      noRecommendationTitle: '此设备暂无自动推荐模型',
+      noRecommendationDetail:
+        '自动设置需要一个可完全放入显存或统一内存的精选模型。你仍可在下方自行选择，或浏览更多模型。',
+      noRecommendationAction: '浏览模型',
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,
       downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
@@ -3267,6 +3304,10 @@ export const zh: Translations = {
     }
   },
 
+  guidedGreeting: {
+    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
+    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3411,6 +3452,51 @@ export const zh: Translations = {
     docs: provider => `${provider} 文档`
   },
 
+  // Not yet translated — English fallbacks so the free-tier surfaces stay
+  // readable until a zh pass lands.
+  freeTier: {
+    providerRowTitle: 'Nous · 免费层',
+    providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
+    readyTitle: 'Hermes 已就绪。',
+    readyCaption: '免费 · 含连接器',
+    begin: '开始',
+    signInInstead: '改为登录 Nous 账户',
+    otherProviders: '其他提供方',
+    stripTitle: '免费的 Nous 推理和连接器现已可用。',
+    stripBody: '打开模型选择器试用，或登录 Nous 账户。',
+    openModelPicker: '打开模型选择器',
+    dismiss: '关闭',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: '登录',
+    signInHeading: '登录 Nous 账户以解锁更多模型和工具。',
+    settingUp: '正在设置免费推理…',
+    codeBody: '在浏览器中输入此代码以完成登录。',
+    copyLink: '复制链接',
+    doNotShare: '请勿分享此代码。',
+    waiting: '等待登录…',
+    finishingHeading: '正在完成登录…',
+    finishingBody: '已在浏览器中批准。正在获取账户令牌。',
+    signedInAs: email => `已登录为 ${email}`,
+    signedIn: '已登录。',
+    completedBody: '现在由你的账户提供推理和工具。',
+    defaultModel: '默认模型',
+    change: '更改',
+    done: '完成',
+    notNow: '暂不',
+    tryAgain: '重试',
+    startAgain: '重新开始',
+    didNotComplete: '登录未完成',
+    rejectedBody: '登录在浏览器中被拒绝。你仍在免费层。',
+    supersededBody: '一个更新的登录代码替换了此代码。',
+    timedOutHeading: '登录超时',
+    timedOutBody: '代码未在有效期内使用。你仍在免费层。',
+    retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
+    errorBody: '登录未完成；请重试。',
+    alreadySignedInHeading: '已登录。',
+    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
+  },
+
   modelPicker: {
     title: '切换模型',
     current: '当前：',
@@ -3535,6 +3621,7 @@ export const zh: Translations = {
       toggleTerminal: '终端',
       toggleTokensPerSecond: '每秒 token 数',
       toggleVersion: '版本与更新',
+      toggleFreeTier: 'Free tier',
       toggleWorkspace: '工作区',
       cacheHitRateTitle: '本会话的提示缓存命中率 — 缓存 token 更便宜，越高越省',
       tokensPerSecondTitle: '每秒输出 token 数，取最近 10 次模型调用的平均值',
@@ -4072,6 +4159,9 @@ export const zh: Translations = {
     readOnlyTranscriptSendBlocked: '该会话目前以只读记录方式打开——发送已禁用。',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    poolSlotTimeoutBody:
+      '所有本地配置后端槽位都在使用中。请在“设置”→“高级”中增加 Warm Bot Backends，或等待空闲后端被驱逐后重试。',
+    poolSlotTimeoutOpenSettings: '打开高级设置',
     resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',

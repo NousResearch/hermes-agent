@@ -484,6 +484,10 @@ export const zhHant = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
+      appActionsTitle: '應用操作',
+      appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
+      appActionsLeft: '左側',
+      appActionsRight: '右側',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',
@@ -1131,9 +1135,13 @@ export const zhHant = defineLocale({
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
           '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。',
-        'least-painful-spilled': '沒有模型能完全裝入 GPU 記憶體——這是從系統記憶體執行表現最好的一個。'
+        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
       } as Record<string, string>,
+      noRecommendationTitle: '此裝置暫無自動推薦模型',
+      noRecommendationDetail:
+        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
+      noRecommendationAction: '瀏覽模型',
+      quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
       downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
@@ -2605,6 +2613,10 @@ export const zhHant = defineLocale({
     }
   },
 
+  guidedGreeting: {
+    line: '來了，進來吧。我是 Hermes。給我兩分鐘，把這裡按你的習慣整理一下，然後我們找件你真正想做的事來做。\n\n先說，我該怎麼稱呼你？',
+    nameSuggestion: (name: string) => `（如果你願意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3355,6 +3367,9 @@ export const zhHant = defineLocale({
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    poolSlotTimeoutBody:
+      '所有本機設定檔後端插槽目前都在使用中。請在「設定」→「進階」中增加 Warm Bot Backends，或等待閒置後端被移除後重試。',
+    poolSlotTimeoutOpenSettings: '開啟進階設定',
     resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',

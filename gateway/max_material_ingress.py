@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,9 @@ class IngressDispatchResult:
     status: str
 
 
+_TELEGRAM_IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+
+
 def dispatch(*, settings: object, chat_id: str, user_id: str, message_ids: list[str],
              media_group_id: str | None, cached_paths: list[str]) -> IngressDispatchResult:
     """Stage one authorized JPEG/PNG batch and invoke no configurable shell."""
@@ -25,6 +29,11 @@ def dispatch(*, settings: object, chat_id: str, user_id: str, message_ids: list[
         return IngressDispatchResult(False, "unauthorized")
     root_value = settings.get("staging_root")
     if not isinstance(root_value, str) or not message_ids or len(message_ids) != len(cached_paths):
+        return IngressDispatchResult(True, "failed")
+    if (not all(isinstance(message_id, str) and _TELEGRAM_IDENTIFIER.fullmatch(message_id)
+                for message_id in message_ids)
+            or media_group_id is not None
+            and (not isinstance(media_group_id, str) or not _TELEGRAM_IDENTIFIER.fullmatch(media_group_id))):
         return IngressDispatchResult(True, "failed")
     root = Path(root_value)
     try:

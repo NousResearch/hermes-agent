@@ -15,11 +15,26 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
+import { MAX_COMPOSER_TEXT_CHARS } from '@/store/composer'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
 import { pathifyRefs } from './path-refs'
 import { extractClipboardImageBlobs } from './text-utils'
 import { linkifyUrls } from './url-refs'
+
+/** Prepare pasted text for composer insertion (#98562): links/paths chip as
+ *  usual, but a paste over MAX_COMPOSER_TEXT_CHARS is clamped to a plain-text
+ *  prefix — linkify/pathify/DOM-chipping a multi-megabyte blob synchronously
+ *  on the UI thread is what froze the app. Both paste entry points (the
+ *  focused editor's handlePaste and the window-level route below) share this
+ *  so neither can bypass the ceiling. */
+export function preparePastedText(text: string): string {
+  if (text.length > MAX_COMPOSER_TEXT_CHARS) {
+    return text.slice(0, MAX_COMPOSER_TEXT_CHARS)
+  }
+
+  return pathifyRefs(linkifyUrls(text))
+}
 
 /** Route clipboard contents to the active composer. True when it carried
  *  something a composer can take (the caller should swallow the event). */
@@ -35,7 +50,7 @@ export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
   if (text && !DATA_IMAGE_URL_RE.test(text)) {
     // Same chipping the focused paste path applies: links land as `@url:`
     // chips, bare `@path` tokens promote. The insert focuses the composer.
-    requestComposerInsert(pathifyRefs(linkifyUrls(text)), { mode: 'inline' })
+    requestComposerInsert(preparePastedText(text), { mode: 'inline' })
 
     return true
   }

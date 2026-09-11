@@ -176,6 +176,14 @@ export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
 
 const NEW_SESSION_DRAFT_KEY = '__new__'
 const MAX_PERSISTED_DRAFTS = 50
+
+// Hard ceiling on any single composer text, pasted or otherwise. The paste
+// paths clamp to it before building DOM (#98562), and persistence drops
+// drafts over it so an oversized paste can never poison the next cold launch
+// — localStorage would otherwise rehydrate a megabyte draft into a full chip
+// DOM rebuild before first paint and re-freeze the renderer.
+export const MAX_COMPOSER_TEXT_CHARS = 100_000
+
 const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 
 export interface SessionDraft {
@@ -365,7 +373,7 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
 function persistDraftTexts() {
   try {
     const entries = [...draftsBySession]
-      .filter(([, draft]) => draft.text)
+      .filter(([, draft]) => draft.text && draft.text.length <= MAX_COMPOSER_TEXT_CHARS)
       .slice(-MAX_PERSISTED_DRAFTS)
       .map(([key, draft]) => [key, draft.text] as const)
 

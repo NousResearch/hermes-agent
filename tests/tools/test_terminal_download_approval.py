@@ -1,7 +1,10 @@
 """Regression tests for session-scoped downloaded-script approval."""
 
+from types import SimpleNamespace
+
 import pytest
 
+import tools.terminal_tool as terminal_module
 from tools.approval import detect_dangerous_command
 from tools.terminal_download_provenance import (
     clear_session,
@@ -61,3 +64,41 @@ def test_downloaded_script_provenance_is_success_session_path_and_ttl_scoped():
     finally:
         clear_session(session)
         clear_session("same-command")
+
+
+def test_terminal_routes_download_provenance_into_combined_approval(monkeypatch):
+    session = "download-terminal-integration"
+    clear_session(session)
+    record_successful_command(
+        "curl https://example.test/install.sh -o install.sh",
+        session_key=session,
+        cwd="/repo",
+        exit_code=0,
+    )
+    plan = SimpleNamespace(
+        config={"env_type": "local"},
+        env_type="local",
+        effective_task_id=session,
+        cwd="/repo",
+        promoted_from_foreground_timeout=None,
+    )
+    captured = {}
+
+    monkeypatch.setattr(terminal_module, "_plan_execution", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(terminal_module, "_acquire_env", lambda *args, **kwargs: object())
+    monkeypatch.setattr(terminal_module, "_pre_exec_block", lambda *args, **kwargs: None)
+
+    def approve(*args, **kwargs):
+        captured.update(kwargs)
+        return terminal_module._ApprovalVerdict()
+
+    monkeypatch.setattr(terminal_module, "_run_approval_guards", approve)
+    monkeypatch.setattr(terminal_module, "_run_foreground", lambda *args, **kwargs: "ok")
+    try:
+        assert terminal_module.terminal_tool("bash install.sh", task_id=session) == "ok"
+        assert captured["additional_dangerous"] == (
+            "execute recently downloaded script",
+            "execute a script downloaded earlier in this session",
+        )
+    finally:
+        clear_session(session)

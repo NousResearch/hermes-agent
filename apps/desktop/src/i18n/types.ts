@@ -74,10 +74,9 @@ export interface Translations {
     ownerMissing: string
     search: string
     empty: string
-    continue: string
-    continueBusy: string
-    continueFailed: string
     disclaimer: string
+    connectTitle: (app: string) => string
+    describe: (app: string) => string
     execution: string
   }
   sessionImport: {

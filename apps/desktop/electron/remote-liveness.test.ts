@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_PATH,
   POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
@@ -260,7 +261,7 @@ describe('revalidateRemoteConnection', () => {
 })
 
 describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
-  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+  function harness() {
     const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
     const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
     const stalePromise = Promise.resolve(stale)
@@ -276,27 +277,125 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
       return replacement
     })
 
+    return {
+      currentPromise: () => currentPromise,
+      reconnect,
+      replacement,
+      retire,
+      stale,
+      stalePromise
+    }
+  }
+
+  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+    const test = harness()
+
     const probe = vi.fn(async connection => {
-      if (connection === stale) {
+      if (connection === test.stale) {
         throw new Error('connect ECONNREFUSED 127.0.0.1:49525')
       }
     })
 
     await expect(
       ensureHealthyPooledRemoteBackendForDispatch({
-        connectionPromise: stalePromise,
-        currentConnectionPromise: () => currentPromise,
+        connectionPromise: test.stalePromise,
+        currentConnectionPromise: test.currentPromise,
         probe,
-        reconnect,
-        retire
+        reconnect: test.reconnect,
+        retire: test.retire
       })
-    ).resolves.toBe(replacement)
+    ).resolves.toBe(test.replacement)
 
-    expect(probe).toHaveBeenCalledWith(stale, '/api/status', {
+    expect(probe).toHaveBeenCalledWith(test.stale, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
-    expect(retire).toHaveBeenCalledOnce()
-    expect(reconnect).toHaveBeenCalledOnce()
+    expect(test.retire).toHaveBeenCalledOnce()
+    expect(test.reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('retires a cached descriptor whose session token is rejected (403) and verifies the replacement', async () => {
+    const test = harness()
+
+    const probe = vi.fn(async connection => {
+      if (connection === test.stale) {
+        // #103795: /api/status answers 200 to a backend whose wsUrl token is
+        // dead, so this cached descriptor used to be dispatched forever and
+        // the renderer redialed 403s against the same stale wsUrl.
+        const error: any = new Error('403: Forbidden')
+        error.statusCode = 403
+
+        throw error
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: test.stalePromise,
+        currentConnectionPromise: test.currentPromise,
+        probe,
+        reconnect: test.reconnect,
+        retire: test.retire
+      })
+    ).resolves.toBe(test.replacement)
+
+    expect(probe).toHaveBeenCalledWith(test.stale, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(test.retire).toHaveBeenCalledOnce()
+    expect(test.reconnect).toHaveBeenCalledOnce()
+    // The replacement's credential was verified before dispatch.
+    expect(probe).toHaveBeenLastCalledWith(test.replacement, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+  })
+
+  it('fails closed when the reconnected backend still rejects the credential', async () => {
+    const test = harness()
+
+    const probe = vi.fn(async () => {
+      const error: any = new Error('401: Unauthorized')
+      error.statusCode = 401
+
+      throw error
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: test.stalePromise,
+        currentConnectionPromise: test.currentPromise,
+        probe,
+        reconnect: test.reconnect,
+        retire: test.retire
+      })
+    ).rejects.toMatchObject({ kind: 'credential-rejected' })
+
+    expect(test.retire).toHaveBeenCalledOnce()
+    expect(test.reconnect).toHaveBeenCalledOnce()
+    expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  it('dispatches without retiring when the token is accepted but the backend is not ssh-owned (404)', async () => {
+    const test = harness()
+
+    const probe = vi.fn(async () => {
+      const error: any = new Error('404: SSH ownership is not active')
+      error.statusCode = 404
+
+      throw error
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: test.stalePromise,
+        currentConnectionPromise: test.currentPromise,
+        probe,
+        reconnect: test.reconnect,
+        retire: test.retire
+      })
+    ).resolves.toBe(test.stale)
+
+    expect(test.retire).not.toHaveBeenCalled()
+    expect(test.reconnect).not.toHaveBeenCalled()
   })
 })
 

@@ -4,6 +4,14 @@ export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // shorter than the background liveness budget so a dead tunnel reconnects
 // promptly instead of making the click feel hung.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 2_500
+// #103795: /api/status and /api/health are PUBLIC by design, so a cached
+// descriptor whose session token was rotated (backend respawned/superseded)
+// passed every liveness probe and its dead wsUrl was handed to every dial —
+// the renderer then 403-looped forever. /api/ssh/ownership is token-gated:
+// 401/403 means the credential is rejected (fail closed, re-fetch by
+// reconnect), 404 means the token was ACCEPTED but the backend is not
+// ssh-owned (plain URL/gateway remote, or a pre-ownership Hermes) — healthy.
+export const POOLED_REMOTE_DISPATCH_PROBE_PATH = '/api/ssh/ownership'
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -68,12 +76,45 @@ export class RemoteRevalidationCoordinator {
   }
 }
 
-interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
+export interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+}
+
+// HTTP status of a probe failure, from the structured error or the legacy
+// "NNN: ..." message prefix (same shape backend-health.ts matches on).
+export function remoteProbeHttpStatus(error: unknown): number | null {
+  if (typeof error === 'object' && error !== null) {
+    const code = (error as { statusCode?: unknown }).statusCode
+    if (typeof code === 'number' && Number.isInteger(code)) {
+      return code
+    }
+  }
+
+  const match = /^(\d{3}):/.exec(error instanceof Error ? error.message : String(error ?? ''))
+
+  return match ? Number(match[1]) : null
+}
+
+function isCredentialRejected(status: number | null): boolean {
+  return status === 401 || status === 403
+}
+
+function credentialRejectedError(connection: unknown, status: number | null): Error {
+  const error: any = new Error(
+    `The cached backend session token was rejected (HTTP ${status ?? 'auth'}); ` +
+      'reconnection could not restore it, refusing the stale WebSocket credential. ' +
+      'Reconnect the connection to spawn a fresh backend.'
+  )
+
+  error.kind = 'credential-rejected'
+  error.statusCode = status ?? 401
+  error.connection = connection
+
+  return error
 }
 
 /**
@@ -83,6 +124,16 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
  * prevent a late probe from tearing down a replacement installed by another
  * caller. The caller should single-flight this function per cached promise so
  * concurrent dispatches share one retire/reconnect sequence.
+ *
+ * The probe target is TOKEN-GATED (#103795): a public liveness endpoint cannot
+ * tell a rotated/rejected session token from a live one, so a cached wsUrl
+ * with a dead credential used to be dispatched forever while the renderer
+ * redialed 403s. Probe failures classify as:
+ *   - 404  -> the credential was ACCEPTED but the backend is not ssh-owned
+ *            (URL/gateway remotes, pre-ownership Hermes): healthy, dispatch.
+ *   - 401/403 -> the credential is rejected: retire, reconnect, and verify the
+ *            replacement's credential before dispatching it (fail closed).
+ *   - anything else -> transport/dead-tunnel: retire and reconnect as before.
  */
 export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
   connectionPromise,
@@ -100,15 +151,45 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
+    await probe(connection, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
   } catch (error) {
+    const status = remoteProbeHttpStatus(error)
+
+    if (status === 404 && connection !== undefined) {
+      // Authenticated (the token passed the gate) but not ssh-owned: the
+      // credential is valid — never retire a healthy URL/gateway remote.
+      return currentConnectionPromise() === connectionPromise ? connection : reconnect()
+    }
+
+    const credentialRejected = isCredentialRejected(status)
+
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)
     }
 
-    return reconnect()
+    const replacement = await reconnect()
+
+    if (!credentialRejected) {
+      return replacement
+    }
+
+    // The stale credential is gone; fail closed unless the replacement proves
+    // its own credential live (a fresh SSH spawn re-mints and persists one).
+    try {
+      await probe(replacement, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    } catch (verifyError) {
+      if (isCredentialRejected(remoteProbeHttpStatus(verifyError))) {
+        throw credentialRejectedError(replacement, remoteProbeHttpStatus(verifyError))
+      }
+
+      throw verifyError
+    }
+
+    return replacement
   }
 
   if (currentConnectionPromise() !== connectionPromise) {

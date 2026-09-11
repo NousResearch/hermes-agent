@@ -131,8 +131,8 @@ describe('selectProfile startup preference (#79886)', () => {
     }
   })
 
-  it('remembers the selected workspace for the next Desktop launch', async () => {
-    activeGatewayConnectionId.mockReturnValue(null)
+  it.each([null, 'local'])('remembers a local workspace selected on source %s for the next Desktop launch', async source => {
+    activeGatewayConnectionId.mockReturnValue(source)
 
     selectProfile('tilly')
 
@@ -201,8 +201,8 @@ describe('selectProfile startup preference (#79886)', () => {
     await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
   })
 
-  it('does not replace the local startup preference for a profile SSH override', async () => {
-    activeGatewayConnectionId.mockReturnValue(null)
+  it.each([null, 'local'])('does not replace the local startup preference for a profile SSH override on source %s', async source => {
+    activeGatewayConnectionId.mockReturnValue(source)
 
     const getConnection = vi.fn(async () => ({ mode: 'remote', remoteKind: 'ssh' }))
 

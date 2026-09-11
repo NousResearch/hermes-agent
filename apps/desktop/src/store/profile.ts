@@ -816,12 +816,13 @@ export function selectProfile(name: string): void {
   // The profile rail is a live workspace switch, so it must not call
   // profile.set() and reload the window. Once activation succeeds, remember
   // the selection for the next Desktop launch through the persistence-only
-  // IPC instead (#79886). Registry-source picks name ANOTHER source's
-  // profiles, so only a primary-backend activation updates the startup
-  // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // IPC instead (#79886). Both the legacy primary and explicit "This device"
+  // source can select a local startup profile. Remote registry-source picks
+  // name another machine's profiles and must not replace that preference.
+  const connectionId = activeGatewayConnectionId()
+  const onLocalSource = connectionId == null || connectionId === LOCAL_CONNECTION_ID
 
-  const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
+  const shouldRememberStartupProfile = onLocalSource ? isLocalDesktopProfile(target) : Promise.resolve(false)
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {

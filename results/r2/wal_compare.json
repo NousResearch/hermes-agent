@@ -1,0 +1,10 @@
+{
+ "delete": {
+  "journal": "delete",
+  "add300_ms": 3966.9
+ },
+ "wal": {
+  "journal": "wal",
+  "add300_ms": 1322.3
+ }
+}

@@ -1,0 +1,9 @@
+{
+  "prefetch_chars": 85,
+  "prefetch_tokens_est": 21,
+  "prefetch_ms": 0.0,
+  "has_injection": true,
+  "llm_calls": 0,
+  "arm": "baseline",
+  "ts": 1789126337.6073556
+}

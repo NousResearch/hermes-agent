@@ -1,0 +1,10 @@
+{
+ "singles1k_ms_per": 13.52,
+ "batch1k_ms_per": 0.91,
+ "batch_search_ms": 3.31,
+ "delete_batch1k_ms": 580.0,
+ "delete_journal": "delete",
+ "wal_batch1k_ms": 502.3,
+ "wal_journal": "wal",
+ "llm_calls": 0
+}

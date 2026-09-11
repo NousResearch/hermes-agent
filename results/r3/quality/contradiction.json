@@ -1,0 +1,10 @@
+{
+ "conflict_cases": 20,
+ "found": 20,
+ "agreement_cases": 20,
+ "false_alarms": 0,
+ "paraphrase_value_cases": 10,
+ "paraphrase_found": 10,
+ "arm": "r3",
+ "llm_calls": 0
+}

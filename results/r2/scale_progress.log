@@ -1,0 +1,41 @@
+09:57:52 R2 scale start
+09:59:30 add progress 2000/10000 avg_ms=73.7
+10:03:10 add progress 4000/10000 avg_ms=131.9
+10:08:49 add progress 6000/10000 avg_ms=196.5
+10:16:50 add progress 8000/10000 avg_ms=266.3
+10:27:16 add progress 10000/10000 avg_ms=346.9
+10:27:18 10k done add_per=176.4ms search_p95=22.49ms db=47747072
+10:27:24 wal_compare done {'delete': {'journal': 'delete', 'add300_ms': 3966.9}, 'wal': {'journal': 'wal', 'add300_ms': 1322.3}}
+10:28:58 add progress 2000/50000 avg_ms=68.1
+10:37:03 R2 scale start
+10:38:42 50k progress 2000/50000 avg_ms=49.2
+10:42:20 50k progress 4000/50000 avg_ms=79.0
+10:49:01 R2 scale start
+10:49:01 50k resume from 0
+10:50:35 50k progress 2000/50000 avg_ms=46.8
+10:53:59 50k progress 4000/50000 avg_ms=74.5
+10:59:38 50k progress 6000/50000 avg_ms=106.1
+11:06:53 50k progress 8000/50000 avg_ms=134.0
+11:16:07 50k progress 10000/50000 avg_ms=162.6
+11:27:21 50k progress 12000/50000 avg_ms=191.7
+11:40:39 50k progress 14000/50000 avg_ms=221.3
+11:56:57 50k progress 16000/50000 avg_ms=254.7
+12:14:19 50k progress 18000/50000 avg_ms=284.3
+12:33:32 50k progress 20000/50000 avg_ms=313.5
+12:54:48 50k progress 22000/50000 avg_ms=343.0
+13:18:06 50k progress 24000/50000 avg_ms=372.7
+13:43:31 50k progress 26000/50000 avg_ms=402.7
+14:11:08 50k progress 28000/50000 avg_ms=433.1
+14:41:20 50k progress 30000/50000 avg_ms=464.6
+15:13:50 50k progress 32000/50000 avg_ms=496.5
+15:48:43 50k progress 34000/50000 avg_ms=528.9
+16:26:08 50k progress 36000/50000 avg_ms=561.9
+17:06:07 50k progress 38000/50000 avg_ms=595.4
+17:48:52 50k progress 40000/50000 avg_ms=629.8
+18:33:39 50k progress 42000/50000 avg_ms=663.8
+19:20:39 50k progress 44000/50000 avg_ms=697.7
+20:10:39 50k progress 46000/50000 avg_ms=732.6
+21:04:25 50k progress 48000/50000 avg_ms=769.3
+22:03:51 50k progress 50000/50000 avg_ms=809.8
+22:03:58 50k done {'p50': 92.53, 'p95': 123.94, 'p99': 143.5, 'mean_ms': 96.72, 'n_queries': 50, 'update_ms': 2594.09, 'feedback_ms': 5.03, 'prefetch_like_ms': 101.12, 'n': 50000, 'add_total_ms': 40490646.3, 'add_per_fact_ms': 809.81, 'db_bytes': 238579712, 'completed': True, 'llm_calls': 0}
+22:03:58 R2 scale ALL DONE

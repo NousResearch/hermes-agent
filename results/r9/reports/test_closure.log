@@ -1,0 +1,50 @@
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 25 test files (~196 tests) under ['tests\\plugins\\memory\\test_holographic_store.py', 'tests\\plugins\\memory\\test_holographic_retrieval.py', 'tests\\plugins\\memory\\test_holographic_auto_extract.py', 'tests\\plugins\\memory\\test_holographic_shutdown_closes_db.py', 'tests\\plugins\\test_holographic_vector_storage.py', 'tests\\plugins\\memory\\test_r1_benchmark.py', 'tests\\plugins\\memory\\test_r1_semantic_brain.py', 'tests\\plugins\\memory\\test_r2_hardening.py', 'tests\\plugins\\memory\\test_r3_storage.py', 'tests\\plugins\\memory\\test_r3_retrieval.py', 'tests\\plugins\\memory\\test_r3_semantic.py', 'tests\\plugins\\memory\\test_r3_quality.py', 'tests\\plugins\\memory\\test_r4_temporal.py', 'tests\\plugins\\memory\\test_r4_paraphrase.py', 'tests\\plugins\\memory\\test_r4_thai.py', 'tests\\plugins\\memory\\test_r4_security.py', 'tests\\plugins\\memory\\test_r5_invariants.py', 'tests\\plugins\\memory\\test_r5_fuzz.py', 'tests\\plugins\\memory\\test_r5_security.py', 'tests\\plugins\\memory\\test_r5_recovery.py', 'tests\\plugins\\memory\\test_r5_perf.py', 'tests\\plugins\\memory\\test_r5_longrun.py', 'tests\\plugins\\memory\\test_r6_ops.py', 'tests\\plugins\\memory\\test_r7_integration.py', 'tests\\plugins\\memory\\test_r8_release.py']; running with -j 16
+[  4.1% |     8/~196 | ✓0 | ✗0] ✓ tests\plugins\memory\test_holographic_retrieval.py (1s, 7.9s)
+[  5.6% |    11/~196 | ✓3 | ✗0] ✓ tests\plugins\memory\test_r4_paraphrase.py (3✓, 9.0s)
+[  6.6% |    13/~196 | ✓5 | ✗0] ✓ tests\plugins\memory\test_r3_semantic.py (2✓, 9.0s)
+[  8.2% |    16/~196 | ✓8 | ✗0] ✓ tests\plugins\memory\test_holographic_shutdown_closes_db.py (3✓, 9.7s)
+[  8.7% |    17/~196 | ✓9 | ✗0] ✓ tests\plugins\memory\test_r4_thai.py (1✓, 9.5s)
+[ 12.2% |    24/~196 | ✓16 | ✗ 0] ✓ tests\plugins\memory\test_r3_retrieval.py (7✓, 9.7s)
+[ 17.3% |    34/~196 | ✓36 | ✗ 0] ✓ tests\plugins\memory\test_r1_semantic_brain.py (20✓, 10.0s)
+[ 21.9% |    43/~196 | ✓45 | ✗ 0] ✓ tests\plugins\memory\test_r4_security.py (9✓, 9.9s)
+[ 25.0% |    49/~196 | ✓52 | ✗ 0] ✓ tests\plugins\memory\test_r1_benchmark.py (7✓, 10.2s)
+[ 29.6% |    58/~196 | ✓57 | ✗ 0] ✓ tests\plugins\memory\test_r3_storage.py (5✓ 4s, 10.1s)
+[ 36.7% |    72/~196 | ✓71 | ✗ 0] ✓ tests\plugins\memory\test_r2_hardening.py (14✓, 10.9s)
+[ 39.8% |    78/~196 | ✓84 | ✗ 0] ✓ tests\plugins\memory\test_holographic_auto_extract.py (13✓, 10.9s)
+[ 46.4% |    91/~196 | ✓97 | ✗ 0] ✓ tests\plugins\memory\test_holographic_store.py (13✓, 11.1s)
+[ 51.0% |   100/~196 | ✓106 | ✗  0] ✓ tests\plugins\memory\test_r3_quality.py (9✓, 11.4s)
+[ 66.8% |   131/~196 | ✓137 | ✗  0] ✓ tests\plugins\memory\test_r4_temporal.py (31✓, 12.9s)
+[ 67.3% |   132/~196 | ✓138 | ✗  0] ✓ tests\plugins\memory\test_r5_invariants.py (1✓, 7.5s)
+[ 73.0% |   143/~196 | ✓138 | ✗  0] ✓ tests\plugins\test_holographic_vector_storage.py (1s, 5.9s)
+[ 75.5% |   148/~196 | ✓143 | ✗  0] ✓ tests\plugins\memory\test_r5_recovery.py (5✓, 6.9s)
+[ 77.0% |   151/~196 | ✓146 | ✗  0] ✓ tests\plugins\memory\test_r7_integration.py (3✓, 6.8s)
+[ 81.6% |   160/~196 | ✓155 | ✗  0] ✓ tests\plugins\memory\test_r5_security.py (9✓, 7.2s)
+[ 84.2% |   165/~196 | ✓160 | ✗  0] ✓ tests\plugins\memory\test_r8_release.py (5✓, 6.9s)
+[ 84.7% |   166/~196 | ✓161 | ✗  0] ✓ tests\plugins\memory\test_r5_fuzz.py (1✓, 17.2s)
+[ 87.2% |   171/~196 | ✓165 | ✗  0] ✓ tests\plugins\memory\test_r5_perf.py (4✓ 1s, 9.0s)
+[ 99.5% |   195/~196 | ✓185 | ✗  0] ✓ tests\plugins\memory\test_r6_ops.py (20✓ 4s, 10.2s)
+[100.0% |   196/~196 | ✓186 | ✗  0] ✓ tests\plugins\memory\test_r5_longrun.py (1✓, 29.4s)
+
+=== Summary: 25 files, 186 tests passed, 0 failed, 11 skipped (100% complete) in 38.5s (16 workers) ===
+  Durations cached to test_durations.json (25 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   25
+  Total subprocess CPU-wall: 259.3s  (runner wall: 38.5s, parallelism: 16x)
+  P50: 9.70s  P90: 12.88s  P95: 17.23s  P99: 29.36s  Max: 29.36s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+     29.36s  tests\plugins\memory\test_r5_longrun.py
+     17.23s  tests\plugins\memory\test_r5_fuzz.py
+     12.88s  tests\plugins\memory\test_r4_temporal.py
+     11.39s  tests\plugins\memory\test_r3_quality.py
+     11.06s  tests\plugins\memory\test_holographic_store.py
+     10.88s  tests\plugins\memory\test_holographic_auto_extract.py
+     10.86s  tests\plugins\memory\test_r2_hardening.py
+     10.25s  tests\plugins\memory\test_r1_benchmark.py
+     10.23s  tests\plugins\memory\test_r6_ops.py
+     10.14s  tests\plugins\memory\test_r3_storage.py

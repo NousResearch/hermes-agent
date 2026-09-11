@@ -1,0 +1,17 @@
+{
+ "steps": [
+  "init",
+  "add",
+  "search",
+  "feedback",
+  "supersede",
+  "stale",
+  "revalidate=UNCHANGED",
+  "maintenance-LIGHT-ok",
+  "health=HEALTHY",
+  "backup",
+  "verify"
+ ],
+ "result": "ALL PASS",
+ "llm_calls": 0
+}

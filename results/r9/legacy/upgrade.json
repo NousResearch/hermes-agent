@@ -1,0 +1,9 @@
+{
+ "facts_preserved": 2,
+ "retrieval": "ok",
+ "maintenance_LIGHT_ok": true,
+ "health_after_backfill": "HEALTHY",
+ "silent_reset": false,
+ "note": "pre-HRR rows get derived vectors backfilled on first bank rebuild (R9 fix)",
+ "llm_calls": 0
+}

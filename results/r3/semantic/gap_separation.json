@@ -1,0 +1,433 @@
+{
+ "summary": {
+  "SEMANTIC": {
+   "n": 60,
+   "hits": 13,
+   "hit_rate": 0.217
+  },
+  "LEXICAL": {
+   "n": 5,
+   "hits": 5,
+   "hit_rate": 1.0
+  },
+  "TOKEN": {
+   "n": 5,
+   "hits": 5,
+   "hit_rate": 1.0
+  },
+  "RANK": {
+   "n": 5,
+   "hits": 5,
+   "hit_rate": 1.0
+  },
+  "ENTITY": {
+   "n": 5,
+   "hits": 5,
+   "hit_rate": 1.0
+  }
+ },
+ "rows": [
+  {
+   "qid": "s01",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s02",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s03",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s04",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s05",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s06",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s07",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s08",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s09",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s10",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s11",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s12",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s13",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s14",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s15",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s16",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s17",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s18",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s19",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s20",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s21",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s22",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s23",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s24",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s25",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s26",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s27",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s28",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s29",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s30",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s31",
+   "class": "LEXICAL",
+   "hit": true
+  },
+  {
+   "qid": "s32",
+   "class": "LEXICAL",
+   "hit": true
+  },
+  {
+   "qid": "s33",
+   "class": "LEXICAL",
+   "hit": true
+  },
+  {
+   "qid": "s34",
+   "class": "LEXICAL",
+   "hit": true
+  },
+  {
+   "qid": "s35",
+   "class": "LEXICAL",
+   "hit": true
+  },
+  {
+   "qid": "s36",
+   "class": "TOKEN",
+   "hit": true
+  },
+  {
+   "qid": "s37",
+   "class": "TOKEN",
+   "hit": true
+  },
+  {
+   "qid": "s38",
+   "class": "TOKEN",
+   "hit": true
+  },
+  {
+   "qid": "s39",
+   "class": "TOKEN",
+   "hit": true
+  },
+  {
+   "qid": "s40",
+   "class": "TOKEN",
+   "hit": true
+  },
+  {
+   "qid": "s41",
+   "class": "RANK",
+   "hit": true
+  },
+  {
+   "qid": "s42",
+   "class": "RANK",
+   "hit": true
+  },
+  {
+   "qid": "s43",
+   "class": "RANK",
+   "hit": true
+  },
+  {
+   "qid": "s44",
+   "class": "RANK",
+   "hit": true
+  },
+  {
+   "qid": "s45",
+   "class": "RANK",
+   "hit": true
+  },
+  {
+   "qid": "s46",
+   "class": "ENTITY",
+   "hit": true
+  },
+  {
+   "qid": "s47",
+   "class": "ENTITY",
+   "hit": true
+  },
+  {
+   "qid": "s48",
+   "class": "ENTITY",
+   "hit": true
+  },
+  {
+   "qid": "s49",
+   "class": "ENTITY",
+   "hit": true
+  },
+  {
+   "qid": "s50",
+   "class": "ENTITY",
+   "hit": true
+  },
+  {
+   "qid": "s51",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s52",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s53",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s54",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s55",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s56",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s57",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s58",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s59",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s60",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s61",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s62",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s63",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s64",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s65",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s66",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s67",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s68",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s69",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s70",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s71",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s72",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s73",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s74",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s75",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s76",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s77",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s78",
+   "class": "SEMANTIC",
+   "hit": false
+  },
+  {
+   "qid": "s79",
+   "class": "SEMANTIC",
+   "hit": true
+  },
+  {
+   "qid": "s80",
+   "class": "SEMANTIC",
+   "hit": false
+  }
+ ],
+ "backend": "none",
+ "llm_calls": 0
+}

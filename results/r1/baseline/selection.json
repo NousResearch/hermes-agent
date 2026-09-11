@@ -1,0 +1,29 @@
+{
+  "queries": [
+    {
+      "qid": "qh1",
+      "ranked": [
+        "h_real1",
+        "h_n4",
+        "a_deploy"
+      ],
+      "rejected_hit": [],
+      "relevant_hit": [
+        "h_real1"
+      ]
+    },
+    {
+      "qid": "qh2",
+      "ranked": [
+        "h_real2"
+      ],
+      "rejected_hit": [],
+      "relevant_hit": [
+        "h_real2"
+      ]
+    }
+  ],
+  "llm_calls": 0,
+  "arm": "baseline",
+  "ts": 1789126336.9923646
+}

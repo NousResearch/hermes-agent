@@ -1,0 +1,6 @@
+{
+ "simulated_upgrade_failed": true,
+ "scratch_recovered": true,
+ "prod_untouched": true,
+ "policy": "rollback = restore known-good backup (no transactional downgrade invented)"
+}

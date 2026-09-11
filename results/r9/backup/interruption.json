@@ -1,0 +1,5 @@
+{
+ "backup_during_writes_ok": true,
+ "writer_errors": 0,
+ "maint_rerun_ok": true
+}

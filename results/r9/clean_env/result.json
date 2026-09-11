@@ -1,0 +1,5 @@
+{
+ "result": "ALL PASS",
+ "scope": "fresh HERMES_HOME, cwd-independent, no venv",
+ "llm_calls": 0
+}

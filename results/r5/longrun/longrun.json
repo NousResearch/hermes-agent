@@ -1,0 +1,54 @@
+{
+ "n_events": 10000,
+ "snapshots": [
+  {
+   "label": "bulk-load",
+   "elapsed_s": 1.3,
+   "active": 6000,
+   "stale": 0,
+   "superseded": 0,
+   "revoked": 0,
+   "conflict": 0,
+   "lineage": 0,
+   "dupe_contents": 0
+  },
+  {
+   "label": "churn",
+   "elapsed_s": 8.3,
+   "active": 6749,
+   "stale": 0,
+   "superseded": 1,
+   "revoked": 0,
+   "conflict": 0,
+   "lineage": 750,
+   "dupe_contents": 0
+  },
+  {
+   "label": "mixed-1999",
+   "elapsed_s": 20.9,
+   "active": 6784,
+   "stale": 250,
+   "superseded": 1,
+   "revoked": 0,
+   "conflict": 0,
+   "lineage": 750,
+   "dupe_contents": 0
+  },
+  {
+   "label": "final",
+   "elapsed_s": 24.0,
+   "active": 6785,
+   "stale": 312,
+   "superseded": 1,
+   "revoked": 0,
+   "conflict": 0,
+   "lineage": 750,
+   "dupe_contents": 0
+  }
+ ],
+ "invariants_failed": {},
+ "final_search_ms": 16.0,
+ "final_hits": 5,
+ "db_bytes": 2211840,
+ "llm_calls": 0
+}

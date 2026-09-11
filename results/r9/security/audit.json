@@ -1,0 +1,11 @@
+{
+ "suites": [
+  "test_r2_hardening",
+  "test_r4_security",
+  "test_r5_security",
+  "test_r1_semantic_brain"
+ ],
+ "result": "52 passed, 0 failed",
+ "critical_leakage": 0,
+ "llm_calls": 0
+}

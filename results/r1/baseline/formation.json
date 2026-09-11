@@ -1,0 +1,12 @@
+{
+  "exact_dedupe_stable": true,
+  "no_row_growth_on_dupe": true,
+  "contradiction_pair_found": true,
+  "auto_extract_decision_to_project": true,
+  "paraphrase_dedupe": "ABSENT-stock-has-exact-only",
+  "classifier": "ABSENT-no-deterministic-classifier-in-stock",
+  "temporal_lifecycle": "ABSENT-half-life-default-0-no-lifecycle",
+  "llm_calls": 0,
+  "arm": "baseline",
+  "ts": 1789126337.3426776
+}

@@ -1,0 +1,15 @@
+{
+ "env": "py3.14+numpy",
+ "llm_calls": 0,
+ "startup_ms": 94.12,
+ "add_ms_per_1k": 5.48,
+ "search_ms": 3.06,
+ "prefetch_ms": 5.19,
+ "update_ms": 4.56,
+ "maintenance_ms": 27.61,
+ "health_ms": 6.18,
+ "backup_ms": 26.32,
+ "verify_ms": 15.86,
+ "restore_ms": 18.18,
+ "db_bytes": 1609728
+}

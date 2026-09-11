@@ -163,8 +163,18 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            lines = [f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
+            # Filter BEFORE the limit: screen a wider pool so unsafe rows do
+            # not silently displace safe ones. Fail-closed: a screening error
+            # yields no injection rather than unfiltered injection.
+            from . import safety as _safety
+            results = self._retriever.search(query, min_trust=self._min_trust, limit=15)
+            results = [r for r in results if not _safety.is_firewalled(r.get("content", ""))][:5]
+            lines = []
+            for r in results:
+                label = ""
+                if (r.get("lifecycle") or "active") != "active":
+                    label = f" ({r['lifecycle']})"  # stale/superseded context, never silent truth
+                lines.append(f"- [{r.get('trust_score', r.get('trust', 0)):.1f}]{label} {r.get('content', '')}")
             return "## Holographic Memory\n" + "\n".join(lines) if results else ""
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
@@ -189,8 +199,17 @@ class HolographicMemoryProvider(MemoryProvider):
             self._auto_extract_facts(messages)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
+        """Mirror built-in memory writes as facts (automatic path: secrets and
+        injected instructions are refused, never mirrored)."""
         if action == "add" and self._store and content:
+            try:
+                from . import safety as _safety
+                if _safety.is_firewalled(content):
+                    logger.debug("Holographic memory_write mirror refused unsafe content")
+                    return
+            except Exception as e:  # fail-closed: screening error refuses the mirror
+                logger.debug("Holographic memory_write screening failed, refusing: %s", e)
+                return
             try:
                 self._store.add_fact(content, category="user_pref" if target == "user" else "general")
             except Exception as e:
@@ -248,6 +267,13 @@ class HolographicMemoryProvider(MemoryProvider):
             elif content is None or is_compaction_summary_message(msg):
                 continue
             if not isinstance(content, str) or len(content) < 10:
+                continue
+            try:  # automatic formation must never mint secrets/instructions as memory
+                from . import safety as _safety
+                if _safety.is_firewalled(content):
+                    continue
+            except Exception as e:  # fail-closed: screening error skips the write
+                logger.debug("Holographic auto_extract screening failed, skipping: %s", e)
                 continue
             for patterns, category in _EXTRACT_CATEGORIES:
                 if any(p.search(content) for p in patterns):

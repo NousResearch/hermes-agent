@@ -91,7 +91,7 @@ import {
   setMessages
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { clearSessionTodos, setRawSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -517,7 +517,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             storedSessionId
           )
 
-          const restored = todosForHydration(latestSessionTodos(messages))
+          const rawTodos = latestSessionTodos(messages)
+          const restored = todosForHydration(rawTodos)
+
+          if (rawTodos) {
+            setRawSessionTodos(runtimeSessionId, rawTodos)
+          }
 
           if (restored) {
             setSessionTodos(runtimeSessionId, restored)

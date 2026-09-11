@@ -208,6 +208,40 @@ test('cancelAndWait force-cleans pending resources before awaiting rollback', as
   assert.equal(cleaned, 1)
 })
 
+test('cancelAndWait keeps the drain up through afterCancel teardown', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const events: string[] = []
+  let releaseAfter: (() => void) | undefined
+  const afterGate = new Promise<void>(resolve => {
+    releaseAfter = resolve
+  })
+  let teardownStarted: (() => void) | undefined
+  const started = new Promise<void>(resolve => {
+    teardownStarted = resolve
+  })
+
+  const drain = coordinator.cancelAndWait('scope', async () => {
+    events.push('teardown-start')
+    teardownStarted?.()
+    await afterGate
+    events.push('teardown-done')
+  })
+
+  await started
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(events, ['teardown-start'])
+  releaseAfter?.()
+  await drain
+  assert.equal(await next, 'new')
+  assert.deepEqual(events, ['teardown-start', 'teardown-done', 'new-start'])
+})
+
 test('a generation started during cancelAndWait cannot run before the drain completes', async () => {
   const coordinator = createBootstrapCoordinator()
   const oldGate = deferred()

@@ -33,6 +33,11 @@ export interface PoolStopperDeps {
   stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
+  /**
+   * Extra per-key work that must finish before a replacement may spawn.
+   * Held on the same in-flight promise as child exit (SSH teardown, etc.).
+   */
+  afterStop?: (key: string, entry: PoolStopEntry) => Promise<void>
 }
 
 export interface PoolStopper {
@@ -67,6 +72,9 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
+      if (deps.afterStop) {
+        await deps.afterStop(key, entry)
+      }
     })().finally(() => {
       stops.delete(key)
     })

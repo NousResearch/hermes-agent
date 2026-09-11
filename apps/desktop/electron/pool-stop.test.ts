@@ -113,6 +113,57 @@ test('stopAll stops every pooled backend and resolves after all exits', async ()
   assert.equal(settled, true)
 })
 
+test('afterStop holds inFlight until extra teardown finishes (process-less SSH)', async () => {
+  const pool = new Map<string, PoolStopEntry>()
+  const events: string[] = []
+  let releaseAfter: (() => void) | undefined
+  const afterGate = new Promise<void>(resolve => {
+    releaseAfter = resolve
+  })
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => {
+      events.push('stop')
+    },
+    waitForExit: async () => {
+      events.push('exit')
+    },
+    afterStop: async () => {
+      events.push('after-start')
+      await afterGate
+      events.push('after-done')
+    }
+  })
+
+  pool.set('ssh', { process: null })
+  const stop = stopper.stop('ssh')
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(stopper.inFlight('ssh'), stop)
+  assert.deepEqual(events, ['stop', 'exit', 'after-start'])
+
+  let spawned = false
+  const respawn = (async () => {
+    const dying = stopper.inFlight('ssh')
+
+    if (dying) {
+      await dying
+    }
+
+    spawned = true
+  })()
+
+  await Promise.resolve()
+  assert.equal(spawned, false, 'reconnect must wait for SSH teardown, not just child exit')
+  releaseAfter?.()
+  await stop
+  await respawn
+  assert.equal(spawned, true)
+  assert.deepEqual(events, ['stop', 'exit', 'after-start', 'after-done'])
+  assert.equal(stopper.inFlight('ssh'), undefined)
+})
+
 test('a respawn can await the in-flight stop before reusing the key', async () => {
   const { addChild, exitResolvers, stopper } = harness()
   const child = addChild('selena')

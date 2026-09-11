@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -162,6 +163,17 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
     return next((name for name in roster if name.lower() == want), None) if want else None
 
 
+def _sender_display_label(profile_dir: Path, canonical_handle: str) -> str:
+    """Return sanitized presentation metadata; never use it for routing or trust."""
+    try:
+        from hermes_cli.profiles import read_profile_meta
+        raw = str(read_profile_meta(profile_dir).get("display_name") or "")
+    except Exception:
+        return canonical_handle
+    label = " ".join("".join(char for char in raw if not unicodedata.category(char).startswith("C")).split())
+    return label[:64] or canonical_handle
+
+
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
@@ -212,7 +224,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:
         return _roster_err("target is required.")
-    content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
+    canonical_handle = _handle(me)
+    content = f"Message from 🤖 {_sender_display_label(Path(home), canonical_handle)} (@{canonical_handle}): " + body
     delivery = dict(task_id=task_id, agent=agent)
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
     author = {"id": f"bot:{me}", "name": _handle(me), "is_bot": True}

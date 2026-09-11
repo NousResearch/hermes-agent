@@ -9,10 +9,10 @@ so tests patching that module still intercept the call.
 import logging
 import re
 import threading
-from http.cookiejar import CookieJar
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from agent.shared_cookie_transport import SharedCookieJar
 from hermes_cli.route_identity import normalize_route_base_url
 
 # Log-record parity with the origin module.
@@ -448,35 +448,36 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
-# Process-wide shared cookie jars for providers with ``cookie_jar: true`` — keyed by normalized
-# route. One jar per endpoint, created lazily and reused across every client rebuild so LB
-# sticky cookies (nginx ``route=``, Cloudflare ``__cf_bm``) survive per-request client churn.
-_SHARED_COOKIE_JARS: Dict[str, "CookieJar"] = {}
+# Process-wide shared cookie-jar bundles for providers with ``cookie_jar: true`` — keyed by
+# normalized route.  A bundle (jar + its lock) travels together: every client sharing a jar
+# must share its lock, since per-request client rebuilds are concurrent.  The jar survives
+# client churn; the lock is the one process-wide guard over it.
+_SHARED_COOKIE_JARS: Dict[str, "SharedCookieJar"] = {}
 _SHARED_COOKIE_JARS_LOCK = threading.Lock()
 
 
 def get_custom_provider_cookie_jar(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None) -> Optional["CookieJar"]:
-    """Shared ``CookieJar`` for a route-matching entry with ``cookie_jar: true``.
+    config: Optional[Dict[str, Any]] = None) -> Optional["SharedCookieJar"]:
+    """Shared ``CookieJar`` bundle for a route-matching entry with ``cookie_jar: true``.
 
-    The SAME jar instance is returned on every call for a given endpoint — that identity is
-    the whole mechanism: per-request clients are rebuilt constantly, the jar must not be.
-    Returns ``None`` when no matching entry opts in.
+    The SAME bundle (jar + lock) instance is returned on every call for a given endpoint —
+    that identity is the whole mechanism: per-request clients are rebuilt constantly, the
+    jar and the lock guarding it must not be.  Returns ``None`` when no matching entry opts in.
     """
-    from http.cookiejar import CookieJar  # noqa: F401 — re-exported for typing
+    from agent.shared_cookie_transport import SharedCookieJar
 
     for entry in _entries_for_route(base_url, custom_providers, config):
         if not entry.get("cookie_jar"):
             return None
         route = normalize_route_base_url(base_url)
         with _SHARED_COOKIE_JARS_LOCK:
-            jar = _SHARED_COOKIE_JARS.get(route)
-            if jar is None:
-                jar = CookieJar()
-                _SHARED_COOKIE_JARS[route] = jar
-            return jar
+            bundle = _SHARED_COOKIE_JARS.get(route)
+            if bundle is None:
+                bundle = SharedCookieJar()
+                _SHARED_COOKIE_JARS[route] = bundle
+            return bundle
     return None
 
 

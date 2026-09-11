@@ -418,7 +418,8 @@ def build_keepalive_http_client(
         if cookie_jar is not None:
             from agent.shared_cookie_transport import build_shared_cookie_http_client
             return build_shared_cookie_http_client(
-                jar=cookie_jar, proxy=proxy, verify=verify, limits=limits, timeout=timeout,
+                jar=cookie_jar, async_mode=async_mode, proxy=proxy,
+                verify=verify, limits=limits, timeout=timeout,
             )
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client

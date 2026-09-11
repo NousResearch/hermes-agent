@@ -144,3 +144,76 @@ class TestSharedCookieTransportReplay:
 
         # Second request went through a jar that never saw the Set-Cookie.
         assert _StickyHandler.received_cookies[1] is None
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (PR review feedback): one lock per JAR, not per transport
+# ---------------------------------------------------------------------------
+
+class TestSharedJarLocking:
+    def test_bundles_from_registry_share_one_lock(self):
+        from agent.shared_cookie_transport import SharedCookieJar
+        from hermes_cli.config_providers import _SHARED_COOKIE_JARS
+
+        url = "https://lockcheck.example.com/v1"
+        entries = [_normalize_custom_provider_entry(_entry(url, cookie_jar=True))]
+        b1 = get_custom_provider_cookie_jar(url, entries)
+        b2 = get_custom_provider_cookie_jar(url, entries)
+        assert isinstance(b1, SharedCookieJar)
+        assert b1 is b2 and b1.lock is b2.lock
+        # Cleanup so route registries stay isolated between tests.
+        route = url.rstrip("/").lower()
+        _SHARED_COOKIE_JARS.pop(route, None)
+
+    def test_plain_jar_wraps_into_bundle_with_lock(self):
+        from agent.shared_cookie_transport import SharedCookieJar
+
+        jar = CookieJar()
+        bundle1 = SharedCookieJar._from(jar)
+        bundle2 = SharedCookieJar._from(jar)
+        # Same jar object, independently minted locks (single-client case).
+        assert bundle1.jar is jar and bundle2.jar is jar
+        assert bundle1.lock is not bundle2.lock
+
+    def test_concurrent_transports_share_lock(self, sticky_server):
+        """Two clients built from the same registry bundle serialize on one lock."""
+        import httpx
+        import openai
+        from agent.shared_cookie_transport import SharedCookieJar
+
+        bundle = SharedCookieJar()
+        lock_checks = []
+
+        def make_client():
+            client = build_shared_cookie_http_client(
+                jar=bundle, limits=None, timeout=5.0)
+            return openai.OpenAI(
+                api_key="test", base_url=sticky_server, http_client=client,
+            ), client
+
+        oc1, raw1 = make_client()
+        oc2, raw2 = make_client()
+        # Both clients' https transports must share the bundle's lock.
+        for raw in (raw1, raw2):
+            request = raw.build_request("POST", sticky_server + "/chat/completions")
+            transport = raw._transport_for_url(request.url)
+            lock_checks.append(getattr(transport, "_bundle", None) is bundle)
+        oc1.post("/chat/completions", body={}, cast_to=object)
+        oc2.post("/chat/completions", body={}, cast_to=object)
+        oc1.close()
+        oc2.close()
+        assert all(lock_checks), f"transports not sharing the bundle lock: {lock_checks}"
+
+    def test_async_mode_returns_async_client(self):
+        import httpx
+
+        client = build_shared_cookie_http_client(
+            jar=CookieJar(), async_mode=True, limits=None, timeout=5.0)
+        assert isinstance(client, httpx.AsyncClient)
+
+    def test_sync_mode_returns_sync_client(self):
+        import httpx
+
+        client = build_shared_cookie_http_client(
+            jar=CookieJar(), limits=None, timeout=5.0)
+        assert isinstance(client, httpx.Client)

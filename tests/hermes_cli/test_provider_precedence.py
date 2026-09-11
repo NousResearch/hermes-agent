@@ -43,19 +43,15 @@ class TestProviderPrecedence:
         _config(monkeypatch, {"provider": "zai", "default": "glm-4.6"})
         assert resolve_provider("auto") == "zai"
 
-    @pytest.mark.parametrize("provider", ["custom", "custom:llama-local"])
-    def test_config_custom_provider_counts_as_inference_route(self, monkeypatch, provider):
-        """Dashboard setup readiness must accept custom routes outside the auth registry."""
+    def test_config_runtime_provider_counts_as_inference_route(self, monkeypatch):
+        """Dashboard readiness accepts custom routes but keeps the auto sentinel unresolved."""
         _clear_provider_env(monkeypatch)
         _no_aws(monkeypatch)
         _logged_out(monkeypatch)
-        _config(monkeypatch, {"provider": provider, "default": "local-model"})
-        assert resolve_provider("auto", skip_free_tier=True) == provider
+        for provider in ("custom", "custom:llama-local"):
+            _config(monkeypatch, {"provider": provider, "default": "local-model"})
+            assert resolve_provider("auto", skip_free_tier=True) == provider
 
-    def test_config_auto_provider_continues_resolution(self, monkeypatch):
-        """The auto sentinel is not itself a resolved inference route."""
-        _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"provider": "auto", "default": "some-model"})
         assert resolve_provider("auto") == "anthropic"

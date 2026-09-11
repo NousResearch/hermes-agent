@@ -32,3 +32,15 @@ def test_a_real_builtin_is_returned_unchanged():
     """Resolution still passes known engines straight through."""
     engine, error = _select_builtin_engine("gemini")
     assert engine == "gemini" and error is None
+
+
+def test_configured_edge_is_not_reported_as_a_substitution(caplog):
+    """Edge is the default engine and has no dispatch entry, so it reaches the same
+    branch as an unresolved name — but asking for Edge and getting Edge is not a swap.
+    Warning on it trains the operator to ignore the warning that matters."""
+    with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+        engine, error = _select_builtin_engine("edge")
+
+    assert engine == "edge" and error is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+        "no substitution happened, so nothing should be warned about")

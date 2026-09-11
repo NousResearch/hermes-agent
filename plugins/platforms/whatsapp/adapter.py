@@ -264,6 +264,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
+        configured_mode = extra.get("mode")
+        env_mode = _wenv("WHATSAPP_MODE")
+        self._whatsapp_mode_explicit = bool(str(configured_mode or env_mode or "").strip())
+        self._whatsapp_mode = str(
+            configured_mode or env_mode or "self-chat"
+        ).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))

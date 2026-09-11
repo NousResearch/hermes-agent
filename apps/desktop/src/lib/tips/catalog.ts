@@ -35,7 +35,6 @@ export type TipId =
   | 'composer-mentions'
   | 'cron'
   | 'messaging'
-  | 'model-switch'
   | 'new-session'
   | 'profiles'
   | 'right-pane'
@@ -53,6 +52,5 @@ export const TIP_CATALOG: readonly TipDef[] = [
   { id: 'command-palette', keybind: 'nav.commandPalette', side: 'right', targets: ['[data-tour="sessions-sidebar"]'] },
   { id: 'profiles', keybind: 'profile.next', side: 'right', targets: ['[data-tour="profile-rail"]'] },
   { id: 'composer-mentions', side: 'top', targets: ['[data-tour="composer"]'] },
-  { id: 'model-switch', keybind: 'composer.modelPicker', side: 'top', targets: ['[data-tour="model-pill"]'] },
   { id: 'right-pane', keybind: 'view.toggleRightSidebar', side: 'bottom', targets: ['[data-tour="right-pane-toggle"]'] }
 ]

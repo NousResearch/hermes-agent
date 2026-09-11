@@ -12,13 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
+from tools.tts_tool import _build_audio_delivery_files, _split_text_for_tts
+from tools.tts_tool_delivery import (
     AudioDeliveryProfile,
-    _build_audio_delivery_files,
     _concat_audio_files,
     _pack_audio_files_for_delivery,
     _split_oversized_sentence,
-    _split_text_for_tts,
 )
 
 
@@ -141,7 +140,7 @@ class TestBuildAudioDeliveryFiles:
         out = str(tmp_path / "output.mp3")
         profile = AudioDeliveryProfile(platform="default", max_file_bytes=10000)
 
-        with patch("tools.tts_tool._concat_audio_files") as mock_concat:
+        with patch("tools.tts_tool_delivery._concat_audio_files") as mock_concat:
             mock_concat.return_value = out
             # Copy the first file to output so the size check passes
             Path(out).write_bytes(b"\x00" * 300)

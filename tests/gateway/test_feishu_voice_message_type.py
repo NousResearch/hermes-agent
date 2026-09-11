@@ -9,7 +9,7 @@ file attachment — so a Feishu voice note silently reached the agent as
 untranscribable audio. Follow-up to #28993 (Discord + DingTalk).
 """
 
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from plugins.platforms.feishu.adapter import FeishuAdapter, FeishuNormalizedMessage
 
 

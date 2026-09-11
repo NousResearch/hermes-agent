@@ -29,6 +29,31 @@ from typing import List, Dict, Any, Optional, Mapping
 
 logger = logging.getLogger(__name__)
 
+# Bridge import-time redaction settings before CLI mixins can import agent.redact.
+from hermes_constants import get_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
+from utils import fast_safe_load
+
+_hermes_home = get_hermes_home()
+_project_env = Path(__file__).parent / ".env"
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+try:
+    _early_config_path = _hermes_home / "config.yaml"
+    if _early_config_path.exists():
+        _early_config = fast_safe_load(_early_config_path.read_text(encoding="utf-8")) or {}
+        _early_security = _early_config.get("security", {})
+        if isinstance(_early_security, dict):
+            if "HERMES_REDACT_SECRETS" not in os.environ:
+                _early_redact_secrets = _early_security.get("redact_secrets")
+                if _early_redact_secrets is not None:
+                    os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact_secrets).lower()
+            if "HERMES_REDACT_LEVEL" not in os.environ:
+                _early_redact_level = _early_security.get("redact_level")
+                if _early_redact_level is not None:
+                    os.environ["HERMES_REDACT_LEVEL"] = str(_early_redact_level).lower()
+except Exception:
+    pass
+
 os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 
 from hermes_cli.fallback_config import get_fallback_chain
@@ -166,9 +191,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
-from hermes_constants import get_hermes_home
-from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_safe_load
+from utils import base_url_host_matches, base_url_hostname
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -366,9 +389,14 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
-        redact = security_config.get("redact_secrets")
-        if redact is not None:
-            os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            redact = security_config.get("redact_secrets")
+            if redact is not None:
+                os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        if "HERMES_REDACT_LEVEL" not in os.environ:
+            redact_level = security_config.get("redact_level")
+            if redact_level is not None:
+                os.environ["HERMES_REDACT_LEVEL"] = str(redact_level).lower()
 
     # Session-search index knobs (hermes_state reads the env carriers).
     sessions_config = defaults.get("sessions", {})

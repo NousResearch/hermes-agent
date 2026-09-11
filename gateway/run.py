@@ -29,6 +29,14 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
+# Direct execution bypasses gateway.__init__, which normally performs this bootstrap.
+_gateway_project_root = str(Path(__file__).resolve().parents[1])
+if _gateway_project_root not in sys.path:
+    sys.path.insert(0, _gateway_project_root)
+from gateway._startup import bootstrap_gateway_redaction
+
+bootstrap_gateway_redaction()
+
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -1994,8 +2002,11 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     if _tz_cfg and isinstance(_tz_cfg, str):
         os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
     _security_cfg = _cfg.get("security", {})
-    if isinstance(_security_cfg, dict) and _security_cfg.get("redact_secrets") is not None:
-        os.environ["HERMES_REDACT_SECRETS"] = str(_security_cfg["redact_secrets"]).lower()
+    if isinstance(_security_cfg, dict):
+        if "HERMES_REDACT_SECRETS" not in os.environ and _security_cfg.get("redact_secrets") is not None:
+            os.environ["HERMES_REDACT_SECRETS"] = str(_security_cfg["redact_secrets"]).lower()
+        if "HERMES_REDACT_LEVEL" not in os.environ and _security_cfg.get("redact_level") is not None:
+            os.environ["HERMES_REDACT_LEVEL"] = str(_security_cfg["redact_level"]).lower()
     # Media policy uses the shared bridge so standalone entrypoints (`hermes cron run`) match.
     _gateway_cfg = _cfg.get("gateway", {})
     if isinstance(_gateway_cfg, dict):

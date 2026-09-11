@@ -64,9 +64,16 @@ async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
     return _err("action_failed", "discord thread rename failed")
 
 
+async def _discord_set_thread_lifecycle_emoji(adapter, chat_id, thread_id, emoji):
+    if await adapter.rename_thread(thread_id, "", lifecycle_emoji=emoji):
+        return _ok(action="set_thread_lifecycle_emoji")
+    return _err("action_failed", "discord thread lifecycle emoji update failed")
+
+
 _VERBS = {
     "add_reaction": {"telegram": _telegram_add_reaction, "discord": _discord_add_reaction},
     "set_thread_title": {"telegram": _telegram_set_thread_title, "discord": _discord_set_thread_title},
+    "set_thread_lifecycle_emoji": {"discord": _discord_set_thread_lifecycle_emoji},
 }
 
 
@@ -189,6 +196,15 @@ class PlatformActions:
         return await self._run(
             "set_thread_title", platform, chat_id, thread_id, title,
             chat_id=chat_id, thread_id=thread_id, title=title,
+        )
+
+    async def set_thread_lifecycle_emoji(
+        self, platform: str, chat_id: str, thread_id: str, emoji: str,
+    ) -> Dict[str, Any]:
+        """Set a platform thread's lifecycle marker without changing its title."""
+        return await self._run(
+            "set_thread_lifecycle_emoji", platform, chat_id, thread_id, emoji,
+            chat_id=chat_id, thread_id=thread_id, emoji=emoji,
         )
 
     def _audit(self, verb: str, platform: str, result: Dict[str, Any]) -> None:

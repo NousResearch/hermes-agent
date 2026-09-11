@@ -177,6 +177,7 @@ VALID_HOOKS: Set[str] = {
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
+
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
@@ -1684,6 +1685,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     callbacks registered by user plugins (tracking #64178).
     """
     return _delivery_manager().invoke_hook(hook_name, **kwargs)
+
+
+def emit_core_event(event: str, payload: Mapping[str, Any]) -> int:
+    """Publish a non-blocking event in Hermes's reserved plugin-event namespace.
+
+    This is a core-only publishing seam. Plugins subscribe with
+    ``ctx.subscribe(\"hermes:<event>\", callback)`` but cannot emit under the ``hermes:`` namespace.
+    Payloads are copied by the event dispatcher before per-subscriber deep copies, so gateway state and
+    adapter objects must never be supplied here.
+    """
+    if not isinstance(event, str) or not event or ":" in event:
+        raise ValueError("core event name must be a non-empty bare string")
+    if not isinstance(payload, Mapping):
+        raise TypeError("core event payload must be a mapping")
+    return _delivery_manager()._dispatch_event(f"{HERMES_EVENT_NAMESPACE}:{event}", dict(payload))
 
 
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> List[RenderedPluginSystemPromptSection]:

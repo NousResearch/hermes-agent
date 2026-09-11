@@ -236,6 +236,16 @@ class TestVerbRouting:
         assert result == {"ok": True, "action": "set_thread_title"}
         adapter.rename_thread.assert_awaited_once_with("321", "Renamed")
 
+    def test_discord_set_thread_lifecycle_emoji_routes_to_rename_thread(self):
+        actions = PlatformActions("p")
+        adapter = _discord_adapter()
+        with _grant(True), _runner_with({Platform.DISCORD: adapter}):
+            result = asyncio.run(
+                actions.set_thread_lifecycle_emoji("discord", "555", "321", "✅")
+            )
+        assert result == {"ok": True, "action": "set_thread_lifecycle_emoji"}
+        adapter.rename_thread.assert_awaited_once_with("321", "", lifecycle_emoji="✅")
+
     def test_discord_rename_false_is_action_failed(self):
         actions = PlatformActions("p")
         adapter = _discord_adapter()

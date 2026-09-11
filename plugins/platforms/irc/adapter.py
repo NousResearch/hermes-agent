@@ -21,6 +21,22 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
 
+LIBERA_POLICY_WARNING = (
+    "Libera.Chat forbids LLM-powered agents. Prefer a local IRCd "
+    "(e.g. ergo on 127.0.0.1) or a network that permits agentic clients."
+)
+
+
+def is_libera_chat_host(server: str) -> bool:
+    """Return True when *server* is a Libera.Chat hostname (policy-banned for agents)."""
+    host = (server or "").strip().lower().split("%", 1)[0].rstrip(".")
+    if host.startswith("[") and "]" in host:
+        return False
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host == "libera.chat" or host.endswith(".libera.chat")
+
+
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes"}
@@ -157,6 +173,10 @@ class IRCAdapter(BasePlatformAdapter):
         if not self.server or not self.channel:
             logger.error("IRC: server and channel must be configured")
             return self._fail("config_missing", "IRC_SERVER and IRC_CHANNEL must be set", retryable=False)
+
+        if is_libera_chat_host(self.server):
+            logger.warning("IRC: %s", LIBERA_POLICY_WARNING)
+
         # Prevent two profiles from using the same IRC identity
         try:
             from gateway.status import acquire_scoped_lock
@@ -368,10 +388,17 @@ def interactive_setup() -> None:
         if not prompt_yes_no("Reconfigure IRC?", False):
             return
     info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.",
-         "   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+         "   Prefer a local IRCd (ergo/InspIRCd on 127.0.0.1) or a network that allows agents.",
+         "   Libera.Chat bans LLM-powered clients — do not use it as the recommended host.")
     print()
-    if not _required("IRC server hostname (e.g. irc.libera.chat)", "IRC_SERVER", existing_server or "", "Server"):
+    server = prompt("IRC server hostname (e.g. 127.0.0.1)", default=existing_server or "")
+    if not server:
+        print_warning("Server is required — skipping IRC setup")
         return
+    server = server.strip()
+    if is_libera_chat_host(server):
+        print_warning(LIBERA_POLICY_WARNING)
+    save_env_value("IRC_SERVER", server)
     use_tls = prompt_yes_no("Use TLS (recommended)?", True)
     save_env_value("IRC_USE_TLS", "true" if use_tls else "false")
     default_port = "6697" if use_tls else "6667"

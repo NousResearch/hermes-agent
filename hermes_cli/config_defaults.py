@@ -2809,7 +2809,7 @@ OPTIONAL_ENV_VARS = {
         password=None),
     "QQ_SANDBOX": _msg("Enable QQ sandbox mode for development testing (true/false)",
         "QQ Sandbox Mode", password=None),
-    "IRC_SERVER": _msg("IRC server hostname (e.g. irc.libera.chat)", "IRC server", None),
+    "IRC_SERVER": _msg("IRC server hostname (e.g. 127.0.0.1 for a local IRCd)", "IRC server", None),
     "IRC_CHANNEL": _msg("IRC channel to join (e.g. #hermes)", "IRC channel", None),
     "IRC_NICKNAME": _msg("Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None),
     "IRC_SERVER_PASSWORD": _msg("IRC server password (if required)", "IRC server password", None,

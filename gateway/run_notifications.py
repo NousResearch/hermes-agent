@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -260,8 +261,8 @@ class GatewayNotificationsMixin:
         files the model never asked for. MEDIA tags are NOT deduped against prior turns (a final-reply
         directive is a deliberate attach); stale auto-appended tags are deduped upstream.
 
-        Only ``MEDIA:`` directives — the explicit attachment contract — trigger post-stream uploads. See
-        #20834.
+        Only explicit attachment directives trigger post-stream uploads: ``MEDIA:`` paths, and explicit
+        ``file://`` / ``http(s)://`` markdown/HTML image tags extracted by ``extract_images``. See #20834.
         """
         from urllib.parse import quote as _quote
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
@@ -278,7 +279,8 @@ class GatewayNotificationsMixin:
             # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
-            adapter.extract_images(cleaned)
+            # Capture extracted images for dedup with the MEDIA paths below.
+            _stream_extracted_images, cleaned = adapter.extract_images(cleaned)
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
@@ -292,10 +294,34 @@ class GatewayNotificationsMixin:
 
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
-            if image_paths:
+            # Explicit image tags from extract_images ride the same batch, deduplicated
+            # against the MEDIA paths above. Keys are canonical -- resolved MEDIA paths
+            # plus ``_normalize_file_url`` output for file:// images -- so
+            # file://C:/a.png and file:///C:/a.png (same file) deliver once, while
+            # foo.png and foo.png.backup.png (different files) both deliver. HTTP(S)
+            # URLs compare by exact string, and namespace tuples keep a local path from
+            # colliding with a URL string.
+            image_delivery: list = []
+            delivery_keys: set = set()
+            for media_path in image_paths:
+                image_delivery.append((f"file://{_quote(media_path)}", ""))
+                delivery_keys.add(("local", os.path.normcase(media_path)))
+            for _img_url, _img_alt in _stream_extracted_images:
+                if _img_url.lower().startswith('file://'):
+                    _normed = BasePlatformAdapter._normalize_file_url(_img_url)
+                    if _normed:
+                        _key = ("local", os.path.normcase(_normed))
+                        if _key in delivery_keys:
+                            continue
+                        delivery_keys.add(_key)
+                elif ("local", _img_url) in delivery_keys or ("url", _img_url) in delivery_keys:
+                    continue
+                else:
+                    delivery_keys.add(("url", _img_url))
+                image_delivery.append((_img_url, _img_alt))
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    await adapter.send_multiple_images(chat_id=chat_id, images=image_delivery, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:

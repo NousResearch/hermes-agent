@@ -50,6 +50,19 @@ function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
   return next
 }
 
+/** The live collapsed selection container, if it belongs to this editor. */
+function composerCollapsedSelectionContainer(editor: HTMLElement): Node | null {
+  const selection = window.getSelection()
+
+  if (!selection?.isCollapsed || selection.rangeCount === 0) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  return editor.contains(range.startContainer) ? range.startContainer : null
+}
+
 /** Keep the `data-empty` marker the placeholder paints on in step with the
  *  editor root's contents.
  *
@@ -716,10 +729,12 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
+  const selectedContainer = composerCollapsedSelectionContainer(editor)
+
   // Chromium's zero-length text nodes first: every check below reads siblings,
   // and litter between them makes a chip look like it has text either side.
   for (const child of Array.from(editor.childNodes)) {
-    if (isEmptyTextNode(child)) {
+    if (isEmptyTextNode(child) && child !== selectedContainer) {
       child.remove()
     }
   }

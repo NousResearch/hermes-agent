@@ -342,34 +342,6 @@ def _build_anthropic_client_with_bearer_hook(
     return _new_sdk_client(sdk, kwargs, headers)
 
 
-def _sdk_omit_sentinel(sdk) -> Optional[Any]:
-    """``anthropic._types.Omit`` instance from the caller's SDK, or ``None`` when unavailable
-    (SDK too old / exotic import layout) so the caller can skip the copy-safe guard."""
-    try:
-        from anthropic._types import Omit
-    except Exception:
-        return None
-    return Omit()
-
-
-def _header_stripping_http_client(kwargs: Dict[str, Any], header: str):
-    """An ``httpx.Client`` that deletes ``header`` from every outgoing request. Copy-safe
-    fallback for :func:`_new_sdk_client` when the SDK's ``Omit`` sentinel is unavailable: the
-    SDK copies ``http_client`` into every ``with_options()``/``copy()`` clone (see its
-    ``copy()``), so the strip applies to the original client and all copies, with no dependency
-    on the SDK's header-omission internals. Mirrors the custom-client pattern already used by
-    :func:`_build_anthropic_client_with_bearer_hook`."""
-    import httpx
-    target = header.lower()
-
-    def _strip(request: "httpx.Request") -> None:
-        # httpx headers are case-insensitive; pop by any casing the SDK wrote.
-        for name in [k for k in request.headers if k.lower() == target]:
-            del request.headers[name]
-
-    return httpx.Client(timeout=kwargs.get("timeout"), event_hooks={"request": [_strip]})
-
-
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
     ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
@@ -381,21 +353,10 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     if headers:
         kwargs["default_headers"] = headers
     if "api_key" in kwargs and "auth_token" not in kwargs:
-        # Copy-safe sentinel: a None attribute clear does not survive with_options(), which
-        # re-runs the constructor and re-reads ANTHROPIC_AUTH_TOKEN from the environment.
-        # An Omit() default header propagates through client copies, so the sentinel Bearer
-        # never reaches the wire on the original client or on any with_options() copy.
-        omit = _sdk_omit_sentinel(sdk)
-        if omit is not None:
-            merged = dict(kwargs.get("default_headers") or {})
-            merged["Authorization"] = omit
-            kwargs["default_headers"] = merged
-        elif "http_client" not in kwargs:
-            # Omit unavailable (old/exotic SDK): do NOT fall through to a client that leaks the
-            # env-derived Bearer. Fail closed onto a copy-safe request hook that strips
-            # Authorization on the wire — http_client propagates through with_options()/copy(),
-            # so the original client and every copy are covered.
-            kwargs["http_client"] = _header_stripping_http_client(kwargs, "Authorization")
+        # A `client.auth_token = None` clear does not survive with_options(): the copy re-runs
+        # the constructor and re-reads ANTHROPIC_AUTH_TOKEN. An Omit() default header rides
+        # along on every copy, so the ambient Bearer never reaches the wire.
+        kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), "Authorization": sdk.Omit()}
     client = sdk.Anthropic(**kwargs)
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None

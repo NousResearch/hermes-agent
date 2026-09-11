@@ -76,6 +76,47 @@ class TestSmsFormatAndTruncate:
         assert result == "a\n\nb"
 
 
+# ── Standalone-send markdown stripping ─────────────────────────────
+
+class TestStripMarkdownForSms:
+    """_strip_markdown_for_sms must only strip real emphasis.
+
+    The star rules used to run unguarded, so their delimiters paired up
+    unrelated ``*`` characters across a run of text and the SMS reader saw
+    bullet markers and literal asterisks disappear.
+    """
+
+    def test_dash_bullet_list_survives(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        text = "- item one\n- item two"
+        assert _strip_markdown_for_sms(text) == text
+
+
+    def test_star_bullet_list_survives(self):
+        """The leading ``*`` of one item used to pair with the next item's,
+        so both markers were swallowed as an emphasis span."""
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        text = "* item one\n* item two"
+        assert _strip_markdown_for_sms(text) == text
+
+
+    def test_spaced_literal_asterisks_survive(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        assert _strip_markdown_for_sms("2 * 3 = 6") == "2 * 3 = 6"
+        assert _strip_markdown_for_sms("a * b * c") == "a * b * c"
+
+
+    def test_real_emphasis_is_still_stripped(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        assert _strip_markdown_for_sms("**bold**") == "bold"
+        assert _strip_markdown_for_sms("this is *italic* text") == "this is italic text"
+        assert _strip_markdown_for_sms("a *multi\nline* span") == "a multi\nline span"
+
+
 # ── Echo prevention ────────────────────────────────────────────────
 
 class TestSmsEchoPrevention:

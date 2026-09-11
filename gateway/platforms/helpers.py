@@ -59,9 +59,13 @@ class MessageDeduplicator:
 
 # Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
 # code fence markers, inline code, headings, links, then newline squeeze.
+# The star rules carry the same inside-edge guards the underscore rules already have.
+# Without them the delimiters pair up unrelated ``*`` characters across a run of text,
+# so "* item\n* item" bullet lists and literal asterisks ("a * b * c") are swallowed
+# as if they were italic spans.
 _STRIP_RULES = (
-    (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"),
-    (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
+    (re.compile(r"\*\*(?![\s*])(.+?)(?<![\s*])\*\*", re.DOTALL), r"\1"),
+    (re.compile(r"\*(?![\s*])(.+?)(?<![\s*])\*", re.DOTALL), r"\1"),
     (re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL), r"\1"),
     (re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL), r"\1"),
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?"), ""),

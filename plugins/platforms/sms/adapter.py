@@ -272,7 +272,11 @@ class SmsAdapter(BasePlatformAdapter):
 # Standalone-send markdown stripping: looser than helpers.strip_markdown (no
 # word-boundary guards on underscores, ``[a-z]*`` fence tags) — kept for parity.
 _SMS_MARKDOWN_SUBS = (
-    (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"), (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
+    # The star rules carry the same inside-edge guards as helpers.strip_markdown. Unguarded,
+    # their delimiters pair up unrelated ``*`` characters, so "* item\n* item" bullet lists and
+    # "a * b * c" prose are swallowed as if they were emphasis spans.
+    (re.compile(r"\*\*(?![\s*])(.+?)(?<![\s*])\*\*", re.DOTALL), r"\1"),
+    (re.compile(r"\*(?![\s*])(.+?)(?<![\s*])\*", re.DOTALL), r"\1"),
     (re.compile(r"__(.+?)__", re.DOTALL), r"\1"), (re.compile(r"_(.+?)_", re.DOTALL), r"\1"),
     (re.compile(r"```[a-z]*\n?"), ""), (re.compile(r"`(.+?)`"), r"\1"),
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""), (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),

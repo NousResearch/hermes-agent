@@ -169,13 +169,17 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    done_when: Optional[str] = None,
+    done_when_retries: int = 3,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
     JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    by this turn. ``done_when`` is an optional shell command that must exit 0 before the run
+    counts as done (see ``_run_done_when_loop``); ``done_when_retries`` bounds the repair turns.
+    Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -196,6 +200,15 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+
+    # ``done_when_retries`` arrives as ``object`` (main.py passes raw argparse values);
+    # normalize once, clamping to >= 0, mirroring the toolsets tolerance style.
+    if done_when is not None and not str(done_when).strip():
+        done_when = None
+    try:
+        done_when_retries = max(0, int(done_when_retries))
+    except (TypeError, ValueError):
+        done_when_retries = 3
 
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -225,6 +238,8 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                done_when=done_when,
+                done_when_retries=done_when_retries,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -262,6 +277,16 @@ def run_oneshot(
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
+    if done_when and result.get("done_when_passed") is not True:
+        # The agent answered but the deterministic gate says the work is not done — that is
+        # exactly the failure CI / cron callers must see, not a 0-exit with red tests inside.
+        code = result.get("done_when_exit_code")
+        real_stderr.write(
+            f"hermes -z: --done-when gate failed (exit {code}); "
+            f"run not counted as done.\n"
+        )
+        real_stderr.flush()
+        return 3
     return 0
 
 
@@ -416,6 +441,8 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    done_when: Optional[str] = None,
+    done_when_retries: int = 3,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -499,9 +526,68 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if done_when:
+            _run_done_when_loop(agent, result, done_when, done_when_retries)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)
+
+
+# Cap the repair feedback tail so a failing test suite's wall of text cannot eat the context.
+_DONE_WHEN_TAIL_CHARS = 3000
+_DONE_WHEN_TIMEOUT_SECONDS = 300
+
+
+def _run_done_when_gate(command: str) -> tuple[bool, int, str]:
+    """Run the --done-when command; mirrors goals.run_gate semantics (bounded tail, timeout=-1)."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            command, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_DONE_WHEN_TIMEOUT_SECONDS,
+        )
+        combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        return proc.returncode == 0, proc.returncode, combined[-_DONE_WHEN_TAIL_CHARS:]
+    except subprocess.TimeoutExpired as exc:
+        out = "".join(c if isinstance(c, str) else c.decode("utf-8", "replace") for c in (exc.stdout, exc.stderr) if c)
+        return False, -1, (out + f"\n[done-when gate timed out after {_DONE_WHEN_TIMEOUT_SECONDS}s]")[-_DONE_WHEN_TAIL_CHARS:]
+    except Exception as exc:
+        return False, -1, f"[done-when gate could not run: {type(exc).__name__}: {exc}]"
+
+
+def _run_done_when_loop(agent, result: dict, command: str, retries: int) -> None:
+    """Deterministic completion gate for oneshot mode.
+
+    After the first turn, ``command`` runs; on failure its exit code and bounded output
+    tail become a follow-up user message (same shape as goals' gate-failed continuation)
+    and the agent gets up to ``retries`` repair turns. The loop mutates ``result`` in
+    place: the final turn's ``final_response`` wins and ``done_when_passed`` records the
+    gate verdict so ``run_oneshot`` can set the process exit code.
+    """
+    attempts_left = max(0, int(retries))
+    while True:
+        passed, exit_code, tail = _run_done_when_gate(command)
+        result["done_when_passed"] = passed
+        result["done_when_exit_code"] = exit_code
+        if passed:
+            return
+        if attempts_left <= 0:
+            return
+        attempts_left -= 1
+        feedback = (
+            f"[done-when gate failed — exit {exit_code}, "
+            f"{retries - attempts_left} repair turn(s) left]\n"
+            f"$ {command}\n\n{tail or '(no output)'}\n\n"
+            "The command above must exit 0 before this run counts as done. "
+            "Fix the failure it reports; do not merely explain it."
+        )
+        repair = agent.run_conversation(feedback)
+        if isinstance(repair, dict):
+            result.clear()
+            result.update(repair)
+            result["done_when_passed"] = False
+            result["done_when_exit_code"] = exit_code
 
 
 def _quietly(what: str, fn) -> None:

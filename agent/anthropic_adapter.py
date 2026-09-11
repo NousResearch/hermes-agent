@@ -205,8 +205,16 @@ def _supports_fast_mode(model: str) -> bool:
 # auxiliary calls. Bedrock/Azure still need it for 1M context and opt in on their own paths.
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when the tool-streaming beta is
 # present. ``_FAST_MODE_BETA`` enables the ``speed: "fast"`` request parameter.
+# ``fine-grained-tool-streaming`` is intentionally NOT in _COMMON_BETAS: it streams raw
+# tool JSON without Anthropic's server-side buffering/repair, so a malformed model
+# delta (e.g. {"names": cronjob_manage}) raises ValueError inside the SDK's
+# incremental parser (anthropic/lib/streaming/_messages.py: from_json partial_mode)
+# and the turn fails permanently after 3 identical retries (#107830). Without
+# the beta Anthropic repairs the JSON server-side. OpenRouter Claude keeps the
+# beta (see agent_init._apply_openai_header_policy) because its proxy buffers
+# otherwise and times out.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-_COMMON_BETAS = ["interleaved-thinking-2025-05-14", _TOOL_STREAMING_BETA]
+_COMMON_BETAS = ["interleaved-thinking-2025-05-14"]
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
 # Required for OAuth/subscription auth; matches Claude Code / pi-ai / OpenCode.
@@ -630,6 +638,40 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     return is_streaming_access_denied_error(exc)
 
 
+def _is_stream_json_parse_error(exc: Exception) -> bool:
+    """True when a fine-grained-tool-streaming parse failure should fall back to create().
+
+    With ``fine-grained-tool-streaming-2025-05-14`` Anthropic streams raw tool
+    JSON deltas without its server-side repair pass. A malformed delta (e.g.
+    ``{"names": cronjob_manage}`` — unquoted value) makes the SDK incremental
+    parser raise ``ValueError: expected value at line 1 column 11`` on
+    ``from_json(json_buf, partial_mode=True)`` (#107830). Retrying the same
+    prompt with the same beta deterministically re-emits the same malformed
+    JSON, so the turn fails permanently. Falling back to ``messages.create()``
+    lets Anthropic's buffered ``input_json`` repair run, which succeeds.
+    """
+    if not isinstance(exc, (ValueError, TypeError)):
+        # Some SDK builds wrap the ValueError; also check message text regardless
+        # of exact type so the fallback still fires.
+        if not isinstance(exc, Exception):
+            return False
+    msg = str(exc).lower()
+    # SDK's from_json partial_mode raises "expected value at line 1 column N"
+    # for unquoted identifiers / truncated escapes.
+    if "expected value at line 1 column" in msg:
+        return True
+    if "from_json" in msg and "partial_mode" in msg:
+        return True
+    # Generic JSON parse failure during streaming — treat as recoverable
+    # so the non-streaming path (with server repair) is tried once.
+    if isinstance(exc, ValueError) and ("json" in msg or "expected value" in msg):
+        # limit to streaming-context errors: caller only invokes this for
+        # stream-path exceptions, so false positives are bounded to a single
+        # wasted create() call.
+        return True
+    return False
+
+
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
@@ -676,11 +718,21 @@ def create_anthropic_message(
         except TimeoutError:
             raise
         except Exception as exc:
-            if not _is_stream_unavailable_error(exc):
+            is_unavailable = _is_stream_unavailable_error(exc)
+            is_json_parse = _is_stream_json_parse_error(exc)
+            if not (is_unavailable or is_json_parse):
                 raise
-            logger.debug(
-                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
-            )
+            if is_json_parse:
+                logger.warning(
+                    "%sAnthropic stream JSON parse failed (%s); falling back to messages.create() "
+                    "so server-side repair can recover the turn (#107830)",
+                    log_prefix,
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
+                )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
 
 

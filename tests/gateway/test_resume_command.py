@@ -371,7 +371,7 @@ class TestHandleResumeCommand:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/resume 2")
+        event = _make_event(text="/sessions")
         lane_key = _session_key_for_event(event)
         db.create_session(
             "lane_older", "telegram", session_key=lane_key,
@@ -399,11 +399,34 @@ class TestHandleResumeCommand:
         runner = _make_runner(
             session_db=db, current_session_id="current_session_001", event=event
         )
-        result = await runner._handle_resume_command(event)
+        sessions_listing = await runner._handle_sessions_command(event)
+        resume_listing = await runner._handle_resume_command(_make_event(text="/resume"))
+        older_line = next(
+            line for line in sessions_listing.splitlines() if "`lane_older`" in line
+        )
+        current_line = next(
+            line for line in sessions_listing.splitlines() if "`current_session_001`" in line
+        )
+        older_index = int(older_line.split(".", 1)[0])
+        current_index = int(current_line.split(".", 1)[0])
+
+        assert f"{current_index}. **— (current)**" in resume_listing
+        assert f"{older_index}. **Lane Older**" in resume_listing
+        assert "None" not in resume_listing
+
+        result = await runner._handle_resume_command(
+            _make_event(text=f"/resume {older_index}")
+        )
 
         assert "Resumed" in result
         runner.session_store.switch_session.assert_called_once()
         assert runner.session_store.switch_session.call_args[0][1] == "lane_older"
+
+        already_current = await runner._handle_resume_command(
+            _make_event(text=f"/resume {current_index}")
+        )
+        assert "Already on session **— (current)**" in already_current
+        assert f"session **{current_index}**" not in already_current
         db.close()
 
     @pytest.mark.asyncio

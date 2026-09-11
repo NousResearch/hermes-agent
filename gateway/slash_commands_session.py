@@ -864,6 +864,8 @@ class GatewaySessionCommandsMixin:
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
         if name.isdigit():
+            from hermes_cli.session_listing import session_listing_display_parts
+
             try:
                 titled = await self._list_titled_sessions(source, session_key, allow_all)
             except Exception as e:
@@ -873,7 +875,8 @@ class GatewaySessionCommandsMixin:
             if index < 1 or index > len(titled):
                 return t("gateway.resume.out_of_range", index=index)
             target = titled[index - 1]
-            target_id, name = target.get("id"), target.get("title") or name
+            display_name, current_part = session_listing_display_parts(target)
+            target_id, name = target.get("id"), f"{display_name}{current_part}"
         else:  # session id first, then title
             session = await self._session_db.get_session(name)
             target_id = session["id"] if session else await self._session_db.resolve_session_by_title(name)
@@ -966,6 +969,8 @@ class GatewaySessionCommandsMixin:
     def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
         """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
         (sibling of the /sessions notice)."""
+        from hermes_cli.session_listing import session_listing_display_parts
+
         scope_note = None
         if allow_all and not self._resume_caller_is_admin(source):
             scope_note = t("gateway.resume.all_requires_admin")
@@ -976,14 +981,17 @@ class GatewaySessionCommandsMixin:
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
         for idx, s in enumerate(titled[:10], start=1):
-            title = s["title"]
+            title, current_part = session_listing_display_parts(s)
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
                 if origin:
                     title = f"{title} — {origin.chat_name or origin.chat_id}"
             preview = s.get("preview", "")[:40]
             preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
-            lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
+            lines.append(t(
+                "gateway.resume.list_item_numbered", index=idx,
+                title=f"{title}{current_part}", preview_part=preview_part,
+            ))
         if scope_note:
             lines.append(scope_note)
         lines.append(t("gateway.resume.list_footer_numbered"))

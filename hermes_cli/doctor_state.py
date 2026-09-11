@@ -3,6 +3,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -404,6 +405,89 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
         check_warn(f"{label} check failed", str(_e))
 
 
+def _profile_env_keys(profile_dir: Path) -> set:
+    """Env var names given a non-empty value in a profile's own .env.
+
+    Read straight from the file: doctor must not mutate the process env (or HERMES_HOME) to
+    resolve another profile's keys.
+    """
+    keys: set = set()
+    env_path = profile_dir / ".env"
+    if not env_path.is_file():
+        return keys
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = env_path.read_text(encoding="latin-1")
+    except OSError:
+        return keys
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if name.startswith("export "):
+            name = name[len("export "):].strip()
+        if name and value.strip().strip('"').strip("'"):
+            keys.add(name)
+    return keys
+
+
+def _profile_auth_pool_providers(profile_dir: Path) -> set:
+    """Providers holding at least one credential in a profile's own auth.json pool."""
+    providers: set = set()
+    auth_path = profile_dir / "auth.json"
+    if not auth_path.is_file():
+        return providers
+    try:
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return providers
+    pool = data.get("credential_pool") if isinstance(data, dict) else None
+    if isinstance(pool, dict):
+        providers.update(str(k).strip().lower() for k in pool if str(k).strip())
+    return providers
+
+
+def _profile_provider_credential_problem(p) -> str:
+    """Reason string when a named profile's provider has no usable credential, else "".
+
+    Profiles are independent islands: a credential that works for the default profile proves
+    nothing about a named one, which resolves keys from its own .env / auth.json. A profile
+    pinned to a provider whose credential is gone (unset, blanked, never added) otherwise shows
+    a green tick here and only fails later at request time behind a generic provider error.
+
+    Static and offline by design — doctor must not issue a network request per profile. That
+    covers the "provider set, credential absent" class; a present-but-invalid key needs live
+    verification and is deliberately out of scope.
+    """
+    try:
+        provider = str(getattr(p, "provider", "") or "").strip().lower()
+        if not provider or provider in {"auto", "custom"} or provider.startswith("custom:"):
+            return ""
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if pconfig is None:
+            return f"model.provider '{provider}' is not a recognised provider"
+        if str(getattr(pconfig, "auth_type", "") or "") != "api_key":
+            return ""  # OAuth / cloud-SDK providers run their own checks
+        env_names = {str(n) for n in (getattr(pconfig, "api_key_env_vars", ()) or ()) if str(n)}
+        if provider == "openrouter":
+            env_names |= {"OPENROUTER_API_KEY", "OPENAI_API_KEY"}
+        if not env_names:
+            return ""
+        if env_names & _profile_env_keys(p.path):
+            return ""
+        if provider in _profile_auth_pool_providers(p.path):
+            return ""
+        checked = ", ".join(sorted(env_names))
+        return (f"model.provider '{provider}' is set but no credential is configured for this "
+                f"profile (checked {checked} in its .env and auth.json)")
+    except Exception:
+        return ""
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
@@ -419,7 +503,13 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             (p.gateway_running, "gateway running"), (p.model, (p.model or "")[:30]),
             (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
             (not (wrapper_dir / p.name).exists(), "no alias")) if cond]
-        check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
+        label = f"  {p.name}: {', '.join(parts) if parts else 'configured'}"
+        problem = _profile_provider_credential_problem(p)
+        if problem:
+            check_warn(label, f"({problem})")
+            f.issues.append(f"Profile '{p.name}': {problem}")
+        else:
+            check_ok(label)
     # Orphan wrappers
     if wrapper_dir.is_dir():
         for wrapper in wrapper_dir.iterdir():

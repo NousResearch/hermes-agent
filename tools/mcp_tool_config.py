@@ -15,6 +15,17 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
+
+class _MCPServerConfig(dict):
+    """A server snapshot carrying its immutable discovery provenance."""
+
+    def __init__(self, *args, native_config_managed: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.native_config_managed = native_config_managed
+
+    def copy(self):
+        return type(self)(self, native_config_managed=self.native_config_managed)
+
 _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
 
@@ -335,7 +346,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
-                safe_servers[name] = interpolated
+                safe_servers[name] = _MCPServerConfig(interpolated, native_config_managed=True)
         _portable_mcp_servers(safe_servers)
         return safe_servers
     except Exception as exc:

@@ -182,7 +182,7 @@ class MCPServerRunMixin:
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
-        self._native_config_managed = _config._native_mcp_server_enabled(self.name) is True
+        self._native_config_managed = bool(getattr(config, "native_config_managed", False))
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")

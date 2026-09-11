@@ -32,9 +32,47 @@ async def test_removed_native_server_is_not_reconnected(monkeypatch):
         mcp_tool._server_scope_keys[server.name] = None
 
     try:
-        await server.run({"command": "fake"})
+        await server.run(mcp_tool_config._MCPServerConfig(
+            {"command": "fake"}, native_config_managed=True))
 
         assert calls == 1
+        assert server._shutdown_event.is_set()
+        assert server.name not in mcp_tool._servers
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.pop(server.name, None)
+            mcp_tool._server_scope_keys.pop(server.name, None)
+
+
+@pytest.mark.asyncio
+async def test_native_snapshot_removed_before_run_never_spawns(monkeypatch):
+    """Discovery provenance survives removal before task initialization."""
+    calls = 0
+    server = mcp_tool.MCPServerTask("removed-before-run")
+    snapshot = mcp_tool_config._MCPServerConfig(
+        {"command": "fake"}, native_config_managed=True)
+
+    monkeypatch.setattr(
+        mcp_tool_config,
+        "_native_mcp_server_enabled",
+        lambda _name: False,
+    )
+
+    async def transport(_server, _config):
+        nonlocal calls
+        calls += 1
+        return "shutdown"
+
+    monkeypatch.setattr(mcp_tool.MCPServerTask, "_run_stdio", transport)
+    monkeypatch.setattr(mcp_tool.MCPServerTask, "_deregister_tools", lambda _server: None)
+    with mcp_tool._lock:
+        mcp_tool._servers[server.name] = server
+        mcp_tool._server_scope_keys[server.name] = None
+
+    try:
+        await server.run(snapshot)
+
+        assert calls == 0
         assert server._shutdown_event.is_set()
         assert server.name not in mcp_tool._servers
     finally:

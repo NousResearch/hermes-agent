@@ -18,6 +18,8 @@ from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
 from tools.ansi_strip import strip_ansi as _strip_ansi
 
+from hermes_cli.session_listing import AUTOMATION_SOURCES
+
 
 ConsoleStatus = Literal["ok", "error", "confirm_required", "exit", "clear"]
 
@@ -596,7 +598,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
     with _session_db() as db:
         sessions = db.list_sessions_rich(
-            exclude_sources=["kanban", "tool"], limit=ns.limit, order_by_last_active=True)
+            exclude_sources=sorted(AUTOMATION_SOURCES), limit=ns.limit, order_by_last_active=True)
     return _format_sessions(sessions)
 
 
@@ -604,7 +606,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
     with _session_db() as db:
         total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=["kanban", "tool"])
+        listable = db.session_count(exclude_children=True, exclude_sources=sorted(AUTOMATION_SOURCES))
         lines = [
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",

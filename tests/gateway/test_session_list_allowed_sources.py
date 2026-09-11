@@ -7,8 +7,9 @@ History:
   values, newly-added platforms) were silently dropped from the resume
   picker — users reported "lots of sessions are missing from browse
   but exist in .hermes/sessions."
-- The handler now deny-lists only the internal/noisy source ``tool``
-  (sub-agent runs) and surfaces every other source to the picker.
+- The handler now deny-lists only internal/automation sources (cron jobs,
+  tool sub-runs, kanban workers, subagent delegates) and surfaces every
+  human-facing source to the picker.
 - The default ``limit`` raised from 20 to 200 so longer-running users
   can scroll through their history without hitting an artificial cap.
 """
@@ -40,10 +41,13 @@ def _call(limit: int | None = None):
 
 
 def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
-    """acp / webhook / custom sources should all appear; only ``tool`` is hidden."""
+    """acp / webhook / custom sources should all appear; automation stays hidden."""
     rows = [
-        {"id": "tui-1", "source": "tui", "started_at": 9},
-        {"id": "tool-1", "source": "tool", "started_at": 8},
+        {"id": "tui-1", "source": "tui", "started_at": 12},
+        {"id": "tool-1", "source": "tool", "started_at": 11},
+        {"id": "cron-1", "source": "cron", "started_at": 10},
+        {"id": "kanban-1", "source": "kanban", "started_at": 9},
+        {"id": "sub-1", "source": "subagent", "started_at": 8},
         {"id": "tg-1", "source": "telegram", "started_at": 7},
         {"id": "acp-1", "source": "acp", "started_at": 6},
         {"id": "cli-1", "source": "cli", "started_at": 5},
@@ -65,7 +69,10 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "webhook-1" in ids, "webhook sessions were being hidden by the old allow-list"
     assert "custom-1" in ids, "custom HERMES_SESSION_SOURCE values were being hidden"
 
-    # Only internal sub-agent runs stay hidden.
+    # All automation/internal producers stay hidden, not just tool sub-runs.
     assert "tool-1" not in ids
+    assert "cron-1" not in ids
+    assert "kanban-1" not in ids
+    assert "sub-1" not in ids
 
 

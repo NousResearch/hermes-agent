@@ -8,6 +8,15 @@ from typing import Any
 _LIST_WORDS = {"list", "ls", "browse"}
 _SEARCH_WORDS = {"search", "find"}
 
+# Internal/automation session producers that must never surface in interactive
+# resume/list surfaces: cron jobs, tool sub-runs, kanban workers, and subagent
+# delegates are machine driven, not conversations a person picks up. Human
+# conversation surfaces (cli, tui, webui, ACP adapter sessions, webhook
+# sessions, custom HERMES_SESSION_SOURCE values, and every gateway platform)
+# stay visible. This is a deny-list, not a human whitelist, so a newly added
+# gateway platform appears automatically with no edit here.
+AUTOMATION_SOURCES = frozenset({"cron", "tool", "kanban", "subagent"})
+
 
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
@@ -34,6 +43,34 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     return flags["all"], flags["full"], " ".join(target_parts).strip(), None
 
 
+def _effective_listing_scope(
+    *,
+    source: str | None,
+    session_key: str | None,
+    include_all_sources: bool,
+    exclude_sources: list[str] | None,
+) -> tuple[str | None, list[str] | None]:
+    """Resolve source/deny-list policy without weakening gateway lane authority.
+
+    The classic local CLI historically passes ``source="cli"`` even though it
+    reads the same user-owned state DB as TUI/Desktop/WebUI. Treat that label as
+    provenance rather than an allow-list: local CLI discovery is cross-source
+    and deny-lists only reviewed automation producers.
+
+    Gateway callers carry ``session_key`` (or explicitly request all sources)
+    and keep their existing source/origin authority. This helper only widens the
+    local ``cli``/no-lane shape.
+    """
+    local_cli = source == "cli" and session_key is None
+    if not (include_all_sources or local_cli):
+        return source, exclude_sources
+
+    effective_exclude = set(exclude_sources or ())
+    if local_cli:
+        effective_exclude.update(AUTOMATION_SOURCES)
+    return None, sorted(effective_exclude) if effective_exclude else None
+
+
 def query_session_listing(
     session_db: Any,
     *,
@@ -49,17 +86,26 @@ def query_session_listing(
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces (shared CLI/gateway policy).
 
-    Source-scoped unless global is requested; unnamed hidden unless a full listing is asked for;
-    current session hidden unless requested (then marked ``is_current_session``); ``session_key``
-    restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
-    are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
-    since an id match may be the only handle.
+    Gateway callers remain source/lane scoped unless a global listing is
+    requested. The local classic CLI is cross-source by default because its
+    ``source="cli"`` value is provenance, not an authorization boundary;
+    reviewed automation sources are denied instead. Unnamed rows are hidden
+    unless a full listing is asked for; current session is hidden unless
+    requested (then marked ``is_current_session``). With ``search_query`` rows
+    are filtered by title/id in SQL, ordered by recent activity, and unnamed
+    sessions stay visible since an id match may be the only handle.
     """
     search = (search_query or "").strip()
-    rows = session_db.list_sessions_rich(
-        source=None if include_all_sources else source,
+    effective_source, effective_exclude = _effective_listing_scope(
+        source=source,
         session_key=session_key,
+        include_all_sources=include_all_sources,
         exclude_sources=exclude_sources,
+    )
+    rows = session_db.list_sessions_rich(
+        source=effective_source,
+        session_key=session_key,
+        exclude_sources=effective_exclude,
         limit=max(limit * 4, limit),
         search_query=search or None,
         order_by_last_active=bool(search),

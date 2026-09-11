@@ -65,7 +65,8 @@ def test_update_check_fetch_returns_timeout_if_tree_cannot_be_reaped(tmp_path: P
             ["git"], [], "origin", "main", tmp_path
         )
 
-    assert result.returncode == 124
+    assert result.returncode == update_cmd.UPDATE_CHECK_FETCH_TEARDOWN_FAILED
+    assert "could not be stopped" in result.stderr
 
 
 def test_update_check_fetch_preserves_git_failure(tmp_path: Path) -> None:

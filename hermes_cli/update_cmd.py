@@ -462,6 +462,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
 
 
 UPDATE_CHECK_FETCH_TIMEOUT_SECONDS = 30
+UPDATE_CHECK_FETCH_TEARDOWN_FAILED = 125
 
 
 def _update_check_fetch_popen_kwargs() -> dict:
@@ -513,7 +514,7 @@ def _terminate_update_check_fetch(proc: subprocess.Popen) -> bool:
         pass
     except OSError:
         return False
-    with suppress(subprocess.TimeoutExpired):
+    with suppress(OSError, subprocess.TimeoutExpired):
         proc.wait(timeout=1)
 
     try:
@@ -574,12 +575,15 @@ def _run_update_check_fetch(
             cmd, proc.returncode, stdout=stdout, stderr=stderr
         )
     except subprocess.TimeoutExpired:
-        _terminate_update_check_fetch(proc)
+        quiesced = _terminate_update_check_fetch(proc)
         result = subprocess.CompletedProcess(
             cmd,
-            124,
+            124 if quiesced else UPDATE_CHECK_FETCH_TEARDOWN_FAILED,
             stdout="",
-            stderr=f"git fetch timed out after {timeout_seconds:g} seconds",
+            stderr=(
+                f"git fetch timed out after {timeout_seconds:g} seconds"
+                + ("" if quiesced else "; its process tree could not be stopped")
+            ),
         )
     except BaseException:
         _terminate_update_check_fetch(proc)
@@ -630,6 +634,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("→ Fetching from upstream...")
         fetch_result = _run_update_check_fetch(
             git_cmd, depth_args, "upstream", branch, _m().PROJECT_ROOT)
+    if (
+        fetch_result is not None
+        and fetch_result.returncode == UPDATE_CHECK_FETCH_TEARDOWN_FAILED
+    ):
+        _print_fetch_failure(fetch_result.stderr)
+        sys.exit(1)
     if fetch_result is not None and fetch_result.returncode == 0:
         compare_branch = f"upstream/{branch}"
     else:

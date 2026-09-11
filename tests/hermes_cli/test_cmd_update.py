@@ -1002,6 +1002,29 @@ class TestCmdUpdateCheckBranchFlag:
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("hermes_cli.update_cmd._run_update_check_fetch")
+    @patch("subprocess.run")
+    def test_check_does_not_fallback_when_upstream_tree_survives(
+        self, mock_run, mock_fetch, _mock_method, capsys
+    ):
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = self._check_side_effect(target_branch="main")
+        mock_fetch.return_value = subprocess.CompletedProcess(
+            ["git", "fetch"],
+            update_cmd.UPDATE_CHECK_FETCH_TEARDOWN_FAILED,
+            stdout="",
+            stderr="git fetch timed out; its process tree could not be stopped",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace(check=True, branch=None))
+
+        assert exc_info.value.code == 1
+        assert [call.args[2] for call in mock_fetch.call_args_list] == ["upstream"]
+        assert "could not be stopped" in capsys.readouterr().out
+
 
 class TestCmdUpdateZipBranchRefusal:
     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.

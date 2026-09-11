@@ -864,7 +864,7 @@ class GatewayNotificationsMixin:
                 "⚠️ Session database reported a corruption error confined to the search index "
                 "(FTS5); the message tables are not damaged. Messages may not be persisted until "
                 f"it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run "
-                "recovery tools or restore a backup unless `hermes doctor` confirms damage."
+                f"recovery tools or restore a backup unless `hermes {profile_arg}doctor` confirms damage."
             )
         else:
             message = (

@@ -130,11 +130,11 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.uv-cache-path }}
-        key: setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}
+        key: setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}
 
         # Isolated writes also need a distinct prefix: production's broad
         # fallback must not restore a smoke run's partial dependency set.
-        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v1-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
+        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v2-production-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
 
     - name: Restore uv dependencies for an explicit save
       id: python-cache-restore
@@ -144,10 +144,10 @@ runs:
         path: ${{ steps.install.outputs.uv-cache-path }}
         # Caches are immutable. Each producer needs its own snapshot, even
         # when a caller run contains both PM Bundle and Desktop Release.
-        key: setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        key: setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         restore-keys: |
-          setup-pm-uv-${{ inputs.cache-suffix != '' && 'isolated-' || '' }}v1-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ inputs.cache-suffix }}-
-          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v1-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
+          setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-
+          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v2-production-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
 
     # Post steps run in reverse registration order: prune before cache save.
     - name: Register uv cache pruning

@@ -15,16 +15,12 @@ Snapshots use a run ID, attempt, and producer job suffix because Actions caches
 are immutable. Sibling bundle workflows in one caller run must not race to save
 different contents under the same key.
 Restore tries the current dependency set's rolling snapshots first, then the
-compatible prefix, which also admits the existing pre-change caches. This lets
+compatible v2 prefix. There is no fallback to older cache formats. This lets
 a retry add wheels to a snapshot saved by a partially failed build. The ordinary
 automatic cache path and its exact-hit smoke tests remain available.
 
-New smoke snapshots use a separate `setup-pm-uv-isolated-` prefix, outside
-production's restore prefix. Their run suffix stays at the end so the existing
-PM Toolchain cleanup still removes them. Pre-change smoke snapshots retain
-their old keys until that cleanup or GitHub's retention removes them; preserving
-legacy production caches also preserves the possibility of matching those old
-smoke entries during migration.
+Smoke namespaces precede the native/dependency identity, outside production's
+restore prefix. PM Toolchain cleanup removes its run-scoped snapshots.
 
 Before saving, `uv cache prune` removes dangling entries. It does not use
 `--ci`: that option discards downloaded wheels, while bundles copy the full

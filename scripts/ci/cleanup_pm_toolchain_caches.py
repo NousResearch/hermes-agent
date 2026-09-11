@@ -15,7 +15,8 @@ def cleanup_run_caches(run_id: str, request, *, page_size: int = 100) -> list[in
     if run["status"] != "completed" or run["path"] != ".github/workflows/pm-toolchain.yml":
         raise ValueError("cleanup requires a completed PM Toolchain run")
     pattern = re.compile(
-        rf"^(?:setup-pm-|node-cache-).*-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*$"
+        rf"^(?:(?:setup-pm-tools-|node-cache-).*-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*"
+        rf"|setup-pm-uv-v2-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*-.+)$"
     )
 
     def collect():

@@ -10,8 +10,7 @@ it('restores compatible wheels without freezing a partial build under its depend
   const cached = setup.runs.steps.find(step => step.id === 'python-cache')
   const restored = setup.runs.steps.find(step => step.id === 'python-cache-restore')
   const prefixes = restored.with['restore-keys'].trim().split('\n')
-  // An exact legacy entry wins over prefix matching. Prefer rolling entries
-  // first so the next attempt can use additions from the last failed build.
+  // Prefer this dependency set before falling back across dependency changes.
   const rollingPrefix = prefixes[0]
   expect(restored.with.key).toBe(`${rollingPrefix}\${{ github.run_id }}-\${{ github.run_attempt }}-\${{ github.job }}`)
   expect(rollingPrefix).toBe(`${cached.with.key}-`)
@@ -29,14 +28,14 @@ it('restores compatible wheels without freezing a partial build under its depend
 
   // A suffix-only namespace isolates smoke reads but still lets production
   // restore smoke writes through its broad dependency fallback.
-  const namespace = "${{ inputs.cache-suffix != '' && 'isolated-' || '' }}"
+  const namespace = "${{ inputs.cache-suffix || 'production' }}"
   for (const template of [cached.with.key, restored.with.key, rollingPrefix]) {
-    const production = template.replace(namespace, '')
-    const smoke = template.replace(namespace, 'isolated-')
-    expect(production.startsWith('setup-pm-uv-v1-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-isolated-v1-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-v1-')).toBe(false)
-    expect(production.startsWith('setup-pm-uv-isolated-v1-')).toBe(false)
+    const production = template.replace(namespace, 'production')
+    const smoke = template.replace(namespace, 'smoke-42-1')
+    expect(production.startsWith('setup-pm-uv-v2-production-')).toBe(true)
+    expect(smoke.startsWith('setup-pm-uv-v2-smoke-42-1-')).toBe(true)
+    expect(smoke.startsWith('setup-pm-uv-v2-production-')).toBe(false)
+    expect(production.startsWith('setup-pm-uv-v2-smoke-42-1-')).toBe(false)
   }
 })
 

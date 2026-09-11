@@ -145,6 +145,27 @@ class TestBindMechanics:
             await second.disconnect()
 
 
+    @pytest.mark.macos_only  # the exclusive bind (reuse_address=False) is a Darwin-only path
+    @pytest.mark.asyncio
+    async def test_rebind_over_time_wait(self):
+        """A port held only by a server-side TIME_WAIT socket (the previous gateway closed a
+        connection first) must not fail the bind on macOS, where address reuse is disabled."""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted, _ = listener.accept()
+        accepted.close()  # the side closing first enters TIME_WAIT
+        client.close()
+        listener.close()
+        adapter = self._make_adapter(port)
+        try:
+            assert await adapter.connect() is True
+            assert adapter.has_fatal_error is False
+        finally:
+            await adapter.disconnect()
+
     @pytest.mark.asyncio
     async def test_port_conflict_sets_non_retryable_fatal_error(self):
         """A real port conflict (EADDRINUSE) must set a non-retryable fatal

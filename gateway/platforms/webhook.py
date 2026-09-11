@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
@@ -33,6 +32,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
 
@@ -217,13 +217,8 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_post("/p/{profile}/webhooks/{route_name}", self._handle_webhook)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        # SO_REUSEADDR: on macOS (BSD) two wildcard/specific sockets can silently split traffic while
-        # both report success → disable. On Linux it only permits rebinding past TIME_WAIT (a quick
-        # restart would otherwise fail to bind for ~60s) → keep the default.
-        site = web.TCPSite(self._runner, self._host, self._port,
-                           reuse_address=False if sys.platform == "darwin" else None)
         try:
-            await site.start()
+            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None

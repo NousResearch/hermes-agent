@@ -176,12 +176,16 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
     final attempt uses lenient ``auto`` slicing. A
     :class:`~agent.pet.generate.atlas.UnsegmentableStripError` skips the
     remaining strict retries — the defect is in the art, and each strict retry
-    is a paid image call that will fail the same way (#87739). Returns
-    ``(state, None)`` when cancelled or every attempt failed.
+    is a paid image call that will fail the same way (#87739). Sliced frames are
+    then checked against the base silhouette *before* compose: a collapsed row
+    is retried (or dropped) here, instead of poisoning every other state through
+    normalize's shared scale and failing the whole hatch after all rows are paid
+    for. Returns ``(state, None)`` when cancelled or every attempt failed.
     """
     state, _row, count = spec
     t0 = time.monotonic()
     last_exc: Exception | None = None
+    reference_size = atlas.silhouette_box(base)
     for attempt in range(_ROW_GEN_ATTEMPTS):
         if cancelled():
             return state, None
@@ -207,6 +211,10 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
                     frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
                 else:
                     raise
+            if collapsed := atlas.row_frames_collapsed(frames, reference_size):
+                # Lenient slicing can "succeed" with slivers of the body; those
+                # pass relative frame checks but sink the atlas later.
+                raise atlas.UnsegmentableStripError(f"row {state} collapsed: {collapsed}")
             logger.info("pet hatch %r: row %r ready in %.1fs (attempt %d)", slug, state, time.monotonic() - t0, attempt + 1)
             return state, frames
         except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated

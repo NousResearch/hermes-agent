@@ -11,7 +11,8 @@ import { host, useValue, Wordmark } from '@hermes/plugin-sdk'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { $botMeta, $lastRoster } from './data'
+import { $openBotChat } from './bot-state'
+import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { useBots } from './i18n'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -62,8 +63,13 @@ export function BotChatEmpty({ sessionId }: { sessionId: string }) {
   // is in hand.
   const roster = useValue($lastRoster)
   const allMeta = useValue($botMeta)
+  const open = useValue($openBotChat)
+
   useValue(host.state.focusedStoredSessionId)
-  const bot = botForChat(roster, sessionId)
+
+  const bot =
+    botForChat(roster, sessionId) ??
+    (open?.openedRegistryId === '' ? roster.find(candidate => botRosterKey(candidate) === open.key) ?? null : null)
 
   if (!bot) {
     return null

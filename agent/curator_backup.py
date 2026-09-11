@@ -355,6 +355,30 @@ def _cron_summary(cron_report: Dict[str, Any]) -> Optional[str]:
     return "cron links: " + ", ".join(parts) if parts else None
 
 
+def _rollback_extract_filter(member: tarfile.TarInfo, dest_path: str):
+    """Extraction filter for curator rollback.
+
+    Behaves like tarfile's built-in ``data`` filter (rejects absolute paths,
+    ``..`` traversal, device/special files, …), with one carve-out: a skill
+    entry that is a *symlink pointing outside the skills tree* is skipped with a
+    warning instead of aborting the whole rollback. External skill links are a
+    legitimate install layout, e.g. ``skills/<name> -> ../../.agents/skills/<name>``,
+    and ``data``'s blanket rejection makes rollback unusable exactly when the user
+    needs it (#44658). Skipping keeps the safety guarantee of #23794 — an
+    untrusted link is still never recreated from the archive — while every real
+    file/dir in the snapshot is restored. Non-link unsafe members still abort.
+    """
+    try:
+        return tarfile.data_filter(member, dest_path)
+    except (tarfile.LinkOutsideDestinationError, tarfile.AbsoluteLinkError):
+        logger.warning(
+            "curator rollback: skipping external skill link %s -> %s "
+            "(re-create it manually after rollback if you still need it)",
+            member.name, member.linkname,
+        )
+        return None
+
+
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot (explicit id or newest): safety-snapshot the CURRENT tree; stage
     current top-level entries; extract; on failure move staged entries back. Returns ``(ok, message, snapshot_path)``."""
@@ -403,7 +427,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                 if member.name.startswith("/") or ".." in Path(member.name).parts:
                     raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
             try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
+                tf.extractall(str(skills), filter=_rollback_extract_filter)  # type: ignore[call-arg]
             except TypeError:
                 tf.extractall(str(skills))  # Python < 3.12 — no filter kwarg
     except (OSError, tarfile.TarError) as e:

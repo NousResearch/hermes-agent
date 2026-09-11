@@ -1605,6 +1605,31 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> tuple[bool, bool]:
         """Return ``(admitted, role_authorized)`` for one Discord event."""
         message_id = str(getattr(message, "id", ""))
+        channel = getattr(message, "channel", None)
+        thread_parent = getattr(channel, "parent", None)
+        forum_parent_types = tuple(
+            channel_type
+            for channel_type in (
+                getattr(discord, "ForumChannel", None),
+                getattr(discord, "MediaChannel", None),
+            )
+            if isinstance(channel_type, type)
+        )
+        # A message-attached thread mirrors its parent starter as a second
+        # MESSAGE_CREATE whose id equals the new thread id. Drop that mirror
+        # by shape before the async thread-creation path can race the dedup
+        # pre-seed below (#51057). Forum/media starters have the same shape but
+        # no separate parent-channel MESSAGE_CREATE, so they must be admitted.
+        if (
+            isinstance(channel, discord.Thread)
+            and message_id
+            and message_id == str(getattr(channel, "id", ""))
+            and not (
+                forum_parent_types
+                and isinstance(thread_parent, forum_parent_types)
+            )
+        ):
+            return False, False
         if claim:
             if self._dedup.is_duplicate(message_id):
                 return False, False
@@ -8187,6 +8212,33 @@ class DiscordAdapter(BasePlatformAdapter):
         normalized_content = raw_content
         mention_prefix = False
 
+        # ``message.create_thread()`` may mutate the discord.py message
+        # object. Preserve quote context and attachments before awaiting it,
+        # just as we already preserve normalized_content for command parsing.
+        original_attachments = list(getattr(message, "attachments", []) or [])
+        reference = getattr(message, "reference", None)
+        resolved_reference = getattr(reference, "resolved", None) if reference else None
+        referenced_attachments = (
+            list(getattr(resolved_reference, "attachments", []) or [])
+            if resolved_reference is not None
+            else []
+        )
+        reference_message_id = (
+            getattr(reference, "message_id", None)
+            if reference is not None
+            else None
+        )
+        reply_to_id = (
+            str(reference_message_id)
+            if reference_message_id is not None
+            else None
+        )
+        reply_to_text = (
+            getattr(resolved_reference, "content", None) or None
+            if resolved_reference is not None
+            else None
+        )
+
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
             snapshot_text_parts = []
@@ -8259,8 +8311,11 @@ class DiscordAdapter(BasePlatformAdapter):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
-            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Discord quote-replies posted in a parent text channel are still
+            # new conversation roots for routing purposes. Excluding
+            # MessageType.reply here silently bypassed auto-threading and sent
+            # the agent's answer inline in the shared parent channel.
+            if auto_thread and not skip_thread and not is_voice_linked_channel:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -8299,13 +8354,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                     return False
 
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+        all_attachments = original_attachments + snapshot_attachments + referenced_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -8602,13 +8651,6 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
 
         event = MessageEvent(
             text=event_text,

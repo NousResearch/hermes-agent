@@ -61,6 +61,10 @@ class _TextChannel:
         return _empty()
 
 
+class _ForumChannel(_TextChannel):
+    """Fake Discord forum parent whose starter exists only in its post thread."""
+
+
 class _Thread:
     """Fake Discord thread (not a DM, not a top-level channel)."""
 
@@ -199,6 +203,64 @@ class TestThreadStarterDedup:
         assert adapter.handle_message.call_count == 1, (
             "handle_message should only be called once — duplicate starter dropped"
         )
+
+    @pytest.mark.asyncio
+    async def test_thread_starter_racing_creation_is_dropped(self, adapter, monkeypatch):
+        """A starter mirror arriving before dedup pre-seeding cannot dispatch."""
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        monkeypatch.setattr(discord_platform.discord, "Thread", _Thread)
+        adapter._ready_event.set()
+
+        channel = _TextChannel(channel_id=100)
+        thread = _Thread(thread_id=55555, parent=channel)
+
+        async def create_thread_with_racing_starter(message):
+            starter = _make_message(
+                msg_id=thread.id,
+                channel=thread,
+                content=message.content,
+            )
+            dispatched = await adapter._dispatch_discord_message(starter)
+            assert dispatched is False
+            return thread
+
+        monkeypatch.setattr(
+            adapter, "_auto_create_thread", create_thread_with_racing_starter
+        )
+
+        user_msg = _make_message(
+            msg_id=42,
+            channel=channel,
+            content="replying to an earlier message",
+            msg_type=discord_platform.discord.MessageType.reply,
+        )
+        await adapter._handle_message(user_msg)
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_forum_starter_with_thread_id_is_admitted(self, adapter, monkeypatch):
+        """A forum post starter is not mistaken for a text-channel mirror."""
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+        monkeypatch.setattr(discord_platform.discord, "Thread", _Thread)
+        monkeypatch.setattr(discord_platform.discord, "ForumChannel", _ForumChannel)
+        adapter._ready_event.set()
+
+        forum = _ForumChannel(channel_id=100)
+        post = _Thread(thread_id=55555, parent=forum)
+        starter = _make_message(
+            msg_id=post.id,
+            channel=post,
+            content="new forum post",
+        )
+
+        dispatched = await adapter._dispatch_discord_message(starter)
+
+        assert dispatched is True
+        adapter.handle_message.assert_awaited_once()
 
 
     @pytest.mark.asyncio

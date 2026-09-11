@@ -29,6 +29,12 @@ single machine for a bounded window and nothing survives its release.
 
 - A job needs CUDA and the local machine has no NVIDIA card, or has one with too little
   VRAM for the model or kernel under test.
+- Another skill in this tree needs a card the machine does not have. `flash-attention`
+  states it has no CPU path. `slime` starts its container with `--gpus all`. `peft` sizes
+  every example in GPU memory. `nemo-curator` has a CPU install that gives up the speedups
+  it quotes. Lease a box, run that skill's own commands on it, release. Published capacity
+  reports CUDA 12, so a skill that requires CUDA 13 or newer is not served by it: read
+  `gpu.cuda_major` in the offer before planning the run.
 - Several steps depend on each other and need the same box: build, then run, then collect.
 - A result has to be citable by someone who does not trust the caller. Every settled lease
   publishes a receipt whose hash is committed on chain.
@@ -37,8 +43,10 @@ single machine for a bounded window and nothing survives its release.
 - Don't use for a whole interactive session on a GPU shell. The separate `hermes-plugin-prism`
   package (PyPI) makes the agent's own terminal a rented GPU, which is a different shape of
   purchase from the per-job leasing here.
-- Don't use before the job has run once on CPU at reduced size. A crash loop on a rented box
-  bills for the crash loop.
+- Don't use for a multi-GPU example. A lease is one machine with one card, so `--tp_size 4`
+  and an eight-worker cluster have nothing to run on.
+- Don't use before the job has run once at reduced size, on CPU where the code has a CPU
+  path. A crash loop on a rented box bills for the crash loop.
 
 ## Prerequisites
 

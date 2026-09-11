@@ -61,8 +61,17 @@ class TestCodexBuildKwargs:
             ],
         ))
         reasoning = normalized.provider_data["codex_reasoning_items"]
+        legacy_reasoning = {
+            "type": "reasoning",
+            "encrypted_content": "legacy-endpoint-only-blob",
+            "_issuer_kind": "other:https://responses.example.com/v1",
+        }
         history = [
-            {"role": "assistant", "content": "done", "codex_reasoning_items": reasoning},
+            {
+                "role": "assistant",
+                "content": "done",
+                "codex_reasoning_items": reasoning + [legacy_reasoning],
+            },
             {"role": "user", "content": "next"},
         ]
 

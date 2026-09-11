@@ -56,9 +56,10 @@ def test_local_backend_keeps_session_state_where_commands_actually_run(tmp_path,
 def test_routed_session_starts_in_the_far_sides_directory(tmp_path, monkeypatch):
     """A host cwd fallback would make the wrapper's ``cd`` fail on the far side.
 
-    Only the fallback is replaced: an explicit per-command workdir is the
-    caller's own choice, and a recorded session cwd was read from the routed
-    filesystem's own ``pwd``, so both must still win.
+    Every host-derived candidate loses to the backend's declared directory: the
+    configured ``terminal.cwd`` AND the per-task override the Desktop/TUI
+    registers from the session's own workspace (a host path). Only a cwd
+    RECORDED from the routed filesystem's own ``pwd`` still wins.
     """
     api = importlib.import_module("hermes_cli.session_execution")
     terminal_tool = importlib.import_module("tools.terminal_tool")
@@ -66,8 +67,7 @@ def test_routed_session_starts_in_the_far_sides_directory(tmp_path, monkeypatch)
     host_cwd = str(tmp_path / "host-project")
     Path(host_cwd).mkdir()
     monkeypatch.setenv("TERMINAL_CWD", host_cwd)
-    monkeypatch.setattr(terminal_tool, "get_session_cwd", lambda *a, **k: None)
-
+    terminal_tool.clear_session_cwd("routed-session")
     context = _routing_context(api, backend_cwd="/home/guest")
     api.register_session_execution_context("routed-session", context)
     try:
@@ -76,17 +76,66 @@ def test_routed_session_starts_in_the_far_sides_directory(tmp_path, monkeypatch)
             timeout=None, background=False, _host_local=False)
         assert plan.cwd == "/home/guest"
 
-        # An explicit per-task cwd override is the caller's own choice and wins.
-        terminal_tool.register_task_env_overrides("routed-session", {"cwd": "/etc"})
+        # The Desktop/TUI registers this session's workspace as a per-task
+        # override on every session. It is a HOST path: naming it on the far
+        # side made every routed command die in the wrapper's `cd`.
+        terminal_tool.register_task_env_overrides(
+            "routed-session", {"cwd": host_cwd, "cwd_source": "session"})
         try:
-            explicit = terminal_tool._plan_execution(
+            overridden = terminal_tool._plan_execution(
                 "pwd", task_id="routed-session", session_id="routed-session",
                 timeout=None, background=False, _host_local=False)
-            assert explicit.cwd == "/etc"
+            assert overridden.cwd == "/home/guest"
         finally:
             terminal_tool.register_task_env_overrides("routed-session", {})
+
+        # A cwd the guest's own shell REPORTED is the one candidate that wins.
+        terminal_tool.record_session_cwd(
+            "routed-session", "/home/guest/src", observed=True)
+        try:
+            recorded = terminal_tool._plan_execution(
+                "pwd", task_id="routed-session", session_id="routed-session",
+                timeout=None, background=False, _host_local=False)
+            assert recorded.cwd == "/home/guest/src"
+        finally:
+            terminal_tool.clear_session_cwd("routed-session")
     finally:
         api.remove_session_execution_context("routed-session")
+
+
+@pytest.mark.linux_only
+def test_per_command_cwd_ignores_an_unobserved_record_when_routed():
+    """``_resolve_command_cwd`` builds the ``cd`` the routed shell actually runs.
+
+    ``register_task_env_overrides`` seeds a cwd record from the Desktop/TUI
+    session workspace — a HOST path — so a record alone does not mean the far
+    side has that directory. Only a cwd the far side reported may be reused;
+    otherwise the command must start in the backend's declared directory.
+    """
+    terminal_tool = importlib.import_module("tools.terminal_tool")
+    host_cwd = "/host/workspace"
+    guest_cwd = "/home/guest"
+
+    terminal_tool.record_session_cwd("routed-cmd", host_cwd)
+    try:
+        assert terminal_tool._resolve_command_cwd(
+            workdir=None, default_cwd=guest_cwd, session_key="routed-cmd",
+            env_type="local", routed=True) == guest_cwd
+        # Unrouted sessions keep the record: it is their own ``cd`` state.
+        assert terminal_tool._resolve_command_cwd(
+            workdir=None, default_cwd=guest_cwd, session_key="routed-cmd",
+            env_type="local", routed=False) == host_cwd
+
+        terminal_tool.record_session_cwd("routed-cmd", "/home/guest/src", observed=True)
+        assert terminal_tool._resolve_command_cwd(
+            workdir=None, default_cwd=guest_cwd, session_key="routed-cmd",
+            env_type="local", routed=True) == "/home/guest/src"
+        # An explicit per-command workdir always wins.
+        assert terminal_tool._resolve_command_cwd(
+            workdir="/tmp", default_cwd=guest_cwd, session_key="routed-cmd",
+            env_type="local", routed=True) == "/tmp"
+    finally:
+        terminal_tool.clear_session_cwd("routed-cmd")
 
 
 @pytest.mark.linux_only
@@ -96,7 +145,7 @@ def test_unrouted_sessions_keep_the_configured_host_directory(tmp_path, monkeypa
     host_cwd = str(tmp_path / "host-project")
     Path(host_cwd).mkdir()
     monkeypatch.setenv("TERMINAL_CWD", host_cwd)
-    monkeypatch.setattr(terminal_tool, "get_session_cwd", lambda *a, **k: None)
+    terminal_tool.clear_session_cwd("plain-session")
 
     plan = terminal_tool._plan_execution(
         "pwd", task_id="plain-session", session_id="plain-session",

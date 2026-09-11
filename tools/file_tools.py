@@ -272,11 +272,16 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     except Exception:
         recorded_cwd = None
     cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-    # Same routed-filesystem fallback as the terminal tool: the configured HOST
-    # cwd does not exist on the far side of a routing command_prefix.
-    if (execution is not None and not overrides.get("cwd") and not recorded_cwd
-            and (routed_cwd := getattr(execution.context, "backend_cwd", None))):
-        cwd = routed_cwd
+    # Same routed-filesystem rule as the terminal tool: only a cwd the far side
+    # actually reported may win over the backend's declared start directory.
+    # The configured cwd, the per-task override, and the record that override
+    # seeds are all host paths the routed filesystem does not have.
+    if execution is not None and (
+            routed_cwd := getattr(execution.context, "backend_cwd", None)):
+        from tools.terminal_tool import session_cwd_observed
+
+        cwd = (recorded_cwd if recorded_cwd and session_cwd_observed(raw_task_id)
+               else routed_cwd)
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.

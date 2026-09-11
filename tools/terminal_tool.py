@@ -237,6 +237,9 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 # class). Written after every completed command and on cwd-override
 # registration; readers resolve against it before any env-side cwd.
 _session_cwd: Dict[str, str] = {}
+# Provenance for each entry above: True once the running shell REPORTED the
+# directory. A routed backend must not adopt a merely-requested (host) cwd.
+_session_cwd_observed: Dict[str, bool] = {}
 _session_cwd_lock = threading.Lock()
 
 # Subagent → parent container aliasing. delegate_task children have their own
@@ -247,16 +250,30 @@ _container_aliases: Dict[str, str] = {}
 _container_alias_lock = threading.Lock()
 
 
-def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
+def record_session_cwd(session_key: Optional[str], cwd: Optional[str],
+                       *, observed: bool = False) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
     command, or on workspace-override registration). None/empty keys collapse
-    to ``"default"``; non-string / empty cwds are ignored."""
+    to ``"default"``; non-string / empty cwds are ignored.
+
+    ``observed=True`` means the running shell REPORTED this directory, so it is
+    a path on whatever filesystem that shell runs in. A workspace override is
+    only a request and stays unobserved — it may name a host directory that a
+    routed backend (VM guest, remote host) cannot enter.
+    """
     if not isinstance(cwd, str) or not cwd.strip():
         return
     key = str(session_key or "default")
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
+        _session_cwd_observed[key] = observed
+
+
+def session_cwd_observed(session_key: Optional[str]) -> bool:
+    """Whether *session_key*'s recorded cwd was reported by the running shell."""
+    with _session_cwd_lock:
+        return _session_cwd_observed.get(str(session_key or "default"), False)
 
 
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
@@ -270,6 +287,7 @@ def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
         _session_cwd.pop(session_key, None)
+        _session_cwd_observed.pop(session_key, None)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -768,6 +786,7 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
+    routed: bool = False,
 ) -> str:
     """cwd for a command: explicit ``workdir`` > the session's own cwd record >
     ``default_cwd``.
@@ -776,7 +795,10 @@ def _resolve_command_cwd(
     it is the session's ``cd`` state with no shared-env ambiguity. On
     container backends a recorded HOST path (a desktop/TUI surface registering
     its workspace) is unusable in the sandbox — ``cd <host path>`` fails with
-    exit 126 — so it is discarded in favor of ``default_cwd``.
+    exit 126 — so it is discarded in favor of ``default_cwd``. A routed session
+    (``command_prefix`` into a VM guest or remote host) has the same problem
+    from the same cause, but no path shape reveals it: the record is only
+    trustworthy there once the far side itself reported it.
 
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
@@ -788,6 +810,13 @@ def _resolve_command_cwd(
             "Ignoring recorded session cwd %r for %s backend "
             "(host/relative path won't work in sandbox). Using %r instead.",
             recorded, env_type, default_cwd,
+        )
+        return default_cwd
+    if recorded and routed and not session_cwd_observed(session_key):
+        logger.info(
+            "Ignoring recorded session cwd %r for a routed session "
+            "(never observed on the far side). Using %r instead.",
+            recorded, default_cwd,
         )
         return default_cwd
     return recorded or default_cwd
@@ -894,6 +923,12 @@ class _ExecPlan:
     promoted_from_foreground_timeout: Optional[int] = None
 
 
+def _plan_is_routed(plan: "_ExecPlan") -> bool:
+    """Whether *plan*'s commands run on another filesystem via ``command_prefix``."""
+    context = getattr(plan.execution_context, "context", None)
+    return bool(getattr(context, "command_prefix", None))
+
+
 _PROMOTED_NOTE = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
@@ -953,13 +988,17 @@ def _plan_execution(
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
     host_cwd = None if _host_local else _resolve_task_host_cwd(config, task_id)
     # A routed execution context whose commands land in another filesystem
-    # declares where a session starts there. Only the fallback to the configured
-    # HOST cwd is replaced: an explicit workdir/override is the caller's choice,
-    # and a recorded session cwd was read from that filesystem's own ``pwd``.
-    if (execution is not None and not overrides.get("cwd")
-            and not get_session_cwd(task_id)
-            and (routed_cwd := getattr(execution.context, "backend_cwd", None))):
-        cwd = routed_cwd
+    # declares where a session starts there. Every host-derived candidate —
+    # the configured ``terminal.cwd``, the gateway/TUI per-task override, and
+    # the cwd record that override seeds (``register_task_env_overrides``
+    # writes one, so "recorded" does NOT imply "seen on the far side") — names
+    # a directory the routed shell cannot enter. Only a cwd the far side
+    # actually reported (``cwd_observed``, recorded after a command ran there)
+    # may win, and it is recognised by being inside the declared root.
+    if execution is not None and (
+            routed_cwd := getattr(execution.context, "backend_cwd", None)):
+        recorded = get_session_cwd(task_id)
+        cwd = recorded if recorded and session_cwd_observed(task_id) else routed_cwd
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
@@ -1106,6 +1145,7 @@ def _run_foreground(
         try:
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                routed=_plan_is_routed(plan),
             )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
@@ -1257,6 +1297,7 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                routed=_plan_is_routed(plan),
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)

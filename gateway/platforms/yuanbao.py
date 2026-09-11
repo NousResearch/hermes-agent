@@ -2537,10 +2537,36 @@ class MessageSender:
 
     @staticmethod
     async def _dispatch_encoded(adapter: "YuanbaoAdapter", encoded: bytes, req_id: str) -> dict:
-        """Send pre-encoded bytes via WS → ``{"success", "msg_key" | "error"}``."""
+        """Send pre-encoded bytes via WS → ``{"success", "msg_key" | "error"}``.
+
+        Validates both the ConnMsg head status and the business payload code
+        so rejected messages are not silently reported as success (#107227).
+        """
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            return {"success": True, "msg_key": response.get("msg_id", "")}
+            head = response.get("head", {}) if isinstance(response, dict) else {}
+            status = head.get("status", 0) if isinstance(head, dict) else 0
+            if status != 0:
+                return {"success": False, "error": f"Yuanbao response status={status}"}
+            data = response.get("data", b"") if isinstance(response, dict) else b""
+            if not data:
+                data = response.get("body", b"") if isinstance(response, dict) else b""
+            if isinstance(data, (bytes, bytearray)) and len(data) > 0:
+                try:
+                    from gateway.platforms.yuanbao_proto import _get_string, _get_varint, _parse_dict
+
+                    fdict = _parse_dict(bytes(data))
+                    code = _get_varint(fdict, 1, 0)
+                    if code not in (0,):
+                        msg = _get_string(fdict, 2, "")
+                        detail = msg[:300] if msg else f"business code {code}"
+                        return {"success": False, "error": f"Yuanbao business error code={code}: {detail}"}
+                except Exception:
+                    pass
+            msg_key = head.get("msg_id", "") if isinstance(head, dict) else ""
+            if not msg_key:
+                msg_key = response.get("msg_id", "") if isinstance(response, dict) else ""
+            return {"success": True, "msg_key": msg_key}
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
         except Exception as exc:
@@ -2598,7 +2624,7 @@ class OutboundManager:
 class YuanbaoAdapter(BasePlatformAdapter):
     """Yuanbao AI Bot adapter backed by a persistent WebSocket connection."""
     PLATFORM = Platform.YUANBAO
-    MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    MAX_TEXT_CHUNK: int = 1800  # Yuanbao single message character limit (reduced from 4000: 2491-char payload was rejected with biz code 999/9992501, 1800 fixes via 2 chunks; see #107227)
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000

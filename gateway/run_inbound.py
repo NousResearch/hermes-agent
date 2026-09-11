@@ -155,11 +155,16 @@ class GatewayInboundMixin:
         # Ignored-channel guard runs FIRST — before startup-restore queueing, plugin hooks, auth,
         # and session setup — so an ignored channel can never reach pairing/auth/session state.
         _chat_id = getattr(source, "chat_id", None)
+        if not is_internal and getattr(source, "platform", None) == Platform.SLACK:
+            # The routed adapter's extra carries a secondary profile's own list; ``_config`` is the default's.
+            _slack_adapter = None
+            with suppress(Exception):
+                _slack_adapter = self._adapter_for_source(source)
         if (
             # See #51899.
             not is_internal
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(_config, _chat_id)
+            and _is_slack_ignored_channel(_config, _chat_id, _slack_adapter)
         ):
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None

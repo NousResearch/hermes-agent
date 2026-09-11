@@ -1159,18 +1159,23 @@ def _csv_or_list_to_set(raw: Any) -> set[str]:
     return {part.strip() for part in str(raw).split(",") if part.strip()}
 
 
-def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
+def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
-    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions."""
-    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions.
+    ``adapter`` is the source's routed adapter: under multiplex ``config`` is the DEFAULT profile's
+    GatewayConfig, so a secondary Slack bot's list lives only in its adapter's ``extra``."""
     raw = None
-    if platform_cfg is not None:
+    if adapter is not None:
+        raw = (getattr(getattr(adapter, "config", None), "extra", None) or {}).get("ignored_channels")
+    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    if raw is None and platform_cfg is not None and adapter is None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
     if raw is None:
-        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra.
-        # See #46925.
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
+        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
+        # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
+        from gateway.authz_mixin import _platform_gate_env
+        raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 
 
@@ -1179,10 +1184,11 @@ def _slack_parent_channel_id(chat_id: Any) -> str:
     return str(chat_id).split(":", 1)[0] if chat_id else ""
 
 
-def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
-    """Check the generic Slack gateway blacklist for channel or thread IDs."""
+def _is_slack_ignored_channel(config: Any, chat_id: Any, adapter: Any = None) -> bool:
+    """Check the generic Slack gateway blacklist for channel or thread IDs (``adapter`` = the source's
+    routed adapter, whose ``extra`` is authoritative for a secondary profile)."""
     channel_id = _slack_parent_channel_id(chat_id)
-    ignored = _slack_ignored_channels_from_gateway_config(config)
+    ignored = _slack_ignored_channels_from_gateway_config(config, adapter)
     return bool(channel_id and ("*" in ignored or channel_id in ignored))
 
 

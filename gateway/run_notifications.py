@@ -109,7 +109,7 @@ class GatewayNotificationsMixin:
             return
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)
-        if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id):
+        if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id, adapter):
             logger.info("Skipping Slack platform notice for configured ignored channel %s", chat_id)
             return
         notice_delivery = (

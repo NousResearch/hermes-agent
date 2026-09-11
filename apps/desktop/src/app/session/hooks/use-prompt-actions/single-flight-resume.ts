@@ -13,9 +13,52 @@
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
+import { withTimeout } from '@/lib/with-timeout'
+
 const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
+/**
+ * Ceiling on how long ONE flight may hold the shared slot.
+ *
+ * Sharing the promise is what makes an unsettled resume so expensive: the
+ * entry is only released by `.finally()`, so while it hangs every later
+ * caller for that stored id joins the same dead promise and the conversation
+ * is unrecoverable for the life of the window. The deadline exists to break
+ * that wedge, NOT to make a slow resume feel responsive — the RPC's own 30s
+ * budget already covers responsiveness.
+ *
+ * Derived from the longest LEGITIMATE settlement rather than picked round, so
+ * a slow-but-healthy resume is never aborted. `run()` bodies resolve the
+ * owning profile before they send anything, and `resolveStoredSession()`
+ * probes backends sequentially on a cache miss:
+ *
+ *   30s  active-profile `getSession` probe    (Electron DEFAULT_FETCH_TIMEOUT_MS)
+ * + 30s  one cross-profile `getSession` probe (same budget, per profile)
+ * + 30s  the `session.resume` RPC             (HermesGateway DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+ * = 90s
+ *
+ * An install with more profiles can still exceed this, and that is deliberate:
+ * past this point the flight has held the slot longer than any single healthy
+ * recovery ever needs, and breaking it is better than stranding the window.
+ */
+export const SESSION_RESUME_SETTLEMENT_TIMEOUT_MS = 90_000
+
+/** Best-effort `session_id` off a `session.resume`-shaped response. */
+function resumedRuntimeId(result: unknown): string {
+  if (typeof result !== 'object' || result === null) {
+    return ''
+  }
+
+  const sessionId = (result as { session_id?: unknown }).session_id
+
+  return typeof sessionId === 'string' ? sessionId : ''
+}
+
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  timeoutMs = SESSION_RESUME_SETTLEMENT_TIMEOUT_MS
+): Promise<T> {
   const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
 
   if (existing) {
@@ -25,13 +68,41 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
-    .then(run)
-    .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
-      }
-    })
+  const work = Promise.resolve().then(run)
+
+  // withTimeout does NOT cancel the work it bounds, and here the straggler is
+  // not inert: `session.resume` can still land a REAL runtime, registered on
+  // the gateway, that no client is holding. Dropping it on the floor is the
+  // exact orphan-per-resume shape this module exists to prevent (#91276), so
+  // hand a late arrival to the same recovered-runtime cache the drift-abort
+  // path uses and let the next resume-shaped action adopt it.
+  const adoptStraggler = () => {
+    void work.then(
+      result => {
+        // A newer flight already owns this stored id — its caller will adopt
+        // whatever it returns, so caching an older runtime here would just
+        // aim the next action at the wrong one.
+        if (_inFlightResumeByStoredSessionId.has(storedSessionId)) {
+          return
+        }
+
+        registerRecoveredRuntime(storedSessionId, resumedRuntimeId(result))
+      },
+      // A straggler that failed minted nothing — there is nothing to adopt.
+      () => undefined
+    )
+  }
+
+  const flight = withTimeout(
+    work,
+    timeoutMs,
+    `Timed out resuming session ${storedSessionId}`,
+    adoptStraggler
+  ).finally(() => {
+    if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
+      _inFlightResumeByStoredSessionId.delete(storedSessionId)
+    }
+  })
 
   _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
 

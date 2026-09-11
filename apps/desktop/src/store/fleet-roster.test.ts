@@ -25,9 +25,11 @@ const recovered: DesktopAgentRoster = {
 describe('fleet roster recovery', () => {
   it('queues one fresh enumeration when recovery overlaps an older request', async () => {
     let finish!: (roster: DesktopAgentRoster) => void
+
     const pending = new Promise<DesktopAgentRoster>(resolve => {
       finish = resolve
     })
+
     const getAgentRoster = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(recovered)
     vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
 

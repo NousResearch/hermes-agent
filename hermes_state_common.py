@@ -558,6 +558,8 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_pid INTEGER,
     owner_started_at INTEGER,
     task_json TEXT,
+    -- Owner-side execution fence (unified runtime).
+    owner_execution_id TEXT,
     delivery_claim TEXT,
     delivery_claimed_at REAL,
     -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py

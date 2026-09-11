@@ -1421,3 +1421,145 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+# Deltas 0-12 and 41-44 of one measured reply, verbatim, from
+# ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` on Converse with ``thinking``
+# enabled, prompt "Is 91 prime? Think it through briefly, then answer." -- 45
+# reasoning deltas in total.
+#
+# Two properties of the real data are what these turn on: deltas split mid-word
+# (``" div"`` then ``"iding by small primes:"``), and the model's OWN paragraph
+# breaks arrive INSIDE a delta (``"\n\nI"``). Together they mean joining deltas
+# with the block separator does not merely add noise -- it makes the model's real
+# breaks indistinguishable from manufactured ones.
+MEASURED_REASONING_DELTAS = [
+    "Let", " me check if 91 is prime", " by seeing", " if it has", " any factors",
+    " other", " than 1 and itself.", "\n\nI", "'ll try", " div",
+    "iding by small primes:", "\n- 91 \u00f7", " 2 = 45.5",
+    "\n\nSo 91 = 7", " \u00d7 13,", " which", " means 91 is not prime.",
+]
+
+
+def _reasoning_stream(delta_groups, trailing_text=None):
+    """A Converse event stream with one reasoning block per group."""
+    stream = [{"messageStart": {"role": "assistant"}}]
+    index = 0
+    for deltas in delta_groups:
+        stream.append({"contentBlockStart": {"contentBlockIndex": index, "start": {}}})
+        for d in deltas:
+            stream.append({"contentBlockDelta": {
+                "contentBlockIndex": index, "delta": {"reasoningContent": {"text": d}}}})
+        stream.append({"contentBlockStop": {"contentBlockIndex": index}})
+        index += 1
+    if trailing_text is not None:
+        stream.append({"contentBlockStart": {"contentBlockIndex": index, "start": {}}})
+        stream.append({"contentBlockDelta": {
+            "contentBlockIndex": index, "delta": {"text": trailing_text}}})
+        stream.append({"contentBlockStop": {"contentBlockIndex": index}})
+    stream.append({"messageStop": {"stopReason": "end_turn"}})
+    return {"stream": stream}
+
+
+class TestReasoningIsJoinedByBlockNotByDelta:
+    """#98468 -- ``"\n\n"`` is the separator between reasoning BLOCKS.
+
+    ``_ResponseParts`` is shared by both normalizers, and a flat per-call
+    accumulator could only ever be right for one of them: the sync path calls
+    ``absorb_reasoning`` once per content block, the streaming path once per
+    delta. Both now derive from ``ordered_blocks``, which means the same thing
+    on either path, so these tests pin both halves together.
+    """
+
+    def test_streamed_deltas_are_concatenated(self):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        result = stream_converse_with_callbacks(
+            _reasoning_stream([MEASURED_REASONING_DELTAS], trailing_text="No."))
+        assert result.choices[0].message.reasoning_content == "".join(
+            MEASURED_REASONING_DELTAS)
+
+    def test_a_word_split_across_deltas_survives(self):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        stored = stream_converse_with_callbacks(
+            _reasoning_stream([MEASURED_REASONING_DELTAS])
+        ).choices[0].message.reasoning_content
+        assert "dividing by small primes" in stored
+        assert "div\n\niding" not in stored
+
+    def test_only_the_breaks_the_model_sent_survive(self):
+        """The tightest statement of the bug: this reply contains exactly two
+        ``"\n\n"`` runs, both inside a single delta. The old code produced one
+        per delta boundary."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        stored = stream_converse_with_callbacks(
+            _reasoning_stream([MEASURED_REASONING_DELTAS])
+        ).choices[0].message.reasoning_content
+        expected = "".join(MEASURED_REASONING_DELTAS)
+        assert stored.count("\n\n") == expected.count("\n\n") == 2
+        assert len(stored) == len(expected)
+
+    def test_separate_streamed_blocks_keep_the_separator(self):
+        """The fix narrows the separator from deltas to blocks; it does not
+        remove it."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        assert stream_converse_with_callbacks(
+            _reasoning_stream([["first ", "thought"], ["second ", "thought"]])
+        ).choices[0].message.reasoning_content == "first thought\n\nsecond thought"
+
+    def test_the_live_callback_still_gets_every_raw_chunk(self):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        seen = []
+        stream_converse_with_callbacks(
+            _reasoning_stream([MEASURED_REASONING_DELTAS]),
+            on_reasoning_delta=seen.append)
+        assert seen == MEASURED_REASONING_DELTAS
+
+    def test_reasoning_and_text_do_not_bleed(self):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        msg = stream_converse_with_callbacks(
+            _reasoning_stream([["thinking"]], trailing_text="No - 91 = 7 x 13.")
+        ).choices[0].message
+        assert msg.reasoning_content == "thinking"
+        assert msg.content == "No - 91 = 7 x 13."
+
+    def test_no_reasoning_leaves_it_none(self):
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        assert stream_converse_with_callbacks(
+            _reasoning_stream([], trailing_text="plain")
+        ).choices[0].message.reasoning_content is None
+
+    def test_a_redacted_only_block_contributes_no_text(self):
+        """A block carrying only ``redactedContent`` has no text to join and
+        must not surface as an empty entry or a stray separator."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        events = {"stream": [
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {
+                "reasoningContent": {"redactedContent": b"opaque"}}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}}]}
+        msg = stream_converse_with_callbacks(events).choices[0].message
+        assert msg.reasoning_content is None
+        assert msg.reasoning_details[0]["type"] == "redacted_thinking"
+
+    def test_bedrock_content_blocks_and_reasoning_agree(self):
+        """One now derives from the other, so pin them together."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        msg = stream_converse_with_callbacks(
+            _reasoning_stream([MEASURED_REASONING_DELTAS])).choices[0].message
+        assert msg.bedrock_content_blocks[0]["reasoningContent"]["text"] == "".join(
+            MEASURED_REASONING_DELTAS)
+        assert msg.reasoning_content == msg.bedrock_content_blocks[0]["reasoningContent"]["text"]
+
+    def test_the_sync_path_is_byte_identical(self):
+        """The sync normalizer walks real blocks, so its output must not move.
+        This is the half a streaming-only fix would have had to protect with a
+        guard; sharing the derivation makes it the same assertion."""
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {"output": {"message": {"role": "assistant", "content": [
+            {"reasoningContent": {"text": "first thought"}},
+            {"reasoningContent": {"text": "second thought"}},
+            {"text": "answer"}]}}, "stopReason": "end_turn", "usage": {}}
+        msg = normalize_converse_response(response).choices[0].message
+        assert msg.reasoning_content == "first thought\n\nsecond thought"
+        assert msg.content == "answer"

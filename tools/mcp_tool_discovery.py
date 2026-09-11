@@ -490,6 +490,10 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
+            if server._dropped_tools:
+                # Offered by the server but discarded because their definition fails the SDK's wire
+                # schema (see tools/mcp_listing_guard.py); agent.log has the reasons.
+                entry["dropped_tools"] = sorted(server._dropped_tools)
         elif status == "failed":
             entry["error"] = connect_errors[name]
         result.append(entry)

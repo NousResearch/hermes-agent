@@ -138,12 +138,39 @@ class MCPServerTransportMixin:
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason
 
+    def _guard_session_streams(self, read_stream, write_stream):
+        """Wrap a transport's stream pair so one bad tool can't park the server.
+
+        The mcp 2.x SDK validates each ``tools/list`` page as a whole against the negotiated protocol
+        version's wire schema *before* the client sees it, so one tool the schema rejects fails the
+        entire response and the server parks with zero tools (#101669). The guard validates each tool
+        on its own with the same versioned model and drops just the offending ones, by name, recording
+        them in ``_dropped_tools`` for status. The write proxy remembers each outbound request's method,
+        so only the response to ``tools/list`` is touched — a custom method whose result carries a
+        ``tools`` list passes through untouched. Wrapping the streams covers every ``list_tools`` caller
+        at once: discovery, ``tools/list_changed`` refreshes and the keepalive fallback.
+        """
+        from tools.mcp_listing_guard import guard_session_streams
+
+        return guard_session_streams(
+            read_stream, write_stream,
+            server_name=self.name,
+            version_getter=lambda: getattr(self.session, "protocol_version", None),
+            on_drop=self._record_dropped_tools,
+        )
+
+    def _record_dropped_tools(self, dropped) -> None:
+        """Remember guard-dropped tools so status can show what went missing."""
+        for name, reason in dropped:
+            self._dropped_tools[name] = reason
+
     async def _serve_transport(self, transport_cm, label: str, connect_timeout: float) -> str:
         """Open *transport_cm*, wrap its streams in a ClientSession and serve it. Streams are indexed,
         not unpacked (mcp 1.x yields a 3-tuple, 2.x a pair); a TaskGroup drop maps to ``"reconnect"``."""
         try:
             async with transport_cm as _streams:
-                async with _core.ClientSession(_streams[0], _streams[1], **self._session_kwargs()) as session:
+                read_stream, write_stream = self._guard_session_streams(_streams[0], _streams[1])
+                async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     return await self._serve_session(session, connect_timeout, label)
         except BaseExceptionGroup as _eg:
             return self._reconnect_or_reraise_group(_eg)
@@ -243,6 +270,7 @@ class MCPServerTransportMixin:
                 if new_pids:
                     self._track_spawned_children(new_pids)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
+                read_stream, write_stream = self._guard_session_streams(read_stream, write_stream)
                 async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
@@ -428,6 +456,9 @@ class MCPServerTransportMixin:
         anomalyco/opencode#31271.)
         """
         self._ping_unsupported = False  # fresh transport: re-probe ``ping`` across the reconnect
+        # Forget guard verdicts from the previous catalog before deciding whether a new one is even
+        # fetched: a server that stops advertising ``tools`` must not keep reporting stale drops.
+        self._dropped_tools = {}
         if self.session is None:
             return
         if not self._advertises_tools():

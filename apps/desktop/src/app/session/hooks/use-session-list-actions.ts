@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
+  configuredExcludeSources,
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
+  mergeExcludedSources,
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
@@ -116,6 +119,18 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
+
+  // The recents slice hides the built-in machine sources (SIDEBAR_EXCLUDED_SOURCES)
+  // plus whatever `sessions.exclude_sources` adds — `a2a` by default, so A2A peer
+  // dispatches don't crowd out interactive chats. Reading the shared config record
+  // makes the extra exclusions user-configurable without a code change; the
+  // built-in entries can never be configured away.
+  const { data: configRecord } = useHermesConfigRecord()
+
+  const recentsExclude = useMemo(
+    () => mergeExcludedSources(SIDEBAR_EXCLUDED_SOURCES, configuredExcludeSources(configRecord)),
+    [configRecord]
+  )
 
   useLayoutEffect(() => {
     profileScopeRef.current = profileScope
@@ -279,7 +294,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         const result = await listSidebarSessions({
           recentsProfile: sessionProfile,
           recentsLimit: limit,
-          recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+          recentsExclude,
           cronLimit: CRON_SECTION_LIMIT,
           messagingLimit: MESSAGING_SECTION_LIMIT,
           messagingExclude: MESSAGING_EXCLUDED_SOURCES
@@ -384,7 +399,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         void refreshCronJobs()
       }
     },
-    [profileScope, refreshCronJobs]
+    [profileScope, recentsExclude, refreshCronJobs]
   )
 
   const loadMoreSessions = useCallback(async () => {

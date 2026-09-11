@@ -165,6 +165,11 @@ hermes kanban boards show             # who's active right now?
 # Rename the display name (the slug is immutable — it's the directory name).
 hermes kanban boards rename atm10-server "ATM10 (Prod)"
 
+# Pin the board to the profile that owns its repo. Decomposed children the LLM
+# can't route and unassigned ready cards land on this profile instead of the
+# global kanban.default_assignee. "none" clears it.
+hermes kanban boards set-default-assignee atm10-server ops
+
 # Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/.
 # Recoverable by moving the dir back.
 hermes kanban boards rm atm10-server
@@ -666,6 +671,8 @@ Flip between the two modes from the **Orchestration: Auto/Manual** pill at the t
 
 The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee` (or the active default profile if that's unset).
 
+A board can pin its own fallback: `hermes kanban boards set-default-assignee <slug> <profile>` stores `default_assignee` in that board's `board.json`. It takes precedence over `kanban.default_assignee` for the board's decomposed children and for unassigned `ready` cards the dispatcher picks up, the decomposer prompt gains a `Board: <name> - <description> (repo: <default_workdir>); Board default assignee: <profile>` line, and the value is ignored (global fallback) if the profile no longer exists. Explicitly assigned cards are never changed.
+
 `kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
 Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
@@ -675,7 +682,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
-| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. A board-level `default_assignee` (`hermes kanban boards set-default-assignee <slug> <profile>`) takes precedence for that board. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 

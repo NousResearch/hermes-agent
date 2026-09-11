@@ -1,9 +1,9 @@
-"""Profile-based routing: route guilds/channels/threads to different profiles.
+"""Profile-based routing: route senders/locations to different profiles.
 
-Matching priority, most specific first (``gateway.profile_routes`` in config.yaml):
-platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + guild_id (2)
-→ default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
-direct parent, so a channel route also matches any thread/post under it.
+Matching is conjunctive; the highest additive specificity wins (``gateway.profile_routes``
+in config.yaml): user_id 16, thread_id 8, chat_id 4, guild_id 2, else the default profile.
+For Discord threads/forum posts ``parent_chat_id`` carries the direct parent, so a
+channel route also matches any thread/post under it.
 """
 
 from __future__ import annotations
@@ -58,15 +58,16 @@ class ProfileRoute:
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
     enabled: bool = True
+    user_id: Optional[str] = None
 
     @property
     def specificity(self) -> int:
         """Higher value = more specific match."""
-        return 2 * bool(self.guild_id) + 4 * bool(self.chat_id) + 8 * bool(self.thread_id)
+        return 2 * bool(self.guild_id) + 4 * bool(self.chat_id) + 8 * bool(self.thread_id) + 16 * bool(self.user_id)
 
     def matches(
         self, platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
-        thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None, user_id: Optional[str] = None,
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
@@ -74,6 +75,8 @@ class ProfileRoute:
         ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
         """
         if not self.enabled or self.platform != platform:
+            return False
+        if self.user_id is not None and (not str(self.user_id).strip() or self.user_id != user_id):
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
@@ -138,6 +141,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             guild_id=_coerce_route_id(entry.get("guild_id")),
             chat_id=_coerce_route_id(entry.get("chat_id")),
             thread_id=_coerce_route_id(entry.get("thread_id")),
+            user_id=_coerce_route_id(entry.get("user_id")),
             enabled=entry.get("enabled", True),
         ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
@@ -147,10 +151,11 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 
 def match_profile_route(
     routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
-    thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None, user_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
     """Return the first (most specific) matching route, or None."""
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+                         parent_chat_id=parent_chat_id, user_id=user_id):
             return route
     return None

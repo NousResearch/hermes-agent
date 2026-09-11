@@ -46,6 +46,38 @@ class TestProfileRouteMatching:
         # guild matches but chat differs -> NO match
         assert not r.matches("discord", guild_id="111", chat_id="333")
 
+    def test_user_id_matches_exactly_and_is_conjunctive_with_chat_id(self):
+        sender = ProfileRoute(
+            name="sender", platform="teams", profile="owner", user_id="aad-456",
+        )
+        assert sender.matches("teams", user_id="aad-456")
+        assert not sender.matches("teams", user_id="AAD-456")
+        assert not sender.matches("teams")
+
+        sender_chat = ProfileRoute(
+            name="sender-chat", platform="teams", profile="owner",
+            user_id="aad-456", chat_id="conversation-1",
+        )
+        assert sender_chat.matches(
+            "teams", user_id="aad-456", chat_id="conversation-1",
+        )
+        assert not sender_chat.matches(
+            "teams", user_id="aad-456", chat_id="conversation-2",
+        )
+
+    def test_sender_routes_split_one_chat_and_outrank_its_location_route(self):
+        routes = parse_profile_routes([
+            {"name": "shared", "platform": "teams", "profile": "shared",
+             "chat_id": "shared-chat"},
+            {"name": "alice", "platform": "teams", "profile": "alice",
+             "chat_id": "shared-chat", "user_id": "user-a"},
+            {"name": "bob", "platform": "teams", "profile": "bob", "user_id": "user-b"},
+        ])
+        for user, profile in (("user-a", "alice"), ("user-b", "bob"), ("user-c", "shared")):
+            assert match_profile_route(
+                routes, "teams", chat_id="shared-chat", user_id=user,
+            ).profile == profile
+
 
 class TestParseProfileRoutes:
     def test_empty(self):
@@ -57,22 +89,35 @@ class TestParseProfileRoutes:
         # inbound SessionSource ids are str, so un-coerced routes never match.
         routes = parse_profile_routes([
             {"name": "server", "platform": "discord", "profile": "p",
-             "guild_id": 111, "chat_id": 222, "thread_id": 333},
+             "guild_id": 111, "chat_id": 222, "thread_id": 333, "user_id": 444},
             {"name": "tg", "platform": "telegram", "profile": "p",
              "chat_id": -1001234567890},
             {"name": "platform-only", "platform": "discord", "profile": "p"},
         ])
         by_name = {r.name: r for r in routes}
         assert (by_name["server"].guild_id, by_name["server"].chat_id,
-                by_name["server"].thread_id) == ("111", "222", "333")
+                by_name["server"].thread_id, by_name["server"].user_id) == (
+                    "111", "222", "333", "444",
+                )
         assert match_profile_route(
             routes, "discord", guild_id="111", chat_id="222", thread_id="333",
+            user_id="444",
         ).name == "server"
         assert match_profile_route(
             routes, "telegram", chat_id="-1001234567890",
         ).name == "tg"
         assert (by_name["platform-only"].guild_id, by_name["platform-only"].chat_id,
                 by_name["platform-only"].thread_id) == (None, None, None)
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_user_id_is_inert_never_a_broader_route(self, blank):
+        # Unlike the location fields, a blank sender does not fall back to "unconstrained".
+        routes = parse_profile_routes([
+            {"name": "blank", "platform": "teams", "profile": "owner", "user_id": blank},
+            {"name": "legacy", "platform": "teams", "profile": "shared"},
+        ])
+        assert match_profile_route(routes, "teams", user_id=blank).name == "legacy"
+        assert match_profile_route(routes, "teams", user_id="anyone").name == "legacy"
 
     def test_non_int_numeric_ids_warn_instead_of_silently_coercing(self, caplog):
         # #86470 nuance: float/bool stringify to values that can never match
@@ -187,3 +232,21 @@ class TestWhatsAppChatIdIdentityMatching:
         tg = ProfileRoute(name="tg", platform="telegram", profile="owner", chat_id="640466638")
         assert tg.matches("telegram", chat_id="640466638")
         assert not tg.matches("telegram", chat_id="640466638@s.whatsapp.net")
+
+
+class TestGatewayConfigRoundtrip:
+    def test_routes_survive_to_dict_from_dict_with_user_id_and_enabled(self):
+        # GatewayConfig serializes routes with asdict(); a field added to ProfileRoute but not
+        # re-read by parse_profile_routes would silently widen or disable routes on reload.
+        from gateway.config import GatewayConfig
+
+        config = GatewayConfig(profile_routes=parse_profile_routes([
+            {"name": "sender", "platform": "teams", "profile": "owner", "user_id": "aad-456"},
+            {"name": "off", "platform": "teams", "profile": "owner",
+             "chat_id": "conversation-1", "enabled": False},
+        ]))
+        restored = GatewayConfig.from_dict(config.to_dict()).profile_routes
+
+        assert [(r.name, r.user_id, r.enabled, r.specificity) for r in restored] == [
+            ("sender", "aad-456", True, 16), ("off", None, False, 4),
+        ]

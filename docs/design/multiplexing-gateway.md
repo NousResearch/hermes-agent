@@ -119,7 +119,7 @@ profile-scoped code runs without the override where one is expected.
 
 ## Inbound routing
 
-`gateway.profile_routes` maps `(platform, guild_id, chat_id, thread_id)` to a
+`gateway.profile_routes` maps `(platform, user_id, guild_id, chat_id, thread_id)` to a
 profile; matching is conjunctive, most-specific-first, with parent-chain chat
 matching for threads. Routing only runs when multiplexing is active, and a
 matched route whose target is outside the served set is rejected (the event is

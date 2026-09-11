@@ -117,6 +117,7 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     guild = metadata.get("scope_id") or metadata.get("guild_id")
     parent = metadata.get("parent_chat_id")
     chat, thread = sub.get("chat_id"), sub.get("thread_id") or None
+    user_id = sub.get("user_id") or None
     thread_like = bool(thread) or (sub.get("chat_type") or metadata.get("chat_type")) in {
         "thread", "forum", "forum_post", "forum-post", "topic",
     }
@@ -126,14 +127,15 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # hand-maintained equality implementation.
     for route in getattr(config, "profile_routes", None) or []:
         if route.matches(platform.value, guild_id=guild, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent):
+                         thread_id=thread, parent_chat_id=parent, user_id=user_id):
             if route.profile != profile:
                 return None
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
+                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
+                         user_id=user_id or route.user_id):
             return None
     return primary if profile == primary_profile else None
 

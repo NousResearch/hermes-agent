@@ -2199,6 +2199,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # No profile dir (isolated test fixtures) — the CLI resolves it from
         # HERMES_PROFILE (set below) instead.
         pass
+    # The gateway bridged its own terminal config before switching profiles.
+    # Let the child load the assignee's backend and forwarding allowlist;
+    # task-owned cwd and runtime pins are applied below, after this cleanup.
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+
+    for env_var in TERMINAL_CONFIG_ENV_MAP.values():
+        env.pop(env_var, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

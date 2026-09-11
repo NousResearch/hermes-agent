@@ -516,12 +516,9 @@ function Stage-Repository {
 }
 
 function Stage-Venv {
-    $uv = Get-Uv
-    Log "creating venv"
-    Push-Location $InstallDir
-    & $uv venv --allow-existing venv; $code = $LASTEXITCODE
-    Pop-Location
-    if ($code) { Fail "uv venv failed" }
+    # Keep the installer stage protocol; PM alone creates dependency environments.
+    Get-BootstrapPython | Out-Null
+    Log "bootstrap Python ready; PM prepares the dependency environment"
 }
 
 # Delegate the whole python+venv+tools install to pm: stage the pinned uv,

@@ -319,9 +319,10 @@ stage_repository() {
 }
 
 stage_venv() {
-    ensure_uv
-    log "creating venv"
-    (cd "$INSTALL_DIR" && "$UV_CMD" venv --allow-existing venv) || fail "uv venv failed"
+    # Keep the installer stage protocol; PM alone creates dependency environments.
+    local boot_py
+    bootstrap_python
+    log "bootstrap Python ready; PM prepares the dependency environment"
 }
 
 # Tool-only bootstrap: acquire uv and Python before PM's own dependencies exist.

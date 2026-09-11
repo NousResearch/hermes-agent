@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url)
 const config = require('../electron-builder.config.cjs')
 const repo = path.resolve(import.meta.dirname, '../../..')
 const desktop = path.resolve(import.meta.dirname, '..')
-const python = process.env.HERMES_PYTHON || process.env.UV_PYTHON || 'python'
+const python = process.env.HERMES_PYTHON || 'python'
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-digest-order-'))
@@ -34,7 +34,7 @@ function fixture() {
   const ignored = path.join(tools, 'python', 'non-macho.bin')
   fs.writeFileSync(ignored, Buffer.alloc(64))
   const env = { ...process.env, HERMES_HOME: path.join(root, 'home'),
-    HERMES_RUNTIME_DIR: path.join(root, 'state'), UV_PYTHON: python,
+    HERMES_RUNTIME_DIR: path.join(root, 'state'), HERMES_PYTHON: python,
     UV_OFFLINE: '1', UV_PYTHON_DOWNLOADS: 'never', UV_CACHE_DIR: path.join(root, 'cache') }
   delete env.PYTHONHOME
   delete env.PYTHONPATH
@@ -69,7 +69,7 @@ async function signThroughBuilder(f) {
 }
 
 function armEnvironment(f) {
-  for (const name of ['HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UV_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
+  for (const name of ['HERMES_HOME', 'HERMES_RUNTIME_DIR', 'HERMES_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
     vi.stubEnv(name, f.env[name])
   }
   vi.stubEnv('PYTHONHOME', undefined)

@@ -418,9 +418,18 @@ def _compute_git_bash_bin_dirs() -> list[str]:
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
     """Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
-    dir keeps its position; unchanged input when nothing is missing."""
+    dir keeps its position; unchanged input when nothing is missing.
+
+    Dedup is case-insensitive and trailing-separator-insensitive: without that,
+    ``C:\\Foo\\`` and ``C:\\Foo`` both look distinct to ``in`` and the path can
+    accumulate Windows path variants until MSYS translation explodes the bash
+    session snapshot to 70+ entries (verified 2026-09-11). See issue #108508.
+    """
+    def _norm(p: str) -> str:
+        return p.rstrip("\\/").casefold()
     entries = [e for e in existing_path.split(os.pathsep) if e]
-    missing = [d for d in dirs if d not in entries]
+    seen = {_norm(e) for e in entries}
+    missing = [d for d in dirs if _norm(d) not in seen]
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 

@@ -591,27 +591,20 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Prepare sudo using this environment's passwordless-sudo probe."""
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
         from tools.terminal_tool_sudo import _transform_sudo_command
+        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
 
-        return _transform_sudo_command(
-            command,
-            sudo_nopasswd_check=self._sudo_nopasswd_works,
-        )
+    _SUDO_PROBE_TIMEOUT_S = 3
 
     def _sudo_nopasswd_works(self) -> bool:
-        """Probe passwordless sudo inside this execution environment."""
+        """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
+        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
         if not self._sudo_nopasswd_probe_supported:
             return False
         try:
-            proc = self._run_bash(
-                "sudo -n true",
-                login=False,
-                timeout=3,
-                stdin_data=None,
-            )
-            result = self._wait_for_process(proc, timeout=3)
-            return result.get("returncode") == 0
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False
 

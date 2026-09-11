@@ -53,7 +53,10 @@ def _record_kanban_budget_exhausted(
     from multiple exit paths.
     """
     try:
-        from hermes_cli import kanban_db as _kb
+        raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "")
+        if not raw_run_id.isascii() or not raw_run_id.isdecimal() or int(raw_run_id) <= 0:
+            return
+        expected_run_id = int(raw_run_id)
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
@@ -68,6 +71,7 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
+                expected_run_id=expected_run_id,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
             )
         finally:

@@ -399,7 +399,8 @@ def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     assert blocked.status == "blocked"
     gave_up = _event(kb.list_events(conn, task_id), "gave_up")
     assert gave_up.payload is not None
-    assert gave_up.payload["retry_status"] == "review"
+    # The breaker preserves the review history, but no retry is queued.
+    assert gave_up.payload["retry_status"] == blocked.status
     assert kb.unblock_task(conn, task_id)
     unblocked = kb.get_task(conn, task_id)
     assert unblocked is not None

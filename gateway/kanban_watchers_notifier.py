@@ -289,6 +289,67 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
+def _fresh_events(conn, task, events):
+    """Reject obsolete failure/decision envelopes using ordered board receipts.
+
+    Timestamps have second precision; lifecycle event IDs fence even an
+    unblock/reblock or two worker generations within the same second.
+    """
+    if task is None:
+        return []
+    guarded = {"timed_out", "crashed", "gave_up", "blocked", "block_loop_detected"}
+    kinds = (*TERMINAL_KINDS, "claimed", "promoted", "reclaimed")
+    latest = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind IN ("
+        + ",".join("?" for _ in kinds) + ") ORDER BY id DESC LIMIT 1",
+        (task.id, *kinds),
+    ).fetchone()
+    latest_run = conn.execute(
+        "SELECT id, outcome, ended_at FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    accepted = []
+    for ev in events:
+        if ev.kind not in guarded:
+            accepted.append(ev)
+            continue
+        if latest is None or ev.id != latest["id"] or task.current_run_id is not None:
+            continue
+        if ev.kind in {"timed_out", "crashed"}:
+            if (latest_run is None or ev.run_id != latest_run["id"]
+                    or latest_run["ended_at"] is None or latest_run["outcome"] != ev.kind
+                    or task.status not in {"ready", "review"}
+                    or _payload(ev, "retry_status") != task.status):
+                continue
+            original = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind = ? ORDER BY id LIMIT 1", (task.id, ev.run_id, ev.kind),
+            ).fetchone()
+            if original is None or original["id"] != ev.id:
+                continue
+        elif task.status not in {"blocked", "triage"}:
+            continue
+        accepted.append(ev)
+    return accepted
+
+
+def _refresh_delivery(d):
+    from hermes_cli import kanban_db as kb
+    conn = _kbc().connect(board=d.get("board"))
+    try:
+        task = kb.get_task(conn, d["sub"]["task_id"])
+        return task, _fresh_events(conn, task, d["events"])
+    finally:
+        conn.close()
+
+
+def _fmt_timeout(ev, n):
+    used, maximum = _payload(ev, "budget_used"), _payload(ev, "budget_max")
+    detail = f"iteration budget {used}/{maximum}" if maximum else f"max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s"
+    retry = "retry queued" if n.task and n.task.status in {"ready", "review"} else "no automatic retry queued"
+    return f"⏱ {n.head} timed out ({detail}); {retry}", None, None
+
+
 def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
     """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
     value = _payload(ev, key)
@@ -308,9 +369,9 @@ def _fmt_completed(ev, n) -> tuple:
     wake_handoff = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
+        wake_handoff = str(payload_summary)
     elif n.task and n.task.result:
-        wake_handoff = _first_line(n.task.result, 160)
+        wake_handoff = n.task.result
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
     return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
 
@@ -350,10 +411,8 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "gave_up": lambda ev, n: (
         f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
     ),
-    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
-    "timed_out": lambda ev, n: (
-        f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
-    ),
+    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); retry queued", None, None),
+    "timed_out": _fmt_timeout,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
@@ -585,6 +644,10 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        if not self.d["events"]:
+            await self.advance()
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:
@@ -603,6 +666,9 @@ class _KanbanNotification:
 
         if not await self._send_pings():
             return
+        # Transport awaits can overlap a human resolving an approval or a
+        # dispatcher claiming the retry. Never wake from the older snapshot.
+        self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
         # All text pings delivered (or skipped for non-push / wake-only).
         self.build_wake_text()
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter

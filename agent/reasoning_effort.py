@@ -58,6 +58,8 @@ OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Tencent TokenHub / Nebius Token Factory / Upstage Solar: plain three-level knobs.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+#: Phoenix Grove relays ``reasoning_effort`` to the model; ``none`` is honored as the off switch.
+PGSGROVE_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3

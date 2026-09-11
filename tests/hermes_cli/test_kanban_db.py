@@ -828,6 +828,9 @@ class TestSharedBoardPaths:
                 captured["env"] = kwargs.get("env", {})
                 self.pid = 4242
 
+            def poll(self):
+                return None
+
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
         task = kb.Task(
@@ -850,6 +853,9 @@ class TestSharedBoardPaths:
         )
         kbd._default_spawn(task, str(tmp_path / "ws"))
 
+        if os.name == "nt":
+            assert kbd._windows_worker_processes[4242].pid == 4242
+            kbd._windows_worker_processes.pop(4242)
         env = captured["env"]
         assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(

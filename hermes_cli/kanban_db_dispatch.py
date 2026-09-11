@@ -135,62 +135,102 @@ class DispatchResult:
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
 
 
-# Bounded registry of recently-reaped worker exits, filled by the reap loop in
+# Bounded registry of recently-observed worker exits, filled by the reap loop in
 # ``dispatch_once`` and read by ``detect_crashed_workers`` to classify a dead-pid
-# task. Entry: ``pid -> (raw_wait_status, reaped_at_epoch)``; raw status kept so
-# both WIFEXITED/WEXITSTATUS and WIFSIGNALED can be consulted. Trimmed by age
-# plus a total size cap.
+# task. Entry: ``pid -> (kind, code, observed_at_epoch)``. POSIX wait statuses
+# and Windows ``Popen.returncode`` values are normalized at their observation
+# boundary so classification is platform-independent. Trimmed by age plus a
+# total size cap.
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
-_recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+_recent_worker_exits: "dict[int, tuple[str, Optional[int], float]]" = {}
+# Windows has no waitpid(-1), so retain the Popen handles from the default
+# spawner until poll() exposes their real return codes. A bare PID can establish
+# liveness via OpenProcess but cannot recover an exit code after the handle is
+# discarded.
+_windows_worker_processes: "dict[int, subprocess.Popen]" = {}
 
 
-def _record_worker_exit(pid: int, raw_status: int) -> None:
-    """Record a reaped child's exit status; duplicate pids overwrite (latest wins)."""
+def _remember_worker_exit(pid: int, kind: str, code: Optional[int]) -> None:
     if not pid or pid <= 0:
         return
     now = time.time()
-    _recent_worker_exits[int(pid)] = (int(raw_status), now)
+    _recent_worker_exits[int(pid)] = (kind, code, now)
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
         cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+        for _pid in [p for p, (_k, _c, t) in _recent_worker_exits.items() if t < cutoff]:
             _recent_worker_exits.pop(_pid, None)
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
-        # Drop oldest half.
-        ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
+        ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][2])
         for _pid, _ in ordered[: len(ordered) // 2]:
             _recent_worker_exits.pop(_pid, None)
 
 
+def _record_worker_returncode(pid: int, returncode: int, *, windows: bool) -> None:
+    """Normalize a ``Popen.returncode`` into the dispatcher exit vocabulary."""
+    code = int(returncode)
+    if code == 0:
+        kind = "clean_exit"
+    elif code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+        kind = "rate_limited"
+    elif code < 0 and not windows:
+        kind, code = "signaled", -code
+    else:
+        kind = "nonzero_exit"
+    _remember_worker_exit(pid, kind, code)
+
+
+def _record_worker_exit(pid: int, raw_status: int) -> None:
+    """Normalize and record a POSIX wait status; test stubs use this seam too."""
+    try:
+        if hasattr(os, "WIFEXITED") and os.WIFEXITED(raw_status):
+            _record_worker_returncode(pid, os.WEXITSTATUS(raw_status), windows=False)
+            return
+        if hasattr(os, "WIFSIGNALED") and os.WIFSIGNALED(raw_status):
+            _remember_worker_exit(pid, "signaled", os.WTERMSIG(raw_status))
+            return
+        if not hasattr(os, "WIFEXITED"):
+            # Windows has no wait-status helpers, but platform-neutral tests and
+            # custom reapers may still feed the documented POSIX wait encoding.
+            signal_code = int(raw_status) & 0x7F
+            if signal_code == 0:
+                _record_worker_returncode(pid, (int(raw_status) >> 8) & 0xFF, windows=False)
+                return
+            _remember_worker_exit(pid, "signaled", signal_code)
+            return
+    except Exception:
+        pass
+    _remember_worker_exit(pid, "unknown", None)
+
+
+def _track_worker_process(proc: subprocess.Popen) -> None:
+    """Retain a default-spawned Windows worker handle until its exit is polled."""
+    # Test/custom spawners may return a lightweight pid-only object. They do not
+    # provide an exit-code handle and must not poison later dispatcher ticks.
+    if os.name == "nt" and callable(getattr(proc, "poll", None)):
+        _windows_worker_processes[int(proc.pid)] = proc
+
+
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
-    """``(kind, code)`` for a reaped worker PID: ``clean_exit`` (rc 0 while
-    still ``running`` = protocol violation), ``rate_limited``
-    (``KANBAN_RATE_LIMIT_EXIT_CODE``, never counts as a failure),
-    ``nonzero_exit``, ``signaled`` (``code`` is the signal), ``unknown`` (pid
-    not in the reap registry; ``code`` None)."""
+    """Return the normalized ``(kind, code)`` for an observed worker exit."""
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
-    raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
-    return ("unknown", None)
+    return (entry[0], entry[1])
 
 
 def reap_worker_zombies() -> "list[int]":
-    """Reap all zombie children without blocking; returns reaped PIDs. No-op on Windows."""
+    """Observe terminated default-spawned workers without blocking."""
     reaped: "list[int]" = []
-    if os.name != "nt":
+    if os.name == "nt":
+        for pid, proc in list(_windows_worker_processes.items()):
+            returncode = proc.poll()
+            if returncode is None:
+                continue
+            _record_worker_returncode(pid, returncode, windows=True)
+            _windows_worker_processes.pop(pid, None)
+            reaped.append(pid)
+    else:
         try:
             while True:
                 try:
@@ -2278,6 +2318,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
+    # Windows cannot recover a child exit code from its PID after this Popen
+    # handle is discarded. Retain it until reap_worker_zombies() polls the
+    # completed process; POSIX continues to use waitpid(-1).
+    _track_worker_process(proc)
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
     return proc.pid

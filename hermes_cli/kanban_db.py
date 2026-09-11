@@ -1260,6 +1260,32 @@ def _validate_task_skills_for_assignee(assignee: Optional[str], skills: Optional
         )
 
 
+def _validate_worktree_anchor_at_create(
+    workspace_kind: str, workspace_path: Optional[str], project_repo: Optional[str],
+    board: Optional[str],
+) -> None:
+    """Reject a ``worktree`` task that no runtime anchor could ever resolve.
+
+    Mirrors the dispatch-time rule in ``kanban_db_workspace`` (task path, else
+    project repo, else board ``default_workdir``), so the error surfaces to the
+    creator (CLI, dashboard/MCP tool, Watchdog bridge all route through
+    ``create_task``) instead of as a ``gave_up`` run one tick later. Only the
+    "no anchor at all" case is rejected here: an explicit path may legitimately
+    name a worktree directory that does not exist yet (it is materialized at
+    spawn), so existence and git-ness stay with the runtime check.
+    """
+    if workspace_kind != "worktree":
+        return
+    if workspace_path or project_repo:
+        return
+    board_slug = board or "default"
+    raise ValueError(
+        "workspace_kind=worktree needs a repo to branch from: pass an absolute repo path "
+        "(CLI: --workspace worktree:/abs/path/to/repo), link a project, or set the board's "
+        f"default_workdir (board {board_slug!r} has none)."
+    )
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1348,6 +1374,12 @@ def create_task(
         board_default = _board_meta_for(board).get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+
+    # Fail at creation, not at spawn: a worktree task with no anchor is rejected by
+    # kanban_db_workspace at dispatch time, which scores ``gave_up`` on every tick
+    # and feeds the dispatcher-stuck alarm (2026-09-10: three engineer cards, two
+    # hours of alarms). The runtime check stays as defense-in-depth.
+    _validate_worktree_anchor_at_create(workspace_kind, workspace_path, project_repo, board)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

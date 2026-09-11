@@ -79,3 +79,53 @@ def test_tool_tail_without_followup_is_unchanged():
     wire = sanitize_api_messages([dict(message) for message in canonical])
 
     assert wire == canonical
+
+
+# ---------------------------------------------------------------------------
+# Durable provenance round-trip (quad-review gap: the DB layer had zero
+# coverage — a mutant binding 0 / skipping replay passed the whole suite).
+# ---------------------------------------------------------------------------
+def test_interrupted_tool_tail_survives_db_roundtrip(tmp_path):
+    """Flush → persist → reload must carry interrupted_tool_tail=True: the
+    provenance is DURABLE canonical state, not an in-memory-only flag."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message(
+        "s1", role="tool", content="partial result", tool_call_id="call-1",
+    )
+    assert db.mark_tool_tail_interrupted("s1", "call-1") is True
+
+    # Zero-row match returns False (unknown id / not-yet-flushed row) —
+    # the flush-side guard relies on this to stay eligible for back-stamp.
+    assert db.mark_tool_tail_interrupted("s1", "missing-call") is False
+
+    reloaded = db.get_messages_as_conversation("s1", include_ancestors=False)
+    assert reloaded and reloaded[0].get("_interrupted_tool_tail") is True
+
+
+def test_interrupted_tool_tail_column_upgrades_legacy_db(tmp_path):
+    """A state.db written BEFORE this PR (no interrupted_tool_tail column)
+    reconciles on open: the column is added and legacy rows default to 0."""
+    from hermes_state import SessionDB
+
+    path = tmp_path / "legacy.db"
+    db = SessionDB(path)
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="hi")
+    db.close()
+
+    # Simulate the pre-PR on-disk shape: drop the column the DDL just added
+    # (a plain DROP COLUMN keeps triggers/indexes intact, unlike a rebuild).
+    con = __import__("sqlite3").connect(path)
+    con.execute("PRAGMA writable_schema = OFF")
+    con.execute("ALTER TABLE messages DROP COLUMN interrupted_tool_tail")
+    con.commit()
+    con.close()
+
+    reopened = SessionDB(path)  # _reconcile_columns must re-ADD the column
+    cols = {row[1] for row in reopened._conn.execute("PRAGMA table_info(messages)")}
+    assert "interrupted_tool_tail" in cols
+    reloaded = reopened.get_messages("s1")
+    assert reloaded and reloaded[0].get("_interrupted_tool_tail") in (None, False)

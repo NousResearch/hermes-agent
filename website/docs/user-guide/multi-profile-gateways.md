@@ -240,9 +240,16 @@ secrets or chat history to a reply. Authorization is per profile too:
 `GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS` and every platform allowlist
 or allow-all opt-in are read from the owning profile's `.env` — the default
 profile opting into open access never opens a secondary profile's bot, and a
-secondary that opts in only in its own `.env` is honored. Kanban,
-profile-scoped skills/memory/SOUL, and model routing all behave per-profile
-exactly as they do with separate gateways.
+secondary that opts in only in its own `.env` is honored. The same holds for
+per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
+`mention_patterns`, `allow_bots`, `reactions`, `auto_thread`, `dm_policy`,
+`ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
+lands in the shared process environment, so it cannot become the default
+profile's policy, and the default profile's YAML never governs a secondary
+bot. The `terminal.env_passthrough` allowlist, the Yuanbao auto-designated
+home channel, and the write guards protecting each profile's own `config.yaml`
+are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
+model routing all behave per-profile exactly as they do with separate gateways.
 
 Outbound identity is per profile too. A turn running for profile `P` that calls
 the `send_message` tool (send, react, media) posts through `P`'s own bot;

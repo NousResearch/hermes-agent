@@ -3059,6 +3059,33 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return _contains_any(err_lower, _RATE_LIMIT_KEYWORDS) or not _contains_any(err_lower, _RATE_LIMIT_BILLING_KEYWORDS)
 
 
+def _is_nous_upstream_capacity_error(
+    exc: Exception, *, provider: str = "", base_url: str = "",
+) -> bool:
+    """Whether a Nous 429 is model capacity rather than a credential limit.
+
+    Nous multiplexes upstream models behind one credential.  Reuse the main
+    request path's exhausted-bucket test so a bare/model-capacity 429 does not
+    quarantine a healthy Portal identity.
+    """
+    if getattr(exc, "status_code", None) != 429:
+        return False
+    if _normalize_aux_provider(provider) != "nous" and not base_url_host_matches(
+        base_url, "inference-api.nousresearch.com"
+    ):
+        return False
+    error_text = str(exc).lower()
+    if "not your api key's rate limit" in error_text or "temporarily at capacity upstream" in error_text:
+        return True
+    try:
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None) if response is not None else None
+        return not is_genuine_nous_rate_limit(headers=headers)
+    except Exception:
+        return False
+
+
 def _is_timeout_error(exc: Exception) -> bool:
     """Full-budget request timeout, distinct from a fast connection drop.
 
@@ -3870,6 +3897,9 @@ def _try_payment_fallback(
             continue
         client, model = try_fn()
         if client is not None:
+            if not _fallback_supports_task(task, label, model):
+                tried.append(f"{label} (no vision support)")
+                continue
             logger.info("Auxiliary %s: %s on %s — falling back to %s (%s)",
                         task or "call", reason, failed_provider, label, model or "default")
             return client, model, label
@@ -3915,6 +3945,12 @@ def _try_main_agent_model_fallback(
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+        return None, None, ""
+    if not _fallback_supports_task(task, main_provider, main_model):
+        logger.info(
+            "Auxiliary vision: skipping main agent provider %s because its model reports no vision capability",
+            main_provider,
+        )
         return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
@@ -4020,6 +4056,9 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
+        if not _fallback_supports_task(task, fb_provider, fb_model):
+            tried.append(f"{label} (no vision support)")
+            continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -4106,6 +4145,9 @@ def _try_main_fallback_chain(
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
             tried.append(f"{label} (skipped)")
+            continue
+        if not _fallback_supports_task(task, fb_provider, fb_model):
+            tried.append(f"{label} (no vision support)")
             continue
         if _is_provider_unhealthy(fb_norm, fb_base_url):
             _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url)
@@ -5047,6 +5089,15 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     except Exception:  # pragma: no cover - defensive
         return True
     return True if supports is None else bool(supports)
+
+
+def _fallback_supports_task(task: Optional[str], provider: str, model: Optional[str]) -> bool:
+    """Reject fallback candidates known not to accept a vision request."""
+    if task != "vision":
+        return True
+    if (provider or "").strip().lower() in _PROVIDERS_WITHOUT_VISION:
+        return False
+    return _main_model_supports_vision(provider, model)
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
@@ -6970,7 +7021,10 @@ def _ladder_credential_rungs(
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
-    if pool_provider and _credential_rung_accepts(first_err):
+    upstream_capacity = _is_nous_upstream_capacity_error(
+        first_err, provider=resolved_provider, base_url=route.base_info,
+    )
+    if pool_provider and _credential_rung_accepts(first_err) and not upstream_capacity:
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
         # another request with the same exhausted key.
@@ -7275,11 +7329,14 @@ def _plan_aux_call(
     return req, retry_kwargs, candidate_kwargs
 
 
-def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -> bool:
-    """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
-    tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
-    to fallback."""
-    if not _is_transient_transport_error(exc):
+def _should_retry_same_provider(
+    task: Optional[str], exc: Exception, tag: str, *, provider: str = "", base_url: str = "",
+) -> bool:
+    """Whether a transient transport or Nous model-capacity failure merits a local retry."""
+    if not (
+        _is_transient_transport_error(exc)
+        or _is_nous_upstream_capacity_error(exc, provider=provider, base_url=base_url)
+    ):
         return False
     if _should_skip_same_provider_retry(task, exc):
         logger.info("Auxiliary %s%s: timeout on the critical path; "
@@ -7377,20 +7434,24 @@ def _call_llm_impl(
         try:
             return _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
-            if not _should_retry_same_provider(task, transient_err, ""):
+            if not _should_retry_same_provider(
+                task, transient_err, "", provider=request_provider, base_url=req.base_info,
+            ):
                 raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):
                 _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)
-                logger.info("Auxiliary %s: transient transport error (attempt %d/%d); "
+                logger.info("Auxiliary %s: transient provider error (attempt %d/%d); "
                             "retrying same provider after %.1fs before fallback: %s",
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
                 try:
                     return _primary()
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if not _should_retry_same_provider(
+                        task, retry_transient, "", provider=request_provider, base_url=req.base_info,
+                    ):
                         raise
                     _last_transient = retry_transient
             raise _last_transient
@@ -7538,11 +7599,36 @@ async def _async_call_llm_impl(
             return await _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
-            if not _should_retry_same_provider(task, transient_err, " (async)"):
+            if not _should_retry_same_provider(
+                task, transient_err, " (async)", provider=request_provider, base_url=req.base_info,
+            ):
                 raise
-            logger.info("Auxiliary %s (async): transient transport error; retrying "
-                        "once on the same provider before fallback: %s", task or "call", transient_err)
-            return await _primary()
+            import asyncio
+            upstream_capacity = _is_nous_upstream_capacity_error(
+                transient_err, provider=request_provider, base_url=req.base_info,
+            )
+            # Preserve the async transport path's existing one retry while giving
+            # explicit upstream-capacity responses the configured short retry budget.
+            max_transient_retries = _transient_retry_count() if upstream_capacity else 1
+            last_transient = transient_err
+            for attempt in range(1, max_transient_retries + 1):
+                backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (attempt - 1)), 8.0)
+                logger.info(
+                    "Auxiliary %s (async): transient provider error (attempt %d/%d); "
+                    "retrying same provider after %.1fs before fallback: %s",
+                    task or "call", attempt, max_transient_retries, backoff, last_transient,
+                )
+                await asyncio.sleep(backoff)
+                try:
+                    return await _primary()
+                except Exception as retry_transient:
+                    if not _should_retry_same_provider(
+                        task, retry_transient, " (async)",
+                        provider=request_provider, base_url=req.base_info,
+                    ):
+                        raise
+                    last_transient = retry_transient
+            raise last_transient
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)

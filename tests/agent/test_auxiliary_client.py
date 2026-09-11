@@ -1993,6 +1993,18 @@ class TestTryMainAgentModelFallback:
         assert model == "anthropic/claude-sonnet-4"
         assert label == "main-agent(openrouter)"
 
+    def test_vision_skips_known_text_only_main_model(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="zai"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="glm-5.3"), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            result = _try_main_agent_model_fallback("nous", task="vision", reason="rate limit")
+
+        assert result == (None, None, "")
+        mock_resolve.assert_not_called()
+
 
 
 
@@ -2827,6 +2839,43 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 class TestAuxiliaryPoolRotationRetry:
+    @pytest.mark.asyncio
+    async def test_nous_upstream_capacity_retries_without_exhausting_pool(self):
+        capacity = Exception(
+            "The requested model is temporarily at capacity upstream. "
+            "This is not your API key's rate limit — please retry shortly."
+        )
+        capacity.status_code = 429
+        response = _DummyResponse("vision recovered")
+        create = AsyncMock(side_effect=[capacity, capacity, response])
+        client = SimpleNamespace(
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_key="healthy-nous-key",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("nous", "vision-model", None, None, None)),
+            patch("agent.auxiliary_client.resolve_vision_provider_client",
+                  return_value=("nous", client, "vision-model")),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._transient_retry_count", return_value=2),
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+        ):
+            result = await async_call_llm(
+                task="vision",
+                provider="nous",
+                messages=[{"role": "user", "content": "image"}],
+            )
+
+        assert result is response
+        assert create.await_count == 3
+        assert [call.args[0] for call in sleep.await_args_list] == [1.0, 2.0]
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
     def test_call_llm_rotates_explicit_codex_pool_on_429(self):
         rate_err = Exception("usage limit reached")
         rate_err.status_code = 429

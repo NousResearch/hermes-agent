@@ -1011,6 +1011,10 @@ class GatewayNotificationsMixin:
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
             )
+            if evt.get("type") == "completion":
+                # A merge can retain internal=True while appending human text/media.
+                # Bind permission to this exact injected input, outside public metadata.
+                setattr(synth_event, "_completion_silence_text", synth_text)
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1030,6 +1034,19 @@ class GatewayNotificationsMixin:
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
             return False
+
+    @staticmethod
+    def _completion_silence_metadata(event: MessageEvent) -> dict:
+        """Authorize only an unmerged, gateway-injected completion at the turn boundary."""
+        injected_text = getattr(event, "_completion_silence_text", None)
+        if (
+            injected_text is not None and event.internal is True
+            and event.message_type == MessageType.TEXT and not event.media_urls
+            and event.text == injected_text
+            and not event.is_command()
+        ):
+            return {"completion_silence_allowed": True}
+        return {}
 
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
@@ -1304,10 +1321,13 @@ class GatewayNotificationsMixin:
             return True
         if not remaining:
             return False
+        silence_allowed = bool(self._completion_silence_metadata(event))
         event.metadata["process_completion_entries"] = remaining
         event.text = remaining[0][0] if len(remaining) == 1 else self._format_coalesced_process_completions(
             [(text, evt, None) for text, evt in remaining]
         )
+        if silence_allowed:
+            setattr(event, "_completion_silence_text", event.text)
         return True
 
     @staticmethod

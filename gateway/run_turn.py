@@ -1969,7 +1969,10 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                persist_user_display_metadata={
+                    "gateway_input_owner": prepared.persistence_owner,
+                    **self._completion_silence_metadata(event),
+                },
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -3525,6 +3528,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
             channel_prompt=next_channel_prompt, message_type=next_message_type,
+            persist_user_display_metadata=self._completion_silence_metadata(pending_event),
         )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which

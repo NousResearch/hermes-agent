@@ -148,6 +148,7 @@ def recover_empty_response(
     the ladder). Role alternation is preserved: the post-tool nudge appends the empty
     assistant row BEFORE the user-level hint (APIs reject tool→user)."""
     from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message
+    from agent.turn_facade import completion_recovery_nudge
 
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
@@ -214,7 +215,8 @@ def recover_empty_response(
         _nudge_msg["_empty_recovery_synthetic"] = True
         append_message(messages, _nudge_msg)
         append_message(messages, {
-            "role": "user", "content": _EMPTY_TOOL_RESPONSE_NUDGE, "_empty_recovery_synthetic": True
+            "role": "user", "content": completion_recovery_nudge(agent, _EMPTY_TOOL_RESPONSE_NUDGE),
+            "_empty_recovery_synthetic": True,
         })
         return _verdict("continue")
 

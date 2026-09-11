@@ -35,7 +35,10 @@ else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 
 
-from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import (
+    get_config_path, get_hermes_home, mkdir_under_hermes_home,
+    named_profile_home, named_profile_is_deleted,
+)
 
 # setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
 _logging_initialized = False
@@ -260,6 +263,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
+        self._profile_home = named_profile_home(self.baseFilename)
         self._record_stream_stat()
 
     def _chmod_if_managed(self):
@@ -312,19 +316,33 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_stream(st)
 
     def emit(self, record: logging.LogRecord) -> None:
+        # FileHandler in append mode can reopen after close(); deletion must be terminal.
+        if self._closed:
+            return
+        if (
+            self._profile_home is not None
+            and (not self._profile_home.is_dir() or named_profile_is_deleted(self._profile_home))
+        ) or not Path(self.baseFilename).parent.is_dir():
+            self.close()
+            return
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
         super().emit(record)
 
     def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
+        """Retire deleted log directories and suppress the known Windows lock timeout.
 
         CLH's ``emit()`` routes that RuntimeError here, so this is the single point to
         silence it before stdlib prints to stderr (which the Desktop slash-worker
         captures into chat output).
         """
-        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
+        error = sys.exc_info()[1]
+        if isinstance(error, FileNotFoundError) and not Path(self.baseFilename).parent.is_dir():
+            # Deletion can race the emit preflight; never re-arm the missing path.
+            self.close()
+            return
+        if not _is_windows_concurrent_log_lock_timeout(error):
             super().handleError(record)
 
     def _open(self):
@@ -372,6 +390,9 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._max_bytes = getattr(existing, "maxBytes", 0)
         self._backup_count = getattr(existing, "backupCount", 0)
         self._profile_handlers: dict[Path, _ManagedRotatingFileHandler] = {}
+        # Bounded by the startup home list; retain routing identity so stale records
+        # are dropped instead of falling back into another profile's log.
+        self._retired_homes: set[Path] = set()
         self._profile_handlers_lock = threading.RLock()
         self.setFormatter(existing.formatter)
         for log_filter in existing.filters:
@@ -385,8 +406,20 @@ class _ProfileRoutingFileHandler(logging.Handler):
             candidate = self._default_home
         return candidate if candidate in self._profile_homes else self._default_home
 
-    def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
+    def _retire_home(self, home: Path) -> None:
         with self._profile_handlers_lock:
+            self._retired_homes.add(home)
+            handler = self._profile_handlers.pop(home, None)
+            if handler is not None:
+                handler.close()
+
+    def _handler_for_home(self, home: Path) -> Optional[_ManagedRotatingFileHandler]:
+        with self._profile_handlers_lock:
+            if home in self._retired_homes:
+                return None
+            if not home.is_dir() or named_profile_is_deleted(home):
+                self._retire_home(home)
+                return None
             if home not in self._profile_handlers:
                 self._profile_handlers[home] = _new_file_handler(
                     home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
@@ -396,7 +429,15 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            home = self._home_for_record(record)
+            handler = self._handler_for_home(home)
+            if handler is not None:
+                handler.handle(record)
+                if handler._closed:
+                    self._retire_home(home)
+        except FileNotFoundError:
+            # The profile can disappear between the registration check and open().
+            self._retire_home(home)
         except Exception:
             self.handleError(record)
 

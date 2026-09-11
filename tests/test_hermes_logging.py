@@ -2,6 +2,7 @@
 import io
 import logging
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -141,6 +142,113 @@ class TestSetupLogging:
         assert "profile-routed cron record" not in (
             hermes_home / "logs" / "agent.log"
         ).read_text()
+
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("routed", [False, True])
+    @pytest.mark.parametrize("removed", ["home", "logs", "tombstone"])
+    def test_deleted_profile_stops_log_retries(
+        self, hermes_home, monkeypatch, capsys, routed, removed,
+    ):
+        from hermes_constants import (
+            mark_named_profile_deleted, reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = hermes_home / "profiles" / "worker"
+        profile_home.mkdir(parents=True)
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home if routed else profile_home, mode="gui",
+        )
+        if routed:
+            assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home])
+
+        logger = logging.getLogger("hermes_cli.web_server")
+
+        def emit_cycle():
+            token = set_hermes_home_override(profile_home)
+            try:
+                logger.warning("deleted-profile record")
+            finally:
+                reset_hermes_home_override(token)
+            hermes_logging.flush_log_queue()
+
+        emit_cycle()
+        handlers = [
+            h._profile_handlers[profile_home] if routed else h
+            for h in hermes_logging._queued_file_handlers
+        ]
+        streams = [h.stream for h in handlers]
+        if removed == "tombstone":
+            mark_named_profile_deleted(profile_home)
+        else:
+            # POSIX permits deletion while the dashboard still holds open log files.
+            shutil.rmtree(profile_home if removed == "home" else profile_home / "logs")
+
+        attempts = []
+        for handler in handlers:
+            original_open = handler._open
+
+            def tracked_open(original_open=original_open):
+                attempts.append(original_open)
+                return original_open()
+
+            monkeypatch.setattr(handler, "_open", tracked_open)
+
+        capsys.readouterr()
+        emit_cycle()
+        first_attempts = len(attempts)
+        emit_cycle()
+        emit_cycle()
+        assert len(attempts) == first_attempts, "later records retried the deleted log"
+        assert "--- Logging error ---" not in capsys.readouterr().err
+        assert all(stream.closed for stream in streams)
+        assert all(handler._closed for handler in handlers)
+        if routed:
+            assert all(
+                profile_home not in router._profile_handlers
+                for router in hermes_logging._queued_file_handlers
+            )
+            logger.warning("live-profile record")
+            hermes_logging.flush_log_queue()
+            live_log = (hermes_home / "logs" / "agent.log").read_text()
+            assert "live-profile record" in live_log
+            assert "deleted-profile record" not in live_log
+
+    @pytest.mark.parametrize("removed", ["home", "tombstone"])
+    def test_deleted_profile_is_not_registered_lazily(
+        self, hermes_home, capsys, removed,
+    ):
+        from hermes_constants import (
+            mark_named_profile_deleted, reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = hermes_home / "profiles" / "worker"
+        profile_home.mkdir(parents=True)
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home])
+        if removed == "tombstone":
+            mark_named_profile_deleted(profile_home)
+        else:
+            profile_home.rmdir()
+
+        # Reaching the constructor at all would retry a known-deleted profile on every record.
+        with patch.object(
+            hermes_logging, "_new_file_handler", wraps=hermes_logging._new_file_handler,
+        ) as create:
+            token = set_hermes_home_override(profile_home)
+            try:
+                for _ in range(3):
+                    logging.getLogger("hermes_cli.web_server").warning("stale profile poll")
+                    hermes_logging.flush_log_queue()
+            finally:
+                reset_hermes_home_override(token)
+            create.assert_not_called()
+        assert "--- Logging error ---" not in capsys.readouterr().err
+        assert all(
+            profile_home not in router._profile_handlers
+            for router in hermes_logging._queued_file_handlers
+        )
 
 
 
@@ -685,4 +793,3 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging._queued_file_handlers
         )
-

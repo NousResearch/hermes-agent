@@ -70,9 +70,11 @@ Sessions sidebar, so the bot row is the ONLY door — "newest visible session wi
 relationship off behind a row that previews one session and opens another. Side-chats ("New chat
 with this agent") are not plumbing-titled, stay visible in the sidebar, and are never the row's target.
 
-Reviewer corollaries: no per-bot session browser (removed in #90732; don't add it back). Reject any
-stored session-id pointer as canonical identity — including "as a fallback tier" or "for
-verification". Reject anything consulting recency/visibility/"where the user left off" for the row's
+Reviewer corollaries: the per-bot **session pointer** design is gone (removed in #90732) and must not
+come back — reject any stored session-id as canonical identity, including "as a fallback tier" or
+"for verification". The read-only session **browser** (`bot-sessions.ts`, context menu → "Show
+sessions") is different in kind and allowed: it lists `session.list` rows for the bot's profile,
+persists nothing, and never decides the row's click target. Reject anything consulting recency/visibility/"where the user left off" for the row's
 target; such reports are about side-chats and the fix belongs in the Sessions sidebar hide-sweep.
 The gateway reports the registry row as `canonical_session` on `profiles.list` (resolved server-side
 by title); roster preview, activity signals, and the `/new`→`/compact` guard all read it, so preview

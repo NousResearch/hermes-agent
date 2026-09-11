@@ -905,25 +905,34 @@ async function runEverythingUpdate(): Promise<void> {
   const cachedClientStatus = $updateStatus.get()
 
   try {
-    // 1. Active backend first (remote mode), with the detailed overlay flow.
-    //    Its own finish path re-checks and nudges, but the everything-flow
-    //    continues regardless of the outcome: one unreachable backend must
-    //    not strand the other machines or the client.
-    if (isRemoteMode()) {
+    const remoteMode = isRemoteMode()
+    const bridge = window.hermesDesktop?.connections
+    const registry = $connectionsRegistry.get() ?? (await refreshConnectionsRegistry().catch(() => null))
+    const activeConnectionId = $connection.get()?.connectionId
+    const activeConnection = registry?.connections.find(connection => connection.id === activeConnectionId)
+    const activeUsesManagedSshUpdate = remoteMode && activeConnection?.kind === 'ssh'
+
+    // 1. Active URL backend first (remote mode), with the detailed overlay
+    //    flow. A registered SSH backend must stay in the fan-out below: the
+    //    Electron handler routes it through the transactional managed SSH
+    //    drain/update/restore lifecycle instead of the forwarded HTTP API.
+    //    The everything-flow continues regardless of an active URL backend's
+    //    outcome so one unreachable backend cannot strand the other machines
+    //    or the client.
+    if (remoteMode && !activeUsesManagedSshUpdate) {
       $updateOverlayTarget.set('backend')
 
       await applyBackendUpdate().catch(() => null)
     }
 
-    // 2. Fan out to every OTHER eligible registered connection. The active
-    //    backend was just updated (excluded), and the local runtime updates
-    //    with the client in step 3 (excluded). No registry/bridge → skip.
-    const bridge = window.hermesDesktop?.connections
-    const registry = $connectionsRegistry.get() ?? (await refreshConnectionsRegistry().catch(() => null))
+    // 2. Fan out to eligible registered connections. An active URL backend was
+    //    just updated and is excluded; an active managed SSH backend remains
+    //    included so Electron can own its lifecycle. The local runtime updates
+    //    with the client in step 3 and is always excluded. No registry/bridge
+    //    means there is nothing to fan out.
     const excludeIds = ['local']
-    const activeConnectionId = $connection.get()?.connectionId
 
-    if (isRemoteMode() && activeConnectionId && !excludeIds.includes(activeConnectionId)) {
+    if (remoteMode && !activeUsesManagedSshUpdate && activeConnectionId && !excludeIds.includes(activeConnectionId)) {
       excludeIds.push(activeConnectionId)
     }
 

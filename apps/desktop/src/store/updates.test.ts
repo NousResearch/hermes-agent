@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopConnectionKind, DesktopUpdateStatus } from '@/global'
 
 const storage = new Map<string, string>()
 
@@ -105,11 +105,11 @@ const {
 
 const { setConnection } = await import('./session')
 
-const registryOf = (ids: string[]) => ({
+const registryOf = (ids: string[], kinds: Partial<Record<string, DesktopConnectionKind>> = {}) => ({
   version: 2,
   primary: ids[0] ?? 'local',
   secureTokenStorage: true,
-  connections: ids.map(id => ({ id, kind: id === 'local' ? 'local' : 'remote', label: id }))
+  connections: ids.map(id => ({ id, kind: kinds[id] ?? (id === 'local' ? 'local' : 'remote'), label: id }))
 })
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -122,9 +122,10 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
 
 const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { action: { onClick: () => void }; onDismiss: () => void }
 
-const setRemote = (on: boolean) =>
+const setRemote = (on: boolean, connectionId?: string) =>
   setConnection({
     baseUrl: 'http://box:9119',
+    connectionId,
     isFullscreen: false,
     mode: on ? 'remote' : 'local',
     nativeOverlayWidth: 0,
@@ -597,7 +598,7 @@ describe('applyEverythingUpdate', () => {
   })
 
   it('fans out to other registered connections, excluding local and the active backend', async () => {
-    setRemote(true)
+    setRemote(true, 'vps')
     $mockConnectionsRegistry.set(registryOf(['local', 'vps', 'homelab']))
     $backendUpdateStatus.set(status({ behind: 1 }))
 
@@ -606,6 +607,22 @@ describe('applyEverythingUpdate', () => {
     expect(updateAllMock).toHaveBeenCalledTimes(1)
     const options = updateAllMock.mock.calls[0]?.[0] as { excludeIds: string[] }
     expect(options.excludeIds).toContain('local')
+    expect(options.excludeIds).toContain('vps')
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes the active registered SSH backend through the managed update fan-out', async () => {
+    setRemote(true, 'homelab')
+    $mockConnectionsRegistry.set(registryOf(['local', 'homelab'], { homelab: 'ssh' }))
+    $backendUpdateStatus.set(status({ behind: 1 }))
+
+    await applyEverythingUpdate()
+
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect(updateAllMock).toHaveBeenCalledTimes(1)
+    const options = updateAllMock.mock.calls[0]?.[0] as { excludeIds: string[] }
+    expect(options.excludeIds).toContain('local')
+    expect(options.excludeIds).not.toContain('homelab')
   })
 
   it('local mode with a multi-connection registry: fans out and updates the client, no active-backend leg', async () => {

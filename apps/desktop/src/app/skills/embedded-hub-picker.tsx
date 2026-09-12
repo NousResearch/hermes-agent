@@ -134,11 +134,11 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
 
       const data = event.data as SkillPickMessage | null
 
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+      if (!data || data.type !== 'hermes-skill-pick' || !data.name || !data.identifier) {
         return
       }
 
-      const target = String(data.identifier || data.name)
+      const target = String(data.identifier)
       const label = String(data.name)
 
       // Already installed in this scope → tell the user, don't reinstall.

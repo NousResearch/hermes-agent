@@ -1143,6 +1143,51 @@ def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
     )
 
 
+def checkpoint_capability_remediation() -> str:
+    """Remediation hint appended to checkpoint-gate refusals the operator can fix in config."""
+    return (
+        "compression.checkpoint_required is enabled: disable it to restore "
+        "compression, or use a memory provider that advertises checkpoint API "
+        f"v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
+    )
+
+
+def warn_checkpoint_provider_mismatch(agent: Any) -> None:
+    """Warn at init when the checkpoint gate is armed but cannot ever pass.
+
+    The gate refuses lossy rewrites unless an active memory provider advertises
+    checkpoint API v2. When the flag is set and no such provider is active, every
+    compression attempt fails closed — better to say so once at startup than
+    discover it from an opaque slash-command error mid-session.
+    """
+    if getattr(agent, "compression_checkpoint_required", False) is not True:
+        return
+    memory_manager = getattr(agent, "_memory_manager", None)
+    supports_checkpoint = getattr(
+        memory_manager, "supports_pre_compress_checkpoint", None
+    )
+    if callable(supports_checkpoint):
+        try:
+            if bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)):
+                return
+        except Exception:
+            pass  # probe failure here is re-reported per attempt at compress time
+    provider_name = "none"
+    for provider in getattr(memory_manager, "providers", None) or []:
+        name = getattr(provider, "name", None)
+        if isinstance(name, str) and name.strip():
+            provider_name = name
+            break
+    logger.warning(
+        "compression.checkpoint_required is enabled but memory provider '%s' does not "
+        "advertise checkpoint API v%s: every compression attempt will be blocked. "
+        "Disable compression.checkpoint_required or switch to a checkpoint-capable "
+        "memory provider.",
+        provider_name,
+        PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    )
+
+
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
     Only the exact old ``hermes_state.SessionDB`` class (hot-reload skew) may fail open; proxies, lookalikes,
@@ -2619,6 +2664,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
         if memory_manager is None or not callable(supports_checkpoint):
             raise _checkpoint_blocked(
                 f"no active provider implements checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
+                f" ({checkpoint_capability_remediation()})"
             )
         try:
             compatible = bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION))
@@ -2627,6 +2673,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
         if not compatible:
             raise _checkpoint_blocked(
                 f"active provider does not implement checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
+                f" ({checkpoint_capability_remediation()})"
             )
         try:
             _maybe_ctx = memory_manager.on_pre_compress(

@@ -89,6 +89,77 @@ class TestTrustGate:
         _trust(project_env["config"], project_env["repo"])
         assert su.get_untrusted_project_skills_root() is None
 
+    def test_dispatcher_task_worktree_inherits_trusted_stable_root(
+        self, project_env, monkeypatch
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspaces_root = project_env["repo"] / ".worktrees"
+        workspace = workspaces_root / "t_example"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        (
+            workspace / ".agents" / "skills" / "task-skill" / "SKILL.md"
+        ).write_text("# Task skill\n")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_example")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_root))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        dirs = su.get_project_skills_dirs()
+
+        assert (workspace / ".agents" / "skills").resolve() in dirs
+
+    def test_migrated_dispatcher_worktree_uses_trusted_dot_worktrees_parent(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspace = project_env["repo"] / ".worktrees" / "t_migrated"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        (
+            workspace / ".agents" / "skills" / "task-skill" / "SKILL.md"
+        ).write_text("# Task skill\n")
+        board_workspaces_root = tmp_path / "board" / "workspaces"
+        board_workspaces_root.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_migrated")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACES_ROOT", str(board_workspaces_root)
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        dirs = su.get_project_skills_dirs()
+
+        assert (workspace / ".agents" / "skills").resolve() in dirs
+
+    def test_nested_worktree_without_dispatcher_identity_stays_untrusted(
+        self, project_env, monkeypatch
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        workspace = project_env["repo"] / ".worktrees" / "untrusted"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        assert su.get_project_skills_dirs() == []
+
+    def test_dispatcher_identity_cannot_trust_unapproved_dot_worktrees_parent(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        untrusted = tmp_path / "untrusted"
+        workspace = untrusted / ".worktrees" / "t_untrusted"
+        (workspace / ".agents" / "skills" / "task-skill").mkdir(parents=True)
+        (workspace / ".git").write_text("gitdir: /fixture/worktree\n")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_untrusted")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACES_ROOT", str(tmp_path / "board" / "workspaces")
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        assert su.get_project_skills_dirs() == []
+
     def test_discovery_disabled_kills_both(self, project_env):
         project_env["config"].write_text(
             "skills:\n  project_discovery: false\n"

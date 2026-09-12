@@ -1989,6 +1989,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+            # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
+            # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
+            updated.pop("pending_slot", None)
         if inference_fields_changed:
             snapshots = _compute_provider_model_snapshots(
                 provider=updated.get("provider"),
@@ -2234,6 +2238,7 @@ def _record_run_outcome(
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
+    job.pop("pending_slot", None)
     if job.get("run_claim") is not None:  # keep key absence for legacy records
         job["run_claim"] = None
 
@@ -2581,6 +2586,8 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
+        job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
@@ -2969,6 +2976,29 @@ def _oneshot_dispatch_limit_reached(job: Dict[str, Any], scan: _DueScan) -> bool
     return True
 
 
+def _restore_unclaimed_slot(job: Dict[str, Any], scan: _DueScan) -> Optional[str]:
+    """Put an occurrence the dispatcher advanced past but never claimed back on the schedule
+    (#107485); returns the restored ``next_run_at`` or None. Restored ONCE: the stamp is dropped
+    here, so the slot then meets the ordinary late / fast-forward / ``cron.catch_up_missed``
+    policy like any other overdue instant — never a replay of every missed slot."""
+    from cron.occurrences import unclaimed_pending_slot
+
+    slot = unclaimed_pending_slot(job, scan.now)
+    if slot is None:
+        return None
+    logger.warning(
+        "Job '%s' (%s): occurrence %s was taken off the schedule but never claimed "
+        "(scheduler stopped before dispatch); restoring it as the due instant (was %s).",
+        job.get("name", job.get("id")), job.get("id"), slot, job.get("next_run_at"))
+    job["next_run_at"] = slot
+    job.pop("pending_slot", None)
+    rj = scan.find(job["id"])
+    if rj is not None:
+        rj.pop("pending_slot", None)
+    scan.persist(job["id"], next_run_at=slot)
+    return slot
+
+
 def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float) -> bool:
     """Decide whether one enabled, non-terminal job fires this tick, persisting any repairs.
     Ordering matters: recover missing next_run_at, repair timezone shifts, re-arm stale-error
@@ -2984,7 +3014,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     ):
         return False
 
-    next_run = job.get("next_run_at") or _recover_missing_next_run(job, scan)
+    next_run = _restore_unclaimed_slot(job, scan) or job.get("next_run_at") or _recover_missing_next_run(job, scan)
     if not next_run:
         return False
     raw_next_run_dt = datetime.fromisoformat(next_run)
@@ -3040,7 +3070,13 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
             "kind": _classify_dispatch_lateness(lateness, grace),
         }
         job["last_dispatch"] = dispatch_stamp
-        scan.persist(job["id"], last_dispatch=dispatch_stamp)
+        # The tick advances next_run_at past this occurrence before any fire claim exists; the
+        # stamp survives a process death in that window so the slot is restored, not lost.
+        from cron.occurrences import pending_slot_stamp
+
+        scan.persist(
+            job["id"], last_dispatch=dispatch_stamp,
+            pending_slot=pending_slot_stamp(next_run, now))
     return True
 
 

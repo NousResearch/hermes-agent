@@ -292,7 +292,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { createParentStartMarkerResolver } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -12126,7 +12126,8 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
   stopBackendChild(primary)
-  await Promise.all([waitForBackendExit(primary), stopAllPoolBackends()])
+  // Bounded: a backend that ignores SIGTERM must not wedge app quit (main's 7 s teardown budget).
+  await waitForTeardown([localShutdown, waitForBackendExit(primary), stopAllPoolBackends()], 7_000)
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())

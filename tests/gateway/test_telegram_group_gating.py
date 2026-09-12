@@ -23,6 +23,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
+    ignore_human_mentions=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -68,6 +69,8 @@ def _make_adapter(
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
     if bots_require_mention is not None:
         extra["bots_require_mention"] = bots_require_mention
+    if ignore_human_mentions is not None:
+        extra["ignore_human_mentions"] = ignore_human_mentions
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -154,6 +157,17 @@ def _bot_command_entity(text, command):
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
+def _text_mention_entity(text, mention, *, user_id=222, is_bot=False):
+    """Entity Telegram emits when a user without a public username is @mentioned."""
+    offset = text.index(mention)
+    return SimpleNamespace(
+        type="text_mention",
+        offset=offset,
+        length=len(mention),
+        user=SimpleNamespace(id=user_id, is_bot=is_bot),
+    )
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -939,3 +953,69 @@ def test_human_reply_unaffected_by_bots_require_mention():
         gated._should_process_message(_group_message("replying", reply_to_bot=True))
         is True
     )
+
+
+def test_ignore_human_mentions_suppresses_human_mention_in_free_response():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_ignore_human_mentions_disabled_preserves_respond_by_default():
+    adapter = _make_adapter(free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_direct_bot_mention():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @hermes_bot"
+    msg = _group_message(text, entities=[_mention_entity(text, "@hermes_bot")])
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_preserves_mixed_human_and_bot_mention():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @alice @hermes_bot"
+    msg = _group_message(
+        text, entities=[_mention_entity(text, "@alice"), _mention_entity(text, "@hermes_bot")],
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_handles_text_mention_entity():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi Alice"
+    msg = _group_message(text, entities=[_text_mention_entity(text, "Alice", user_id=222)])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_ignore_human_mentions_preserves_reply_to_bot():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")], reply_to_bot=True)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_ignore_human_mentions_handles_caption_entities():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    caption = "check @alice"
+    msg = _group_message("", caption=caption, caption_entities=[_mention_entity(caption, "@alice")])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_message_mentions_human_only_ignores_other_bot_handles():
+    adapter = _make_adapter(ignore_human_mentions=True)
+    text = "hi @other_bot"
+    msg = _group_message(text, entities=[_mention_entity(text, "@other_bot")])
+    assert adapter._message_mentions_human_only(msg) is False
+
+
+def test_ignore_human_mentions_preserves_forwarded_messages():
+    adapter = _make_adapter(ignore_human_mentions=True, free_response_chats=["-100"])
+    text = "hi @alice"
+    msg = _group_message(text, entities=[_mention_entity(text, "@alice")])
+    msg.forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(id=333))
+    assert adapter._should_process_message(msg) is True

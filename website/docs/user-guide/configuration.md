@@ -1239,6 +1239,33 @@ model:
   streaming: false
 ```
 
+## Model pricing overrides
+
+Use `model_pricing` when a provider/model contract differs from Hermes' bundled
+pricing or the provider's model metadata. Overrides are exact: provider and
+model keys must match the resolved billing route, and Hermes does not expand
+aliases. Schema version `1` accepts non-negative USD-per-million-token rates:
+
+```yaml
+model_pricing:
+  version: 1
+  providers:
+    my-provider:
+      my-model:
+        input: "1.25"       # required
+        output: "5.00"      # required
+        cache_read: "0.125" # optional
+        cache_write: "1.50" # optional
+```
+
+A valid exact override takes precedence over bundled snapshots and `/models`
+metadata. Its accounting provenance is stored as `user_override` with a
+content-hashed `pricing_version` (`1.<sha256[:12]>` of the rates in force),
+so changing a rate under the same schema stamps later calls differently.
+An absent, malformed, unsupported-version, or nonmatching block is ignored.
+Omitted cache rates are not treated as zero: if the provider reports
+nonzero usage for an unpriced cache bucket, the request cost remains unknown.
+
 ## Context Pressure Warnings
 
 Separate from iteration budget pressure, context pressure tracks how close the conversation is to the **compaction threshold** — the point where context compression fires to summarize older messages. This helps both you and the agent understand when the conversation is getting long.

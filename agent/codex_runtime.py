@@ -138,7 +138,12 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     if cost_usd is not None:
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
-    cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    cost_fields = {
+        "estimated_cost_usd": cost_usd,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+        "pricing_version": cost_result.pricing_version,
+    }
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields,

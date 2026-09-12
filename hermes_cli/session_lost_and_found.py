@@ -39,7 +39,11 @@ KNOWN_SOURCES = frozenset({
 # declares several mid-definition (#101409). Cells are mapped by name through the layout
 # ``infer_physical_layouts`` recovers, never zipped onto declared order.
 SESSIONS_LEGACY_MINIMAL_NFIELD = 14
-SESSION_MODEL_USAGE_NFIELD = 18
+SESSION_MODEL_USAGE_NFIELD = 19
+# Width before pricing_version joined session_model_usage. Salvage still
+# classifies those records; 18-column sessions rows were already attributed
+# to usage when this was the current width.
+SESSION_MODEL_USAGE_PRE_REVISION_NFIELD = 18
 
 # Per-table cells whose salvaged value must look like what the column name
 # says. On stores created at the original schema these sit in the shared
@@ -309,7 +313,7 @@ def classify_lost_and_found_row(nfield: int, cells: tuple[Any, ...]) -> Optional
     if not _is_session_id(cells[0] if cells else None):
         return None
     second = cells[1] if len(cells) > 1 else None
-    if nfield == SESSION_MODEL_USAGE_NFIELD:  # session id first, model string second
+    if nfield in (SESSION_MODEL_USAGE_PRE_REVISION_NFIELD, SESSION_MODEL_USAGE_NFIELD):
         return "session_model_usage" if isinstance(second, str) and second else None
     # Any historical sessions width: session id first + recognizable source second (every sessions
     # layout ever shipped has at least the 14 original columns).
@@ -448,6 +452,7 @@ _TEXT_SHAPE_RULES: dict[str, dict[str, Callable[[str], bool]]] = {
     "session_model_usage": {
         "billing_base_url": _blank_or(_is_url),
         **dict.fromkeys(("billing_mode", "cost_status", "cost_source"), _blank_or(_is_token)),
+        "pricing_version": _blank_or(lambda value: bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value))),
     },
 }
 

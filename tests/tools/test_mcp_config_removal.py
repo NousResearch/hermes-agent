@@ -411,6 +411,46 @@ def test_shared_adoption_requires_matching_authority_provenance(
             mcp_tool._server_tool_scopes.clear()
 
 
+@pytest.mark.parametrize("owner_native", [False, True])
+def test_existing_shared_overlay_is_removed_when_provenance_changes(tmp_path, monkeypatch, owner_native):
+    """A native/portable transition invalidates a previously adopted overlay."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool_registration
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for home in homes.values():
+        home.mkdir()
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    raw = {"url": "https://mcp.example/shared"}
+    changed_cfg = (dict(raw) if owner_native else
+                   mcp_tool_config._MCPServerConfig(raw, native_config_managed=True))
+    server = mcp_tool.MCPServerTask("shared")
+    server._config = raw
+    server._native_config_managed = owner_native
+    server.session = object()
+    server._registered_tool_names = []
+    tokens = []
+    try:
+        tokens.append(set_hermes_home_override(homes["a"]))
+        scope_a = hermes_home_key(homes["a"])
+        mcp_tool_discovery._adopt_server("shared", server)
+        key = (scope_a, "shared")
+        tokens.append(set_hermes_home_override(homes["b"]))
+        scope_b = hermes_home_key(homes["b"])
+        with mcp_tool._lock:
+            mcp_tool._server_tool_scopes[key] = {scope_a, scope_b}
+
+        assert mcp_tool_registration.register_connected_into_current_scope({"shared": changed_cfg}) == 0
+        assert scope_b not in mcp_tool._server_tool_scopes.get(key, set())
+    finally:
+        for token in reversed(tokens):
+            reset_hermes_home_override(token)
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_tool_scopes.clear()
+
+
 def test_adoption_revalidates_after_retirement_cas(tmp_path, monkeypatch):
     """A profile cannot publish an overlay after its selected task retires."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override

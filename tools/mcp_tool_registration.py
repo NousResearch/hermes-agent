@@ -454,7 +454,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None or not _same_server_route(server, config)
+                    or bool(getattr(server, "_native_config_managed", False))
+                    != bool(getattr(config, "native_config_managed", False))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)

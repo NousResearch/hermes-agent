@@ -7,8 +7,14 @@ the relay doesn't recognize — placeholders included — is rejected with 401
 
 The client therefore must ship an EMPTY ``Authorization`` default header for
 every opencode-free build, which overrides the OpenAI SDK's always-injected
-``Authorization: Bearer <api_key>`` so no credential-shaped value ever
-reaches the wire.
+``Authorization: Bearer <api_key>`` so no credential-shaped value ever reaches
+the wire.
+
+The free tier is additionally gated on the request identifying as the OpenCode
+client rather than as Hermes (Hermes' canonical attribution headers draw HTTP
+429 ``FreeUsageLimitError``, the OpenCode fingerprint gets 200), so this client
+also carries that fingerprint — see the wire-level guard in
+``test_opencode_zen_free_wire_headers.py`` (#106495).
 """
 from unittest.mock import MagicMock, patch
 
@@ -63,9 +69,9 @@ def test_opencode_free_blanks_authorization_header(mock_openai):
 
 
 @patch("agent.process_bootstrap.OpenAI")
-def test_opencode_free_sends_hermes_attribution(mock_openai):
-    """Keyless requests still identify as Hermes (attribution headers match
-    the opencode zen/go profiles)."""
+def test_opencode_free_sends_opencode_fingerprint(mock_openai):
+    """Keyless requests identify as the OpenCode client, not as Hermes: the relay's free
+    tier 429s (FreeUsageLimitError) the canonical Hermes attribution headers (#106495)."""
     mock_openai.return_value = MagicMock()
     create_openai_client(
         _FakeAgent(api_key="opencode-zen-free-keyless"),
@@ -74,8 +80,29 @@ def test_opencode_free_sends_hermes_attribution(mock_openai):
         shared=False,
     )
     headers = _zen_call_headers(mock_openai)
-    assert headers.get("X-Title") == "Hermes Agent"
-    assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
+    assert headers.get("X-Title") == "opencode"
+    assert headers.get("User-Agent") == "opencode/0.20.5"
+    assert headers.get("HTTP-Referer") == "https://opencode.ai/"
+    assert headers.get("X-Session-ID")
+    assert not str(headers.get("User-Agent", "")).startswith("HermesAgent/")
+
+
+@patch("agent.process_bootstrap.OpenAI")
+def test_zen_free_model_selected_under_keyed_provider_gets_the_same_fingerprint(mock_openai):
+    """A free slug picked under ``opencode-zen`` heals to the same keyless runtime, so the
+    client build must key the header set off the keyless placeholder, not the provider name."""
+    mock_openai.return_value = MagicMock()
+    agent = _FakeAgent(api_key="opencode-zen-free-keyless")
+    agent.provider = "opencode-zen"
+    create_openai_client(
+        agent,
+        {"api_key": "opencode-zen-free-keyless", "base_url": ZEN_V1},
+        reason="test",
+        shared=False,
+    )
+    headers = _zen_call_headers(mock_openai)
+    assert headers.get("User-Agent") == "opencode/0.20.5"
+    assert headers.get("X-Session-ID")
 
 
 @patch("agent.process_bootstrap.OpenAI")

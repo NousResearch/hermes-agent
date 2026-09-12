@@ -1771,11 +1771,23 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
-    # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+    # OpenCode Zen free tier is served anonymously: any bearer the relay doesn't recognize is a
+    # 401, and the canonical Hermes attribution headers get the free tier 429'd
+    # (FreeUsageLimitError), so every keyless route sends the empty-Authorization + OpenCode
+    # fingerprint set. The keyless placeholder — not the provider name — is the identity: a free
+    # slug selected under opencode-zen/opencode-go heals to this same keyless route.
+    try:
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER as _zen_free_key,
+            opencode_zen_free_headers as _zen_free_headers,
+        )
+    except Exception:  # a broken catalog module must not break every other provider's client
+        _zen_free_key = None
+        _zen_free_headers = None
+    if _zen_free_headers is not None and (
+            agent.provider == "opencode-free" or client_kwargs.get("api_key") == _zen_free_key):
+        client_kwargs["default_headers"] = {
+            **(client_kwargs.get("default_headers") or {}), **_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers

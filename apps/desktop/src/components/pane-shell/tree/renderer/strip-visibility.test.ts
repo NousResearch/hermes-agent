@@ -23,6 +23,37 @@ describe('auto (no stored choice)', () => {
   it('has nothing to draw for an empty zone', () => {
     expect(resolveTabStripVisible({ shown: [] })).toBe(false)
   })
+
+  // The multi-session view: the zone is one window of several, so it keeps the
+  // strip its siblings all have (chips + ✕ + "+"). Without this it was the one
+  // window with no title bar at all, and nothing on it to click to get one.
+  it('keeps the strip for a lone MAIN pane in a tiled layout', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()], tiled: true })).toBe(true)
+    expect(resolveTabStripVisible({ shown: [tile()], tiled: true })).toBe(true)
+  })
+
+  it('still gives a tiled lone SIDE-CHROME zone no strip', () => {
+    expect(resolveTabStripVisible({ shown: [sideChrome()], tiled: true })).toBe(false)
+    expect(resolveTabStripVisible({ shown: [toolPanel()], tiled: true })).toBe(true)
+  })
+
+  it('leaves the solo layout chromeless — one chat in one window is not a tab', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()], tiled: false })).toBe(false)
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
+  })
+})
+
+// Same last-handle invariant as the lone tile: in a tiled layout the strip's ✕
+// is the workspace zone's ONLY Close control (⌘W refuses the workspace, the
+// chat header's title menu has no Close row), so "Hide tabs" must not take it.
+describe('a tiled lone workspace against a stored choice', () => {
+  it('keeps the strip even when the zone says never', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()], tiled: true })).toBe(true)
+  })
+
+  it('honors never on the solo layout, where nothing is stranded', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
+  })
 })
 
 describe('the stored choice', () => {

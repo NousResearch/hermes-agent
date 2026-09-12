@@ -59,6 +59,7 @@ import {
   closeTabPane,
   closeTreeTabsToRight,
   collapseTreePane,
+  hasTiledSessionZones,
   hideOnlyZoneTabs,
   hostsSessionDropTarget,
   isCollapsePane,
@@ -342,7 +343,8 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown
+    shown,
+    tiled: hasTiledSessionZones()
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the

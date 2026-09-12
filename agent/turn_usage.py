@@ -253,7 +253,11 @@ def record_response_usage(
                 cache_read_tokens=canonical_usage.cache_read_tokens,
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
-                estimated_cost_usd=_cost_delta,
+                # A provider-reported cost (status="actual") is real spend, not an
+                # estimate: accumulate it into actual_cost_usd (None keeps the
+                # stored column value untouched).
+                estimated_cost_usd=_cost_delta if cost_result.status != "actual" else None,
+                actual_cost_usd=_cost_delta if cost_result.status == "actual" else None,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

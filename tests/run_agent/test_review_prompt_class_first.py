@@ -1,54 +1,129 @@
-"""Behavior tests for the skill review / combined review prompts.
+"""Behavior contracts for the operative background skill-review prompts."""
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
-  1. Patching currently-loaded skills first,
-  2. Patching existing umbrellas next,
-  3. Adding references/ files under an existing umbrella,
-  4. Creating a new class-level umbrella only when nothing else fits.
+from types import SimpleNamespace
+from unittest.mock import patch
 
-User-preference corrections (style, format, verbosity, legibility) are
-first-class skill signals, not just memory signals.
+from agent.background_review import spawn_background_review_thread
 
-These tests assert behavioral *instructions* are present — they do NOT
-snapshot the full prompt text (change-detector).
-"""
 
-from run_agent import AIAgent
+def _assembled_prompt(*, review_memory: bool) -> str:
+    """Exercise the prompt-selection path used by the background review thread."""
+    _target, prompt = spawn_background_review_thread(
+        SimpleNamespace(),
+        [],
+        review_memory=review_memory,
+        review_skills=True,
+        task_cfg={},
+    )
+    return prompt
 
 
 # ---------------------------------------------------------------------------
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
 
-
-def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
-    """Style/format/verbosity complaints must be FIRST-CLASS skill signals, not just memory."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
+def _assert_selective_skill_policy(prompt: str, label: str) -> None:
     lower = prompt.lower()
-    # Must mention style/format/verbosity-family corrections
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
-        "must name style/format/verbosity/legibility as signals"
+    assert "taking no skill action" in lower and "explicitly valid" in lower, label
+    assert "no persistent action" not in lower, label
+    assert "all five" in lower, label
+    for requirement in (
+        "narrow loading trigger",
+        "reusable procedural value",
+        "evidence the workflow recurs",
+        "no better home",
+        "safe selective loading",
+    ):
+        assert requirement in lower, (
+            f"{label}: missing creation requirement {requirement!r}"
+        )
+    for better_home in (
+        "config",
+        "user.md",
+        "memory.md",
+        "project instructions",
+        "code",
+        "session/git/issue/pr",
+        "existing skill",
+    ):
+        assert better_home in lower, f"{label}: missing better home {better_home!r}"
+    assert "unrelated conversations must work correctly without loading" in lower, label
+    assert "prefer extending an existing matching skill" in lower, label
+    for rejected in (
+        "global preferences",
+        "standard agent behavior",
+        "one-off task state",
+        "raw logs",
+        "generic advice",
+    ):
+        assert rejected in lower, f"{label}: must reject {rejected}"
+    assert "standing user preferences" not in lower, (
+        f"{label}: must not route global preferences into selectively loaded skills"
     )
-    # Must frame these as first-class skill signals (not memory-only)
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
-        "must explicitly label user-preference corrections as first-class skill signals"
+
+
+def test_skill_review_prompt_requires_selective_creation():
+    prompt = _assembled_prompt(review_memory=False)
+    _assert_selective_skill_policy(prompt, "skill-only review")
+    lower = prompt.lower()
+    assert "during a skill-only review, take no action" in lower
+    assert "put them in user.md or memory.md" not in lower
+    assert "route global style/format/behavior preferences to memory" not in lower
+
+
+def test_review_rejects_redundant_learning_governance_skill_for_regression_scenario():
+    """A create-then-delete meta skill is evidence against persisting the same policy again."""
+    transcript = [
+        {
+            "role": "user",
+            "content": "Improve self-learning and stop creating noisy skills.",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "The existing hermes-agent management skill, stable user policy, and core "
+                "background review machinery already govern this behavior. Even so, the old "
+                "review instruction said to be active because most sessions should produce a "
+                "skill action, so it created hermes-learning-governance."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Why is that a new skill instead of part of the existing learning machinery?"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "It is redundant with universal policy and has been deleted.",
+        },
+    ]
+    agent = SimpleNamespace()
+    target, _prompt = spawn_background_review_thread(
+        agent, transcript, review_skills=True, task_cfg={},
     )
-    # Must mention the correction-type phrases to tune the model's ear
-    assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
-        "must give concrete phrasing examples so the model recognizes corrections"
+
+    with patch("agent.background_review._run_review_in_thread") as run_review:
+        target()
+
+    reviewed_transcript = run_review.call_args.args[1]
+    prompt = run_review.call_args.args[2].lower()
+    assert reviewed_transcript is transcript
+    assert "taking no skill action" in prompt
+    assert "no persistent action" not in prompt
+    assert "hermes-learning-governance" in prompt and "never create" in prompt
+    assert (
+        "universal learning governance" in prompt
+        and "not a specialized workflow" in prompt
     )
+    assert all(
+        home in prompt
+        for home in ("core", "config", "user.md", "memory.md", "hermes-agent")
+    )
+    assert "deleting it as redundant is evidence against recreating it" in prompt
+    assert "prefer extending an existing matching skill" in prompt
+    assert "most sessions produce" not in prompt
 
 
 
@@ -71,9 +146,16 @@ def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
 
 def test_combined_review_prompt_has_memory_section():
     """Memory half must still cover user facts and preferences."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    prompt = _assembled_prompt(review_memory=True)
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
+
+
+def test_combined_review_prompt_requires_selective_creation():
+    prompt = _assembled_prompt(review_memory=True)
+    _assert_selective_skill_policy(prompt, "combined review")
+    assert "memory action does not require skill action" in prompt.lower()
+    assert "route global style/format/behavior preferences to memory" in prompt.lower()
 
 
 
@@ -137,11 +219,11 @@ def _assert_unresolved_failure_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_rejects_unresolved_failures():
-    _assert_unresolved_failure_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_unresolved_failure_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_rejects_unresolved_failures():
-    _assert_unresolved_failure_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_unresolved_failure_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
@@ -175,11 +257,11 @@ def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_teaches_read_before_write():
-    _assert_read_before_write_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_read_before_write_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_teaches_read_before_write():
-    _assert_read_before_write_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_read_before_write_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 
@@ -204,11 +286,11 @@ def _assert_lesson_layer_guidance(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_teaches_lesson_layer():
-    _assert_lesson_layer_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_lesson_layer_guidance(_assembled_prompt(review_memory=False), "skill-only review")
 
 
 def test_combined_review_prompt_teaches_lesson_layer():
-    _assert_lesson_layer_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+    _assert_lesson_layer_guidance(_assembled_prompt(review_memory=True), "combined review")
 
 
 def test_curator_prompt_consolidates_by_distilling():

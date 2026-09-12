@@ -217,6 +217,75 @@ def test_fire_claim_fence_rejects_stale_owner(temp_home):
         assert owns_claim is False
 
 
+def test_same_owner_heartbeat_refreshes_while_fire_fence_is_held(temp_home, monkeypatch):
+    """A long delivery must not lose its claim merely because its heartbeat runs concurrently."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="fenced-heartbeat")
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
+    completed = threading.Event()
+    result = {}
+
+    def heartbeat():
+        result["refreshed"] = jobs.heartbeat_fire_claim(job["id"], expected_owner=owner)
+        completed.set()
+
+    with jobs.fire_claim_fence(job["id"], expected_owner=owner) as owns_claim:
+        assert owns_claim is True
+        before = jobs.get_job(job["id"])["fire_claim"]["at"]
+        thread = threading.Thread(target=heartbeat)
+        thread.start()
+        assert completed.wait(timeout=2), "same-owner heartbeat waited past the fire-fence timeout"
+        assert result["refreshed"] is True
+        assert jobs.get_job(job["id"])["fire_claim"]["at"] != before
+
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+
+
+@pytest.mark.parametrize(
+    "replacement_claim,lock_failure",
+    [
+        ({"at": "2099-01-01T00:00:00+00:00", "by": "replacement-owner"}, "timeout"),
+        (None, "unavailable"),
+    ],
+    ids=["replacement-owner", "terminal-clear"],
+)
+def test_fire_claim_heartbeat_fails_closed_without_jobs_flock(
+    temp_home, monkeypatch, replacement_claim, lock_failure,
+):
+    """A stale heartbeat must not overwrite state changed by the jobs-lock holder."""
+    import copy
+    import json
+
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="unlocked-heartbeat")
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    stale_snapshot = copy.deepcopy(jobs.load_jobs())
+    jobs_file = jobs._current_cron_store().jobs_file
+
+    def replace_then_time_out(_lock_fd, _timeout):
+        replacement_jobs = copy.deepcopy(stale_snapshot)
+        replacement_jobs[0]["fire_claim"] = copy.deepcopy(replacement_claim)
+        jobs_file.write_text(json.dumps({"jobs": replacement_jobs}), encoding="utf-8")
+        if lock_failure == "unavailable":
+            raise OSError("jobs flock unavailable")
+        return False
+
+    monkeypatch.setattr(jobs, "_acquire_flock", replace_then_time_out)
+    monkeypatch.setattr(jobs, "load_jobs", lambda: copy.deepcopy(stale_snapshot))
+
+    assert jobs.heartbeat_fire_claim(job["id"], expected_owner=owner) is False
+    persisted = json.loads(jobs_file.read_text(encoding="utf-8"))["jobs"][0]
+    assert persisted["fire_claim"] == replacement_claim
+
+
 def test_same_process_fire_fence_refuses_second_claim_after_timeout(temp_home, monkeypatch):
     """A wedged local holder must not indefinitely block another claimant."""
     import cron.jobs as jobs

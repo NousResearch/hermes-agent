@@ -2,6 +2,7 @@ import { webcrypto } from 'node:crypto'
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 import {
   canonicalFilesFailure,
   listCanonicalFiles,
@@ -19,6 +20,7 @@ const authority = { gatewayId: 'install:home', epoch: 1 }
 const raw = { ...fileItem(20, 'same-name.bin'), size: 4 }
 const item = parseGroupFilesPage(filePage([raw])).items[0]
 const bytes = new Uint8Array([0, 1, 2, 255])
+let observed: ReturnType<typeof observeDownloads>
 
 async function receipt() {
   const hash = await webcrypto.subtle.digest('SHA-256', bytes)
@@ -35,9 +37,11 @@ async function receipt() {
 beforeEach(() => {
   request.mockReset()
   vi.stubGlobal('crypto', webcrypto)
+  observed = observeDownloads()
 })
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   window.hermesDesktop = originalDesktop
 })
@@ -94,7 +98,17 @@ it('downloads the selected event/version with both authority pins and saves veri
       authority_epoch: 1
     }
   )
-  expect(save).toHaveBeenCalledWith(bytes, '.bin', raw.name)
+  expect(observed.downloads).toHaveLength(1)
+  await expectDownloaded(observed, bytes, raw.name, raw.mime)
+  expect(save).not.toHaveBeenCalled()
+})
+
+it('uses the user-facing download workflow even without the composer-cache bridge', async () => {
+  window.hermesDesktop = {} as typeof window.hermesDesktop
+  request.mockResolvedValue(await receipt())
+  await saveCanonicalFile(FILE_BINDING, authority, item)
+  expect(observed.downloads).toHaveLength(1)
+  await expectDownloaded(observed, bytes, raw.name, raw.mime)
 })
 
 it.each(['room_id', 'event_id', 'attachment_id', 'name', 'mime', 'size', 'sha256', 'data_base64', 'authority'])(
@@ -108,6 +122,7 @@ it.each(['room_id', 'event_id', 'attachment_id', 'name', 'mime', 'size', 'sha256
     })
     await expect(saveCanonicalFile(FILE_BINDING, authority, item)).rejects.toThrow()
     expect(save).not.toHaveBeenCalled()
+    expect(observed.create).not.toHaveBeenCalled()
   }
 )
 
@@ -124,6 +139,7 @@ it('retires late download replies on intent cancellation and timeout', async () 
   held.resolve(response)
   await Promise.resolve()
   expect(save).not.toHaveBeenCalled()
+  expect(observed.create).not.toHaveBeenCalled()
 
   vi.useFakeTimers()
   const late = deferred<unknown>()
@@ -134,6 +150,7 @@ it('retires late download replies on intent cancellation and timeout', async () 
   await check
   late.resolve(response)
   expect(save).not.toHaveBeenCalled()
+  expect(observed.create).not.toHaveBeenCalled()
 })
 
 it.each(['permission_denied', 'profile_mismatch'])(

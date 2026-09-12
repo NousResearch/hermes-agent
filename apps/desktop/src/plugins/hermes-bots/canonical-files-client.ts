@@ -1,4 +1,5 @@
 /** Canonical adapter for #104199's metadata-only Files catalog. */
+import { downloadCanonicalAttachment } from './canonical-attachment-download'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 import {
   GROUP_FILES_MAX_PAGE_SIZE,
@@ -236,15 +237,7 @@ export async function saveCanonicalFile(
   item: GroupFileItem,
   signal?: AbortSignal
 ) {
-  const save = window.hermesDesktop?.saveImageBuffer
-
-  if (!save) {
-    throw new CanonicalFilesError('unavailable')
-  }
-
   const bytes = await readCanonicalFile(binding, authority, item, signal)
   assertFilesIntent(signal)
-  const dot = item.attachment.name.lastIndexOf('.')
-  const extension = dot > 0 ? item.attachment.name.slice(dot) : '.bin'
-  await save(bytes, extension, item.attachment.name)
+  downloadCanonicalAttachment(bytes, item.attachment.name, item.attachment.mime, signal)
 }

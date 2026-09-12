@@ -4,6 +4,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 import { deferred, FILE_BINDING, fileItem, filePage } from './canonical-files-test-fixtures'
 import { CanonicalGroupFiles } from './canonical-group-files'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -36,10 +37,12 @@ vi.mock('./canonical-group-labels', async () => {
 const props = { binding: FILE_BINDING, name: 'Review room', authority: { gatewayId: 'install:home', epoch: 1 } }
 const originalDesktop = window.hermesDesktop
 const save = vi.fn()
+let observed: ReturnType<typeof observeDownloads>
 beforeEach(() => {
   request.mockReset()
   save.mockReset().mockResolvedValue(undefined)
   vi.stubGlobal('crypto', webcrypto)
+  observed = observeDownloads()
   window.hermesDesktop = { saveImageBuffer: save } as unknown as typeof window.hermesDesktop
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
@@ -47,6 +50,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
   window.hermesDesktop = originalDesktop
@@ -157,6 +161,7 @@ it('clears all cached pages on access denial and never delivers a concurrent lat
   expect(rows()).toHaveLength(0)
   await act(async () => download.resolve(response))
   expect(save).not.toHaveBeenCalled()
+  expect(observed.create).not.toHaveBeenCalled()
 })
 
 it.each(['close', 'profile', 'room', 'authority', 'denied'])(
@@ -184,6 +189,7 @@ it.each(['close', 'profile', 'room', 'authority', 'denied'])(
 
     await act(async () => pending.resolve(response))
     expect(save).not.toHaveBeenCalled()
+    expect(observed.create).not.toHaveBeenCalled()
     expect(rows()).toHaveLength(0)
   }
 )
@@ -235,7 +241,9 @@ it('uses the selected same-name version and keeps an individual missing file sep
   await screen.findByText('This file is no longer available.')
   expect(rows()).toHaveLength(2)
   fireEvent.click(within(rows()[1]).getByRole('button'))
-  await waitFor(() => expect(save).toHaveBeenCalledWith(new Uint8Array([65]), '.txt', 'report.txt'))
+  await waitFor(() => expect(observed.downloads).toHaveLength(1))
+  await expectDownloaded(observed, new Uint8Array([65]), 'report.txt', 'text/plain')
+  expect(save).not.toHaveBeenCalled()
   expect(request.mock.calls[2][2]).toMatchObject({
     attachment_id: second.attachment_id,
     event_id: second.event_id,

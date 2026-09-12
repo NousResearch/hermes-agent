@@ -75,8 +75,15 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
     age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
+    retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+    if _core._server_errors_all_application.get(key):
+        # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
+        # model to the user instead of to its own arguments (#11113).
+        return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
+                          f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
+                          f"fix the arguments/URL/target or use a different approach.")
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))}s. Do NOT retry "
+                      f"Auto-retry available in ~{retry_in}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
@@ -106,8 +113,12 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
+    flagged as an application error so the open-breaker message stays truthful."""
+    if _result_is_error(result):
+        _core._bump_server_error(server_name, application=True)
+    else:
+        _core._reset_server_error(server_name)
     return result
 
 

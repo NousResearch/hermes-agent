@@ -346,6 +346,23 @@ class TestExecE2E:
         result = _exec("new_tab('http://169.254.169.254/latest/meta-data')", task_id="e2e-blocked")
         assert result.get("success") is not True
 
+    def test_runtime_rejects_private_and_non_http_navigation(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
+        monkeypatch.setenv("BH_USER_ID", "test-user")
+        from tools.browser_camofox_runtime import _validate_navigation_url
+
+        with pytest.raises(ValueError, match="private or loopback"):
+            _validate_navigation_url("http://127.0.0.1:8080/admin")
+        with pytest.raises(ValueError, match="http or https"):
+            _validate_navigation_url("file:///etc/passwd")
+
+    def test_runtime_accepts_public_https_navigation(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
+        monkeypatch.setenv("BH_USER_ID", "test-user")
+        from tools.browser_camofox_runtime import _validate_navigation_url
+
+        _validate_navigation_url("https://example.com/path")
+
     def test_last_tab_id_wins(self, camofox_mode):
         """Two new_tab() calls in one script: the cache must follow the LAST."""
         result = _exec(

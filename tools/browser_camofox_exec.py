@@ -129,6 +129,19 @@ def _update_session_tab(task_id: Optional[str], tab_id: str) -> None:
         logger.debug("Could not persist Camofox tab id %s: %s", tab_id, exc)
 
 
+def _redact_camofox_secret(text: str) -> str:
+    """Keep an accidentally printed API key out of tool results."""
+    try:
+        from agent.secret_scope import get_secret
+
+        secret = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    except Exception:
+        secret = ""
+    if secret and len(secret) >= 8:
+        return text.replace(secret, "[REDACTED_CAMOFOX_API_KEY]")
+    return text
+
+
 def browser_exec(
     code: str,
     session: str = "",
@@ -211,15 +224,17 @@ def browser_exec(
     except OSError as e:
         return tool_error(f"Failed to launch Camofox exec runtime: {e}")
 
+    raw_stdout = proc.stdout or ""
+    safe_stdout = _redact_camofox_secret(raw_stdout)
     result: Dict[str, Any] = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": proc.stdout,
+        "output": safe_stdout,
     }
     if workspace:
         result["workspace"] = workspace
 
-    stderr = (proc.stderr or "").strip()
+    stderr = _redact_camofox_secret((proc.stderr or "").strip())
     if stderr:
         if len(stderr) > _STDERR_CAP_CHARS:
             stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"

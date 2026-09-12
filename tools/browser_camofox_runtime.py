@@ -28,8 +28,10 @@ starts from the new tab.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 import urllib.error
@@ -139,9 +141,30 @@ def ensure_real_tab() -> dict:
     return {"ok": True, "tab_id": _tab()}
 
 
+def _validate_navigation_url(url: str) -> None:
+    """Reject non-web and private destinations before sending them to Camofox."""
+    parsed = urllib.parse.urlsplit(str(url))
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("navigation URL must use http or https")
+    host = parsed.hostname
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            addresses = [
+                ipaddress.ip_address(info[4][0])
+                for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            ]
+        except OSError as exc:
+            raise ValueError(f"could not resolve navigation host: {host}") from exc
+    if any(address.is_private or address.is_loopback or address.is_link_local for address in addresses):
+        raise ValueError(f"private or loopback navigation is blocked: {host}")
+
+
 def new_tab(url: str) -> dict:
     """Open a URL in a fresh tab (first navigation of a session)."""
     global _TAB_ID
+    _validate_navigation_url(url)
     data = _request(
         "POST",
         "/tabs",
@@ -158,6 +181,7 @@ def new_tab(url: str) -> dict:
 
 def goto_url(url: str) -> dict:
     """Navigate the current tab to a URL."""
+    _validate_navigation_url(url)
     data = _request(
         "POST",
         f"/tabs/{_tab()}/navigate",

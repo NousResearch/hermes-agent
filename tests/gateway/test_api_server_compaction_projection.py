@@ -166,6 +166,27 @@ class TestSummaryRecognizer:
 
 
 class TestTurnTranscriptProjection:
+    def test_skips_one_projection_failure_and_keeps_later_valid_rows(self, monkeypatch):
+        result = {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "malformed"},
+                {"role": "assistant", "content": {"not-json"}},
+                {"role": "assistant", "content": "done"},
+            ]
+        }
+        original = APIServerAdapter._message_response
+
+        def project(message):
+            if message.get("content") == "malformed":
+                raise ValueError("plugin-mutated row")
+            return original(message)
+
+        monkeypatch.setattr(APIServerAdapter, "_message_response", staticmethod(project))
+        assert APIServerAdapter._turn_transcript_messages(
+            [], "hello", result
+        ) == [{"role": "assistant", "content": "done"}]
+
     def test_run_completed_strips_scaffolding_but_keeps_real_carrier_content(self):
         result = {
             "messages": [

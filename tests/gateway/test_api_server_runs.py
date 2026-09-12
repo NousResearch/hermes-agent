@@ -443,6 +443,105 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_run_completed_carries_turn_transcript(self, adapter):
+        """run.completed (Runs surface) must carry the authoritative per-turn
+        transcript so SSE clients can reconcile intermediate assistant/tool
+        segments lost from live deltas. Mirrors run.completed on the chat
+        surface (refs #34703). Refs #105886."""
+        import json as _json
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Here is the summary.",
+                    "messages": [
+                        {"role": "user", "content": "search then summarize"},
+                        {
+                            "role": "assistant",
+                            "content": "Let me search for that:",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "web_search", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                        {"role": "tool", "content": "results",
+                         "tool_call_id": "call_1", "tool_name": "web_search"},
+                        {"role": "assistant", "content": "Here is the summary."},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "search then summarize"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "run.completed" in body
+                completed_payload = None
+                for block in body.split("\n\n"):
+                    for line in block.splitlines():
+                        if line.startswith("data: "):
+                            try:
+                                candidate = _json.loads(line[len("data: "):])
+                            except _json.JSONDecodeError:
+                                continue
+                            if isinstance(candidate, dict) and candidate.get("event") == "run.completed":
+                                completed_payload = candidate
+                                break
+                    if completed_payload:
+                        break
+                assert completed_payload is not None, "run.completed event not found in SSE body"
+                messages = completed_payload.get("messages")
+                assert isinstance(messages, list) and messages, \
+                    "run.completed must carry the authoritative per-turn transcript (refs #105886)"
+                assert [m.get("role") for m in messages] == ["assistant", "tool", "assistant"]
+                assert messages[0]["content"] == "Let me search for that:"
+                assert messages[1]["tool_call_id"] == "call_1"
+                assert messages[2]["content"] == "Here is the summary."
+
+    @pytest.mark.asyncio
+    async def test_malformed_transcript_row_does_not_turn_successful_run_failed(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "done",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {"role": {}, "content": "plugin-mutated malformed row"},
+                        {"role": "assistant", "content": {"not-json"}},
+                        {"role": "assistant", "content": "done"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+
+        assert "run.completed" in body
+        assert "run.failed" not in body
+        assert status["status"] == "completed"
+        assert status["messages"] == [{"role": "assistant", "content": "done"}]
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

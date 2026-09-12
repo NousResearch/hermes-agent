@@ -7,6 +7,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+from hermes_cli.kanban_db_connect import write_txn
+
 import json
 import sqlite3
 import time
@@ -305,6 +307,117 @@ def _notify_cursor(
         _sub_key(task_id, platform, chat_id, thread_id),
     ).fetchone()
     return None if row is None else int(row["last_event_id"])
+
+
+def purge_stale_notify_deliveries(
+    conn: sqlite3.Connection,
+    *,
+    max_age_days: int = 90,
+) -> int:
+    """Delete old receipts once their task is terminal or no longer exists.
+
+    Receipts stay durable across subscription removal so partial retries and
+    audits remain reliable. They do not need to live forever after a task is
+    ``done``/``archived`` (or deleted), though. Active-task receipts are retained
+    regardless of age because they may still suppress duplicate retry parts.
+
+    ``max_age_days <= 0`` disables the sweep. Returns deleted row count.
+    """
+    try:
+        days = int(max_age_days)
+    except (TypeError, ValueError):
+        days = 90
+    if days <= 0:
+        return 0
+    cutoff = int(time.time()) - days * 86400
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_deliveries"
+            " WHERE delivered_at < ?"
+            " AND NOT EXISTS ("
+            "  SELECT 1 FROM tasks t"
+            "  WHERE t.id = kanban_notify_deliveries.task_id"
+            "  AND t.status NOT IN ('done', 'archived')"
+            " )",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def record_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    event_kind: str,
+    message_id: Optional[str],
+    delivered_at: Optional[int] = None,
+    delivery_key: str = "text",
+) -> None:
+    """Persist a durable receipt and refresh ephemeral subscription telemetry.
+
+    ``last_event_id`` proves only that a watcher claimed an event. This receipt
+    is written after ``adapter.send()`` reports success and retains the platform
+    message id when the adapter provides one. The durable ledger write does not
+    depend on the subscription row still existing: terminal unsubscribe and a
+    concurrent receipt writer may race, but confirmed delivery remains auditable.
+    """
+    when = int(delivered_at if delivered_at is not None else time.time())
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO kanban_notify_deliveries (task_id, platform, chat_id, "
+            "thread_id, event_id, event_kind, delivery_key, message_id, delivered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id, platform, chat_id, thread_id, event_id, delivery_key) "
+            "DO UPDATE SET message_id = COALESCE(excluded.message_id, message_id), "
+            "delivered_at = MIN(delivered_at, excluded.delivered_at)",
+            (
+                task_id, platform, chat_id, thread_id or "", int(event_id),
+                str(event_kind), str(delivery_key),
+                str(message_id) if message_id is not None else None, when,
+            ),
+        )
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_delivery_event_id = ?, "
+            "last_delivery_kind = ?, last_delivery_message_id = ?, last_delivered_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND (last_delivery_event_id IS NULL OR last_delivery_event_id <= ?)",
+            (
+                int(event_id), str(event_kind),
+                str(message_id) if message_id is not None else None,
+                when, task_id, platform, chat_id, thread_id or "", int(event_id),
+            ),
+        )
+        # A zero-row update is expected when a later delivery already owns
+        # the convenience fields or terminal cleanup removed the subscription.
+        # The ledger insert above is the authoritative success criterion;
+        # SQLite exceptions are the only failure signal.
+
+
+def has_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    delivery_key: str = "text",
+) -> bool:
+    """Return whether a durable receipt exists for one event delivery part."""
+    row = conn.execute(
+        "SELECT 1 FROM kanban_notify_deliveries WHERE task_id = ? AND platform = ? "
+        "AND chat_id = ? AND thread_id = ? AND event_id = ? AND delivery_key = ?",
+        (
+            task_id, platform, chat_id, thread_id or "", int(event_id),
+            str(delivery_key),
+        ),
+    ).fetchone()
+    return row is not None
+
 
 
 def unseen_events_for_sub(

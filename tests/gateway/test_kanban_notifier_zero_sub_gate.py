@@ -5,7 +5,7 @@ board had zero subscriptions — paying schema init/migration on first open,
 WAL/-shm sidecar creation, and checkpoint traffic for boards with nothing to
 notify. Per-board work is now gated by a read-only subscription probe
 (``kanban_db.count_notify_subs``), so boards with zero subscriptions are
-never opened writable.
+only opened writable on hourly retention sweeps.
 
 (The companion machine-global ``.notifier.lock`` singleton gate from PR
 #63001 was deliberately NOT salvaged: a lock-winning default-profile gateway
@@ -68,8 +68,8 @@ def _create_completed_task(*, subscribe: bool) -> str:
         conn.close()
 
 
-def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
-    """A board with zero subscriptions must be skipped BEFORE `_kb.connect`."""
+def test_zero_sub_board_skips_writable_open_between_gc_sweeps(tmp_path, monkeypatch):
+    """Ordinary ticks preserve the read-only fast path."""
     db_path = tmp_path / "zero-subs.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
@@ -79,9 +79,31 @@ def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
     runner = _make_runner(adapter)
 
     with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
-        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+        from gateway.kanban_watchers_notifier import _notifier_collect
+        _notifier_collect(runner, kb, notifier_profile="default", gc_due=False, gc_retention_days=30)
 
     spy_connect.assert_not_called()
     assert adapter.sent == []
 
-
+def test_zero_sub_board_prunes_terminal_receipts_on_gc_tick(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "gc.db"))
+    kb.init_db()
+    tid = _create_completed_task(subscribe=False)
+    conn = kbc.connect()
+    try:
+        kbn.record_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            thread_id="", event_id=1, event_kind="completed", message_id="sent",
+            delivered_at=int(time.time()) - 91 * 86400,
+        )
+    finally:
+        conn.close()
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    conn = kbc.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM kanban_notify_deliveries").fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert adapter.sent == []

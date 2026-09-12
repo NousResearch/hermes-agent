@@ -225,6 +225,24 @@ class TestStaleCronEntryMigration:
         assert not run_md.exists()
 
 
+class TestEmptyDirectorySweep:
+    def test_preserves_empty_checkpoint_git_internals(self, _isolate_env):
+        dg = _load_lib()
+        objects = _isolate_env / "checkpoints" / "store" / "objects"
+        refs = _isolate_env / "checkpoints" / "store" / "refs"
+        objects.mkdir(parents=True)
+        refs.mkdir()
+        disposable = _isolate_env / "scratch" / "empty"
+        disposable.mkdir(parents=True)
+
+        removed = dg._sweep_empty_dirs(_isolate_env)
+
+        assert objects.is_dir()
+        assert refs.is_dir()
+        assert not disposable.exists()
+        assert removed > 0
+
+
 class TestTrackForgetQuick:
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()

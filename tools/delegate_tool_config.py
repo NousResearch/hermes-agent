@@ -206,6 +206,54 @@ def _loaded_pool(key: Any):
     pool = load_pool(key)
     return pool if pool is not None and pool.has_credentials() else None
 
+
+def _credential_pool_matches_runtime(
+    pool: Any,
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Whether a pool can safely supply credentials to this exact runtime.
+
+    A provider name alone does not distinguish OpenAI-compatible endpoints:
+    an ``openai-api`` pool for api.openai.com must not bind an Azure child.
+    Lightweight legacy adapters without provider/entry metadata remain usable.
+    """
+    from agent.credential_pool import credential_pool_matches_provider
+
+    raw_pool_provider = getattr(pool, "provider", None)
+    if not isinstance(raw_pool_provider, str):
+        return True
+    if not credential_pool_matches_provider(pool, provider, base_url=base_url):
+        return False
+    expected = str(base_url or "").strip().rstrip("/").lower()
+    if not expected:
+        return True
+    entries_fn = getattr(pool, "entries", None)
+    if not callable(entries_fn):
+        return True
+    try:
+        entries = entries_fn()
+        if not isinstance(entries, (list, tuple)):
+            return False
+    except Exception:
+        return False
+    endpoints = [
+        value.strip().rstrip("/").lower()
+        for entry in entries
+        for value in [getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)]
+        if isinstance(value, str) and value.strip()
+    ]
+    return bool(endpoints) and expected in endpoints
+
+
+def _credential_pool_entry_matches_runtime(entry: Any, base_url: Optional[str]) -> bool:
+    """Whether one pooled credential targets the child endpoint."""
+    expected = str(base_url or "").strip().rstrip("/").lower()
+    if not expected:
+        return True
+    value = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+    return isinstance(value, str) and value.strip().rstrip("/").lower() == expected
+
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
 ):
@@ -236,8 +284,15 @@ def _resolve_child_credential_pool(
                 return parent_pool
             return _loaded_pool(child_key)
         if parent_pool is not None and effective_provider == parent_provider:
-            return parent_pool
-        return _loaded_pool(effective_provider)
+            if _credential_pool_matches_runtime(parent_pool, effective_provider, effective_base_url):
+                return parent_pool
+            logger.debug(
+                "Parent credential pool does not match child runtime %s at %s; resolving independently",
+                effective_provider, effective_base_url,
+            )
+        pool = _loaded_pool(effective_provider)
+        if pool is not None and _credential_pool_matches_runtime(pool, effective_provider, effective_base_url):
+            return pool
     except Exception as exc:
         if effective_provider == "custom":
             logger.debug("Could not resolve custom credential pool for child endpoint '%s': %s", effective_base_url, exc)

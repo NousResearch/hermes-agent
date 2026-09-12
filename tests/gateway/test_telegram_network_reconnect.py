@@ -1081,3 +1081,94 @@ async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatc
         "stale-client cleanup must finish or abandon its own wedged close "
         "without accumulating a background task"
     )
+
+
+# ---------------------------------------------------------------------------
+# Server-side 5xx on the polling path — Telegram answered, so the local socket
+# and the Updater's lifecycle lock are not suspect.
+# ---------------------------------------------------------------------------
+
+
+class NetworkError(Exception):
+    """PTB's class name for a Bot API transport/status error, without importing the optional dep."""
+
+
+class TestServerSideErrorClassifier:
+    def test_bot_api_5xx_reason_phrases_match(self):
+        for text in ("Bad Gateway", "Service Unavailable", "Gateway Timeout", "Internal Server Error"):
+            assert TelegramAdapter._looks_like_server_side_error(NetworkError(text)) is True
+
+    def test_transport_failures_and_untyped_errors_do_not_match(self):
+        # PTB wraps transport errors in NetworkError too ("httpx.ConnectError: ...", "Timed out"), and
+        # callers on the local-recovery path pass bare Exceptions — neither proves Telegram answered.
+        assert TelegramAdapter._looks_like_server_side_error(
+            NetworkError("httpx.ConnectError: All connection attempts failed")
+        ) is False
+        assert TelegramAdapter._looks_like_server_side_error(NetworkError("Timed out")) is False
+        assert TelegramAdapter._looks_like_server_side_error(Exception("Bad Gateway")) is False
+
+    def test_wrapped_5xx_in_cause_graph_matches(self):
+        err = Exception("recovery failed")
+        err.__cause__ = NetworkError("Bad Gateway")
+        assert TelegramAdapter._looks_like_server_side_error(err) is True
+
+
+@pytest.mark.asyncio
+async def test_server_side_5xx_does_not_restart_the_updater():
+    """A 502 from Telegram's edge must not tear the Updater down.
+
+    PTB's ``network_retry_loop`` keeps polling through a 5xx and reconnects on its own. Stopping the
+    Updater here waits on the long-poll socket that failed request left in CLOSE-WAIT, burns
+    ``_UPDATER_STOP_TIMEOUT`` and escalates to a whole-adapter rebuild — turning a few seconds of
+    upstream downtime into ~30s of deaf ingress and two ERROR lines.
+    """
+    adapter = _make_adapter()
+    mock_app, _ = _make_mock_app()
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(NetworkError("Bad Gateway"))
+
+    mock_app.updater.stop.assert_not_awaited()
+    mock_app.updater.start_polling.assert_not_awaited()
+    assert adapter._polling_network_error_count == 0, (
+        "a server-side 5xx must not consume the local restart ladder"
+    )
+    assert adapter._server_side_polling_error_since is not None
+
+
+@pytest.mark.asyncio
+async def test_server_side_5xx_restarts_only_after_the_grace(monkeypatch):
+    """The exemption is bounded: a 5xx run that outlives the grace still escalates."""
+    adapter = _make_adapter()
+    mock_app, _ = _make_mock_app()
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(NetworkError("Bad Gateway"))
+        mock_app.updater.stop.assert_not_awaited()
+
+        monkeypatch.setattr(tg_adapter, "_SERVER_SIDE_ERROR_GRACE", 0.0)
+        await adapter._handle_polling_network_error(NetworkError("Bad Gateway"))
+
+    mock_app.updater.stop.assert_awaited_once()
+    assert adapter._polling_network_error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_transport_error_keeps_the_restart_ladder_and_clears_the_grace():
+    """A transport failure is still treated as a broken local path."""
+    adapter = _make_adapter()
+    mock_app, _ = _make_mock_app()
+    adapter._app = mock_app
+    adapter._server_side_polling_error_since = 123.0  # stale run from an earlier 5xx blip
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(
+            NetworkError("httpx.ReadError: connection reset")
+        )
+
+    mock_app.updater.stop.assert_awaited_once()
+    mock_app.updater.start_polling.assert_awaited_once()
+    assert adapter._polling_network_error_count == 1
+    assert adapter._server_side_polling_error_since is None

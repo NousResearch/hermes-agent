@@ -338,6 +338,17 @@ _INITIAL_POLLING_PROGRESS_TIMEOUT = 60.0
 # ladder always advances toward the fatal-restart escalation. Matches _UPDATER_STOP_TIMEOUT. Refs:
 # NousResearch/hermes-agent#66377
 _DRAIN_TIMEOUT = 15.0
+# Telegram's own edge answers some polling calls with a 5xx (502 "Bad Gateway" in practice) while the local
+# path is healthy: PTB's request wrapper raises ``NetworkError`` carrying the HTTP reason phrase for every
+# status it does not map to BadRequest/Conflict. A 5xx is answered BY Telegram, so it is no evidence that the
+# poll socket or the Updater's lifecycle lock is broken. Give PTB's own retry loop this long to recover
+# before falling back to stop()/restart — the path that wedges when the failed request left the long-poll
+# socket in CLOSE-WAIT and burns the full _UPDATER_STOP_TIMEOUT, turning a few seconds of upstream downtime
+# into a whole-adapter rebuild.
+_SERVER_SIDE_ERROR_GRACE = 120.0
+_SERVER_SIDE_ERROR_MARKERS = (
+    "bad gateway", "service unavailable", "gateway timeout", "internal server error",
+)
 # Wedged-recovery watchdog: healthy worst case is stop + 2x drain + start + 60s backoff ≈ 135s, so
 # 300s in flight is unambiguously stuck and the heartbeat force-escalates.
 # Every recovery path (the reconnect ladder's re-entry, the pending-update probe, PTB's error callback)
@@ -469,6 +480,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
+        # Monotonic start of the current run of server-side 5xx answers on the polling path (None = not in one).
+        self._server_side_polling_error_since: Optional[float] = None
         self._polling_conflict_recovery_generation: Optional[int] = None
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = self._polling_teardown_started = False
@@ -1173,6 +1186,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    @staticmethod
+    def _looks_like_server_side_error(error: Exception) -> bool:
+        """True when *Telegram* failed the request, not the local transport.
+
+        PTB's request wrapper raises ``NetworkError`` carrying the HTTP reason phrase for every status it
+        does not map to BadRequest/Conflict (``request/_baserequest.py``: 502 → ``NetworkError("Bad
+        Gateway")``). Matching the class name rather than the text alone keeps transport failures —
+        ``NetworkError("httpx.ConnectError: ...")``, ``TimedOut``, and the bare ``Exception("Bad Gateway")``
+        some callers pass on the local-recovery path — out of this branch.
+        """
+        for cur in _iter_exception_graph(error):
+            if cur.__class__.__name__.lower() != "networkerror":
+                continue
+            text = str(cur).lower()
+            if any(marker in text for marker in _SERVER_SIDE_ERROR_MARKERS):
+                return True
+        return False
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -1610,6 +1641,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
+        self._server_side_polling_error_since = None
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None
         else:
@@ -1919,14 +1951,35 @@ class TelegramAdapter(BasePlatformAdapter):
         """Reconnect polling after a transient network interruption (NetworkError/TimedOut).
 
         Host connectivity loss (sleep, WiFi switch, VPN) kills the long-poll silently. Exponential back-off (5s→60s
-        cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway."""
+        cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway.
+
+        A server-side 5xx (Telegram answered, "Bad Gateway") is handled separately: it is not evidence that the
+        local poll socket is broken, and PTB's own ``network_retry_loop`` keeps polling through it, so the
+        Updater is only torn down once such a run outlives ``_SERVER_SIDE_ERROR_GRACE``."""
         if self._teardown_started or self.has_fatal_error:
             return
         MAX_NETWORK_RETRIES = 10
         BASE_DELAY = 5
         MAX_DELAY = 60
-        self._polling_network_error_count += 1
         self._send_path_degraded = True
+        if self._looks_like_server_side_error(error):
+            now = asyncio.get_running_loop().time()
+            if self._server_side_polling_error_since is None:
+                self._server_side_polling_error_since = now
+            if now - self._server_side_polling_error_since < _SERVER_SIDE_ERROR_GRACE:
+                # The request reached a Telegram edge that then failed, so stop()/restart would only wait on
+                # the long-poll socket that failure left in CLOSE-WAIT (the wedge that burns the stop
+                # deadline and forces a full adapter rebuild). PTB reconnects on its own; the heartbeat, stall
+                # watchdog and progress verifier still escalate a poll that is genuinely wedged.
+                logger.info(
+                    "[%s] Telegram server-side error on the polling path (attempt %d/%d, %s); leaving the "
+                    "polling retry loop to reconnect without an Updater restart", self.name,
+                    self._polling_network_error_count + 1, MAX_NETWORK_RETRIES,
+                    _redact_telegram_error_text(error))
+                return
+        else:
+            self._server_side_polling_error_since = None
+        self._polling_network_error_count += 1
         attempt = self._polling_network_error_count
         if attempt > MAX_NETWORK_RETRIES:
             message = (

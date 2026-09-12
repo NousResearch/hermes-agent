@@ -2329,12 +2329,21 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
                 with suppress(TypeError, ValueError):
                     config_context_length = int(raw_ctx)
             configured_provider = provider = model_cfg.get("provider") or None
+            # Keep raw model.base_url for runtime overlay; pin check uses the resolved default route.
             configured_base_url = base_url = model_cfg.get("base_url") or None
         try:
             from hermes_cli.config import get_compatible_custom_providers
             custom_providers = get_compatible_custom_providers(data)
         except Exception:
             custom_providers = data.get("custom_providers")
+        if isinstance(model_cfg, dict):
+            try:
+                from agent.agent_init import _configured_default_base_url
+                resolved = _configured_default_base_url(data, model_cfg, custom_providers or [])
+                if resolved:
+                    configured_base_url = resolved
+            except Exception:
+                pass
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key

@@ -568,6 +568,24 @@ class GatewayTurnMixin:
             if hs.data:
                 self._hmwa_hygiene_read_config(hs, hs.data)
             configured_model, configured_provider, configured_base_url = hs.model, hs.provider, hs.base_url
+            # Pin check must see the resolved default route (providers.<name>.base_url),
+            # not the raw empty model.base_url copied above before runtime overlay.
+            if isinstance(hs.data, dict):
+                with suppress(Exception):
+                    from agent.agent_init import _configured_default_base_url
+                    _pin_model_cfg = hs.data.get("model")
+                    if not isinstance(_pin_model_cfg, dict):
+                        _pin_model_cfg = {}
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers as _pin_gcp
+                        _pin_custom = _pin_gcp(hs.data)
+                    except Exception:
+                        _pin_custom = hs.data.get("custom_providers")
+                    resolved = _configured_default_base_url(
+                        hs.data, _pin_model_cfg, _pin_custom or [],
+                    )
+                    if resolved:
+                        configured_base_url = resolved
 
             with suppress(Exception):
                 hs.model, _hyg_runtime = self._resolve_session_agent_runtime(

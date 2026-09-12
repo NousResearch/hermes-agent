@@ -37,11 +37,73 @@ describe('remote HTML previews', () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     readDesktopFileDataUrl.mockResolvedValue(dataUrl)
 
-    await expect(normalizeOrLocalPreviewTarget('/srv/report.html')).resolves.toEqual({
+    await expect(normalizeOrLocalPreviewTarget('/srv/report.html')).resolves.toMatchObject({
       ...remoteTarget,
       dataUrl
     })
     expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
+  })
+
+  it('keeps remote POSIX paths out of the Windows preview normalizer', async () => {
+    const normalizePreviewTarget = vi.fn(async () => ({
+      ...remoteTarget,
+      path: '\\\\wsl.localhost\\Ubuntu-20.04\\srv\\report.html',
+      url: 'file://wsl.localhost/Ubuntu-20.04/srv/report.html'
+    }))
+
+    window.hermesDesktop = { normalizePreviewTarget } as never
+    readDesktopFileDataUrl.mockResolvedValue(`data:text/html;base64,${btoa('<h1>remote</h1>')}`)
+
+    await expect(normalizeOrLocalPreviewTarget('/srv/report.html')).resolves.toMatchObject({
+      path: '/srv/report.html',
+      url: 'file:///srv/report.html'
+    })
+    expect(normalizePreviewTarget).not.toHaveBeenCalled()
+    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
+  })
+
+  it('resolves relative remote paths against a POSIX gateway cwd', async () => {
+    const normalizePreviewTarget = vi.fn(async () => remoteTarget)
+
+    window.hermesDesktop = { normalizePreviewTarget } as never
+    readDesktopFileDataUrl.mockResolvedValue(`data:text/html;base64,${btoa('<h1>remote</h1>')}`)
+
+    await expect(normalizeOrLocalPreviewTarget('report.html', '/srv')).resolves.toMatchObject({
+      path: '/srv/report.html',
+      url: 'file:///srv/report.html'
+    })
+    expect(normalizePreviewTarget).not.toHaveBeenCalled()
+    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
+  })
+
+  it('keeps remote POSIX file URLs out of the local normalizer', async () => {
+    const normalizePreviewTarget = vi.fn(async () => remoteTarget)
+
+    window.hermesDesktop = { normalizePreviewTarget } as never
+    readDesktopFileDataUrl.mockResolvedValue(`data:text/html;base64,${btoa('<h1>remote</h1>')}`)
+
+    await expect(normalizeOrLocalPreviewTarget('file:///srv/report.html')).resolves.toMatchObject({
+      path: '/srv/report.html',
+      url: 'file:///srv/report.html'
+    })
+    expect(normalizePreviewTarget).not.toHaveBeenCalled()
+    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
+  })
+
+  it.each([
+    ['https://example.test/report.html', '/srv'],
+    ['\\\\server\\share\\report.html', '/srv'],
+    ['file://server/share/report.html', '/srv'],
+    ['C:\\reports\\report.html', '/srv']
+  ])('leaves non-POSIX target %s to the Electron normalizer', async (target, cwd) => {
+    const normalizePreviewTarget = vi.fn(async () => remoteTarget)
+
+    window.hermesDesktop = { normalizePreviewTarget } as never
+    readDesktopFileDataUrl.mockResolvedValue(`data:text/html;base64,${btoa('<h1>remote</h1>')}`)
+
+    await normalizeOrLocalPreviewTarget(target, cwd)
+
+    expect(normalizePreviewTarget).toHaveBeenCalledWith(target, cwd)
   })
 
   it('falls back to source mode when the transport is not canonical HTML', async () => {

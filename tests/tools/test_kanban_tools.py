@@ -469,6 +469,57 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_schema_exposes_optional_branch_name(worker_env):
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+
+    invalidate_check_fn_cache()
+    definitions = registry.get_definitions({"kanban_create"})
+
+    assert len(definitions) == 1
+    branch_schema = definitions[0]["function"]["parameters"]["properties"]["branch_name"]
+    assert branch_schema["type"] == "string"
+    assert "branch_name" not in definitions[0]["function"]["parameters"]["required"]
+
+
+@pytest.mark.parametrize(
+    ("workspace_kind", "branch_name", "expect_error"),
+    [
+        ("worktree", "feature/custom", False),
+        ("scratch", "feature/not-allowed", True),
+    ],
+)
+def test_create_branch_name_uses_database_workspace_validation(
+    worker_env, tmp_path, workspace_kind, branch_name, expect_error,
+):
+    import tools.kanban_tools  # ensure registered
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools.registry import registry
+
+    title = f"branch test {workspace_kind}"
+    args = {
+        "title": title,
+        "assignee": "peer",
+        "workspace_kind": workspace_kind,
+        "branch_name": branch_name,
+    }
+    if workspace_kind == "worktree":
+        args["workspace_path"] = str(tmp_path / "worktree")
+
+    result = json.loads(registry.dispatch("kanban_create", args))
+
+    with kbc.connect() as conn:
+        created = [task for task in kb.list_tasks(conn) if task.title == title]
+    if expect_error:
+        assert "branch_name is only valid for worktree workspaces" in result["error"]
+        assert created == []
+    else:
+        assert result["ok"] is True
+        assert len(created) == 1
+        assert created[0].branch_name == branch_name
+
+
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(

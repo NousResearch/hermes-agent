@@ -34,16 +34,19 @@ export interface StripZone {
   /** Panes currently rendered as chips — chrome-hidden and narrow-collapsed
    *  panes are already filtered out. */
   shown: readonly StripPane[]
+  /** The layout holds MORE THAN ONE session-bearing zone — this zone is one
+   *  window of a tiled arrangement, not the whole app. */
+  tiled?: boolean
 }
 
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
  * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
- * to grab. The uncloseable workspace is not strandable — it cannot be closed
- * or lost, so a lone chat is free to be chromeless. Hide-only chrome (sessions
- * / Bots) is the same: the panes stay, Show/Hide is a separate verb, and a
- * hidden strip comes back via ⌘⌥T. Treating it as stranded at any count made
- * Hide tabs a silent no-op on the sessions sidebar.
+ * to grab, and a lone MAIN pane needs one too once the layout is TILED (see
+ * `stranded`). Hide-only chrome (sessions / Bots) is the other exempt case: the
+ * panes stay, Show/Hide is a separate verb, and a hidden strip comes back via
+ * ⌘⌥T. Treating it as stranded at any count made Hide tabs a silent no-op on
+ * the sessions sidebar.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
@@ -57,14 +60,31 @@ export interface StripZone {
  * accumulates tabs: unscoped, one session tab in main pinned the strip on and
  * both the menu row and ⌘⌥T became silent no-ops.
  */
-function stranded(shown: readonly StripPane[]): boolean {
+function stranded(shown: readonly StripPane[], tiled: boolean): boolean {
   if (shown.length !== 1) {
     return false
   }
 
   const [only] = shown
 
-  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
+  if (only.collapsePane) {
+    return true
+  }
+
+  if (only.placement !== 'main') {
+    return false
+  }
+
+  // A lone CLOSEABLE main pane always keeps its ✕. So does the uncloseable
+  // workspace ONCE THE LAYOUT IS TILED: the zone is then one window among
+  // several, every sibling window of which shows a strip, and the strip is the
+  // only Close control the workspace has left — ⌘W refuses it
+  // (closeFocusedSessionTab) and the chat header's title menu carries no Close
+  // row, so a chromeless main zone in a tiled layout is a window with no way to
+  // close it or add a tab to it. One chat in ONE window is still free to be
+  // chromeless: with no sibling zone there is nothing to switch to, and the
+  // sidebar / ⌘T / ⌘W still reach the session.
+  return !only.uncloseable || tiled
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {
@@ -79,7 +99,7 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
     return false
   }
 
-  if (stranded(zone.shown)) {
+  if (stranded(zone.shown, Boolean(zone.tiled))) {
     return true
   }
 
@@ -107,6 +127,8 @@ export function tabStripVisibleForZone(zone: {
   paneFor: (id: string) => Contribution | undefined
   /** Panes currently rendered as chips. */
   shown: readonly string[]
+  /** The layout holds more than one session-bearing zone (see StripZone). */
+  tiled?: boolean
 }): boolean {
   return resolveTabStripVisible({
     headerVeto: paneChrome(zone.paneFor(zone.active)).headerVeto,
@@ -119,6 +141,7 @@ export function tabStripVisibleForZone(zone: {
         placement: chrome.placement,
         uncloseable: chrome.uncloseable
       }
-    })
+    }),
+    tiled: zone.tiled
   })
 }

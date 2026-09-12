@@ -541,6 +541,34 @@ export const isMainStripPane = (paneId: string): boolean =>
 export const hostsSessionDropTarget = (paneIds: readonly string[]): boolean =>
   paneIds.some(isSessionStripPane) || paneIds.some(isMainStripPane)
 
+/**
+ * Is this layout TILED — more than one zone carrying a chat tab strip?
+ *
+ * It answers one question for the strip resolver: whether a zone holding a
+ * lone main pane is the APP or one window of several (see
+ * renderer/strip-visibility.ts — a tiled lone main pane keeps its title bar,
+ * so its Close and "+" stay reachable). Read with `.get()`, deliberately: both
+ * callers already re-render with the tree (the root renders the zones from it),
+ * and subscribing would wire every zone to the whole tree — the sash-drag
+ * render storm that comment in tree-group.tsx exists to avoid.
+ */
+export function hasTiledSessionZones(): boolean {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return false
+  }
+
+  const zones = (node: typeof tree): number =>
+    node.type === 'group'
+      ? node.panes.some(isSessionStripPane)
+        ? 1
+        : 0
+      : node.children.reduce((count, child) => count + zones(child), 0)
+
+  return zones(tree) > 1
+}
+
 /** The zone the session-tab verbs (⌘T / ⌘⇧T / the strip's "+") act on: the
  *  first of hovered / focused / workspace that hosts a chat strip. Same ladder
  *  ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree about
@@ -772,7 +800,8 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
-    shown: shownPanesInGroup(group)
+    shown: shownPanesInGroup(group),
+    tiled: hasTiledSessionZones()
   })
 }
 

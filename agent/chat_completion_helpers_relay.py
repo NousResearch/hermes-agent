@@ -57,7 +57,7 @@ class RelayChatAccumulator:
         text = flatten_message_text(delta.get("content"), sep="")
         if text:
             self._content.append(text)
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
         if reasoning:
             self._reasoning.append(separate_glued_reasoning_blocks(
                 self._reasoning[-1] if self._reasoning else "", reasoning))

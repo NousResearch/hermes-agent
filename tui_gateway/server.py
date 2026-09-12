@@ -485,6 +485,14 @@ def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
+    # Older Desktop clients send profile="default" to an isolated backend
+    # launched for a named profile. Treat that legacy value as the launch
+    # profile so its sessions do not leak into the machine-root database.
+    launch_profile = profile_name_for_home(_hermes_home)
+    if (name == "default"
+            and is_truthy_value(os.environ.get("HERMES_DASHBOARD_ISOLATED"))
+            and launch_profile not in {None, "default"}):
+        return None
     from hermes_cli import profiles as profiles_mod
     home = Path(profiles_mod.get_profile_dir(name))
     if not home.is_dir():

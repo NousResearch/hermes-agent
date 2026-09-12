@@ -642,6 +642,14 @@ def _route_named_profile_dashboard(
     active_profile file). ``--isolated`` opts out; Desktop pool backends
     (HERMES_DESKTOP=1) stay per-profile. Returns normally when no routing applies.
     """
+    # tui_gateway uses this launch fact to distinguish dedicated isolation
+    # from the unified server's intentional cross-profile routing. This runs
+    # before web_server imports tui_gateway.server.
+    if getattr(args, "isolated", False):
+        os.environ["HERMES_DASHBOARD_ISOLATED"] = "1"
+    else:
+        os.environ.pop("HERMES_DASHBOARD_ISOLATED", None)
+
     try:
         from hermes_cli.profiles import get_active_profile_name
         _launch_profile = get_active_profile_name()

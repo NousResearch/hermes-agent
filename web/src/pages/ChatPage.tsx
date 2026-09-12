@@ -671,10 +671,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
+      if (files.length) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        uploadAndAttachImages(files);
+        return;
+      }
+      // Safari can deny navigator.clipboard.readText() in an embedded or
+      // non-secure dashboard even though the synchronous paste event safely
+      // carries the user-approved text. Consume that event before xterm.js
+      // sees it, otherwise Safari's native terminal paste path is unreliable.
+      const text = ev.clipboardData?.getData("text/plain");
+      if (!text) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      term.paste(text);
+      term.focus();
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
       if (!transferMayContainImage(ev.dataTransfer)) return;

@@ -17,6 +17,7 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -25,11 +26,16 @@ class FakeTerminal {
   };
   unicode = { activeVersion: "" };
 
+  customKeyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+  paste = vi.fn();
+
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
-  attachCustomKeyEventHandler() {
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+    this.customKeyHandler = handler;
     return true;
   }
 
@@ -70,8 +76,6 @@ class FakeTerminal {
   scrollToBottom() {}
 
   open() {}
-
-  paste() {}
 
   refresh() {}
 
@@ -190,6 +194,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -273,6 +278,25 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("pastes text from Safari's ClipboardEvent without Clipboard API access", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { files: [], getData: (type: string) => type === "text/plain" ? "Safari text" : "" },
+    });
+    await act(async () => {
+      container.querySelector(".hermes-chat-xterm-host")!.dispatchEvent(paste);
+    });
+    expect(FakeTerminal.instances[0].paste).toHaveBeenCalledWith("Safari text");
+    expect(paste.defaultPrevented).toBe(true);
   });
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {

@@ -1825,12 +1825,55 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def _defer_instead_of_walking(agent, reason: "FailoverReason | None") -> bool:
+    """True when this UNATTENDED run should PARK on the primary's reset rather than
+    walk the chain (config ``fallback.unattended_on_rate_limit: defer``).
+
+    Rationale: the walk exists because a human is waiting. Nobody is waiting on a
+    cron fire or a kanban worker, and on a capped day the walk spends the whole
+    chain — down to a paid floor — on work that would have run fine an hour later.
+    Every gate is in ``agent.unattended_defer.resolve_deferral``, which fails OPEN,
+    so an interactive session (or any run with no reset timestamp) is unaffected.
+
+    STICKY: once a deferral is recorded for this run, every later walk attempt is
+    refused regardless of ``reason``. Without that, the eager-fallback site defers
+    but the max-retries-exhausted site (``turn_api_error``) calls this with
+    ``reason=None`` moments later and walks the chain anyway — the exact behaviour
+    the deferral exists to prevent.
+    """
+    from agent.unattended_defer import format_reset, get_deferral, record_deferral, resolve_deferral
+    already = get_deferral(agent)
+    if already:
+        logger.debug("Fallback walk refused: run already deferred until %s", format_reset(already))
+        return True
+    reset_at = resolve_deferral(agent, reason, error_context=getattr(agent, "_last_error_context", None))
+    if not reset_at:
+        return False
+    record_deferral(agent, reset_at)
+    logger.warning(
+        "Unattended run deferred: %s/%s rate-limited until %s; parking instead of walking the "
+        "fallback chain (fallback.unattended_on_rate_limit=defer)",
+        getattr(agent, "provider", "?"), getattr(agent, "model", "?"), format_reset(reset_at),
+    )
+    _buffer_fallback_notice(agent, (
+        f"⏸️ Deferred: {getattr(agent, 'model', '?')} via {getattr(agent, 'provider', '?')} is "
+        f"rate-limited until {format_reset(reset_at)}. Unattended run parked rather than "
+        f"falling back to a costlier model."))
+    return True
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    # Defer-on-429 for unattended runs. Checked BEFORE the walk loop so the walk
+    # never starts; returning False makes every existing caller take the same path
+    # it takes on an exhausted chain (buffered notice, turn ends), which is exactly
+    # the "park this run" semantics the terminal sites then act on.
+    if _defer_instead_of_walking(agent, reason):
+        return False
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

@@ -116,9 +116,52 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
         logger.error("finalize_turn: _%s failed: %s", label, err, exc_info=True)
 
 
+def _record_kanban_deferral(kanban_task: str, reset_at: float, detail: dict, logger: logging.Logger) -> bool:
+    """Re-queue this worker's card with a ``not_before`` gate (defer-on-429).
+
+    Routed through ``kanban_db.defer_task``, NOT ``_record_task_failure`` and NOT
+    ``block_task``: the worker didn't fail and no human is needed — the provider was
+    capped and said when it resets. Consuming the failure budget would trip the
+    circuit breaker after two capped days; blocking would page Joey for something
+    that fixes itself. Returns True when the card was parked.
+    """
+    try:
+        from agent.unattended_defer import format_reset
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+        run_id = os.environ.get("HERMES_KANBAN_RUN_ID")
+        reason = (
+            f"Deferred until {format_reset(reset_at)}: "
+            f"{detail.get('model') or '?'} via {detail.get('provider') or '?'} is rate-limited. "
+            "Unattended run parked instead of falling back to a costlier model."
+        )
+        _conn = _kbc.connect()
+        try:
+            deferred = _kb.defer_task(
+                _conn, kanban_task, not_before=reset_at, reason=reason,
+                expected_run_id=int(run_id) if run_id and run_id.isdigit() else None,
+                metadata={"deferred_until": float(reset_at), **detail},
+            )
+        finally:
+            with suppress(Exception):
+                _conn.close()
+        if deferred:
+            logger.warning("Kanban task %s deferred until %s", kanban_task, format_reset(reset_at))
+        else:
+            logger.warning(
+                "Kanban task %s could not be deferred (already transitioned); "
+                "leaving the normal terminal path to close it", kanban_task,
+            )
+        return deferred
+    except Exception as exc:
+        logger.error("Failed to defer kanban task %s: %s", kanban_task, exc, exc_info=True)
+        return False
+
+
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
+    deferred=False,
 ) -> Tuple[Any, Any, bool]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback)``."""
@@ -155,7 +198,10 @@ def _resolve_budget_fallback(
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete.
-    _kanban_task = os.environ.get("HERMES_KANBAN_TASK") if budget_exhausted else None
+    # EXCEPT when the run was deferred: the card was already re-queued with a
+    # not_before gate, and ticking consecutive_failures for a provider rate limit
+    # would trip the circuit breaker on work that never failed.
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK") if (budget_exhausted and not deferred) else None
     # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
     # treating it as a protocol violation). This applies whether the user-facing fallback came from the
     # summary call or an explicitly pending continuation; both exhausted the task budget and must advance
@@ -441,13 +487,26 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    # Defer-on-429: a rate-limited unattended run parks its card BEFORE the budget
+    # fallback runs. Ordering is load-bearing — _resolve_budget_fallback would
+    # otherwise route a deferred worker through _record_task_failure, spending the
+    # consecutive-failure budget on a provider cap the worker did not cause.
+    _deferred_until = None
+    with suppress(Exception):
+        from agent.unattended_defer import get_deferral, get_deferral_detail
+        _deferred_until = get_deferral(agent)
+        if _deferred_until and (_kanban_defer_task := os.environ.get("HERMES_KANBAN_TASK")):
+            _record_kanban_deferral(
+                _kanban_defer_task, _deferred_until, get_deferral_detail(agent), logger,
+            )
+
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
-        logger=logger,
+        logger=logger, deferred=bool(_deferred_until),
     )
 
     completed = (

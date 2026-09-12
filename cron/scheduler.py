@@ -2029,6 +2029,8 @@ class _CronRunScope:
         from tools.terminal_tool import record_session_cwd
 
         self._var_map = _VAR_MAP
+        # Retained for enter(): the per-job defer-on-429 opt-out reads job["latency_critical"].
+        self._job = job
         # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
         self.workdir = _resolve_job_workdir(job, job_id)
         self._ctx_tokens = set_session_vars(
@@ -2064,6 +2066,13 @@ class _CronRunScope:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
+        # Per-job defer-on-429 opt-out. A ContextVar, not os.environ, because several jobs
+        # fire in this one process: a latency-critical job must keep walking the chain
+        # without forcing its neighbours to walk too.
+        from agent.unattended_defer import set_latency_critical
+        self._latency_critical_token = set_latency_critical(
+            True if self._job.get("latency_critical") else None
+        )
         # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
         # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
@@ -2071,6 +2080,7 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
+        from agent.unattended_defer import reset_latency_critical
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
@@ -2078,6 +2088,7 @@ class _CronRunScope:
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)
+        reset_latency_critical(getattr(self, "_latency_critical_token", None))
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
@@ -2210,6 +2221,47 @@ class _FireAudit:
 
 
 
+def _deferred_run_result(result: Any) -> Optional[float]:
+    """Reset timestamp when the turn was parked by defer-on-429, else None.
+
+    ``turn_recovery._unattended_deferred_result`` stamps ``deferred_until`` on the
+    turn result. Read it defensively: a provider/plugin returning a non-dict must
+    degrade to "not deferred", never raise inside ``run_job``'s happy path.
+    """
+    if not isinstance(result, dict):
+        return None
+    try:
+        value = result.get("deferred_until")
+        return float(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _deferred_tick_result(
+    job: dict, job_id: str, job_name: str, prompt: Optional[str], reset_at: float,
+) -> _RunResult:
+    """Silent, successful skip for a tick deferred by a rate limit.
+
+    ``success=True`` + ``SILENT_MARKER`` deliberately: the job is healthy, it simply
+    has nothing to say this tick. That keeps ``last_status`` green, suppresses
+    delivery, and still writes the run doc so the skip is auditable — the same
+    contract the monitor gate's ``no_change`` tick already uses.
+    """
+    from agent.unattended_defer import format_reset
+
+    when = format_reset(reset_at)
+    logger.warning(
+        "Job '%s' (ID: %s): deferred until %s — primary model is rate-limited; "
+        "skipping this tick instead of falling back to a costlier model",
+        job_name, job_id, when,
+    )
+    doc = (
+        _run_doc_header(job, f"{job_name} (DEFERRED)", job_id, prompt or "")
+        + f"## Status\n\ndeferred until {when} (primary rate-limited; tick skipped, no fallback walk)\n"
+    )
+    return True, doc, SILENT_MARKER, None
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
@@ -2271,6 +2323,15 @@ def run_job(
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
+        # Defer-on-429: the primary was rate-limited until a known reset and this is an
+        # unattended run, so the turn parked instead of walking the chain. Skip the tick
+        # SILENTLY — the next scheduled fire after the reset does the work. Not a failure:
+        # marking it failed would alert on a quota bucket rolling over, and would set
+        # last_status="error" on a job that is perfectly healthy.
+        _deferred = _deferred_run_result(result)
+        if _deferred is not None:
+            _audit.write(dict(result, response_silent=True), None)
+            return _deferred_tick_result(job, job_id, job_name, prompt, _deferred)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"

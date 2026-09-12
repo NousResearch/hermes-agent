@@ -386,8 +386,9 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     message (server off → point at the switch; else the setup pane)."""
     rp = _rp()
     try:
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint()
+        endpoint = resolve_llamacpp_endpoint(load_config_readonly())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:

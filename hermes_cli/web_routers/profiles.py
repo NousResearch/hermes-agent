@@ -667,7 +667,8 @@ async def create_profile_endpoint(body: ProfileCreate):
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
         path = profiles_mod.create_profile(
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
-            clone_config=clone_config, no_skills=body.no_skills, description=body.description)
+            clone_config=clone_config, no_skills=body.no_skills, description=body.description,
+            auto_install_service=body.auto_install_service)
         # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
         # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
         # ~/.local/bin wrapper when the alias is safe.

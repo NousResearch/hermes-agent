@@ -1048,6 +1048,18 @@ export const api = {
       body: JSON.stringify({ font }),
     }),
 
+  // ── Profile-scoped theme (per-profile theme override / inheritance) ──
+  getProfileTheme: (profile: string) =>
+    fetchJSON<ProfileThemeGetResponse>(
+      `/api/dashboard/profile-theme?profile=${encodeURIComponent(profile)}`),
+
+  setProfileTheme: (body: ProfileThemeSetBody) =>
+    fetchJSON<ProfileThemeGetResponse>("/api/dashboard/profile-theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // ── Admin: MCP servers ──────────────────────────────────────────────
   getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
   addMcpServer: (body: McpServerCreate) =>
@@ -2605,6 +2617,19 @@ export interface DashboardThemesResponse {
 export interface DashboardFontResponse {
   /** Active font-override id, or "theme" when no override is set. */
   font: string;
+}
+
+export interface ProfileThemeGetResponse {
+  profile: string;
+  theme?: string;
+  inherit_from_default: boolean;
+  source: "global" | "default" | "override";
+}
+
+export interface ProfileThemeSetBody {
+  profile: string;
+  theme?: string;
+  inherit_from_default?: boolean;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

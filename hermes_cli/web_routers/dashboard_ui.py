@@ -19,7 +19,7 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ProfileThemeGetResponse, ProfileThemeSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -68,6 +68,99 @@ async def set_dashboard_theme(body: ThemeSetBody):
     """Set the active dashboard theme (persists to config.yaml)."""
     await asyncio.to_thread(_set_dashboard_key, "theme", body.name)
     return {"ok": True, "theme": body.name}
+
+
+# ── Per-profile theme override ────────────────────────────────────────────
+# Each named profile can either inherit the dashboard's default theme or pin
+# an explicit override. Stored under `dashboard.profile_themes.<name>` in
+# config.yaml, alongside the global `dashboard.theme`.
+#
+# The frontend hook `useProfileTheme()` (contexts/profile-theme.ts) drives this
+# from the management-profile scope, so switching profiles re-applies the
+# right theme automatically.
+
+
+def _resolve_profile_theme(*, profile: str) -> dict:
+    """Return the resolved per-profile theme state for *profile*."""
+    cfg = load_config()
+    global_theme = cfg_get(cfg, "dashboard", "theme", default="default")
+
+    # "" = the dashboard's own profile → always global.
+    if not profile:
+        return {"profile": "", "theme": global_theme, "inherit_from_default": True, "source": "global"}
+
+    # "default" = the machine's sticky default profile → global too.
+    if profile == "default":
+        return {"profile": "default", "theme": global_theme, "inherit_from_default": True, "source": "global"}
+
+    pt = (cfg.get("dashboard") or {}).get("profile_themes") or {}
+    entry = pt.get(profile) if isinstance(pt, dict) else None
+
+    # No per-profile setting → inherit from default.
+    if not isinstance(entry, dict) or not entry:
+        return {"profile": profile, "theme": global_theme, "inherit_from_default": True, "source": "default"}
+
+    theme_override = entry.get("theme")
+    inherit = entry.get("inherit_from_default", False)
+
+    if inherit or not theme_override:
+        return {"profile": profile, "theme": global_theme, "inherit_from_default": True, "source": "default"}
+
+    # Explicit override — validate it's a known theme.
+    from hermes_cli.web_server_dashboard import _BUILTIN_DASHBOARD_THEMES
+    known = {t["name"] for t in _BUILTIN_DASHBOARD_THEMES}
+    for t in _discover_user_themes():
+        known.add(t["name"])
+    if theme_override not in known:
+        # Treat as inherit rather than 400 — a stale/missing entry shouldn't break the UI.
+        return {"profile": profile, "theme": global_theme, "inherit_from_default": True, "source": "default"}
+
+    return {"profile": profile, "theme": theme_override, "inherit_from_default": False, "source": "override"}
+
+
+@router.get("/api/dashboard/profile-theme")
+async def get_profile_theme(request: Request, profile: str = ""):
+    """Return the resolved theme state for a named profile.
+
+    ``?profile=`` is required (query param). ``""`` = the dashboard's own
+    profile; ``"default"`` = the machine's sticky default.
+    """
+    return await asyncio.to_thread(_resolve_profile_theme, profile=profile)
+
+
+@router.put("/api/dashboard/profile-theme")
+async def set_profile_theme(request: Request, body: ProfileThemeSetBody):
+    """Set or clear the per-profile theme override.
+
+    ``profile`` is required. With ``inherit_from_default=True``: clear any
+    override and inherit from the default profile. With ``inherit_from_default=False``
+    and ``theme`` set: pin that explicit override. With ``inherit_from_default=False``
+    and ``theme`` omitted: 400.
+    """
+    if not body.profile:
+        raise HTTPException(status_code=400, detail="profile is required")
+
+    def _run() -> dict:
+        cfg = load_config()
+        if "dashboard" not in cfg or not isinstance(cfg.get("dashboard"), dict):
+            cfg["dashboard"] = {}
+        pt = cfg["dashboard"].setdefault("profile_themes", {})
+        if not isinstance(pt, dict):
+            pt = {}
+            cfg["dashboard"]["profile_themes"] = pt
+
+        if body.inherit_from_default:
+            # Clear the override entry.
+            pt.pop(body.profile, None)
+        else:
+            if not body.theme:
+                raise HTTPException(status_code=400, detail="theme is required when inherit_from_default is False")
+            pt[body.profile] = {"theme": body.theme, "inherit_from_default": False}
+
+        save_config(cfg)
+        return _resolve_profile_theme(profile=body.profile)
+
+    return await asyncio.to_thread(_run)
 
 
 # Curated font-override ids, kept in sync with FONT_CHOICES in web/src/themes/fonts.ts. The

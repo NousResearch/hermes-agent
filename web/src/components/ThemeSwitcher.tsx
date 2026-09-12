@@ -10,9 +10,20 @@ import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
 import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { useProfileTheme } from "@/contexts/profile-theme";
 
-/**
- * Compact theme picker mounted next to the language switcher in the header.
+/** Per-profile theme props passed from ThemeSwitcher into ThemeSwitcherOptions. */
+interface ProfileThemeOptionsProps {
+  isProfileScoped: boolean;
+  isInherited: boolean;
+  overrideThemeName?: string;
+  setInherit: (inherit: boolean) => void;
+  setOverride: (themeName: string) => void;
+  loading: boolean;
+}
+
+/** Compact theme picker mounted next to the language switcher in the header.
+ *
  * Each dropdown row shows a 3-stop swatch (background / midground / warm
  * glow) so users can preview the palette before committing. User-defined
  * themes from `~/.hermes/dashboard-themes/*.yaml` use their API-provided
@@ -27,6 +38,7 @@ import { cn } from "@/lib/utils";
 export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitcherProps) {
   const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
   const { t } = useI18n();
+  const profileTheme = useProfileTheme();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -102,6 +114,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               close={close}
               setTheme={setTheme}
               themeName={themeName}
+              {...profileTheme}
             />
             <FontSection
               fontChoices={fontChoices}
@@ -144,6 +157,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               close={close}
               setTheme={setTheme}
               themeName={themeName}
+              {...profileTheme}
             />
             <FontSection
               fontChoices={fontChoices}
@@ -163,53 +177,151 @@ function ThemeSwitcherOptions({
   close,
   setTheme,
   themeName,
-}: ThemeSwitcherOptionsProps) {
+  isProfileScoped,
+  isInherited,
+  overrideThemeName,
+  setInherit,
+  setOverride,
+  loading,
+}: ThemeSwitcherOptionsProps & ProfileThemeOptionsProps) {
+  // Per-profile inheritance toggle: when scoped to a named profile, show
+  // the inheritance control above the theme list. When inherited, hide the
+  // theme list (the user sees "Inherited from default profile").
+  const showInheritanceSection = isProfileScoped;
+
   return (
     <>
-      {availableThemes.map((th) => {
-        const isActive = th.name === themeName;
-        const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
-
-        return (
-          <ListItem
-            active={isActive}
-            aria-selected={isActive}
-            className="gap-3"
-            key={th.name}
-            onClick={() => {
-              setTheme(th.name);
-              close();
-            }}
-            role="option"
-          >
-            {paletteTheme ? (
-              <ThemeSwatch theme={paletteTheme} />
-            ) : (
-              <PlaceholderSwatch />
-            )}
-
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <Typography
-                className="truncate text-display text-xs tracking-wide"
+      {showInheritanceSection && (
+        <div className="border-b border-current/20 px-3 pb-2 pt-2">
+          {isInherited ? (
+            <div className="flex items-center gap-3">
+              <ListItem
+                className="gap-3"
+                onClick={() => {
+                  if (!loading) {
+                    setInherit(false);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label="Disable inheritance — choose a custom theme for this profile"
               >
-                {th.label}
-              </Typography>
-              {th.description && (
-                <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-                  {th.description}
-                </Typography>
-              )}
+                <span
+                  aria-hidden
+                  className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
+                >
+                  <span className="flex-1" style={{ background: "#041c1c" }} />
+                  <span className="flex-1" style={{ background: "#ffe6cb" }} />
+                  <span className="flex-1" style={{ background: "rgba(255,189,56,0.35)" }} />
+                </span>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <Typography className="truncate text-display text-xs tracking-wide">
+                    {t.theme?.inheritFromDefault ??
+                      "Inherited from default profile"}
+                  </Typography>
+                  <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+                    {t.theme?.inheritFromDefaultHint ??
+                      "This profile uses the default profile's theme"}
+                  </Typography>
+                </div>
+                <Check
+                  className={cn(
+                    "h-3 w-3 shrink-0 text-midground opacity-30",
+                  )}
+                />
+              </ListItem>
             </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <ListItem
+                className="gap-3"
+                onClick={() => {
+                  if (!loading) {
+                    setInherit(true);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label="Use the default profile's theme for this profile"
+              >
+                <span
+                  aria-hidden
+                  className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
+                >
+                  <span className="flex-1" style={{ background: "#041c1c" }} />
+                  <span className="flex-1" style={{ background: "#ffe6cb" }} />
+                  <span className="flex-1" style={{ background: "rgba(255,189,56,0.35)" }} />
+                </span>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <Typography className="truncate text-display text-xs tracking-wide">
+                    {t.theme?.useDefaultTheme ??
+                      "Use default profile's theme"}
+                  </Typography>
+                  <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+                    {t.theme?.useDefaultThemeHint ??
+                      "Inherit the theme from the default profile"}
+                  </Typography>
+                </div>
+                <Check
+                  className={cn(
+                    "h-3 w-3 shrink-0 text-midground",
+                    isInherited ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </ListItem>
+            </div>
+          )}
+        </div>
+      )}
 
-            <Check
-              className={cn(
-                "h-3 w-3 shrink-0 text-midground",
-                isActive ? "opacity-100" : "opacity-0",
-              )}
-            />
-          </ListItem>
-        );
-      })}
+      {(!showInheritanceSection || !isInherited) && (
+        <>
+          {availableThemes.map((th) => {
+            const isActive = th.name === themeName;
+            const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
+
+            return (
+              <ListItem
+                active={isActive}
+                aria-selected={isActive}
+                className="gap-3"
+                key={th.name}
+                onClick={() => {
+                  setTheme(th.name);
+                  close();
+                }}
+                role="option"
+              >
+                {paletteTheme ? (
+                  <ThemeSwatch theme={paletteTheme} />
+                ) : (
+                  <PlaceholderSwatch />
+                )}
+
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <Typography
+                    className="truncate text-display text-xs tracking-wide"
+                  >
+                    {th.label}
+                  </Typography>
+                  {th.description && (
+                    <Typography className="truncate text-xs tracking-normal text-text-tertiary">
+                      {th.description}
+                    </Typography>
+                  )}
+                </div>
+
+                <Check
+                  className={cn(
+                    "h-3 w-3 shrink-0 text-midground",
+                    isActive ? "opacity-100" : "opacity-0",
+                  )}
+                />
+              </ListItem>
+            );
+          })}
+        </>
+      )}
     </>
   );
 }
@@ -267,7 +379,7 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
       {order.map((cat) => {
         const fonts = fontChoices.filter((f) => f.category === cat);
         if (fonts.length === 0) return null;
-        const catLabel = t.theme?.[FONT_CATEGORY_LABEL_KEY[cat]] ?? cat;
+        const catLabel = t.font?.[FONT_CATEGORY_LABEL_KEY[cat] as keyof typeof t.font] ?? cat;
         return (
           <div key={cat}>
             <div className="px-3 pb-0.5 pt-1.5">

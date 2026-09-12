@@ -43,14 +43,18 @@ export interface ArtifactRecord {
 export type ArtifactRegistry = Record<string, ArtifactRecord[]>
 
 const MAX_ARTIFACTS_PER_SESSION = 24
+const MAX_ARTIFACT_CONTENT_LENGTH = 4 * 1024 * 1024
 const MAX_VERSIONS_PER_ARTIFACT = 20
 const MAX_SESSIONS = 40
 
-function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
+function pruneRegistry(registry: ArtifactRegistry, newestArtifactId: string): ArtifactRegistry {
   const entries = Object.entries(registry)
     .map(([sessionId, records]) => {
       const trimmed = [...records]
-        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .sort(
+          (a, b) =>
+            b.updatedAt - a.updatedAt || Number(b.id === newestArtifactId) - Number(a.id === newestArtifactId)
+        )
         .slice(0, MAX_ARTIFACTS_PER_SESSION)
         .sort((a, b) => a.createdAt - b.createdAt)
 
@@ -60,17 +64,136 @@ function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
     .sort(([, a], [, b]) => {
       const latest = (records: readonly ArtifactRecord[]) => Math.max(...records.map(record => record.updatedAt))
 
-      return latest(b) - latest(a)
+      return (
+        latest(b) - latest(a) ||
+        Number(b.some(record => record.id === newestArtifactId)) -
+          Number(a.some(record => record.id === newestArtifactId))
+      )
     })
     .slice(0, MAX_SESSIONS)
 
-  return Object.fromEntries(entries)
+  let retained = Object.fromEntries(entries)
+  let retainedLength = Object.values(retained).reduce(
+    (total, records) =>
+      total +
+      records.reduce(
+        (recordsTotal, record) =>
+          recordsTotal + record.versions.reduce((versionsTotal, version) => versionsTotal + version.content.length, 0),
+        0
+      ),
+    0
+  )
+
+  if (retainedLength <= MAX_ARTIFACT_CONTENT_LENGTH) {
+    return retained
+  }
+
+  const historicalVersions = Object.values(retained)
+    .flatMap(records =>
+      records.flatMap(record =>
+        record.versions.slice(0, -1).map((version, index) => ({ index, record, version }))
+      )
+    )
+    .sort(
+      (a, b) =>
+        a.version.createdAt - b.version.createdAt ||
+        a.record.createdAt - b.record.createdAt ||
+        a.record.id.localeCompare(b.record.id) ||
+        a.index - b.index
+    )
+  const evictedVersions = new Set<ArtifactVersion>()
+
+  for (const { version } of historicalVersions) {
+    if (retainedLength <= MAX_ARTIFACT_CONTENT_LENGTH) {
+      break
+    }
+
+    evictedVersions.add(version)
+    retainedLength -= version.content.length
+  }
+
+  if (evictedVersions.size > 0) {
+    retained = Object.fromEntries(
+      Object.entries(retained).map(([sessionId, records]) => [
+        sessionId,
+        records.map(record => ({
+          ...record,
+          versions: record.versions.filter(version => !evictedVersions.has(version))
+        }))
+      ])
+    )
+  }
+
+  if (retainedLength <= MAX_ARTIFACT_CONTENT_LENGTH) {
+    return retained
+  }
+
+  const oldestRecords = Object.values(retained)
+    .flat()
+    .sort((a, b) => a.updatedAt - b.updatedAt || a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+  const protectedArtifactId = oldestRecords.some(record => record.id === newestArtifactId)
+    ? newestArtifactId
+    : oldestRecords.at(-1)?.id
+  const evictedRecords = new Set<string>()
+
+  for (const record of oldestRecords) {
+    if (retainedLength <= MAX_ARTIFACT_CONTENT_LENGTH) {
+      break
+    }
+
+    if (record.id === protectedArtifactId) {
+      continue
+    }
+
+    evictedRecords.add(record.id)
+    retainedLength -= record.versions.reduce((total, version) => total + version.content.length, 0)
+  }
+
+  return Object.fromEntries(
+    Object.entries(retained)
+      .map(([sessionId, records]) => [
+        sessionId,
+        records.filter(record => !evictedRecords.has(record.id))
+      ] as const)
+      .filter(([, records]) => records.length > 0)
+  )
 }
 
 export const $artifactRegistry = atom<ArtifactRegistry>({})
 
 /** Per-artifact selected version index; absent = newest. */
 export const $artifactVersionSelection = atom<Record<string, number>>({})
+
+function setPrunedRegistry(registry: ArtifactRegistry, newestArtifactId: string) {
+  const selection = $artifactVersionSelection.get()
+  const selectedHashes = Object.fromEntries(
+    Object.entries(selection).flatMap(([artifactId, versionIndex]) => {
+      const hash = findArtifact($artifactRegistry.get(), artifactId)?.versions[versionIndex]?.hash
+
+      return hash ? [[artifactId, hash]] : []
+    })
+  )
+  const pruned = pruneRegistry(registry, newestArtifactId)
+  const reconciledSelection = Object.fromEntries(
+    Object.entries(selectedHashes).flatMap(([artifactId, hash]) => {
+      const record = findArtifact(pruned, artifactId)
+      const versionIndex = record?.versions.findIndex(version => version.hash === hash) ?? -1
+
+      return record && versionIndex >= 0 && versionIndex < record.versions.length - 1
+        ? [[artifactId, versionIndex]]
+        : []
+    })
+  )
+
+  $artifactRegistry.set(pruned)
+
+  if (
+    Object.keys(selection).length !== Object.keys(reconciledSelection).length ||
+    Object.entries(selection).some(([artifactId, versionIndex]) => reconciledSelection[artifactId] !== versionIndex)
+  ) {
+    $artifactVersionSelection.set(reconciledSelection)
+  }
+}
 
 /** Lookup against a registry value, for components that already subscribe to
  *  the atom and need the record to change identity when it does. */
@@ -151,11 +274,12 @@ export function upsertArtifact(
       versions
     }
 
-    $artifactRegistry.set(
-      pruneRegistry({
+    setPrunedRegistry(
+      {
         ...registry,
         [id]: records.map(record => (record.id === existing.id ? next : record))
-      })
+      },
+      existing.id
     )
 
     return { artifactId: existing.id, record: next, versionAdded: true }
@@ -173,7 +297,7 @@ export function upsertArtifact(
     versions: [{ content: trimmed, createdAt: now, hash }]
   }
 
-  $artifactRegistry.set(pruneRegistry({ ...registry, [id]: [...records, record] }))
+  setPrunedRegistry({ ...registry, [id]: [...records, record] }, record.id)
 
   return { artifactId: record.id, record, versionAdded: true }
 }

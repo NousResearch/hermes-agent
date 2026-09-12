@@ -410,6 +410,93 @@ class TestGeneratedSystemdUnits:
         assert "SoftResourceLimits" not in plist
 
 
+class TestLaunchdStdioExternalVolume:
+    """launchd Standard*Path must leave /Volumes (xpcproxy EX_CONFIG / exit 78)."""
+
+    def test_path_is_on_external_volume_detects_volumes_prefix(self, tmp_path):
+        assert gateway_cli._path_is_on_external_volume(Path("/Volumes/Fast/hermes")) is True
+        assert gateway_cli._path_is_on_external_volume(Path("/Volumes")) is True
+        assert gateway_cli._path_is_on_external_volume(tmp_path / ".hermes") is False
+
+    def test_launchd_stdio_log_paths_external_uses_library_logs(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        out, err = gateway_cli._launchd_stdio_log_paths(Path("/Volumes/Fast/hermes"))
+        assert out == str(machine_home / "Library" / "Logs" / "hermes-gateway.stdout.log")
+        assert err == str(machine_home / "Library" / "Logs" / "hermes-gateway.stderr.log")
+
+    def test_launchd_stdio_log_paths_profile_stem(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "mybot")
+        out, err = gateway_cli._launchd_stdio_log_paths(Path("/Volumes/Fast/hermes"))
+        assert out == str(machine_home / "Library" / "Logs" / "hermes-gateway-mybot.stdout.log")
+        assert err == str(machine_home / "Library" / "Logs" / "hermes-gateway-mybot.stderr.log")
+
+    def test_launchd_stdio_log_paths_internal_stays_on_hermes_home(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        out, err = gateway_cli._launchd_stdio_log_paths(hermes_home)
+        assert out == str(hermes_home / "logs" / "gateway.log")
+        assert err == str(hermes_home / "logs" / "gateway.error.log")
+
+    def test_launchd_stdio_log_paths_fail_open_when_library_logs_on_volumes(self, monkeypatch):
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/Volumes/Home"))
+        hermes_home = Path("/Volumes/Fast/hermes")
+        out, err = gateway_cli._launchd_stdio_log_paths(hermes_home)
+        assert out == str(hermes_home / "logs" / "gateway.log")
+        assert err == str(hermes_home / "logs" / "gateway.error.log")
+
+    def test_launchd_stdio_log_paths_fail_open_on_pwd_error(self, monkeypatch):
+        def boom(_uid):
+            raise KeyError("no such user")
+
+        monkeypatch.setattr(pwd, "getpwuid", boom)
+        hermes_home = Path("/Volumes/Fast/hermes")
+        out, err = gateway_cli._launchd_stdio_log_paths(hermes_home)
+        assert out == str(hermes_home / "logs" / "gateway.log")
+        assert err == str(hermes_home / "logs" / "gateway.error.log")
+
+
+    def test_launchd_stdio_paths_leave_external_volume(self, tmp_path, monkeypatch):
+        # hermes home lives under tmp so mkdir works; resolve() is faked to /Volumes/...
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        real_resolve = Path.resolve
+        volume_root = Path("/Volumes/Fast/hermes")
+        hermes_home_resolved = real_resolve(hermes_home)
+
+        def fake_resolve(self, *a, **k):
+            resolved = real_resolve(self, *a, **k)
+            try:
+                rel = resolved.relative_to(hermes_home_resolved)
+                return volume_root / rel
+            except ValueError:
+                return resolved
+
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode())
+        assert "Library/Logs" in parsed["StandardOutPath"]
+        assert "Library/Logs" in parsed["StandardErrorPath"]
+        assert not parsed["StandardOutPath"].startswith("/Volumes/")
+        assert not parsed["StandardErrorPath"].startswith("/Volumes/")
+        # fail-open: wrapper --error-log stays on HERMES_HOME/logs
+        assert str(hermes_home / "logs" / "gateway.error.log") in parsed["ProgramArguments"]
+        assert parsed["EnvironmentVariables"]["HERMES_HOME"] == "/Volumes/Fast/hermes"
+
+    def test_launchd_stdio_paths_stay_on_internal_hermes_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode())
+        assert parsed["StandardOutPath"] == str(hermes_home / "logs" / "gateway.log")
+        assert parsed["StandardErrorPath"] == str(hermes_home / "logs" / "gateway.error.log")
+
 
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only

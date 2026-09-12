@@ -9,6 +9,13 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let matchedTerminalPrefix = "";
   let sawUnrelatedTerminalData = false;
+  // The full text already reflected in the PTY line via this forwarder (or
+  // confirmed to already be there by xterm's own onData). Dictation-style
+  // composition re-fires compositionend with the whole revised utterance
+  // rather than just the new suffix, so each commit is diffed against this
+  // instead of being forwarded whole — otherwise the already-sent prefix
+  // gets duplicated.
+  let lastCommitted = "";
 
   const clearPending = () => {
     pending = null;
@@ -20,18 +27,26 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     }
   };
 
+  const commit = (data: string) => {
+    const delta = data.startsWith(lastCommitted)
+      ? data.slice(lastCommitted.length)
+      : data;
+    lastCommitted = data;
+    if (delta) send(delta);
+  };
+
   return {
     onCompositionEnd(data: string | null) {
       if (!data) return;
       // Preserve rapid consecutive commits instead of discarding the first.
       const previous = pending;
       clearPending();
-      if (previous) send(previous);
+      if (previous) commit(previous);
       pending = data;
       timer = setTimeout(() => {
         const committed = pending;
         clearPending();
-        if (committed) send(committed);
+        if (committed) commit(committed);
       }, 16);
     },
     noteTerminalData(data: string) {
@@ -42,6 +57,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       // the fallback even if later callbacks happen to spell the composition.
       const observed = matchedTerminalPrefix + data;
       if (observed.startsWith(pending)) {
+        lastCommitted = pending;
         clearPending();
       } else if (pending.startsWith(observed)) {
         matchedTerminalPrefix = observed;
@@ -49,6 +65,9 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
         sawUnrelatedTerminalData = true;
       }
     },
-    dispose: clearPending,
+    dispose: () => {
+      clearPending();
+      lastCommitted = "";
+    },
   };
 }

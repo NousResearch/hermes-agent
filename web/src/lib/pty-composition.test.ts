@@ -132,4 +132,32 @@ describe("createPtyCompositionForwarder", () => {
 
     expect(send).not.toHaveBeenCalled();
   });
+
+  it("forwards only the new suffix when a later commit revises the whole prior phrase (iOS dictation)", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    forwarder.onCompositionEnd("hello world");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "hello");
+    expect(send).toHaveBeenNthCalledWith(2, " world");
+  });
+
+  it("sends the whole commit when a later revision is unrelated to the prior one", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    forwarder.onCompositionEnd("goodbye");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "hello");
+    expect(send).toHaveBeenNthCalledWith(2, "goodbye");
+  });
 });

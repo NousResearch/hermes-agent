@@ -119,6 +119,8 @@ def normalize_model_response(
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
+    from agent.worker_receipts import observe_worker_response
+    observe_worker_response(agent, response)
     assistant_message = normalize_response_for_agent(agent, response)
     finish_reason = assistant_message.finish_reason
 

@@ -2262,8 +2262,23 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
         return result
     tool_start_time = time.monotonic()
+    from agent.worker_interfaces import is_worker_interface_tool
+
     inline_executor = resolve_invoke_tool_executor(agent, function_name)
-    if inline_executor is not None:
+    if is_worker_interface_tool(
+        getattr(agent, "_worker_interface_selection", None), function_name
+    ):
+        def _execute(next_args: dict) -> Any:
+            result = agent._dispatch_worker_interface(function_name, next_args)
+            emit_terminal_post_tool_call(
+                agent, function_name=function_name,
+                function_args=next_args if isinstance(next_args, dict) else function_args,
+                result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
+                duration_ms=int((time.monotonic() - tool_start_time) * 1000),
+                middleware_trace=_tool_middleware_trace,
+            )
+            return result
+    elif inline_executor is not None:
         inline_ctx = InlineToolContext(
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages
         )
@@ -2290,6 +2305,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            worker_max_tool_calls = (
+                __import__("agent.subagent_lifecycle", fromlist=["worker_tool_calls_remaining"])
+                .worker_tool_calls_remaining(agent)
+            )
+            if worker_max_tool_calls is not None:
+                dispatch_kwargs["worker_max_tool_calls"] = worker_max_tool_calls
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools

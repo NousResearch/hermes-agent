@@ -422,6 +422,13 @@ def local_authority_gateway_id() -> str:
     return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
+def local_authority_gateway_id_existing() -> str | None:
+    """Return current local authority without minting install identity."""
+    from hermes_cli.install_identity import read_existing_install_id
+    install_id = read_existing_install_id()
+    return _actor_id(f"install:{install_id}", "authority_gateway_id") if install_id else None
+
+
 _connect = partial(
     connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
     initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
@@ -438,6 +445,23 @@ def _read_connection(db_path: DbPath) -> sqlite3.Connection:
         _connect(path).close()
         conn = open_sqlite(path)
     return conn
+
+
+def _existing_read_connection(db_path: DbPath) -> sqlite3.Connection | None:
+    """Open a current room schema read-only; never create or migrate shared state."""
+    path = Path(db_path)
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        if not _schema_is_current(conn):
+            conn.close()
+            return None
+        return conn
+    except sqlite3.Error:
+        return None
 
 
 _transaction = partial(transaction, _connect, immediate=False)
@@ -892,6 +916,31 @@ def list_rooms(
     return [_room_from_row(row) for row in rows]
 
 
+def list_rooms_existing(
+    db_path: DbPath, *, room_ids: tuple[str, ...] = (), include_disbanded: bool = False,
+) -> list[dict[str, Any]]:
+    """List selected rooms only from an already-current schema."""
+    conn = _existing_read_connection(db_path)
+    if conn is None:
+        return []
+    try:
+        params: list[Any] = [int(include_disbanded)]
+        selector = ""
+        if room_ids:
+            normalized = tuple(_room_id(room_id) for room_id in room_ids)
+            selector = f" AND room_id IN ({','.join('?' for _ in normalized)})"
+            params.extend(normalized)
+        rows = conn.execute(
+            f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms
+                WHERE (disbanded_at IS NULL OR ?){selector}
+                ORDER BY updated_at DESC, room_id ASC LIMIT ?""",
+            (*params, MAX_ROOM_LIST_LIMIT),
+        ).fetchall()
+        return [_room_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now: float | None = None) -> dict[str, Any]:
     """Rename a live room and append its replay event atomically."""
     room_id = _room_id(room_id)
@@ -1006,6 +1055,22 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
                 AND kind='authority.claimed' AND authority_epoch=? ORDER BY seq DESC LIMIT 1""",
             (room_id, int(row["authority_epoch"]))).fetchone()
     return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
+
+
+def room_state_existing(db_path: DbPath, *, room_id: Any) -> dict[str, Any] | None:
+    """Resolve one active room from an already-current schema without a transaction."""
+    room_id = _room_id(room_id)
+    conn = _existing_read_connection(db_path)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL",
+            (room_id,),
+        ).fetchone()
+        return _room_from_row(row) if row is not None else None
+    finally:
+        conn.close()
 
 
 def request_room_stop(

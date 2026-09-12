@@ -1057,9 +1057,45 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
-    agent.tools = model_tools.get_tool_definitions(
+    from agent.worker_interfaces import (
+        bind_worker_interface, project_worker_tool_definitions, resolve_worker_interface,
+        restore_worker_interface_contract,
+    )
+    from hermes_cli.config import load_config
+
+    # Resolve once per agent/session. A later config or qualification change is
+    # intentionally deferred to the next session so the tool schema/history
+    # vocabulary remains byte-stable for prompt caching and provider replay.
+    raw_tool_defs = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
+        quiet_mode=agent.quiet_mode, skip_tool_search_assembly=True,
+    )
+    # Execution authority is the full scoped catalog.  ``agent.tools`` below is
+    # only the model-visible presentation and may collapse deferred tools into
+    # the tool-search bridge.
+    agent._executable_tool_names = {
+        tool["function"]["name"] for tool in raw_tool_defs if tool.get("function", {}).get("name")
+    }
+    if agent.worker_interface_contract is not None:
+        agent._worker_interface_selection = restore_worker_interface_contract(
+            agent.worker_interface_contract,
+            provider=agent.provider,
+            model=agent.model,
+            definitions=raw_tool_defs,
+        )
+    else:
+        unresolved_worker_interface = resolve_worker_interface(
+            load_config() or {}, provider=agent.provider, model=agent.model
+        )
+        agent._worker_interface_selection = bind_worker_interface(
+            unresolved_worker_interface, raw_tool_defs
+        )
+    agent.tools = project_worker_tool_definitions(
+        model_tools.get_tool_definitions(
+            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        ),
+        agent._worker_interface_selection,
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
@@ -2151,6 +2187,8 @@ _PASSTHROUGH_PARAMS = (
     "enabled_toolsets", "disabled_toolsets",
     # Model response configuration (None = provider/model default)
     "max_tokens", "reasoning_config", "service_tier",
+    # Internal durable-worker presentation contract; no route or credential material.
+    "worker_interface_contract",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
 # per-chat key (e.g. agent:main:telegram:dm:123).
@@ -2204,6 +2242,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    worker_interface_contract: Optional[Dict[str, Any]] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 

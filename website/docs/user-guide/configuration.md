@@ -2699,6 +2699,15 @@ checkpoints:
 
 Configure subagent behavior for the delegate tool:
 
+Named worker definitions live under `delegation.profiles`. Use
+`hermes workers set NAME --file PROFILE.yaml` to configure one and
+`hermes workers validate` to check the active configuration. `default_profile`
+selects a default worker. `routing_mode: profile_only` is the default;
+`routing_mode: dynamic` enables per-task choices within `enabled_models` and
+profile restrictions. See [Worker profiles](features/worker-profiles.md) for
+tools, thinking levels, messaging, and restart behavior. The settings below
+remain the defaults for legacy delegation when no worker profile is selected.
+
 ```yaml
 delegation:
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)

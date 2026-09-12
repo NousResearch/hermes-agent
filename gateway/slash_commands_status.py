@@ -600,13 +600,23 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the session /model override, else the
+        SessionDB row / dominant route, when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
             route = await self._session_db.get_dominant_session_model_route(entry.session_id)
-            return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
+            return entry, persisted, route if isinstance(route, dict) else {}
+        entry, persisted, dominant = await _quiet(_rows, (None, {}, {}))
+        # A /model switch evicts the cached agent, so between turns the dominant
+        # route still names the OLD provider — the explicit override wins.
+        try:
+            _key = getattr(entry, "session_key", None) or self._session_key_for_source(source)
+            _override = ((getattr(self, "_session_model_overrides", {}) or {}).get(_key) or {})
+        except Exception:
+            _override = {}
+        if _override.get("provider"):
+            return _override.get("provider"), _override.get("base_url") or None
         row = dominant if dominant.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 

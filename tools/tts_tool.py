@@ -420,15 +420,29 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
-    try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    # Resolve the command-provider config BEFORE normalizing, so an SSML-aware
+    # command CLI that sets ``skip_markdown_strip`` receives the raw markup
+    # untouched. Otherwise prepare_spoken_text (markdown/SSML rewrite) would
+    # mangle the text before the opt-out is even consulted.
+    skip_strip = bool(
+        command_provider_config
+        and command_provider_config.get("skip_markdown_strip")
+    )
+    # shared cleaner: markdown, emoji, think blocks, verifier footer, units,
+    # newlines. Skipped for opted-out command providers, which want the raw
+    # markup preserved.
+    if not skip_strip:
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            text = prepare_spoken_text(text, max_chars=None)
+        except Exception:
+            text = text.strip()
+    else:
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:

@@ -899,7 +899,8 @@ def browser_back(task_id: Optional[str] = None) -> str:
         blocked = _blocked_private_page(effective_task_id, "Browser history navigation (back) landed on this address.")
         if blocked is not None:
             return blocked
-    return _tool_response(result, {"url": result.get("data", {}).get("url", "")}, "Failed to go back")
+    data = result.get("data") or {}
+    return _tool_response(result, {"url": data.get("url", "")}, "Failed to go back")
 
 
 def browser_press(key: str, task_id: Optional[str] = None) -> str:

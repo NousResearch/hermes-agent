@@ -1,8 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -18,9 +17,18 @@ import {
 import type { SessionCreateResponse } from '@/types/hermes'
 
 import { requestComposerFocus } from './composer/focus'
-import { SessionChatSurface } from './session-tile'
 import { type SessionView } from './session-view'
 import { lastVisibleMessageIsUser } from './thread-loading'
+
+// Keep the public SDK controller/types lightweight. Importing @hermes/plugin-sdk
+// must not eagerly pull the complete transcript renderer (or its app stores)
+// into plugins/tests that never mount a chat panel. The real native surface is
+// loaded only when a consumer renders NativeChatPanel.
+const SessionChatSurface = lazy(async () => {
+  const module = await import('./session-tile')
+
+  return { default: module.SessionChatSurface }
+})
 
 export interface NativeChatBinding {
   route: NativeChatProfileRoute
@@ -312,25 +320,33 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
 
   if (!runtimeId) {
     return (
-      <div className={cn('grid h-full min-h-0 place-items-center', className)}>
-        <CenteredThreadSpinner />
+      <div aria-busy="true" className={cn('grid h-full min-h-0 place-items-center text-sm text-(--ui-text-tertiary)', className)}>
+        Connecting to Hermes…
       </div>
     )
   }
 
   return (
-    <SessionChatSurface
-      className={className}
-      forceFocused
-      listSessionOnFirstSend={false}
-      onRetryResume={retry}
-      onRuntimeRecovered={onRuntimeRecovered}
-      ownerRoute={route}
-      runtimeId={runtimeId}
-      scopeTarget={target}
-      sessionAnchorOverride={null}
-      storedSessionId={storedSessionId}
-      view={view}
-    />
+    <Suspense
+      fallback={
+        <div aria-busy="true" className={cn('grid h-full min-h-0 place-items-center text-sm text-(--ui-text-tertiary)', className)}>
+          Loading Hermes…
+        </div>
+      }
+    >
+      <SessionChatSurface
+        className={className}
+        forceFocused
+        listSessionOnFirstSend={false}
+        onRetryResume={retry}
+        onRuntimeRecovered={onRuntimeRecovered}
+        ownerRoute={route}
+        runtimeId={runtimeId}
+        scopeTarget={target}
+        sessionAnchorOverride={null}
+        storedSessionId={storedSessionId}
+        view={view}
+      />
+    </Suspense>
   )
 }

@@ -247,29 +247,36 @@ class _KanbanDispatcher:
             return 0
         attempted = 0
         successes = 0
-        for slug in self._board_slugs():
-            if attempted >= auto_decompose_per_tick:
-                break
-            # Pin the board via env for the call: the decomposer connects
-            # with no board kwarg (same pattern as the dashboard specify endpoint).
-            prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-            try:
-                os.environ["HERMES_KANBAN_BOARD"] = slug
+        # This tick runs via _to_thread_process_service in a FRESH context, so no
+        # per-turn profile scope is installed. With gateway.multiplex_profiles on,
+        # agent.secret_scope.get_secret() fails closed without a scope and every
+        # decompose attempt dies with UnscopedSecretError before the aux LLM call.
+        # Scope the aux-LLM credential reads to the gateway's default profile —
+        # the same home load_gateway_config_for_runner() uses for the runner.
+        with _default_profile_secret_scope():
+            for slug in self._board_slugs():
+                if attempted >= auto_decompose_per_tick:
+                    break
+                # Pin the board via env for the call: the decomposer connects
+                # with no board kwarg (same pattern as the dashboard specify endpoint).
+                prev_env = os.environ.get("HERMES_KANBAN_BOARD")
                 try:
-                    triage_ids = _decomp.list_triage_ids()
-                except Exception as exc:
-                    logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
-                    triage_ids = []
-                for tid in triage_ids:
-                    if attempted >= auto_decompose_per_tick:
-                        break
-                    attempted += 1
-                    successes += self._decompose_one(_decomp, slug, tid)
-            finally:
-                if prev_env is None:
-                    os.environ.pop("HERMES_KANBAN_BOARD", None)
-                else:
-                    os.environ["HERMES_KANBAN_BOARD"] = prev_env
+                    os.environ["HERMES_KANBAN_BOARD"] = slug
+                    try:
+                        triage_ids = _decomp.list_triage_ids()
+                    except Exception as exc:
+                        logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
+                        triage_ids = []
+                    for tid in triage_ids:
+                        if attempted >= auto_decompose_per_tick:
+                            break
+                        attempted += 1
+                        successes += self._decompose_one(_decomp, slug, tid)
+                finally:
+                    if prev_env is None:
+                        os.environ.pop("HERMES_KANBAN_BOARD", None)
+                    else:
+                        os.environ["HERMES_KANBAN_BOARD"] = prev_env
         return successes
 
     @staticmethod
@@ -289,6 +296,42 @@ class _KanbanDispatcher:
         else:
             logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
         return 1
+
+
+@contextlib.contextmanager
+def _default_profile_secret_scope():
+    """Install the gateway default profile's secret scope when multiplexing is on
+    and no scope is active (background ticks run in a fresh context). No-op
+    otherwise, so single-profile gateways keep reading os.environ as before.
+    """
+    try:
+        from pathlib import Path
+
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            current_secret_scope,
+            is_multiplex_active,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+        from hermes_constants import get_hermes_home
+    except Exception:  # pragma: no cover
+        yield
+        return
+    if not is_multiplex_active() or current_secret_scope() is not None:
+        yield
+        return
+    try:
+        secrets = build_profile_secret_scope(Path(get_hermes_home()))
+    except Exception:
+        logger.debug("kanban auto-decompose: could not build default profile secret scope", exc_info=True)
+        yield
+        return
+    token = set_secret_scope(secrets)
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
 
 
 def _log_spawn_results(results: Optional[list]) -> bool:

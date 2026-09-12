@@ -33,10 +33,10 @@ takes one path. It never enters the diverged-history reset, the Windows
 rollback, or the ZIP fallback, so it reports a SMALLER
 surface than reality.
 
-THE DYNAMIC PATTERNS THAT MATTER (and why they are not missed)
+THE DYNAMIC PATTERNS THAT MATTER
 --------------------------------------------------------------
-Plain import analysis misses three things this flow really does, all of
-which are resolved here because they are all spelled with literals:
+Plain import analysis misses three things this flow does. Literal targets
+are recorded. Unresolved expressions remain visible for manual review:
 
 * ``importlib.reload(m)`` — RE-EXECUTES the new file in the old process.
   This is the most dangerous load in the whole flow and it looks like
@@ -51,6 +51,24 @@ which are resolved here because they are all spelled with literals:
 * ``importlib.import_module(x)`` with a non-literal argument — cannot be
   resolved statically. Reported as UNRESOLVED rather than ignored.
 
+HISTORY COVERAGE AND STATIC LIMITS
+---------------------------------
+History discovery inventories every reachable origin/main commit, including
+merge parents, and scans every distinct Python blob for entrypoint ASTs.
+All historical versions of discovered paths, updater siblings, renamed seed
+helpers, and statically referenced imported functions are audited. Witness
+commits identify versions; unchanged descendants are not re-parsed.
+
+This is NOT a complete Python call-graph proof. Reflection, computed module
+names, arbitrary alias reassignment, class/instance dispatch, and module
+objects passed through opaque callbacks require manual review. Known helper
+modules are conservatively entered wholesale; other modules are followed by
+selected function names, not every unrelated command. FIRST_PARTY_ROOTS
+bounds imports of interest. The report and freeze retain unresolved edges.
+Syntax/decoding failures abort rather than shrink coverage. The special case
+of committed merge markers audits every arm combination and records recovery;
+this is conservative archaeology, not a claim that broken source could run.
+
 Usage:
     python scripts/audit-old-updater-imports.py            # report
     python scripts/audit-old-updater-imports.py --json
@@ -63,23 +81,37 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
+import sys
+import tokenize
+from collections import deque
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# The update flow has lived at both of these paths.
+# Known entrypoint seeds, not a history path filter. Discovery also scans
+# every reachable Python blob for entrypoint definitions at other addresses.
 UPDATE_MODULE_CANDIDATES = (
-    "hermes_cli/update_cmd.py",
+    "hermes_cli/main.py",
     "hermes_cli/subcommands/update.py",
+    "hermes_cli/update_cmd.py",
 )
 
-# Helpers the update flow calls into after the tree moves. Every function
-# in these is treated as post-swap.
+# Known post-swap helpers: every function counts. Historical filenames are
+# augmented by rename edges, updater siblings from the HISTORY inventory,
+# and statically referenced imported functions (including extractions).
+# This list is a conservative seed, not the universe of audited paths.
 POST_SWAP_HELPER_MODULES = (
     "hermes_cli/post_update.py",
     "hermes_cli/update_lock.py",
+    # Read every historical home of these helpers.
+    "hermes_cli/backup.py",
+    "hermes_cli/backup_restore.py",
+    "hermes_cli/managed_uv.py",
+    "hermes_cli/psutil_android.py",
     # pm era: `hermes update` drives the store through the pm package. A pm
     # module imported BEFORE the swap keeps running as old code afterwards,
     # so its lazy loads resolve against the NEW tree -- same failure shape
@@ -94,6 +126,15 @@ POST_SWAP_HELPER_MODULES = (
     "pm/paths.py",
     "pm/registry.py",
     "pm/store.py",
+    "pm/operations.py",
+    "pm/build_operations.py",
+)
+
+# Historical module-object calls that need explicit review, not a guessed
+# receiver type. Keep the witness so regeneration cannot discard the contract.
+REVIEWED_DYNAMIC_LOADS = (
+    ("hermes_cli._subprocess_compat", "run", "2ecca1e7d3e7",
+     "hermes_cli/managed_uv.py:_install_uv_windows"),
 )
 
 # Only OUR packages matter: a third-party import is pinned by the
@@ -155,14 +196,13 @@ class Analysis:
     requirements: list[Requirement] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     reachable: set[str] = field(default_factory=set)
+    dependencies: dict[str, set[str]] = field(default_factory=dict)
+    parse_recoveries: set[str] = field(default_factory=set)
 
 
-def _function_table(tree: ast.AST) -> dict[str, _AnyFunc]:
-    table: dict[str, _AnyFunc] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            table.setdefault(node.name, node)
-    return table
+def _function_definitions(tree: ast.AST) -> list[_AnyFunc]:
+    return [node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
 
 
 def _called_names(node: ast.AST) -> set[str]:
@@ -211,44 +251,30 @@ def _string_constants(tree: ast.AST) -> dict[str, list[str]]:
     return out
 
 
-def _guarded_spans(func: _AnyFunc) -> list[tuple[int, int]]:
-    """Line spans of ``try`` bodies whose handlers catch an import failure.
+def _guarded_spans(func: _AnyFunc, failure: str = "ImportError") -> list[tuple[int, int]]:
+    """Try bodies whose first matching handler swallows this load failure.
 
-    ``except Exception``, ``except ImportError`` and bare ``except``
-    all swallow a missing name; a load inside such a body has a fallback
-    arm in the OLD code and cannot brick the update by itself.
+    AttributeError cannot guard an import, and ModuleNotFoundError cannot
+    guard a missing from-import symbol. A handler that raises is not a
+    fallback, even if it catches the right exception.
     """
+    caught_by = {failure, "Exception", "BaseException"}
+    if failure == "ModuleNotFoundError":
+        caught_by.add("ImportError")
     spans: list[tuple[int, int]] = []
     for node in ast.walk(func):
         if not isinstance(node, ast.Try):
             continue
-        catches = False
         for handler in node.handlers:
-            if handler.type is None:
-                catches = True
-            elif isinstance(handler.type, ast.Name) and handler.type.id in (
-                "Exception",
-                "BaseException",
-                "ImportError",
-                "ModuleNotFoundError",
-                "AttributeError",
-            ):
-                catches = True
-            elif isinstance(handler.type, ast.Tuple):
-                for el in handler.type.elts:
-                    if isinstance(el, ast.Name) and el.id in (
-                        "Exception",
-                        "ImportError",
-                        "ModuleNotFoundError",
-                        "AttributeError",
-                    ):
-                        catches = True
-        if catches and node.body:
-            first = node.body[0].lineno
-            last = max(
-                getattr(stmt, "end_lineno", stmt.lineno) for stmt in node.body
+            types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+            matches = handler.type is None or any(
+                isinstance(t, ast.Name) and t.id in caught_by for t in types
             )
-            spans.append((first, last))
+            if not matches:
+                continue
+            if not any(isinstance(n, ast.Raise) for n in ast.walk(handler)) and node.body:
+                spans.append((node.body[0].lineno, max(stmt.end_lineno or stmt.lineno for stmt in node.body)))
+            break
     return spans
 
 
@@ -260,13 +286,17 @@ def _requirements_in(
     """Every name *func* needs from the new tree, plus what we could not read."""
     reqs: list[Requirement] = []
     unresolved: list[str] = []
-    guarded_spans = _guarded_spans(func)
+    guarded_spans = {
+        failure: _guarded_spans(func, failure)
+        for failure in ("ImportError", "ModuleNotFoundError", "AttributeError")
+    }
 
-    def _is_guarded(node: ast.AST) -> bool:
+    def _is_guarded(node: ast.AST, kind: str, symbol: str | None) -> bool:
         line = getattr(node, "lineno", None)
         if line is None:
             return False
-        return any(first <= line <= last for first, last in guarded_spans)
+        failure = "AttributeError" if kind == "getattr" else "ImportError" if symbol else "ModuleNotFoundError"
+        return any(first <= line <= last for first, last in guarded_spans[failure])
 
     def add(
         module: str, symbol: str | None, kind: str, node: ast.AST
@@ -279,16 +309,17 @@ def _requirements_in(
                     kind,
                     func.name,
                     source_file,
-                    guarded=_is_guarded(node),
+                    guarded=_is_guarded(node, kind, symbol),
                 )
             )
 
     for child in ast.walk(func):
         # ── plain lazy imports ─────────────────────────────────────────
         if isinstance(child, ast.ImportFrom):
-            if not child.level and child.module:
+            module = _import_module(child, source_file)
+            if module:
                 for alias in child.names:
-                    add(child.module, alias.name, "import", child)
+                    add(module, alias.name, "import", child)
         elif isinstance(child, ast.Import):
             for alias in child.names:
                 add(alias.name, None, "import", child)
@@ -403,125 +434,423 @@ def _getattr_on_bound_locals(
             module = bound[holder.id]
             if _first_party(module):
                 out.append(
-                    Requirement(module, attr.value, "getattr", func.name, source_file)
+                    Requirement(
+                        module, attr.value, "getattr", func.name, source_file,
+                        guarded=any(first <= node.lineno <= last for first, last in _guarded_spans(func, "AttributeError")),
+                    )
                 )
     return out
 
 
-def analyse(source: str, source_file: str, *, entrypoints: bool) -> Analysis | None:
-    """Requirements of one version of one file.
+class AuditError(RuntimeError):
+    """An incomplete audit must never be mistaken for a smaller contract."""
 
-    *entrypoints* selects the reachability seed: an update module starts
-    from ``UPDATE_ENTRYPOINTS``; a post-swap helper module is entered
-    wholesale, so every function in it counts.
+
+def _parse_variants(source: str, context: str) -> tuple[list[ast.Module], bool]:
+    """A committed conflict is audited as ALL arm combinations, never skipped.
+
+    Actual history contains merge markers in config.py. Both resolutions
+    can be analyzed without inventing syntax or choosing a winner. Other
+    syntax errors, malformed markers, and excessive combinations fail closed.
     """
     try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return None
+        return [ast.parse(source, filename=context)], False
+    except (SyntaxError, ValueError) as original:
+        if not re.search(r"^<<<<<<< ", source, re.MULTILINE):
+            raise AuditError(f"Cannot parse {context}: {original}") from original
+        variants = [""]
+        arms: list[str] | None = None
+        for line in source.splitlines(keepends=True):
+            if line.startswith("<<<<<<< "):
+                if arms is not None:
+                    raise AuditError(f"Nested conflict in {context}") from original
+                arms = [""]
+            elif line.startswith("||||||| ") or line.rstrip("\r\n") == "=======":
+                if arms is None:
+                    raise AuditError(f"Malformed conflict in {context}") from original
+                arms.append("")
+            elif line.startswith(">>>>>>> "):
+                if arms is None or len(arms) < 2 or len(variants) * len(arms) > 64:
+                    raise AuditError(f"Malformed or excessive conflict variants in {context}") from original
+                variants = [prefix + arm for prefix in variants for arm in arms]
+                arms = None
+            elif arms is not None:
+                arms[-1] += line
+            else:
+                variants = [prefix + line for prefix in variants]
+        if arms is not None:
+            raise AuditError(f"Unterminated conflict in {context}") from original
+        try:
+            return [ast.parse(v, filename=context) for v in variants], True
+        except (SyntaxError, ValueError) as exc:
+            raise AuditError(f"Cannot parse all conflict arms of {context}: {exc}") from exc
 
-    result = Analysis(path=source_file)
-    functions = _function_table(tree)
+
+def _import_module(node: ast.ImportFrom, source_file: str) -> str:
+    if not node.level:
+        return node.module or ""
+    package = source_file.removesuffix(".py").split("/")[:-1]
+    if node.level > len(package):
+        raise AuditError(f"{source_file}:{node.lineno}: invalid relative import")
+    return ".".join(package[:len(package) - node.level + 1] +
+                    ([node.module] if node.module else []))
+
+
+@dataclass
+class FunctionFacts:
+    calls: set[str]
+    imports: list[ast.Import | ast.ImportFrom]
+    references: list[tuple[str, tuple[str, ...], bool]]
+    returned_names: set[str]
+    factory_attributes: set[tuple[str, str]]
+    requirements: list[Requirement]
+    unresolved: list[str]
+    error: str | None = None
+
+
+@dataclass
+class ModuleFacts:
+    functions: dict[str, FunctionFacts]
+    imports: list[ast.Import | ast.ImportFrom]
+    reexports: list[ast.ImportFrom]
+
+
+@dataclass
+class VersionFacts:
+    variants: list[ModuleFacts]
+    recovered: bool
+
+
+def _prepare_tree(tree: ast.Module, source_file: str) -> ModuleFacts:
+    """Discard the big AST after retaining compact, seed-independent facts."""
+    imports: list[ast.Import | ast.ImportFrom] = []
+
+    def collect(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+        for child in ast.iter_child_nodes(node):
+            collect(child)
+
+    collect(tree)
+    functions = {}
     constants = _string_constants(tree)
+    for func in _function_definitions(tree):
+        name = func.name
+        nodes = list(ast.walk(func))
+        parents = {child: parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+        references = []
+        returned_names = set()
+        factory_attributes = set()
+        for node in nodes:
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Name):
+                returned_names.add(node.value.id)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
+                if isinstance(node.value.func, ast.Name):
+                    factory_attributes.add((node.value.func.id, node.attr))
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                attrs = []
+                parent = parents.get(node)
+                returned = isinstance(parent, ast.Return)
+                while isinstance(parent, ast.Attribute):
+                    attrs.append(parent.attr)
+                    parent = parents.get(parent)
+                references.append((node.id, tuple(attrs), returned))
+        error = None
+        try:
+            reqs, unresolved = _requirements_in(func, source_file, constants)
+            reqs.extend(_getattr_on_bound_locals(func, source_file))
+        except AuditError as exc:
+            # Invalid imports in an unreachable function were never part of
+            # the selected surface. Defer that failure until it is reached.
+            reqs, unresolved, error = [], [], str(exc)
+        facts = FunctionFacts(
+            _called_names(func),
+            [n for n in nodes if isinstance(n, (ast.Import, ast.ImportFrom))],
+            references, returned_names, factory_attributes, reqs, unresolved, error,
+        )
+        if name in functions:
+            # Without receiver types, every same-named definition is possible.
+            previous = functions[name]
+            previous.calls.update(facts.calls)
+            previous.imports.extend(facts.imports)
+            previous.references.extend(facts.references)
+            previous.returned_names.update(facts.returned_names)
+            previous.factory_attributes.update(facts.factory_attributes)
+            previous.requirements.extend(facts.requirements)
+            previous.unresolved.extend(facts.unresolved)
+            previous.error = previous.error or facts.error
+        else:
+            functions[name] = facts
+    return ModuleFacts(functions, imports, [n for n in tree.body if isinstance(n, ast.ImportFrom)])
 
-    if entrypoints:
-        seen: set[str] = set()
-        stack = [name for name in UPDATE_ENTRYPOINTS if name in functions]
-        if not stack:
-            return result  # not an update module at this revision
+
+def _prepare_version(source: str, source_file: str) -> VersionFacts:
+    trees, recovered = _parse_variants(source, source_file)
+    return VersionFacts([_prepare_tree(tree, source_file) for tree in trees], recovered)
+
+
+def _imported_dependencies(
+    facts: ModuleFacts, reachable: set[str], source_file: str,
+) -> dict[str, set[str]]:
+    """Resolve bindings over the selected functions, not unrelated commands.
+
+    Keeping bindings seed-dependent preserves conditional aliases and lazy
+    module factories while their expensive AST walks are cached once.
+    """
+    funcs = {name: facts.functions[name] for name in sorted(reachable)}
+    imports = [*facts.imports, *(node for func in funcs.values() for node in func.imports)]
+    bindings: dict[str, set[tuple[str, str]]] = {}
+    for node in imports:
+        if isinstance(node, ast.ImportFrom):
+            module = _import_module(node, source_file)
+            for alias in node.names:
+                bindings.setdefault(alias.asname or alias.name, set()).add((module, alias.name))
+        else:
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                bindings.setdefault(name, set()).add((alias.name if alias.asname else name, "*"))
+
+    factories: dict[str, set[str]] = {}
+    for name, func in funcs.items():
+        for returned in func.returned_names:
+            for module, symbol in bindings.get(returned, ()):
+                if _first_party(module):
+                    factories.setdefault(name, set()).add(
+                        module if symbol == "*" else f"{module}.{symbol}"
+                    )
+    dependencies: dict[str, set[str]] = {}
+    for name, func in funcs.items():
+        for called, attr in func.factory_attributes:
+            for module in factories.get(called, ()):
+                dependencies.setdefault(module, set()).add(attr)
+        for reference, attrs, returned in func.references:
+            if returned and name in factories:
+                continue
+            for module, symbol in bindings.get(reference, ()):
+                if not _first_party(module):
+                    continue
+                if symbol == "*" and attrs:
+                    module = ".".join([module, *attrs[:-1]])
+                    symbol = attrs[-1]
+                elif attrs:
+                    module = ".".join([module, symbol, *attrs[:-1]])
+                    symbol = attrs[-1]
+                dependencies.setdefault(module, set()).add(symbol)
+    return dependencies
+
+
+def _analyse_facts(facts: ModuleFacts, source_file: str, seeds: set[str] | None) -> Analysis:
+    result = Analysis(path=source_file)
+    functions = facts.functions
+    if seeds is None:
+        reachable = set(functions)
+    else:
+        reachable: set[str] = set()
+        stack = [name for name in seeds if name in functions]
         while stack:
             name = stack.pop()
-            if name in seen:
+            if name in reachable:
                 continue
-            seen.add(name)
-            for callee in _called_names(functions[name]):
-                if callee in functions and callee not in seen:
-                    stack.append(callee)
-        reachable = seen
-    else:
-        reachable = set(functions)
-
+            reachable.add(name)
+            stack.extend(functions[name].calls & functions.keys() - reachable)
     result.reachable = reachable
-
+    result.dependencies = _imported_dependencies(facts, reachable, source_file)
+    for node in facts.reexports:
+        module = _import_module(node, source_file)
+        if _first_party(module):
+            for alias in node.names:
+                if seeds is None or (alias.asname or alias.name) in seeds:
+                    result.dependencies.setdefault(module, set()).add(alias.name)
     for name in sorted(reachable):
         func = functions[name]
-        reqs, unresolved = _requirements_in(func, source_file, constants)
-        result.requirements.extend(reqs)
-        result.requirements.extend(_getattr_on_bound_locals(func, source_file))
-        result.unresolved.extend(unresolved)
-
+        if func.error:
+            raise AuditError(func.error)
+        result.requirements.extend(func.requirements)
+        result.unresolved.extend(func.unresolved)
     return result
+
+
+def _analyse_version(facts: VersionFacts, source_file: str, seeds: set[str] | None) -> Analysis:
+    result = Analysis(path=source_file)
+    for variant in facts.variants:
+        part = _analyse_facts(variant, source_file, seeds)
+        result.requirements.extend(part.requirements)
+        result.unresolved.extend(part.unresolved)
+        result.reachable.update(part.reachable)
+        for module, symbols in part.dependencies.items():
+            result.dependencies.setdefault(module, set()).update(symbols)
+    if facts.recovered:
+        result.parse_recoveries.add(
+            f"{source_file}: audited all {len(facts.variants)} merge-conflict arm combinations"
+        )
+    return result
+
+
+def analyse(
+    source: str, source_file: str, *, entrypoints: bool,
+    seeds: set[str] | None = None,
+) -> Analysis:
+    """Analyze selected imports without executing the source. Fail closed."""
+    if entrypoints and seeds is None:
+        seeds = set(UPDATE_ENTRYPOINTS)
+    return _analyse_version(_prepare_version(source, source_file), source_file, seeds)
 
 
 # ─── history walking ────────────────────────────────────────────────────
 
 
-def _all_audited_paths() -> tuple[str, ...]:
-    siblings = tuple(sorted(
-        str(p.relative_to(REPO_ROOT)).replace("\\", "/")
-        for p in (REPO_ROOT / "hermes_cli").glob("update_cmd_*.py")
-    ))
-    return tuple(dict.fromkeys((*UPDATE_MODULE_CANDIDATES, *POST_SWAP_HELPER_MODULES, *siblings)))
+def _git(*args: str, input: bytes | None = None) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "--no-replace-objects", *args], cwd=REPO_ROOT,
+            input=input, capture_output=True, check=True,
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        raise AuditError(exc.stderr.decode("utf-8", "replace").strip()) from exc
+
+
+def _full_history_ref() -> str:
+    if _git("rev-parse", "--is-shallow-repository").strip() != b"false":
+        raise AuditError(
+            "Cannot audit shallow history. Run git fetch --unshallow origin "
+            "and fetch origin/main before regenerating; shallow CI must use "
+            "the checked-in frozen JSON."
+        )
+    return _git("rev-parse", "--verify", "origin/main^{commit}").decode().strip()
 
 
 def shipped_commits() -> list[str]:
-    """Commits a user could actually be running, newest first.
+    """ALL ancestors of origin/main, not tags, first-parent, or a path log."""
+    return _git("rev-list", _full_history_ref()).decode().splitlines()
 
-    Restricted to ``origin/main``: the update channel is ``main`` or
-    ``stable`` (``installation/tree.py``) and both track this branch.
-    Unmerged topic branches are not something anyone updates from, and
-    including them would freeze names that never shipped.
 
-    Only commits that touched the audited files are listed; every other
-    commit leaves them byte-identical to its parent.
-    """
-    proc = subprocess.run(
-        ["git", "log", "origin/main", "--format=%H", "--", *_all_audited_paths()],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
+_ENTRYPOINT_PATTERN = re.compile(
+    rb"\bdef\s+(" + "|".join(UPDATE_ENTRYPOINTS).encode() + rb")\s*\("
+)
+
+
+def _has_entrypoint(source: bytes, context: str) -> bool:
+    # Cheap prefilter, then AST check: fixtures/docstrings mentioning
+    # cmd_update are not entrypoints. A malformed candidate is still fatal.
+    if not any(name.encode() in source for name in UPDATE_ENTRYPOINTS):
+        return False
+    # Python permits explicit line continuations between def and its name.
+    normalized = source.replace(b"\\\r\n", b"").replace(b"\\\n", b"")
+    if not _ENTRYPOINT_PATTERN.search(normalized):
+        return False
+    trees, _ = _parse_variants(_decode_source(source, context), context)
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in UPDATE_ENTRYPOINTS
+        for tree in trees for node in tree.body
     )
-    return [line for line in proc.stdout.split() if line]
 
 
-def _batch_read_blobs(refs: list[str]) -> dict[str, str]:
-    """Read many ``<commit>:<path>`` revisions in ONE git process.
+def _entrypoint_paths(index: HistoryIndex) -> set[str]:
+    """Search every distinct reachable Python blob, not current filenames.
 
-    A ``git show`` per pair is thousands of spawns; ``cat-file --batch``
-    streams them through a single pipe. Bytes both ways, because payloads
-    are located by the byte offset in each header and text decoding would
-    shift every offset at the first multi-byte character.
+    Scanning blobs once avoids pickaxe repeatedly diffing the same large
+    modules at thousands of merges. Bounded batches keep the multi-GB
+    history out of memory; only likely definitions need AST parsing.
     """
+    locations: dict[str, set[str]] = {}
+    for path, versions in index.versions.items():
+        for blob in versions:
+            locations.setdefault(blob, set()).add(path)
+    blobs = sorted(locations)
+    paths: set[str] = set()
+    candidates = 0
+    for start in range(0, len(blobs), 64):
+        if start % 4096 == 0:
+            print(f"[audit] entrypoint discovery: {start}/{len(blobs)} distinct blobs", file=sys.stderr, flush=True)
+        for blob, source in _batch_blobs(blobs[start:start + 64]).items():
+            context = f"{', '.join(sorted(locations[blob]))} [blob {blob}]"
+            if any(name.encode() in source for name in UPDATE_ENTRYPOINTS):
+                candidates += 1
+            if _has_entrypoint(source, context):
+                paths.update(locations[blob])
+    index.discovery_stats = {
+        "python_paths_in_history": len(index.versions),
+        "distinct_blobs_scanned": len(blobs),
+        "blobs_mentioning_entrypoints": candidates,
+    }
+    return paths
+
+
+@dataclass
+class HistoryIndex:
+    # One entry per (path, blob), with commits witnessing that version. A
+    # version unchanged in later commits need not be parsed again.
+    versions: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    renames: dict[str, set[str]] = field(default_factory=dict)
+    discovery_stats: dict[str, int] = field(default_factory=dict)
+
+
+def _history_index(ref: str) -> HistoryIndex:
+    """Inventory every Python version, including deleted files and merge sides.
+
+    A full DAG walk with root diffs covers every blob at its introduction.
+    Rename edges supplement import/definition discovery; correctness does not
+    depend on Git detecting an entrypoint move by its similarity threshold.
+    """
+    output = _git(
+        "log", "--full-history", "-m", "--root", "--find-renames",
+        "--format=%H", "--raw", "--no-abbrev", "-z", ref, "--", "*.py",
+    )
+    index = HistoryIndex()
+    records = iter(output.split(b"\0"))
+    commit = ""
+    for record in records:
+        record = record.lstrip(b"\n")
+        if not record:
+            continue
+        if not record.startswith(b":"):
+            commit = record.decode()
+            continue
+        _old_mode, new_mode, _old_blob, blob, status = record.decode().split()
+        path = next(records).decode()
+        if status.startswith(("R", "C")):
+            old_path, path = path, next(records).decode()
+            index.renames.setdefault(old_path, set()).add(path)
+            index.renames.setdefault(path, set()).add(old_path)
+        if new_mode != "000000" and path.endswith(".py"):
+            index.versions.setdefault(path, {}).setdefault(blob, set()).add(commit)
+    return index
+
+
+def _decode_source(payload: bytes, context: str) -> str:
+    try:
+        encoding, _ = tokenize.detect_encoding(BytesIO(payload).readline)
+        return payload.decode(encoding)
+    except (SyntaxError, UnicodeError, LookupError) as exc:
+        raise AuditError(f"Cannot decode {context}: {exc}") from exc
+
+
+def _batch_blobs(refs: list[str]) -> dict[str, bytes]:
+    """Read known blob IDs in one process; missing/corrupt objects are fatal."""
     if not refs:
         return {}
-
-    proc = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=REPO_ROOT,
-        input=("\n".join(refs) + "\n").encode(),
-        capture_output=True,
-        check=True,
-    )
-
-    out = proc.stdout
-    contents: dict[str, str] = {}
+    out = _git("cat-file", "--batch", input=("\n".join(refs) + "\n").encode())
+    contents: dict[str, bytes] = {}
     pos = 0
     for ref in refs:
         newline = out.find(b"\n", pos)
-        if newline == -1:
-            break
-        header = out[pos:newline].decode("utf-8", "replace")
+        header = out[pos:newline].split()
+        if newline < 0 or len(header) != 3 or header[1] != b"blob":
+            raise AuditError(f"Cannot read historical blob {ref}: {header!r}")
+        size = int(header[2])
         pos = newline + 1
-        if header.endswith(" missing"):
-            continue
-        try:
-            size = int(header.rsplit(" ", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        contents[ref] = out[pos : pos + size].decode("utf-8", "replace")
+        if len(out) <= pos + size or out[pos + size:pos + size + 1] != b"\n":
+            raise AuditError(f"Truncated historical blob {ref}")
+        contents[ref] = out[pos:pos + size]
         pos += size + 1
     return contents
+
+
+def _batch_read_blobs(refs: list[str]) -> dict[str, str]:
+    return {ref: _decode_source(source, ref) for ref, source in _batch_blobs(refs).items()}
 
 
 @dataclass
@@ -537,92 +866,205 @@ class Surface:
     and never fatal in ``--check``.
     """
     unresolved: set[str] = field(default_factory=set)
+    parse_recoveries: set[str] = field(default_factory=set)
     stats: dict = field(default_factory=dict)
 
 
-def audit_history() -> Surface:
-    commits = shipped_commits()
-    paths = _all_audited_paths()
-    refs = [f"{c}:{p}" for c in commits for p in paths]
-    blobs = _batch_read_blobs(refs)
+def _module_paths(module: str, paths: dict) -> list[str]:
+    stem = module.replace(".", "/")
+    return [p for p in (f"{stem}.py", f"{stem}/__init__.py") if p in paths]
+
+
+def _audit_versions(index: HistoryIndex, entrypaths: set[str], read_sources, *, progress: bool = False) -> Surface:
+    """Fixed point over historical static imports and rename edges.
+
+    Demand is monotonic: an additional caller can only add functions. The
+    memo includes the path, not just the blob: identical source at another
+    address has different relative imports, provenance, and seed roles.
+    """
+    demand: dict[str, set[str] | None] = {}
+    pending: deque[str] = deque()
+    queued: set[str] = set()
+
+    def enqueue(path: str, seeds: set[str] | None) -> None:
+        if path not in index.versions:
+            return
+        if path in demand:
+            previous = demand[path]
+            if previous is None or (seeds is not None and seeds <= previous):
+                return
+            if seeds is not None:
+                seeds = seeds | previous
+        demand[path] = None if seeds is None else set(seeds)
+        if path not in queued:
+            pending.append(path)
+            queued.add(path)
+
+    for path in sorted(entrypaths | set(UPDATE_MODULE_CANDIDATES)):
+        enqueue(path, set(UPDATE_ENTRYPOINTS))
+    for path in sorted(set(POST_SWAP_HELPER_MODULES) | {
+        p for p in index.versions
+        if p.startswith("hermes_cli/update_cmd_") and p.endswith(".py")
+    }):
+        enqueue(path, None)
+
+    memo: dict[tuple[str, str], Analysis] = {}
+    prepared: dict[tuple[str, str], VersionFacts] = {}
+    analysis_passes = 0
+    while pending:
+        path = pending.popleft()
+        queued.remove(path)
+        seeds = demand[path]
+        for renamed in index.renames.get(path, ()):
+            enqueue(renamed, seeds)
+        blobs = sorted(index.versions[path])
+        if progress:
+            print(
+                f"[audit] {path}: {len(blobs)} versions; "
+                f"{len(seeds) if seeds is not None else 'all'} function seeds; "
+                f"{len(pending)} paths queued; {analysis_passes} analyses so far",
+                file=sys.stderr, flush=True,
+            )
+        for start in range(0, len(blobs), 64):
+            batch = blobs[start:start + 64]
+            sources = read_sources(path, [blob for blob in batch if (path, blob) not in prepared])
+            for blob in batch:
+                try:
+                    if (path, blob) not in prepared:
+                        prepared[path, blob] = _prepare_version(sources[blob], path)
+                    analysis = _analyse_version(prepared[path, blob], path, seeds)
+                except AuditError as exc:
+                    witnesses = ", ".join(sorted(index.versions[path][blob])[:3])
+                    raise AuditError(f"{exc} [blob {blob}; commits {witnesses}]") from exc
+                memo[path, blob] = analysis
+                analysis_passes += 1
+                for module, symbols in analysis.dependencies.items():
+                    for symbol in symbols:
+                        submodules = _module_paths(f"{module}.{symbol}", index.versions)
+                        if submodules or symbol == "*":
+                            # A bare module object can escape through a callback
+                            # or getattr. Do not turn that into all CLI commands.
+                            # Expose the unresolved edge for manual review.
+                            analysis.unresolved.append(
+                                f"{path}: module object {module}.{symbol} requires manual call-graph review"
+                            )
+                        else:
+                            for target in _module_paths(module, index.versions):
+                                enqueue(target, {symbol})
 
     surface = Surface()
-    memo: dict[int, Analysis | None] = {}
-    distinct = 0
     bare_pairs: set[tuple[str, str]] = set()
-
-    for ref, source in blobs.items():
-        commit, _, path = ref.partition(":")
-        fingerprint = hash(source)
-        if fingerprint not in memo:
-            memo[fingerprint] = analyse(
-                source, path, entrypoints=path in UPDATE_MODULE_CANDIDATES
-            )
-            distinct += 1
-        analysis = memo[fingerprint]
-        if analysis is None:
-            continue
+    for (path, blob), analysis in memo.items():
         for req in analysis.requirements:
-            surface.required.setdefault(req.key(), set()).add(commit[:12])
-            surface.kinds.setdefault(req.key(), set()).add(req.kind)
-            surface.sites.setdefault(req.key(), set()).add(
-                f"{req.source_file}:{req.function}"
+            surface.required.setdefault(req.key(), set()).update(
+                c[:12] for c in index.versions[path][blob]
             )
+            surface.kinds.setdefault(req.key(), set()).add(req.kind)
+            surface.sites.setdefault(req.key(), set()).add(f"{path}:{req.function}")
             if not req.guarded:
                 bare_pairs.add(req.key())
         surface.unresolved.update(analysis.unresolved)
-
+        surface.parse_recoveries.update(
+            f"{recovery} [blob {blob}; commits {', '.join(sorted(index.versions[path][blob]))}]"
+            for recovery in analysis.parse_recoveries
+        )
     surface.guarded_only = set(surface.required) - bare_pairs
     surface.stats = {
-        "commits": len(commits),
-        "revisions_read": len(blobs),
-        "distinct_file_versions": distinct,
+        "files_analyzed": sorted(demand),
+        "entrypoint_paths": sorted(entrypaths & demand.keys()),
+        "files_with_reachable_functions": sorted({p for (p, _), a in memo.items() if a.reachable}),
+        "commits_with_audited_changes": len({c for p, b in memo for c in index.versions[p][b]}),
+        "revisions_read": sum(len(index.versions[p][b]) for p, b in memo),
+        "distinct_file_versions": len(memo),
+        "analysis_passes": analysis_passes,
+        "versions_prepared": len(prepared),
     }
     return surface
 
 
+def audit_history() -> Surface:
+    ref = _full_history_ref()  # pin once; a concurrent fetch cannot mix DAGs
+    index = _history_index(ref)
+    print(f"[audit] indexed {len(index.versions)} historical Python paths", file=sys.stderr, flush=True)
+    surface = _audit_versions(
+        index, _entrypoint_paths(index), lambda path, blobs: _batch_read_blobs(blobs),
+        progress=True,
+    )
+    if not surface.stats["entrypoint_paths"]:
+        raise AuditError("No updater entrypoint found in origin/main history")
+    surface.stats.update({
+        "mode": "history",
+        "discovery": index.discovery_stats,
+        "coverage": "All reachable commits inventoried; distinct selected path/blob versions analyzed. Commit evidence lists version witnesses, not every unchanged descendant.",
+        "history_ref": ref,
+        "complete_history": True,
+        "commits": int(_git("rev-list", "--count", ref)),
+        "roots": sorted(_git("rev-list", "--max-parents=0", ref).decode().split()),
+    })
+    return surface
+
+
 def audit_tree() -> Surface:
-    """The surface of the update flow as it exists in THIS working tree.
-
-    The pm rewrite replaced the installation/* + managed_uv update stack
-    wholesale, so the shipped-history walk over origin/main freezes names
-    (installation.*, hermes_cli.managed_uv.*) that this branch deliberately
-    deleted along with the updaters that loaded them. On this lineage the
-    honest contract is the CURRENT update flow: freeze what today's updater
-    lazy-loads mid-swap, so a FUTURE rename of any of those names turns the
-    test red before it bricks a live update. Once this branch is the shipped
-    channel, every release cut from it re-enters the surface by regenerating
-    against the tree that shipped it.
-    """
-    surface = Surface()
-    bare_pairs: set[tuple[str, str]] = set()
-    analyzed: list[str] = []
-
-    for path in _all_audited_paths():
+    """Audit the current tree without reading any Git history (shallow CI safe)."""
+    names = _git("ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.py")
+    paths = {p.decode() for p in names.split(b"\0") if p}
+    index = HistoryIndex()
+    entrypaths = set()
+    for path in sorted(paths):
         file = REPO_ROOT / path
-        if not file.is_file():
+        if not file.is_file():  # tracked deletion in the working tree
             continue
-        source = file.read_text(encoding="utf-8-sig", errors="replace")
-        analysis = analyse(
-            source, path, entrypoints=path in UPDATE_MODULE_CANDIDATES
-        )
-        if analysis is None or (
-            path in UPDATE_MODULE_CANDIDATES and not analysis.reachable
-        ):
-            continue
-        analyzed.append(path)
-        for req in analysis.requirements:
-            surface.required.setdefault(req.key(), set()).add("worktree")
-            surface.kinds.setdefault(req.key(), set()).add(req.kind)
-            surface.sites.setdefault(req.key(), set()).add(
-                f"{req.source_file}:{req.function}"
-            )
-            if not req.guarded:
-                bare_pairs.add(req.key())
-        surface.unresolved.update(analysis.unresolved)
+        index.versions[path] = {"worktree": {"worktree"}}
+        source = file.read_bytes()
+        if _has_entrypoint(source, path):
+            entrypaths.add(path)
 
-    surface.guarded_only = set(surface.required) - bare_pairs
-    surface.stats = {"mode": "tree", "files_analyzed": sorted(analyzed)}
+    def read_sources(path: str, blobs: list[str]) -> dict[str, str]:
+        return {"worktree": _decode_source((REPO_ROOT / path).read_bytes(), path)}
+
+    surface = _audit_versions(index, entrypaths, read_sources)
+    surface.stats["mode"] = "tree"
+    return surface
+
+
+def audit_union() -> Surface:
+    """The frozen contract: every name any SHIPPED updater can lazy-load
+    after a checkout swap (full history walk over origin/main, following
+    the updater through every path it has lived at), UNION everything the
+    CURRENT updater loads (so a future rename turns the test red before it
+    bricks a live update).
+
+    A pair is guarded_only only when EVERY load site — historical or
+    current — sits under a swallowing ``try``.
+    """
+    history = audit_history()
+    tree = audit_tree()
+
+    surface = Surface()
+    for part in (history, tree):
+        for key, commits in part.required.items():
+            surface.required.setdefault(key, set()).update(commits)
+        for key, kinds in part.kinds.items():
+            surface.kinds.setdefault(key, set()).update(kinds)
+        for key, sites in part.sites.items():
+            surface.sites.setdefault(key, set()).update(sites)
+        surface.unresolved.update(part.unresolved)
+        surface.parse_recoveries.update(part.parse_recoveries)
+
+    bare: set[tuple[str, str]] = set()
+    for part in (history, tree):
+        bare |= set(part.required) - part.guarded_only
+    surface.guarded_only = set(surface.required) - bare
+    witnesses = {commit for commits in history.required.values() for commit in commits}
+    for module, symbol, witness, site in REVIEWED_DYNAMIC_LOADS:
+        if witness not in witnesses:
+            continue
+        key = (module, symbol)
+        surface.required.setdefault(key, set()).add(witness)
+        surface.kinds.setdefault(key, set()).add("reviewed-module-call")
+        surface.sites.setdefault(key, set()).add(site)
+        surface.guarded_only.discard(key)
+    surface.stats = {"mode": "union", "history": history.stats, "tree": tree.stats}
     return surface
 
 
@@ -658,11 +1100,16 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
     except (OSError, SyntaxError) as exc:
         return False, f"{module}: unreadable ({exc})"
 
-    for node in ast.walk(tree):
+    pending: list[ast.AST] = list(tree.body)
+    while pending:
+        node = pending.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == symbol:
                 return True, ""
-        elif isinstance(node, ast.Assign):
+            # Function locals and class members are not module exports.
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+        if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == symbol:
                     return True, ""
@@ -693,21 +1140,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--history",
         action="store_true",
-        help="Walk every shipped revision on origin/main instead of the "
-        "working tree. The pm rewrite retired that lineage's updaters, so "
-        "the default is the working-tree surface; the walk remains for "
-        "archaeology.",
+        help="Audit only the complete origin/main history. By default the "
+        "audit unions that history with the current working tree. Both "
+        "modes require a full clone; CI reads the checked-in frozen JSON.",
     )
     parser.add_argument(
         "--freeze",
         metavar="PATH",
         help="Write the surface as JSON (the file the enforcing test reads). "
-        "The default audits the working tree; --history re-walks shipped "
-        "revisions on origin/main (needs a full clone).",
+        "The default audits the union of the current tree AND the full "
+        "shipped-history walk over origin/main (needs a full clone); "
+        "--history freezes the history half alone.",
     )
     ns = parser.parse_args(argv)
 
-    surface = audit_history() if ns.history else audit_tree()
+    try:
+        surface = audit_history() if ns.history else audit_union()
+    except AuditError as exc:
+        parser.error(str(exc))
 
     if ns.freeze:
         payload = {
@@ -717,9 +1167,12 @@ def main(argv: list[str] | None = None) -> int:
                 "tree after the checkout swap. Deleting a bare name bricks "
                 "every release that loads it, mid-update, on a half-new "
                 "tree. Regenerate after changing the update flow; never "
-                "hand-trim."
+                "hand-trim. History enumeration is complete; static call-graph "
+                "limits and unresolved_dynamic still require manual review."
             ),
             "stats": surface.stats,
+            "unresolved_dynamic": sorted(surface.unresolved),
+            "parse_recoveries": sorted(surface.parse_recoveries),
             "bare": sorted(
                 f"{m}::{s}"
                 for (m, s) in surface.required
@@ -730,6 +1183,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
         Path(ns.freeze).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if surface.parse_recoveries:
+            print("Historical parse recoveries (all arms audited; recorded in JSON):")
+            for recovery in sorted(surface.parse_recoveries):
+                print(f"  {recovery}")
         print(
             f"froze {len(payload['bare'])} bare + "
             f"{len(payload['guarded_only'])} guarded pairs -> {ns.freeze}"
@@ -776,6 +1233,7 @@ def main(argv: list[str] | None = None) -> int:
                         for (m, s), c in sorted(surface.required.items())
                     ],
                     "unresolved_dynamic": sorted(surface.unresolved),
+                    "parse_recoveries": sorted(surface.parse_recoveries),
                     "missing": [
                         {"module": m, "symbol": s or None, "commits": c, "why": w}
                         for m, s, c, w in missing
@@ -791,7 +1249,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if (missing and ns.check) else 0
 
     st = surface.stats
-    if st.get("mode") == "tree":
+    if st.get("mode") == "union":
+        hist, tree = st["history"], st["tree"]
+        print(
+            f"Union of {hist['commits']} reachable shipped commits in the update "
+            f"flow ({hist['revisions_read']} file revisions, "
+            f"{hist['distinct_file_versions']} distinct versions) and the "
+            f"current tree ({len(tree['files_analyzed'])} files)."
+        )
+    elif st.get("mode") == "tree":
         print(
             f"Audited the update flow in this working tree: "
             f"{len(st['files_analyzed'])} files "
@@ -799,7 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(
-            f"Walked every shipped commit that touched the update flow: "
+            f"Walked every reachable shipped commit, auditing distinct update versions: "
             f"{st['commits']} commits, {st['revisions_read']} file revisions, "
             f"{st['distinct_file_versions']} distinct versions."
         )
@@ -833,6 +1299,11 @@ def main(argv: list[str] | None = None) -> int:
             by_module.setdefault(module, []).append(symbol or "<module>")
         for module in sorted(by_module):
             print(f"  {module}: {', '.join(sorted(by_module[module]))}")
+
+    if surface.parse_recoveries:
+        print("Historical parse recoveries (all arms audited):")
+        for recovery in sorted(surface.parse_recoveries):
+            print(f"    {recovery}")
 
     if surface.unresolved:
         print()

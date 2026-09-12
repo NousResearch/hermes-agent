@@ -115,6 +115,11 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def get_default_hermes_root() -> NoReturn:
+    # Shim to suppress old updater work until relaunch. No path is safe to invent.
+    stop_for_relaunch()
+
+
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not bootstrap uv.
     stop_for_relaunch()

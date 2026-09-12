@@ -3,13 +3,15 @@
 `hermes update` replaces the checkout underneath a RUNNING process. The
 old process then lazy-imports from the new tree: whatever it asks for
 must still exist, or the user's update dies half-applied. The names it
-can ask for were collected by auditing the update flow in this tree
-(scripts/audit-old-updater-imports.py) and frozen into
-tests/compat/old_updater_surface.json. The pm rewrite retired the
-lineage the original shipped-history walk froze (installation/*,
-hermes_cli.managed_uv), so the frozen contract here is the CURRENT
-updater's mid-swap loads; releases cut from this branch re-enter the
-surface by regenerating against the tree that shipped them.
+can ask for were collected from EVERY commit reachable from origin/main,
+back to the first cmd_update, UNION the current working tree, and frozen
+into tests/compat/old_updater_surface.json. Moving the implementation to
+pm does not retire already-running old updaters. Historical entrypoints,
+extractions, renamed and deleted helpers remain part of the contract.
+
+Regeneration requires a full clone. These tests deliberately consume the
+checked-in history and only re-audit the current tree, so shallow CI can
+enforce the contract without reconstructing (or silently truncating) it.
 
 `managed_uv._reload_hermes_constants` is the scar proving the failure
 mode is real: a live updater hit ``cannot import name 'venv_python_path'
@@ -98,6 +100,8 @@ class TestTheFrozenFileIsSane:
             "hermes_constants::with_hermes_node_path",
             "pm.ensure::sync_venv",
             "hermes_cli.gitlock::clear_stale_git_locks",
+            "hermes_cli.managed_uv::ensure_uv",
+            "hermes_cli.managed_uv::rebuild_venv",
         ):
             assert anchor in bare, (
                 f"{anchor} missing from the frozen surface — the freeze "
@@ -107,11 +111,20 @@ class TestTheFrozenFileIsSane:
 
     def test_audit_saw_the_whole_update_flow(self):
         stats = _load_surface()["stats"]
-        assert stats.get("mode") == "tree", (
-            "frozen surface is not a tree-mode freeze — regenerate with "
-            "scripts/audit-old-updater-imports.py --freeze (no --history)."
+        assert stats.get("mode") == "union", (
+            "frozen surface must include history AND the current tree — "
+            "regenerate on a full clone with scripts/"
+            "audit-old-updater-imports.py --freeze (no --history)."
         )
-        analyzed = set(stats.get("files_analyzed", []))
+        history = stats["history"]
+        assert history.get("complete_history") is True
+        assert history["commits"] > 0
+        assert history["roots"] and history["entrypoint_paths"]
+        assert "hermes_cli/main.py" in history["entrypoint_paths"], (
+            "the freeze omitted the original inline cmd_update history"
+        )
+        assert history["history_ref"]
+        analyzed = set(stats["tree"]["files_analyzed"])
         for must_see in ("hermes_cli/update_cmd.py", "pm/ensure.py"):
             assert must_see in analyzed, (
                 f"{must_see} was not analyzed for the freeze — the audit "
@@ -119,19 +132,23 @@ class TestTheFrozenFileIsSane:
                 f"cannot guard anything."
             )
 
-    def test_frozen_matches_a_fresh_audit(self):
-        # A new lazy import in the update flow must not slip in unrecorded:
-        # the frozen file and a fresh audit of this tree must agree.
+    def test_frozen_contains_a_fresh_tree_audit(self):
+        # Shallow CI checks a subset, NOT equality: deleted historical loads
+        # must survive even when today's updater no longer imports them.
         fresh = _audit.audit_tree()
-        fresh_bare = sorted(
+        fresh_bare = {
             f"{m}::{s}"
             for (m, s) in fresh.required
             if (m, s) not in fresh.guarded_only
+        }
+        frozen = _load_surface()
+        frozen_bare = set(frozen["bare"])
+        assert fresh_bare <= frozen_bare, (
+            f"new bare updater loads are unfrozen: {sorted(fresh_bare - frozen_bare)}. "
+            "Run scripts/audit-old-updater-imports.py --freeze "
+            "tests/compat/old_updater_surface.json on a full clone."
         )
-        frozen_bare = _load_surface()["bare"]
-        assert fresh_bare == frozen_bare, (
-            "the update flow's bare mid-swap loads changed but the frozen "
-            "surface was not regenerated — run scripts/"
-            "audit-old-updater-imports.py --freeze "
-            "tests/compat/old_updater_surface.json and review the diff."
-        )
+        fresh_all = {f"{m}::{s}" for m, s in fresh.required}
+        frozen_all = frozen_bare | set(frozen["guarded_only"])
+        assert fresh_all <= frozen_all
+        assert not frozen_bare & set(frozen["guarded_only"])

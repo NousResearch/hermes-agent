@@ -46,6 +46,11 @@ _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple, Opt
 logger = logging.getLogger(__name__)
 
 
+def profile_flag_value(command: str) -> Optional[str]:
+    # Shim to suppress old updater work until relaunch. Do not select a profile.
+    return None
+
+
 class StormInfo(NamedTuple):
     """Respawn-storm check result: start count, window, and backoff to sleep."""
 

@@ -11,6 +11,11 @@ from typing import NoReturn
 from hermes_cli._old_updater import stop_for_relaunch
 
 
+def _reload_hermes_constants() -> None:
+    # Shim to suppress old updater work until relaunch. Never re-execute live globals.
+    return None
+
+
 def ensure_uv(*args, **kwargs) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch. Older releases
     # expect a tuple, newer ones a path. Exit before either can consume it.

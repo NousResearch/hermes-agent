@@ -4,7 +4,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NoReturn, Optional, Set
 
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color
@@ -35,6 +35,16 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
     _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
 from hermes_cli.tools_config_mcp import (  # noqa: F401
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
+
+
+def _pip_install(
+    args: List[str], *, timeout: int = 300, capture_output: bool = True
+) -> NoReturn:
+    # Shim to suppress old updater work until relaunch, not install or report success.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
 
 logger = logging.getLogger(__name__)
 

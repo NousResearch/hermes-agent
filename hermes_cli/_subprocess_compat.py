@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
     "IS_WINDOWS",
@@ -48,6 +48,13 @@ _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 # Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
 # (``-C diff`` is a path; ``-c diff=x`` is a config pair).
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def run(cmd, **kwargs) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not start its installer.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:

@@ -43,6 +43,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
@@ -1172,9 +1173,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     const route = captureCanonicalGroupRoute()
-    const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    const mode = groupExecutionMode(capabilities)
 
-    if (capabilities.driver) {
+    if (route.connectionId !== host.state.connectionId.get() || route.profile !== host.state.profile.get() ||
+      host.state.gateway.get() !== 'open' || mode === 'unavailable') {
+      throw new Error(b.canonical.driverUnavailable)
+    }
+
+    if (mode === 'canonical') {
       const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
       const key = registerCanonicalGroup(route, created.room)
       onClose()

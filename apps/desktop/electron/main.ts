@@ -244,6 +244,7 @@ import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { clearStaleLinuxSingletonLock } from './linux-single-instance'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -18037,10 +18038,23 @@ function registerDeepLinkProtocol() {
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
+if (process.platform === 'linux') {
+  const recovered = clearStaleLinuxSingletonLock(app.getPath('userData'))
+
+  if (recovered?.cleared.length) {
+    rememberLog(
+      `[single-instance] cleared stale lock for dead PID ${recovered.pid}: ${recovered.cleared.join(', ')}`
+    )
+  }
+}
+
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 const isPrimaryInstance = _gotSingleInstanceLock
 
 if (!isPrimaryInstance) {
+  rememberLog('[single-instance] another process owns the Hermes user-data lock; exiting this instance')
+  flushDesktopLogBufferSync()
+
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
   // plain quit (event.preventDefault + async backend shutdown), and in that
   // window `ready` still fires — the lock-losing instance then runs the full

@@ -59,6 +59,13 @@ DEFAULT_EXCLUDES = [
 ]
 
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
+
+# A git lock file (``<target>.lock``) is only held for the duration of a single
+# git command, bounded by ``_GIT_TIMEOUT``.  Anything older than this is
+# abandoned — left behind by a git process killed mid-write (gateway restart,
+# crash, OOM) — and safe to remove.
+_STALE_LOCK_MAX_AGE_S = 600
+
 _MAX_FILES = 50_000  # skip huge directories to avoid slowdowns
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')  # short or full SHA-1/SHA-256
 _MB = 1024 * 1024
@@ -236,6 +243,43 @@ def _repair_bare_repo_dirs(store: Path) -> None:
             logger.warning("Cannot create %s in checkpoint store: %s", subdir, exc)
 
 
+def _repair_stale_locks(store: Path) -> int:
+    """Remove abandoned git lock files from the checkpoint store.
+
+    Git creates ``<target>.lock`` files for the duration of a single command
+    and deletes them when the command finishes.  If a git process is killed
+    mid-write — a gateway restart with ``KillMode=mixed``, a crash, an OOM
+    kill — the lock survives.  Every later git command that needs that
+    target then fails with ``fatal: Unable to create '<target>.lock': File
+    exists`` (rc=128) until a human removes the file by hand, silently
+    breaking checkpoints for that project.
+
+    Only locks older than ``_STALE_LOCK_MAX_AGE_S`` are removed — a live
+    concurrent git process holds its lock for seconds at most, so it is
+    never disturbed.  Returns the number of locks removed.
+    """
+    if not store.is_dir():
+        return 0
+    cutoff = time.time() - _STALE_LOCK_MAX_AGE_S
+    removed = 0
+    for root, dirs, files in os.walk(store):
+        # Skip loose-object fan-out dirs; only pack locks can appear there.
+        if Path(root).name == "objects":
+            dirs[:] = [d for d in dirs if d == "pack"]
+        for name in files:
+            if not name.endswith(".lock"):
+                continue
+            path = Path(root) / name
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+                    logger.warning("Removed stale checkpoint lock: %s", path)
+            except OSError:
+                continue
+    return removed
+
+
 def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT_TIMEOUT,
              allowed_returncodes: Optional[Set[int]] = None, index_file: Optional[Path] = None) -> Tuple[bool, str, str]:
     """Run git against the shared store -> (ok, stdout, stderr).  ``allowed_returncodes`` suppresses
@@ -269,6 +313,19 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
     # NUL-delimited output contains literal paths, including leading spaces.
     stdout = result.stdout if "-z" in args else result.stdout.strip()
     stderr = result.stderr.strip()
+    if (
+        not ok
+        and result.returncode == 128
+        and "Unable to create" in stderr
+        and "File exists" in stderr
+        and _repair_stale_locks(store) > 0
+    ):
+        # A stale lock from a killed git process blocked this command.
+        # Repair removed it, so retry once — the retry is expected to succeed.
+        result = _git_subprocess(cmd, _git_env(store, str(wd), index_file=index_file), timeout, cwd=str(wd))
+        ok = result.returncode == 0
+        stdout = result.stdout if "-z" in args else result.stdout.strip()
+        stderr = result.stderr.strip()
     if not ok and result.returncode not in (allowed_returncodes or set()):
         logger.error("Git command failed: %s (rc=%d) stderr=%s",
                      " ".join(cmd), result.returncode, stderr)
@@ -399,6 +456,9 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             return f"Could not create checkpoint base: {exc}"
         _migrate_legacy_store(base)
     if _store_has_head(store):
+        # Sweep abandoned locks from killed git processes before any
+        # operation, so snapshots never hit the rc=128 lock-exists failure.
+        _repair_stale_locks(store)
         return None
     for d in (store, store / _INDEXES_DIRNAME, store / _PROJECTS_DIRNAME):
         d.mkdir(parents=True, exist_ok=True)

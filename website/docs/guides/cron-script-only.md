@@ -149,6 +149,28 @@ That's the whole thing. No prompt, no skill, no model.
 
 The "silent when empty" behavior is the key to the classic watchdog pattern: the script is free to run every minute, but the channel only sees a message when something actually needs attention.
 
+### Scripts that already send messages themselves
+
+Some scripts call a platform API directly (for example uploading files via a
+Weixin / Telegram helper, or posting a multi-part report). In that case the
+script has already delivered the user-facing content.
+
+If the job still uses `deliver: origin` (or another chat target), Hermes will
+**also** deliver the script's stdout after the run. That second push is usually
+unwanted: it can look like a duplicate message, and on platforms with session
+tokens (notably Weixin) it can fail with a misleading `prepare failed` /
+"rate limited" error even though the script's own sends already succeeded.
+
+For self-sending scripts, use:
+
+```bash
+--deliver local
+```
+
+Stdout is still saved under `~/.hermes/cron/output/` for audit, but Hermes will
+not post it again to chat. Keep `deliver: origin` / platform targets for the
+common case where **stdout is the message**.
+
 ## Script Rules
 
 Scripts must live in `~/.hermes/scripts/`. This is enforced at both job-creation time and run time — absolute paths, `~/` expansion, and path-traversal patterns (`../`) are rejected. The same directory is shared with the pre-check script gate used by LLM jobs.

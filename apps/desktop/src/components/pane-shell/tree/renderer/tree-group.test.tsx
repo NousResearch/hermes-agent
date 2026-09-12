@@ -66,6 +66,14 @@ describe('TreeGroup', () => {
       render: () => <div>Terminal</div>
     })
     vi.stubGlobal('CSS', { escape: (value: string) => value })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
     render(<TreeGroup leftEdge node={terminalGroup(false)} rightEdge topEdge />)
     const zone = container!.querySelector('[data-tree-group]')!
     const strip = zone.querySelector<HTMLElement>('[data-zone-tabstrip]')!

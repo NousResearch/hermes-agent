@@ -216,6 +216,120 @@ class TestBridgeEventMetadata:
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
 
+    @pytest.mark.asyncio
+    async def test_reply_to_uncaptioned_image_attaches_quoted_media(self, tmp_path, monkeypatch):
+        # contextInfo.quotedMessage only ever carries a thumbnail-sized stub
+        # for media (or nothing for an uncaptioned attachment). The bridge
+        # resolves the quoted message's already-downloaded media via its own
+        # cache (createQuotedMediaCache) and hands back the real cached path
+        # in quotedMediaUrls. The adapter must fold that into this event's
+        # own media_urls/media_types so the existing vision pipeline picks it
+        # up — otherwise a reply like "save this" to an uncaptioned photo
+        # someone else sent looks to the agent like there is no image at all.
+        adapter = _make_adapter()
+
+        cache_dir = tmp_path / "cache" / "image"
+        cache_dir.mkdir(parents=True)
+        quoted_image_path = cache_dir / "img_original.jpg"
+        quoted_image_path.write_bytes(b"fake-jpeg-bytes")
+
+        from plugins.platforms.whatsapp import adapter as adapter_module
+        monkeypatch.setattr(
+            adapter_module, "_is_allowed_bridge_path", lambda url: True,
+        )
+
+        data = {
+            "messageId": "reply-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Ananya",
+            "chatName": "Family",
+            "isGroup": True,
+            "body": "did you save this wedding invite?",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "mediaType": "",
+            "quotedMessageId": "original-image-msg",
+            "quotedParticipant": "99999999999@s.whatsapp.net",
+            "quotedRemoteJid": "15551234567@s.whatsapp.net",
+            "hasQuotedMessage": True,
+            "quotedText": "",
+            "quotedMediaUrls": [str(quoted_image_path)],
+            "quotedMediaType": "image",
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert str(quoted_image_path) in event.media_urls
+        idx = event.media_urls.index(str(quoted_image_path))
+        assert event.media_types[idx] == "image/jpeg"
+
+    @pytest.mark.asyncio
+    async def test_quoted_media_path_outside_cache_dir_is_rejected(self, monkeypatch):
+        # _is_allowed_bridge_path guards against a compromised/buggy bridge
+        # handing back an arbitrary absolute path; quoted-media handling must
+        # respect the same guard as direct media, not bypass it.
+        adapter = _make_adapter()
+
+        from plugins.platforms.whatsapp import adapter as adapter_module
+        monkeypatch.setattr(
+            adapter_module, "_is_allowed_bridge_path", lambda url: False,
+        )
+
+        data = {
+            "messageId": "reply-msg-2",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Ananya",
+            "chatName": "Family",
+            "isGroup": True,
+            "body": "did you save this?",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "mediaType": "",
+            "quotedMessageId": "original-image-msg",
+            "quotedParticipant": "99999999999@s.whatsapp.net",
+            "quotedRemoteJid": "15551234567@s.whatsapp.net",
+            "hasQuotedMessage": True,
+            "quotedText": "",
+            "quotedMediaUrls": ["/etc/passwd"],
+            "quotedMediaType": "image",
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert "/etc/passwd" not in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_resolves_from_outbound_index(self, tmp_path):
+        """The bridge's quoted-media cache knows inbound messages only. A quote of an image WE sent
+        (cron chart, generated plot) must resolve from the outbound index written at send time —
+        otherwise "what is this?" under the bot's own image reaches the agent with no image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"  # a workspace path, deliberately NOT inside a cache dir
+        image.write_bytes(b"\x89PNG fake")
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "BOT_IMG"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "BOT_IMG"
+
+        event = await adapter._build_message_event({
+            "messageId": "reply-1", "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net", "senderName": "Alice", "isGroup": False,
+            "body": "what is this?", "hasMedia": False, "mediaUrls": [], "mediaType": "",
+            "quotedMessageId": "BOT_IMG", "quotedParticipant": "15550000000@s.whatsapp.net",
+            "hasQuotedMessage": True, "quotedText": "", "quotedMediaUrls": [], "quotedMediaType": "",
+            "botIds": ["15550000000@s.whatsapp.net"],
+        })
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

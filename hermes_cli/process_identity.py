@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
+from utils import atomic_json_write
+
 logger = logging.getLogger(__name__)
 
 SPAWN_ENV_VAR = "HERMES_SPAWN"
@@ -265,9 +267,9 @@ def _append_entry(entry: LedgerEntry) -> bool:
         pruned.append(asdict(entry))
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-            tmp.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
-            os.replace(tmp, path)
+            # argv may carry surrogate-escaped bytes (non-UTF-8 paths); ensure_ascii keeps the
+            # utf-8 text handle from raising UnicodeEncodeError (a ValueError, not an OSError).
+            atomic_json_write(path, pruned, mode=0o600, ensure_ascii=True)
             return True
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)

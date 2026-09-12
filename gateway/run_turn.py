@@ -43,6 +43,29 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+_CONTEXT_OVERFLOW_ERROR_PHRASES = (
+    "context length", "context size", "context window",
+    "maximum context", "token limit", "too many tokens",
+    "reduce the length", "exceeds the limit",
+    "request entity too large", "prompt is too long",
+    "payload too large", "input is too long",
+)
+
+
+def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
+    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
+    (#1630 skip) and the user-facing reply so the two can never disagree.
+
+    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
+    "invalid authentication token"; a bare 400 only counts on a long session."""
+    if not agent_result.get("failed"):
+        return False
+    if agent_result.get("compression_exhausted"):
+        return True
+    err = str(agent_result.get("error") or "").lower()
+    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -472,9 +495,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             raise
         if _lease_token is not None:
-            _lease_state = self._session_state(_quick_key).turn
-            _lease_state.lease_token = _lease_token
-            _lease_state.lease_generation = run_generation
+            self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
 
     @dataclasses.dataclass
     class _HygienePlan:
@@ -1498,13 +1519,47 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _CONTEXT_OVERFLOW_ERROR_PHRASES = (
-        "context length", "context size", "context window",
-        "maximum context", "token limit", "too many tokens",
-        "reduce the length", "exceeds the limit",
-        "request entity too large", "prompt is too long",
-        "payload too large", "input is too long",
+    _FAILED_TURN_NOTICE = (
+        "Your request was not processed. Send it again if you still want me to carry it out."
     )
+    _PARTIAL_FAILED_TURN_NOTICE = (
+        "This turn did not complete. Some actions may already have run; verify their effects "
+        "before resending."
+    )
+
+    def _hmwa_add_failed_turn_notice(self, response, notice):
+        """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
+        response = str(response or "").strip()
+        return f"{response}\n\n{notice}" if response else notice
+
+    def _hmwa_failed_turn_notice(self, agent_result):
+        """Choose retry guidance without assuming completed tool effects can be repeated safely."""
+        from gateway.media_repair import _current_turn_messages
+        # Compression during the failed turn can move the slice boundary; the shared helper falls
+        # back to the last user row so tool evidence is not silently dropped.
+        turn_messages = _current_turn_messages(
+            agent_result.get("messages", []) or [], agent_result.get("history_offset", 0),
+        )
+        if any(
+            message.get("role") == "tool"
+            or (message.get("role") == "assistant" and message.get("tool_calls"))
+            for message in turn_messages
+        ):
+            return self._PARTIAL_FAILED_TURN_NOTICE
+        return self._FAILED_TURN_NOTICE
+
+    async def _hmwa_close_failed_turn(self, session_id, notice):
+        """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
+
+        The tail, not "did the gateway write the user row", is the key: on the primary path the
+        agent's turn-start flush already persisted the row (so the platform-id dedupe skips the
+        gateway write), and a platform redelivery of an already-closed turn must not stack a
+        second assistant row."""
+        if await self.async_session_store.transcript_tail_role(session_id) != "user":
+            return
+        await self.async_session_store.append_to_transcript(session_id, {
+            "role": "assistant", "content": notice, "timestamp": time.time(),
+        })
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -1524,13 +1579,7 @@ class GatewayTurnMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        _err = str(agent_result.get("error", "")).lower()
-        # Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded".
-        is_context_overflow_failure = agent_failed_early and (
-            bool(agent_result.get("compression_exhausted"))
-            or any(p in _err for p in self._CONTEXT_OVERFLOW_ERROR_PHRASES)
-            or ("400" in _err and len(history) > 50)
-        )
+        is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
                 "Skipping transcript persistence for context-overflow "
@@ -1595,11 +1644,10 @@ class GatewayTurnMixin:
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
-        # Transient failure (429/timeout/5xx): persist only the user message so the next message can load a
-        # transcript that reflects what was said. Skip the assistant error text since it's a
-        # gateway-generated hint, not model output. Hidden- reasoning-only incomplete turns follow the same
-        # persistence rule so peer-agent channels don't ingest them as completed assistant turns. (#7100,
-        # #51628)
+        # Transient failure (429/timeout/5xx): persist the user message so the next message can load a
+        # transcript that reflects what was said. The caller pairs it with a stable assistant safety
+        # boundary rather than the provider error text. Hidden-reasoning-only incomplete turns follow the
+        # same persistence rule so peer-agent channels don't ingest provider details. (#7100, #51628)
         _user_entry = {
             "role": "user",
             "content": (
@@ -1620,8 +1668,8 @@ class GatewayTurnMixin:
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
     ):
-        """Persist this turn to the transcript (session_meta on first turn, user-only on transient
-        failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
+        """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
+        transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
@@ -1654,8 +1702,8 @@ class GatewayTurnMixin:
                     "timestamp": ts,
                 })
             if agent_failed_early or hidden_reasoning_incomplete:
-                # Transient failure / hidden-reasoning incomplete: persist only the user message (the
-                # assistant error text is a gateway hint, not model output). Dedupe on platform
+                # Transient failure / hidden-reasoning incomplete: persist the user message without
+                # the provider error text (a gateway hint, not model output). Dedupe on platform
                 # message_id (Telegram retries after transient failures).
                 if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
                     logger.info(
@@ -1664,6 +1712,9 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                # Close the failed turn: a user-only tail lets alternation repair merge this request
+                # into an unrelated future message and replay stale side effects (#107070).
+                await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.
@@ -1754,10 +1805,18 @@ class GatewayTurnMixin:
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
-        turn once, and build the sanitized user-facing error reply."""
+        turn once and close it, and build the sanitized user-facing error reply."""
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
+        status_code = getattr(e, "status_code", None)
+        if status_code in {400, 500} and len(prepared.history) > 50:
+            # Context overflow / payload too large: a deterministic rejection (#107567), and the same
+            # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
+            return (
+                "⚠️ Session too large for the model's context window.\nUse /compact to "
+                "compress the conversation, or /reset to start fresh."
+            )
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -1768,10 +1827,11 @@ class GatewayTurnMixin:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
+                # Tool effects are unknown after an exception.
+                await self._hmwa_close_failed_turn(session_entry.session_id, self._PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
-        status_code = getattr(e, "status_code", None)
         status_hint = self._STATUS_HINTS.get(status_code, "")
         if status_code == 429:
             # Plan usage limit (resets on a schedule) vs a transient rate limit
@@ -1788,18 +1848,12 @@ class GatewayTurnMixin:
                 status_hint = f" Your plan's usage limit has been reached. It resets in ~{math.ceil(_resets_in / 3600)}h."
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
-        elif status_code in {400, 500}:
-            # 400/500 on a large session: context overflow / payload too large.
-            if len(prepared.history) > 50:
-                return (
-                    "⚠️ Session too large for the model's context window.\nUse /compact to "
-                    "compress the conversation, or /reset to start fresh."
-                )
-            elif status_code == 400:
-                status_hint = " The request was rejected by the API."
-        return (
+        elif status_code == 400:
+            status_hint = " The request was rejected by the API."
+        return self._hmwa_add_failed_turn_notice(
             f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session."
+            "Try again or use /reset to start a fresh session.",
+            self._PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
@@ -2003,6 +2057,8 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            if agent_failed_early and not is_context_overflow_failure:
+                response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
@@ -2343,9 +2399,16 @@ class GatewayTurnMixin:
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``)."""
+        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).
+        Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
+        turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
+        the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
         from gateway.run import _load_gateway_config
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
+        except UnscopedSecretError:
+            url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if not url:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
@@ -3266,7 +3329,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
@@ -3791,6 +3854,12 @@ class GatewayTurnMixin:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
                 if not (_notify_res and getattr(_notify_res, "success", False)):
+                    # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
+                    # a fresh "Working" bubble after it reads as a contradiction (#10990).
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
                     _notify_res = await _notify_adapter.send(
                         source.chat_id, _heartbeat_text,
                         metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),

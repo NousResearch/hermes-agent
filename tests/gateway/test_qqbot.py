@@ -978,6 +978,132 @@ class TestDefaultInteractionDispatch:
         assert response.read_text() == "y"
 
 
+class TestProfileNamespaceApprovalAuthz:
+    """Named-profile (multiplex) session keys must authorize like ``main``.
+
+    ``build_session_key`` namespaces named-profile keys as ``agent:<profile>:...``
+    while the default profile keeps the legacy ``agent:main`` prefix
+    (``gateway/session.py::_session_key_namespace``). The interaction authz
+    parser used to require the literal ``main`` in the namespace slot, so
+    every approval button click in a named profile was rejected as
+    unauthorized and the pending approval timed out (fail-closed block).
+    """
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @staticmethod
+    def _parse(key):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter._parse_gateway_session_key(key)
+
+    def test_parse_accepts_named_profile_namespace(self):
+        parsed = self._parse("agent:coder:qqbot:dm:u-1")
+        assert parsed is not None
+        assert parsed["platform"] == "qqbot"
+        assert parsed["chat_type"] == "dm"
+        assert parsed["chat_id"] == "u-1"
+
+    def test_parse_accepts_main_namespace_with_user_id(self):
+        parsed = self._parse("agent:main:qqbot:group:g-1:owner")
+        assert parsed is not None
+        assert parsed["platform"] == "qqbot"
+        assert parsed["chat_type"] == "group"
+        assert parsed["chat_id"] == "g-1"
+        assert parsed["user_id"] == "owner"
+
+    def test_parse_still_rejects_non_agent_and_malformed_keys(self):
+        assert self._parse("session:main:qqbot:c2c:u-1") is None
+        assert self._parse("agent::qqbot:c2c:u-1") is None
+        assert self._parse("agent:main") is None
+        assert self._parse("") is None
+
+    @pytest.mark.asyncio
+    async def test_c2c_click_on_named_profile_key_resolves(self):
+        """Approval click carrying a named-profile c2c key resolves (was rejected)."""
+        adapter = self._make_adapter()
+
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "u-42",
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False)]
+
+    @pytest.mark.asyncio
+    async def test_group_click_on_named_profile_key_authorizes_session_owner(self):
+        """Group approval click under a named profile authorizes the session owner."""
+        adapter = self._make_adapter()
+
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 1,
+                "group_openid": "g-1",
+                "group_member_openid": "owner",
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False)]
+
+    @pytest.mark.asyncio
+    async def test_named_profile_key_still_rejects_wrong_operator(self):
+        """The namespace relaxation must not weaken the operator check."""
+        adapter = self._make_adapter()
+
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 1,
+                "group_openid": "g-1",
+                "group_member_openid": "attacker",
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == []
+
+
 class TestSendExecApproval:
     """Verify the gateway contract: QQAdapter.send_exec_approval(...)."""
 

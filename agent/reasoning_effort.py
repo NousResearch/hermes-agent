@@ -35,6 +35,9 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
+DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
+    {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
+)
 
 #: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
 XAI_GROK46_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
@@ -93,7 +96,12 @@ def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     if is_astra_model(model):
         return CODEX_ASTRA_EFFORTS
-    return CODEX_GPT56_EFFORTS if "gpt-5.6" in (model or "").lower() else CODEX_LEGACY_EFFORTS
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return (
+        CODEX_GPT56_EFFORTS
+        if "gpt-5.6" in bare or bare in DAYBREAK_MODEL_IDS
+        else CODEX_LEGACY_EFFORTS
+    )
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

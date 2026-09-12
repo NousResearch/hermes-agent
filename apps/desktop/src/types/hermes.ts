@@ -56,8 +56,15 @@ export interface ElevenLabsVoicesResponse {
 }
 
 export interface OAuthProviderStatus {
+  /** Nous only: the tier name the token resolves to, when the backend knows
+   *  one. Null for a free-tier identity and for older backends. */
+  account_tier?: null | string
   error?: string
   expires_at?: null | string
+  /** Nous only: true when the stored token belongs to a free-tier identity
+   *  rather than a signed-in account. `logged_in` stays true either way — a
+   *  token exists — so this is the only way to tell the two apart. */
+  free_tier?: boolean
   has_refresh_token?: boolean
   last_refresh?: null | string
   logged_in: boolean
@@ -107,10 +114,39 @@ export interface OAuthSubmitResponse {
 }
 
 export interface OAuthPollResponse {
+  /** Approved sign-ins only: the account the tokens now belong to. Null when
+   *  the backend has no address for it. */
+  account_email?: null | string
   error_message?: null | string
   expires_at?: null | number
+  /** Approved sign-ins only: the default model the backend settled on. Null
+   *  when the config already pointed at the user's own model and was left
+   *  alone. */
+  model?: null | string
+  /** Why a non-approved terminal status ended that way: `user_declined`
+   *  (status `denied`), or `superseded` / `account_retired` /
+   *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
+   *  `error_message` carries the matching user-facing text. */
+  reason?: null | string
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+/** Result of the `free_tier.status` RPC. Pull-only: it reads local auth state
+ *  and makes no network call, so it is safe to refresh on the ambient status
+ *  cadence. */
+export interface FreeTierStatus {
+  /** An identity exists AND the free tier is on: connectors ride on it, and so
+   *  does inference when nothing else carries it. Whether inference actually
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+  available: boolean
+  enabled: boolean
+  has_guest: boolean
+  /** Display name for the route, e.g. "Nous · free tier". */
+  label: string
+  model: string
+  /** True until the one-time introduction has been acknowledged. */
+  notice_pending: boolean
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -244,6 +280,9 @@ export interface MessagingPlatformInfo {
   gateway_running: boolean
   home_channel?: MessagingHomeChannel | null
   id: string
+  /** Served secondary under a multiplexed gateway: the /p/<profile>/ URL on the shared listener
+   *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
+  ingress_url?: null | string
   name: string
   state?: null | string
   updated_at?: null | string
@@ -461,8 +500,13 @@ export interface ModelOptionProvider {
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
-  /** Nous only: whether the current account is on the free tier. */
+  /** Nous only: whether the current account is on the free plan. Set by
+   *  pricing for a signed-in account — NOT the same thing as `free_tier_row`,
+   *  which marks the no-account route. */
   free_tier?: boolean
+  /** True for the free-tier route's own provider row (no account behind it).
+   *  Never match this row by `name` — the label is copy and can change. */
+  free_tier_row?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
   /** Per-model option support, keyed by model id (present when the picker
@@ -658,6 +702,9 @@ export interface SessionMessage {
 }
 
 export interface SessionMessagesResponse {
+  /** Profile the page was read from (the serving process's own when the
+   *  request named none). Absent on backends that predate the field. */
+  profile?: string
   messages: SessionMessage[]
   pagination?: {
     limit: number
@@ -1288,6 +1335,9 @@ export interface StatusResponse {
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean
+  /** Every profile the gateway process serves when the polled profile is carried by the shared
+   *  multiplexer (e.g. ['default', 'alpha', 'beta']); null/absent for a standalone gateway. */
+  gateway_shared_with?: string[] | null
   gateway_state: string | null
   gateway_updated_at: string | null
   hermes_home: string

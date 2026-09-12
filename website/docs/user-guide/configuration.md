@@ -136,7 +136,7 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is) and a warning is logged. Bare `$VAR` is not expanded.
 
-Under a [multiplexed multi-profile gateway](/user-guide/multi-profile-gateways), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved unless B defines the variable itself. Single-profile runs are unchanged.
+Under a [multiplexed multi-profile gateway](/user-guide/multi-profile-gateways), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved (kept verbatim, warning logged) unless B defines the variable itself. This holds wherever B's config is loaded inside the multiplexer: routed gateway turns, B's adapter startup, and B's cron jobs. Single-profile runs are unchanged. See [What is isolated per profile](/user-guide/multi-profile-gateways#what-is-isolated-per-profile) for the full list.
 
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
@@ -152,11 +152,22 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Update Behavior
 
-### Background checks and SSH authentication
+### Background checks
+
+Passive update checks (CLI banner, TUI badge, dashboard, desktop app) ask the
+GitHub REST API for the tip of `main` and, when it differs from your checkout,
+the compare endpoint for the exact count and changelog. They never run
+`git fetch`, and every install asks at most **once per 24 hours** (a failed check
+retries after an hour). Applying an update (`hermes update`, or the desktop's
+Update button) always fetches fresh and invalidates the cached answer. Explicit
+checks — `hermes update --check`, the desktop's "Check for Updates…" menu item,
+Settings → About → "Check now" — bypass the cache.
+
+### SSH authentication
 
 The startup update check reads the origin URL with the same isolated Git
 configuration used for its network calls. Global `url.*.insteadOf` rewrites
-therefore cannot hide an official SSH remote from the public HTTPS check.
+therefore cannot hide an official SSH remote from the public HTTPS path.
 
 Hermes's isolated internal Git commands default to `ssh -o BatchMode=yes`:
 unknown host keys, passwords, and encrypted keys needing a passphrase fail

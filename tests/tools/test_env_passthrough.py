@@ -19,11 +19,11 @@ from tools.env_passthrough import (
 def _clean_passthrough():
     """Ensure a clean passthrough state for every test."""
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
+    _ep_mod._config_passthrough.clear()
     ss.set_multiplex_active(False)
     yield
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
+    _ep_mod._config_passthrough.clear()
     ss.set_multiplex_active(False)
 
 
@@ -46,7 +46,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
+        _ep_mod._config_passthrough.clear()
 
         assert is_env_passthrough("MY_CUSTOM_KEY")
         assert is_env_passthrough("ANOTHER_TOKEN")
@@ -58,7 +58,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
+        _ep_mod._config_passthrough.clear()
 
         register_env_passthrough(["SKILL_KEY"])
         all_pt = get_all_passthrough()

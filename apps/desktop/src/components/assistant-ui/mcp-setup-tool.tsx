@@ -2,15 +2,13 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped } from '@/api/client'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Input } from '@/components/ui/input'
+import { ConnectorCard, type ConnectorCardCopy, ConnectorSummary } from '@/components/ui/connector-card'
 import {
   addMcpServer,
   getActionStatus,
@@ -22,8 +20,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AlertCircle, CheckCircle2, Loader2 } from '@/lib/icons'
-import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
+import { Loader2 } from '@/lib/icons'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
@@ -74,18 +71,33 @@ function readSetupResult(result: unknown): SettledResult {
 
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
-// Same platform sniff the approval bar uses for its accelerator hint.
-const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
-
-const ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
-
-function SetupLine({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
-  return (
-    <div className="flex items-start gap-2">
-      <div className="min-w-0 flex-1">{children}</div>
-      {trailing}
-    </div>
-  )
+/** The card's strings, from this tool's own copy. The verb changes with the
+ *  action (Install / Enable / Authorize); the rest is the shared consent
+ *  vocabulary every connector card speaks. */
+function cardCopy(
+  copy: ReturnType<typeof useI18n>['t']['assistant']['mcpSetup'],
+  action: SetupAction
+): ConnectorCardCopy {
+  return {
+    connectAction:
+      action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction,
+    connectTitle:
+      action === 'enable' ? copy.enableTitle : action === 'authorize' ? copy.authorizeTitle : copy.installTitle,
+    decline: copy.decline,
+    envRequired: copy.envRequired,
+    grantAction: copy.authorizeAction,
+    retryAction: copy.installAction,
+    stateConnected: '',
+    stateDeclined: copy.declined,
+    stateDisabled: '',
+    stateFailed: '',
+    stateNeedsAuth: '',
+    toolCount: copy.toolCount,
+    trustCommunity: '',
+    trustCommunityTip: () => '',
+    trustVerified: () => '',
+    trustVerifiedTip: () => ''
+  }
 }
 
 export const McpSetupTool = (props: ToolCallMessagePartProps) => {
@@ -134,30 +146,21 @@ function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
   const ok = status === 'installed' || status === 'enabled' || status === 'authorized'
   const neutral = status === 'declined' || status === 'unanswered'
   const toolCount = Array.isArray(fromResult.tools) ? fromResult.tools.length : 0
-  const brand = brandFor(server)
 
+  // Settled is scaffolding, the same line a spent connector offer collapses
+  // to: the name, then the verdict as meta. A failure keeps its reason.
   return (
-    <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="mcp-setup-inline">
-      <SetupLine
-        trailing={
-          ok ? (
-            <CheckCircle2 aria-hidden className={cn(ICON_CLASS, 'text-emerald-400')} />
-          ) : neutral && brand ? (
-            <brand.Icon aria-hidden className="mt-px size-4 shrink-0 opacity-60" style={brandGlyphStyle(brand)} />
-          ) : neutral ? (
-            <Codicon className={ICON_CLASS} name="plug" size="1rem" />
-          ) : (
-            <AlertCircle aria-hidden className={cn(ICON_CLASS, 'text-destructive')} />
-          )
-        }
-      >
-        <span className={cn('font-medium', neutral && 'italic text-(--ui-text-tertiary)')}>{line}</span>
-        {ok && toolCount > 0 && <span className="ml-2 text-(--ui-text-tertiary)">{copy.toolCount(toolCount)}</span>}
-        {!ok && !neutral && fromResult.detail ? (
-          <p className="mt-0.5 text-(--ui-text-secondary)">{fromResult.detail}</p>
-        ) : null}
-      </SetupLine>
-    </div>
+    <ConnectorSummary
+      connector={{ name: server, title: displayName }}
+      meta={
+        ok && toolCount > 0
+          ? `${line} · ${copy.toolCount(toolCount)}`
+          : !ok && !neutral && fromResult.detail
+            ? `${line} — ${fromResult.detail}`
+            : line
+      }
+      tone={ok ? 'ok' : neutral ? undefined : 'error'}
+    />
   )
 }
 
@@ -382,29 +385,14 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     }
   }, [action, copy, entry, envDraft, respond, server])
 
-  const title =
-    action === 'enable'
-      ? copy.enableTitle(prettyName(server))
-      : action === 'authorize'
-        ? copy.authorizeTitle(prettyName(server))
-        : copy.installTitle(prettyName(server))
-
-  const actionLabel =
-    action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction
+  const displayName = prettyName(server)
+  const card = cardCopy(copy, action)
 
   // What connecting actually means — the endpoint that will be contacted.
-  // VS Code's trust dialog links the config it's about to trust; same idea.
   // Catalog entries carry their transport URL in the API response; the
   // static directory remains a fallback rung for older backends.
   const known = directoryEntry(server)
   const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
-  const brand = brandFor(server)
-
-  const trailingIcon = brand ? (
-    <brand.Icon aria-hidden className="mt-px size-4 shrink-0" style={brandGlyphStyle(brand)} />
-  ) : (
-    <Codicon className={ICON_CLASS} name="plug" size="1rem" />
-  )
 
   // ⌘/Ctrl+Enter → approve, Esc → decline/cancel. Same accelerators, same
   // guard shape as the approval bar (tool/approval.tsx). Unlike approve, Esc
@@ -449,67 +437,35 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
 
   if (!ready) {
     return (
-      <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="mcp-setup-inline">
+      <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="connector-card">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
-        <span className="text-(--ui-text-tertiary)">{title}</span>
+        <span className="text-(--ui-text-tertiary)">{card.connectTitle?.(displayName)}</span>
       </div>
     )
   }
 
+  // The same consent card the connector offer renders: one shape for every
+  // "connect this?" in the transcript. `phase` is what flips the card into
+  // its working state (spinner on the action, decline becomes cancel).
   return (
-    <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="mcp-setup-inline">
-      <SetupLine trailing={trailingIcon}>
-        <span className="font-medium leading-(--conversation-line-height)">{title}</span>
-        {reason ? <p className="mt-0.5 text-(--ui-text-secondary)">{reason}</p> : null}
-        {sourceLine && <p className="mt-0.5 truncate text-[0.6875rem] text-(--ui-text-tertiary)">{sourceLine}</p>}
-      </SetupLine>
-      {envOpen && entry && entry.required_env.length > 0 && (
-        <div className="grid gap-2" data-slot="mcp-setup-env">
-          <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
-          {entry.required_env.map(env => (
-            <label className="grid gap-1" key={env.name}>
-              <span className="text-[0.6875rem] text-(--ui-text-secondary)">
-                {env.prompt || env.name}
-                {env.required ? ' *' : ''}
-              </span>
-              <Input
-                className="h-7 text-xs"
-                onChange={event => setEnvDraft(prev => ({ ...prev, [env.name]: event.currentTarget.value }))}
-                type="password"
-                value={envDraft[env.name] ?? ''}
-              />
-            </label>
-          ))}
-        </div>
-      )}
-      {/* Same strip as the tool approval bar (tool/approval.tsx): a bordered
-          primary-tinted action plus a quiet ghost decline, with the matching
-          keyboard hints. One consent vocabulary across the transcript. */}
-      <div className="flex items-center gap-2.5">
-        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
-          <Button
-            className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-            disabled={working}
-            onClick={() => void approve()}
-            size="xs"
-            variant="ghost"
-          >
-            {working ? <Loader2 className="size-3 animate-spin" /> : actionLabel}
-            {!working && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
-          </Button>
-        </div>
-        {/* Never disabled: while a flow is in flight this is the cancel —
-            a stuck OAuth tab or hung install must always have a way out. */}
-        <Button
-          className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-          onClick={decline}
-          size="xs"
-          variant="ghost"
-        >
-          {working ? t.common.cancel : copy.decline}
-          <span className="text-[0.625rem] opacity-55">Esc</span>
-        </Button>
-      </div>
-    </div>
+    <ConnectorCard
+      accelerators
+      connector={{
+        description: reason || undefined,
+        name: server,
+        requiredEnv: entry?.required_env,
+        title: displayName
+      }}
+      copy={{ ...card, decline: working ? t.common.cancel : card.decline }}
+      envDraft={envDraft}
+      envOpen={envOpen && !!entry && entry.required_env.length > 0}
+      onConnect={() => void approve()}
+      onDismiss={decline}
+      onEnvChange={(key, value) => setEnvDraft(prev => ({ ...prev, [key]: value }))}
+      phase={working ? '' : undefined}
+      source={sourceLine ? { text: sourceLine } : undefined}
+      state="not_configured"
+      variant="avatar"
+    />
   )
 }

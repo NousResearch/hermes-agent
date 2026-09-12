@@ -302,7 +302,7 @@ def stream_tts_to_speaker(
                 stream_max_len = origin._resolve_max_text_length(
                     provider or origin._get_provider(tts_config), tts_config)
             playback = _StreamerPlayback(streamer, stop_event)
-        chunker = SentenceChunker()
+        chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
 
         def _speak_sentence(sentence: str) -> None:

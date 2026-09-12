@@ -482,6 +482,22 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
+        "reasoning_effort": {
+            "type": "string",
+            "enum": [
+                "none", "minimal", "low", "medium", "high",
+                "xhigh", "max", "ultra",
+            ],
+            "description": (
+                "Pin the dispatched worker's thinking depth for this "
+                "task instead of using the assignee profile's own "
+                "agent.reasoning_effort. Passed to the worker as "
+                "--reasoning <level>; 'none' disables thinking. "
+                "Independent of 'model' — a task can run the "
+                "profile's model at a different depth. Omit to "
+                "inherit the profile setting (the default)."
+            ),
+        },
     },
     ["title", "assignee"],
 )

@@ -2853,14 +2853,14 @@ function recentHermesLog() {
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
 
-function readDesktopUpdateConfig() {
+function readDesktopUpdateConfig(): { branch: string; branchExplicit: boolean } {
   try {
-    const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
-    const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
+    const parsed: { branch?: unknown } | null = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
+    const branch: string = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, branchExplicit: branch.length > 0 }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    return { branch: DEFAULT_UPDATE_BRANCH, branchExplicit: false }
   }
 }
 
@@ -3198,7 +3198,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     directoryExists,
     readCanonicalInstallStamp,
     readDesktopUpdateConfig,
-    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate> => readSourceUpdate({
+    readSourceUpdate: (updateRoot: string): Promise<SourceUpdate | null> => readSourceUpdate({
       python: findPythonForRoot(updateRoot),
       git: resolveGitBinary(),
       updateRoot,

@@ -489,7 +489,7 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         ...IDLE,
         applying: false,
         stage: 'manual',
-        message: result.command ?? 'hermes update',
+        message: result.message ?? result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
 

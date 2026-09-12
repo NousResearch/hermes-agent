@@ -21,6 +21,8 @@ export interface SourceUpdateProbe {
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 
+export const SOURCE_PROBE_RECOVERY: string = 'This checkout predates desktop source-channel checks. Run `hermes update --help` in this installation, then choose the intended branch or channel explicitly before updating.'
+
 export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -35,14 +37,20 @@ export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string):
 }
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
-export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate> {
+export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
   if (!probe.python) {
     throw new Error('No Python interpreter is available to check the source update channel.')
   }
 
   const result: { stdout: string; stderr: string } = await execute(
     probe.python,
-    ['-m', 'hermes_cli.source_releases', '--install-root', probe.updateRoot, '--git', probe.git],
+    [
+      '-c',
+      // Inspect the target checkout's callable, not stderr strings or an editable
+      // install elsewhere on sys.path. Exceptions inside a present probe propagate.
+      'from pathlib import Path; import runpy; p = Path("hermes_cli/source_releases.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")',
+      '--install-root', probe.updateRoot, '--git', probe.git
+    ],
     hiddenWindowsChildOptions({
       cwd: probe.updateRoot,
       env: sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
@@ -52,7 +60,11 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
     })
   )
 
-  const selection: SourceUpdate = JSON.parse(result.stdout) as SourceUpdate
+  const selection: SourceUpdate | null = JSON.parse(result.stdout) as SourceUpdate | null
+
+  if (selection === null) {
+    return null
+  }
 
   if (!['main', 'stable', 'canary'].includes(selection.channel)) {
     throw new Error('The source update check returned an invalid channel.')

@@ -87,6 +87,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   async function applyBody(opts: { stopSafeBlockers?: boolean } = {}): Promise<UpdaterApplyResultWire> {
     const status: UpdaterStatusWire = await checkCheckoutUpdates(deps, { force: true })
 
+    if (status.reason === 'source-probe-unavailable') {
+      return { ok: true, manual: true, command: 'hermes update --help', message: status.message, hermesRoot: status.hermesRoot }
+    }
+
     if (!status.supported || status.error) {
       return { ok: false, error: status.error ?? status.reason, message: status.message }
     }

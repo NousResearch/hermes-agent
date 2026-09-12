@@ -5,7 +5,7 @@ import type { InstallStamp } from '../install-stamp'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from '../update-api-check'
 import { classifyUpdateRoot } from '../update-root-policy'
 
-import type { SourceUpdate } from './checkout-source'
+import { SOURCE_PROBE_RECOVERY, type SourceUpdate } from './checkout-source'
 
 import type { UpdaterStatusWire } from './index'
 
@@ -14,8 +14,8 @@ export interface CheckoutCheckDeps {
   updateCheckCachePath: string
   isGitCheckout: (root: string) => boolean
   readCanonicalInstallStamp: () => { updateMechanism?: InstallStamp['updateMechanism'] } | null
-  readDesktopUpdateConfig: () => { branch: string }
-  readSourceUpdate: (root: string) => Promise<SourceUpdate>
+  readDesktopUpdateConfig: () => { branch: string; branchExplicit?: boolean }
+  readSourceUpdate: (root: string) => Promise<SourceUpdate | null>
   resolveUpdateRoot: () => string
   resolveHealedBranch: (root: string, branch: string) => Promise<string>
   getOriginUrl: (root: string) => Promise<string>
@@ -109,7 +109,8 @@ export async function checkCheckoutUpdates(
   { force = false }: { force?: boolean } = {}
 ): Promise<UpdaterStatusWire> {
   const updateRoot: string = deps.resolveUpdateRoot()
-  let { branch }: { branch: string } = deps.readDesktopUpdateConfig()
+  const config: ReturnType<CheckoutCheckDeps['readDesktopUpdateConfig']> = deps.readDesktopUpdateConfig()
+  let branch: string = config.branch
 
   const policy = classifyUpdateRoot({
     isGitTree: deps.isGitCheckout(updateRoot),
@@ -136,7 +137,15 @@ export async function checkCheckoutUpdates(
     deps.getOriginUrl(updateRoot)
   ])
 
-  const selection: SourceUpdate = await deps.readSourceUpdate(updateRoot)
+  if (config.branchExplicit === false && currentBranch && currentBranch !== 'HEAD') {
+    branch = currentBranch
+  }
+
+  const selection: SourceUpdate | null = await deps.readSourceUpdate(updateRoot)
+
+  if (selection === null) {
+    return { supported: false, reason: 'source-probe-unavailable', message: SOURCE_PROBE_RECOVERY, hermesRoot: updateRoot }
+  }
 
   if (selection.channel !== 'main') {
     return {

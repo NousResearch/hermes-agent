@@ -324,6 +324,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
+  const guidance: string | undefined = message && message !== command ? message : undefined
 
   const handleCopy = () => {
     if (!command) {
@@ -361,7 +362,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">{guidance ?? u.manualBody}</DialogDescription>
       </div>
 
       <button
@@ -387,7 +388,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
+      {!guidance && <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}

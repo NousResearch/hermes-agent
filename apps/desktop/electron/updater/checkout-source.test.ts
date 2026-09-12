@@ -133,7 +133,10 @@ import urllib.request\nfrom urllib.parse import urlsplit\noriginal = urllib.requ
       writeFileAtomic: (file: string, contents: string): void => fs.writeFileSync(file, contents),
       isGitCheckout: (): boolean => true,
       readCanonicalInstallStamp: (): null => null,
-      readDesktopUpdateConfig: (): { branch: string } => ({ branch: 'feature/gui' }),
+      readDesktopUpdateConfig: (): { branch: string; branchExplicit: boolean } => ({
+        branch: 'main',
+        branchExplicit: false
+      }),
       resolveUpdateRoot: (): string => root,
       readSourceUpdate: async (install: string): Promise<SourceUpdate> => {
         const result: { stdout: string } = await execute(

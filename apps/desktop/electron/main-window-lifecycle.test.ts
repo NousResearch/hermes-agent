@@ -70,3 +70,38 @@ test('leaves live-window focus to deep-link delivery', () => {
     focusExisting: false
   })
 })
+
+// A relaunch while the first launch is still waiting for its backend has no
+// window to focus and no right to create a second one, so the extra activation
+// used to be a silent no-op — the user sees nothing and clicks again. Report it
+// so the caller can surface "already starting" instead of swallowing the click.
+test('reports a still-starting activation instead of silently doing nothing', () => {
+  const outcome = ensureMainWindow(null, {
+    isReady: true,
+    createWindow: () => assert.fail('a starting instance must not be duplicated'),
+    focusWindow: () => assert.fail('there is no window to focus yet'),
+    starting: true
+  })
+
+  assert.equal(outcome, 'starting')
+})
+
+test('classifies the ordinary outcomes for the caller', () => {
+  assert.equal(
+    ensureMainWindow(
+      { isDestroyed: () => false },
+      { isReady: true, createWindow: () => undefined, focusWindow: () => undefined }
+    ),
+    'focused'
+  )
+
+  assert.equal(
+    ensureMainWindow(null, { isReady: true, createWindow: () => undefined, focusWindow: () => undefined }),
+    'created'
+  )
+
+  assert.equal(
+    ensureMainWindow(null, { isReady: false, createWindow: () => undefined, focusWindow: () => undefined }),
+    'not-ready'
+  )
+})

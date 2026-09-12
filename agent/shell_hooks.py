@@ -318,12 +318,11 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
     except BaseException as exc:
-        # BaseException, not Exception: Ctrl+C raises KeyboardInterrupt here, and the hook leads its own
-        # process group (above), so the terminal's SIGINT never reaches it — it would keep running.
+        # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
             proc.communicate(timeout=1)
-        if not isinstance(exc, Exception):  # KeyboardInterrupt / SystemExit: reap the hook, then propagate
+        if not isinstance(exc, Exception):
             raise
         if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
             return failed(str(exc))

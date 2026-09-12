@@ -804,7 +804,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _per_token(deepinfra_pricing, deepinfra_fields, lambda v: v / 1_000_000)
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
-        "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
+        "completion": ("completion", "completions", "output", "output_cost_per_token", "completion_token_cost"),
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),

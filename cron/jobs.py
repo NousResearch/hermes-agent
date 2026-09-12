@@ -1120,7 +1120,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
                 expr)
             return None
-        return croniter(expr, base_time).get_next(datetime).isoformat()
+        # croniter may return naive on some platforms/versions; ensure aware so stored
+        # next_run_at preserves the correct UTC offset across DST (#100030).
+        return _ensure_aware(croniter(expr, base_time).get_next(datetime)).isoformat()
     return None
 
 
@@ -1930,7 +1932,37 @@ def _rederive_repeat_for_schedule_change(
     updates["repeat"] = repeat
 
 
-def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
+def _preserved_resave_next_run(
+    original: Optional[Dict[str, Any]], updated_schedule: Dict[str, Any]
+) -> Optional[str]:
+    """Stored ``next_run_at`` to keep when a resave leaves the cron expr unchanged (#100030).
+
+    Recomputing from now (croniter strictly-after) at a month boundary would jump a monthly
+    "0 0 1 * *" from Sep 1 to Oct 1, skipping the run. None = nothing safe to preserve.
+    """
+    try:
+        old = original.get("schedule") if isinstance(original, dict) else None
+        old_expr = old.get("expr") if isinstance(old, dict) else None
+        new_expr = updated_schedule.get("expr") if isinstance(updated_schedule, dict) else None
+        existing = original.get("next_run_at") if isinstance(original, dict) else None
+        if not (old_expr and new_expr == old_expr and isinstance(existing, str)
+                and updated_schedule.get("kind") == "cron"):
+            return None
+        existing_dt = _ensure_aware(datetime.fromisoformat(existing))
+        if not _cron_next_run_matches_expr(updated_schedule, existing_dt):
+            return None
+        age = (_hermes_now() - existing_dt).total_seconds()
+        if age < 0 or 0 <= age <= _compute_grace_seconds(updated_schedule):
+            return existing
+    except Exception:
+        pass
+    return None
+
+
+def _apply_schedule_update(
+    updated: Dict[str, Any], updates: Dict[str, Any], job_id: str,
+    original: Optional[Dict[str, Any]] = None,
+) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
     if isinstance(updated_schedule, str):
@@ -1939,8 +1971,12 @@ def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job
     updated["schedule_display"] = updates.get(
         "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
     if updated.get("state") != "paused":
-        updated["next_run_at"] = _next_run_or_reject_past_oneshot(
-            updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
+        preserved = _preserved_resave_next_run(original, updated_schedule)
+        if preserved is not None:
+            updated["next_run_at"] = preserved
+        else:
+            updated["next_run_at"] = _next_run_or_reject_past_oneshot(
+                updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
 
 
 def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
@@ -1988,7 +2024,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         ) and _normalized_inference_axes(updated) != previous_inference_axes
 
         if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
+            _apply_schedule_update(updated, updates, job_id, job)
         if inference_fields_changed:
             snapshots = _compute_provider_model_snapshots(
                 provider=updated.get("provider"),

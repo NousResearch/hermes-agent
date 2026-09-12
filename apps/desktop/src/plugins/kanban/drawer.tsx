@@ -571,18 +571,6 @@ export function TaskDrawer({
     refetchInterval: running ? 3_000 : 15_000
   })
 
-  // Esc closes the drawer even though it isn't modal (no backdrop to click off).
-  useEffect(() => {
-    if (!id) {
-      return
-    }
-
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose])
-
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
     void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })

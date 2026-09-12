@@ -67,7 +67,7 @@ function RouteTilePane({ path }: { path: string }) {
   if (contrib) {
     return (
       <ContribBoundary id={path}>
-        <ContribRender render={contrib.render} />
+        <ContribRender onClose={() => closeRouteTile(path)} render={contrib.render} />
       </ContribBoundary>
     )
   }

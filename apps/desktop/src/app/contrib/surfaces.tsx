@@ -184,7 +184,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
         <Route
           element={page(
             <ContribBoundary id={route.key}>
-              <ContribRender render={route.render} />
+              <ContribRender onClose={actions.closeContributedRoute} render={route.render} />
             </ContribBoundary>
           )}
           key={route.key}

@@ -1079,8 +1079,13 @@ function SelectionBar({
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
-export function KanbanBoardPage() {
+interface KanbanBoardPageProps {
+  onClose?: () => void
+}
+
+export function KanbanBoardPage({ onClose }: KanbanBoardPageProps = {}) {
   const k = useKanban()
+  const pageRef = useRef<HTMLDivElement>(null)
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
@@ -1144,21 +1149,14 @@ export function KanbanBoardPage() {
     })
   }, [board])
 
+  // Let Escape reach this surface immediately after navigation. Native focus
+  // ignores hidden/inert panes; rerenders and background query updates do not
+  // move focus.
   useEffect(() => {
-    if (selected.size === 0) {
-      return
+    if (!pageRef.current?.contains(document.activeElement)) {
+      pageRef.current?.focus({ preventScroll: true })
     }
-
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setSelected(new Set())
-      }
-    }
-
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selected.size])
+  }, [])
 
   const columnNames = board?.columns.map(col => col.name) ?? []
 
@@ -1321,7 +1319,44 @@ export function KanbanBoardPage() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
+    <div
+      className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)"
+      onKeyDown={event => {
+        // Portaled menus/dialogs bubble through React's tree too. They own
+        // Escape, as do text fields and IME composition.
+        if (
+          event.key !== 'Escape' ||
+          event.defaultPrevented ||
+          event.nativeEvent.isComposing ||
+          addStatus ||
+          document.querySelector('[data-overlay-surface]') ||
+          !event.currentTarget.contains(event.target as Node) ||
+          (event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]')
+        ) {
+          return
+        }
+
+        event.preventDefault()
+        event.stopPropagation()
+
+        if (openId) {
+          setOpenId(null)
+        } else if (selected.size) {
+          setSelected(new Set())
+        } else {
+          onClose?.()
+        }
+      }}
+      onPointerDown={event => {
+        // Cards and empty board space are not native focus targets. Keep
+        // keyboard ownership in this board after the user clicks either.
+        if (!(event.target as HTMLElement).closest('button, a, input, textarea, select, [contenteditable="true"]')) {
+          event.currentTarget.focus({ preventScroll: true })
+        }
+      }}
+      ref={pageRef}
+      tabIndex={-1}
+    >
       {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
       <Contribute area={TITLEBAR_AREAS.center} id="kanban:board-switcher">
         <BoardSwitcher />
@@ -1360,6 +1395,13 @@ export function KanbanBoardPage() {
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
+          {onClose && (
+            <Tip label={`${k.close} (Esc)`}>
+              <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
+                <Codicon name="close" />
+              </Button>
+            </Tip>
+          )}
         </div>
       </header>
 

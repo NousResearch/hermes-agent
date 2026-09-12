@@ -4,9 +4,10 @@
  * A device-local preference (each computer keeps its own), off by default. This
  * atom backs the Settings → Advanced toggle and mirrors changes to the main
  * process, which owns the real power-save blocker AND its own persisted copy —
- * so a cold launch restores the blocker without the renderer visiting Settings
- * (see electron/main.ts + electron/power-save.ts). Linux/web without the bridge
- * just no-op.
+ * so a cold launch restores the preference without the renderer visiting
+ * Settings. Main only holds the blocker while a turn is in flight, so an idle
+ * Hermes lets the machine sleep (see electron/main.ts + electron/power-save.ts).
+ * Linux/web without the bridge just no-op.
  */
 
 import { atom } from 'nanostores'

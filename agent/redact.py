@@ -801,7 +801,7 @@ def _command_segments(command: str) -> list[str]:
             elif quote is None:
                 quote = char
             continue
-        if quote is None and char in "|;&":
+        if quote is None and char in "|;&\r\n":
             segment = command[start:index].strip()
             if segment:
                 segments.append(segment)

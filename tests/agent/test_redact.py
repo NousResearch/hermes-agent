@@ -937,6 +937,30 @@ class TestTerminalOutputRedaction:
         secret = output.rsplit(" ", 1)[-1].split("=", 1)[-1]
         assert secret not in redact_terminal_output(output, command)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "printf x\ncat .env",
+            "printf x\r\ncat $HERMES_HOME/config.yaml",
+            "printf x\ncat ~/.bashrc",
+        ],
+    )
+    def test_multiline_secret_file_reads_mask_opaque_assignments(self, command):
+        from agent.redact import redact_terminal_output
+        secret = "G" * 40
+        assert secret not in redact_terminal_output(f"FOO_TOKEN={secret}", command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "printf 'x\ncat .env'",
+            "printf x \\\ncat .env",
+        ],
+    )
+    def test_quoted_or_escaped_newlines_do_not_split_commands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file(command)
+
     def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
         from agent.redact import redact_terminal_output
         secret = "E" * 40

@@ -877,37 +877,50 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, state: SessionState, session_id: str, conn: Any, result: dict, pre_turn_hermes_id: Any,
         streamed_message: bool,
     ) -> PromptResponse:
-        """Persist, emit provenance/final text, drain queued prompts, report usage."""
-        if result.get("messages"):
-            state.history = result["messages"]
-            self.session_manager.save_session(session_id)
+        """Persist, emit provenance/final text, drain queued prompts, report usage.
 
-        # Head rotated (compression split): emit provenance so clients can render the boundary.
-        post_turn_hermes_id = getattr(state.agent, "session_id", None)
-        if conn and post_turn_hermes_id and pre_turn_hermes_id and post_turn_hermes_id != pre_turn_hermes_id:
-            try:
-                await self._send_session_info_update(
-                    session_id, current_hermes_session_id=post_turn_hermes_id,
-                    previous_hermes_session_id=pre_turn_hermes_id,
-                )
-            except Exception:
-                logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
+        The pre-drain tail runs inside a ``try`` whose ``finally`` clears ``is_running``: an
+        exception anywhere in it (a cancelled turn's ``final_response=None`` reaching
+        ``startswith``, ``save_session`` failing, a ``conn.session_update`` error) would
+        otherwise escape with the session still marked running, so every later prompt —
+        the queued ones included — would be answered with "Queued for the next turn" until
+        the process died (#86798).
+        """
+        try:
+            if result.get("messages"):
+                state.history = result["messages"]
+                self.session_manager.save_session(session_id)
 
-        final_response = result.get("final_response", "")
-        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
-        # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            # Head rotated (compression split): emit provenance so clients can render the boundary.
+            post_turn_hermes_id = getattr(state.agent, "session_id", None)
+            if conn and post_turn_hermes_id and pre_turn_hermes_id and post_turn_hermes_id != pre_turn_hermes_id:
+                try:
+                    await self._send_session_info_update(
+                        session_id, current_hermes_session_id=post_turn_hermes_id,
+                        previous_hermes_session_id=pre_turn_hermes_id,
+                    )
+                except Exception:
+                    logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
-        interrupted = bool(result.get("interrupted")) or cancelled
-        suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
-        # Send the final text unless already streamed — or if a plugin hook transformed it after.
-        if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
-            await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+            # `or ""` rather than the .get(key, "") default: a cancelled/interrupted turn
+            # returns an explicit {"final_response": None}, which only a missing KEY would
+            # have defaulted — the None reached startswith() and crashed the tail (#86798).
+            final_response = result.get("final_response") or ""
+            cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+            # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
+            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
-        # Go idle before draining so recursive prompt() calls can acquire the session.
-        with state.runtime_lock:
-            state.is_running = False
-            state.current_prompt_text = ""
+            interrupted = bool(result.get("interrupted")) or cancelled
+            suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+            # Send the final text unless already streamed — or if a plugin hook transformed it after.
+            if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
+                await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+        finally:
+            # Go idle before draining so recursive prompt() calls can acquire the session. Runs on
+            # every exit path, including a raise from the tail above.
+            with state.runtime_lock:
+                state.is_running = False
+                state.current_prompt_text = ""
         while True:
             with state.runtime_lock:
                 if not state.queued_prompts:

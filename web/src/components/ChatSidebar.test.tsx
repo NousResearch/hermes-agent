@@ -146,6 +146,37 @@ describe("ChatSidebar event socket", () => {
       reloadMocks.maybeReloadForLoopbackWsAuthFailure,
     ).toHaveBeenCalledWith(4401);
   });
+
+  it("shows a Subagents panel when a start event arrives on /api/events", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    expect(container.querySelector('[aria-label="Subagents"]')).toBeNull();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("message", {
+        data: JSON.stringify({
+          method: "event",
+          params: {
+            type: "subagent.start",
+            payload: {
+              subagent_id: "child-1",
+              goal: "write tests",
+              status: "running",
+              started_at: 1700000000,
+            },
+          },
+        }),
+      });
+    });
+
+    const panel = container.querySelector('[aria-label="Subagents"]');
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toMatch(/write tests/);
+    expect(panel?.textContent).toMatch(/running/);
+  });
 });
 
 describe("ChatSidebar event socket reconnect", () => {

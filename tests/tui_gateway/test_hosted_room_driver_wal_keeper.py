@@ -161,7 +161,10 @@ def test_configured_delete_mode_leaves_no_wal_sidecars(tmp_path: Path, monkeypat
     )
     try:
         runtime.start()
-        _wait_for(lambda: runtime._wal_keeper is not None)
+        # The policy now honors journal_mode=delete inside the keeper acquire —
+        # the keeper is deliberately DROPPED (a non-WAL keeper guards nothing),
+        # so wait for the error record instead of the keeper reference.
+        _wait_for(lambda: "wal keeper inapplicable" in (runtime._last_error or ""))
         probe = sqlite3.connect(db, timeout=10)
         mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
         probe.close()
@@ -197,7 +200,10 @@ def test_vulnerable_runtime_fresh_db_keeper_and_store_stay_consistent(tmp_path: 
     )
     try:
         runtime.start()
-        _wait_for(lambda: runtime._wal_keeper is not None)
+        # Vulnerable runtime: policy leaves the fresh DB in DELETE, so the
+        # keeper is dropped — wait for the inapplicable-mode record instead of
+        # a keeper reference, then assert keeper and store agree on the mode.
+        _wait_for(lambda: "wal keeper inapplicable" in (runtime._last_error or ""))
 
         probe = sqlite3.connect(db, timeout=10)
         keeper_mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
@@ -224,6 +230,61 @@ def test_vulnerable_runtime_fresh_db_keeper_and_store_stay_consistent(tmp_path: 
         rows = probe.execute("SELECT * FROM probe").fetchall()
         probe.close()
         assert rows == [("v",)]
+    finally:
+        release.set()
+        runtime.stop(timeout=2.0)
+
+
+def test_indeterminate_mode_probe_drops_keeper(tmp_path: Path, monkeypatch):
+    """When the on-disk journal-mode probe cannot decide (fresh DB whose
+    PRAGMA is blocked, or the WAL-reset gate's indeterminate `current is None`
+    branch), the policy reports 'wal' WITHOUT touching the file and the
+    keeper would stay in DELETE — a later connection flipping the header to
+    WAL then orphans it (sidecars deleted with _wal_keeper non-null). The
+    acquire must therefore trust the file, not the verdict: verify the
+    header and DROP the keeper when it is not actually WAL, recording the
+    inapplicability and re-probing next cycle instead of holding false
+    protection."""
+    import hermes_state_wal
+
+    real_probe = hermes_state_wal._on_disk_journal_mode
+    # Probe indeterminate ONLY during the keeper's acquire window.
+    probe_state = {"indeterminate": True}
+
+    def _probe(conn):
+        return None if probe_state["indeterminate"] else real_probe(conn)
+
+    # The worker's acquire imports the helpers at call time via
+    # `from hermes_state_wal import ...`, so patch the module attribute and the
+    # import inside the driver picks up the mock.
+    monkeypatch.setattr(hermes_state_wal, "_on_disk_journal_mode", _probe)
+
+    db = tmp_path / "state.db"
+    rooms, release = slow_rooms_provider()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=rooms,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        poll_interval_seconds=0.01,
+    )
+    try:
+        runtime.start()
+        _wait_for(
+            lambda: "wal keeper inapplicable" in (runtime._last_error or "")
+        )
+        assert runtime._wal_keeper is None, (
+            "indeterminate-mode keeper must be dropped, not held"
+        )
+        # Self-heal: probe becomes decidable; put the file actually into WAL
+        # FIRST (while the probe is indeterminate the gate refuses the flip),
+        # release the provider so worker cycles complete quickly, then the
+        # next cycles must acquire the keeper.
+        _set_wal_mode(db)
+        probe_state["indeterminate"] = False
+        release.set()
+        runtime._last_error = None
+        _wait_for(lambda: runtime._wal_keeper is not None)
     finally:
         release.set()
         runtime.stop(timeout=2.0)

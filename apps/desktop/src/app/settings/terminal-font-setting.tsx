@@ -13,7 +13,7 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { getNested, setNested } from './helpers'
@@ -39,6 +39,7 @@ export function TerminalFontSetting() {
   const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
+  const writeConfigCache = hermesConfigCacheWriter()
 
   // Lexically outside every useEffect so async save callbacks can cancel the
   // in-flight version without assigning to a ref inside an effect body.
@@ -81,7 +82,7 @@ export function TerminalFontSetting() {
     }
 
     // The last successfully saved value IS what the shared config cache
-    // holds — successful saves write it back via setHermesConfigCache, so
+    // holds — successful saves write it back through the bound cache writer, so
     // rollback re-derives from there instead of mirroring into a ref.
     const rollback = fontFamilyFromConfig(loadedConfig)
 
@@ -98,7 +99,7 @@ export function TerminalFontSetting() {
             return
           }
 
-          setHermesConfigCache(next)
+          writeConfigCache(next)
         })
         .catch(error => {
           if (saveVersionRef.current !== version) {

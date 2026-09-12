@@ -61,7 +61,7 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
@@ -80,6 +80,7 @@ function ResumeLastSessionSetting() {
   const a = t.settings.appearance
   const configQuery = useHermesConfigRecord()
   const config = configQuery.data
+  const writeConfigCache = hermesConfigCacheWriter()
   const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
 
   const update = (on: boolean) => {
@@ -88,7 +89,7 @@ function ResumeLastSessionSetting() {
     }
 
     const next = setNested(config, 'display.resume_last_session', on)
-    setHermesConfigCache(next)
+    writeConfigCache(next)
     void saveHermesConfig(next)
       .then(result => {
         if (!result.ok) {
@@ -96,7 +97,7 @@ function ResumeLastSessionSetting() {
         }
       })
       .catch(error => {
-        setHermesConfigCache(config)
+        writeConfigCache(config)
         notifyError(error, t.settings.config.autosaveFailed)
       })
   }

@@ -40,8 +40,7 @@ vi.mock('@/store/projects', () => ({
 }))
 
 beforeEach(async () => {
-  const { $settingsRequestProfile, $settingsScopeOverride } = await import('@/store/settings-scope')
-  $settingsRequestProfile.set('default')
+  const { $settingsScopeOverride } = await import('@/store/settings-scope')
   $settingsScopeOverride.set(null)
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
@@ -104,8 +103,7 @@ describe('ConfigSettings autosave', () => {
   })
 
   it('does not rescan active-profile repositories while editing another profile', async () => {
-    const { $settingsRequestProfile, $settingsScopeOverride } = await import('@/store/settings-scope')
-    $settingsRequestProfile.set('profile-b')
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
     $settingsScopeOverride.set('profile-b')
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
     vi.useFakeTimers({ shouldAdvanceTime: true })

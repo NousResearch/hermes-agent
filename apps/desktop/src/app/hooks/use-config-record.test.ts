@@ -11,7 +11,7 @@ vi.mock('@/hermes', () => ({
   profileScopeKey: (profile: string) => profile
 }))
 
-import { hermesConfigKey, setHermesConfigCache } from './use-config-record'
+import { hermesConfigCacheWriter, hermesConfigKey } from './use-config-record'
 
 afterEach(() => {
   queryClient.clear()
@@ -24,17 +24,19 @@ describe('Hermes config cache scope', () => {
     expect(hermesConfigKey('profile-a')).not.toEqual(hermesConfigKey('profile-b'))
 
     const config = { model: { default: 'hermes-4' } } as unknown as HermesConfigRecord
-    setHermesConfigCache(config)
+    hermesConfigCacheWriter()(config)
 
     expect(queryClient.getQueryData(hermesConfigKey('default'))).toBe(config)
   })
 
-  it('resolves ambient writes again after the active profile changes', () => {
+  it('binds an ambient writer to the profile active when work starts', () => {
     mocks.activeProfile = 'profile-a'
+    const writeProfileA = hermesConfigCacheWriter()
+    mocks.activeProfile = 'profile-b'
     const config = { model: { default: 'model-a' } } as unknown as HermesConfigRecord
-    setHermesConfigCache(config)
+    writeProfileA(config)
 
     expect(queryClient.getQueryData(hermesConfigKey('profile-a'))).toBe(config)
-    expect(queryClient.getQueryData(hermesConfigKey('default'))).toBeUndefined()
+    expect(queryClient.getQueryData(hermesConfigKey('profile-b'))).toBeUndefined()
   })
 })

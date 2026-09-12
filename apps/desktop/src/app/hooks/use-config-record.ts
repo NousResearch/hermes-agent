@@ -32,21 +32,21 @@ export const hermesConfigKey = (profile?: ProfileScope) => {
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
 // `profile` scopes both the query key and the fetch; omitting it preserves
 // ambient request routing while keying the response by its concrete profile.
-export const useHermesConfigRecord = (profile?: ProfileScope) =>
-  useQuery({
-    queryKey: hermesConfigKey(profile),
+export const useHermesConfigRecord = (profile?: ProfileScope) => {
+  const resolvedProfile = profile ?? getApiRequestProfile() ?? undefined
+
+  return useQuery({
+    queryKey: hermesConfigKey(resolvedProfile),
     // null/undefined both mean "no override" → fetch with undefined so
     // capabilityScoped falls back to the app-wide active profile (passing null
     // would wrongly target the primary backend).
-    queryFn: () => getHermesConfigRecord(profile ?? undefined),
+    queryFn: () => getHermesConfigRecord(resolvedProfile),
     staleTime: 0
   })
+}
 
-// Ambient writes resolve their concrete profile at call time, matching
-// useHermesConfigRecord() even after an app-wide profile switch.
-export const setHermesConfigCache = (
-  next: HermesConfigRecord | undefined | ((prev: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)
-): void => writeCache<HermesConfigRecord>(hermesConfigKey())(next)
+// Bind writers before starting async work so a later active-profile switch
+// cannot redirect an old request's completion into the new profile's row.
 export const hermesConfigCacheWriter = (profile?: ProfileScope) =>
   writeCache<HermesConfigRecord>(hermesConfigKey(profile))
 

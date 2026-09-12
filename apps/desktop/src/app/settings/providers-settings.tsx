@@ -520,7 +520,13 @@ export function ProvidersSettings({
   }
 
   if (view === 'custom-endpoints') {
-    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+    return (
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scopeProfile={scopeProfile}
+      />
+    )
   }
 
   if (view === 'local') {

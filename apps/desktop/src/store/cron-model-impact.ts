@@ -191,7 +191,8 @@ export async function setMainModelAssignment(
   // A concrete profile may still be the active one. Only suppress impact UI
   // when the caller explicitly says the Settings selector targets another
   // profile; its review action would otherwise open the active profile's cron.
-  const targetIsActiveProfile = options?.targetIsActiveProfile ?? scopeProfile == null
+  const targetIsActiveProfile =
+    options?.targetIsActiveProfile ?? (scopeProfile == null || scopeProfile.trim() === profile)
 
   if (!targetIsActiveProfile) {
     return result

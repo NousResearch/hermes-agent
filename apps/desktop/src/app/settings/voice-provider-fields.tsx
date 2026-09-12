@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ConfigField } from './config-field'
 import { SECTIONS } from './constants'
@@ -34,6 +34,7 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
   const { data: loadedConfig } = useHermesConfigRecord()
+  const writeConfigCache = hermesConfigCacheWriter()
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -65,7 +66,7 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
 
     const timeout = window.setTimeout(() => {
       void saveHermesConfig(config)
-        .then(() => setHermesConfigCache(config))
+        .then(() => writeConfigCache(config))
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 

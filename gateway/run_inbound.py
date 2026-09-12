@@ -490,8 +490,9 @@ class GatewayInboundMixin:
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
         from gateway.run import _INTERRUPT_REASON_EVICTED
-        self._interrupt_running_turn(_quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
-        self._drop_turn_slot(_quick_key)
+        _generation_at_interrupt = self._interrupt_running_turn(
+            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
+        self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
@@ -903,8 +904,7 @@ class GatewayInboundMixin:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
-            if not _moa_state.conversation.one_turn_restore:
-                _moa_state.conversation.one_turn_restore = self._snapshot_session_model_override(_quick_key)
+            self._claim_one_turn_restore(_quick_key)
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",

@@ -267,13 +267,9 @@ class GatewayModelCommandsMixin:
             "capabilities": dict(result.runtime_capabilities or {}),
         }
         if one_turn:
-            if not hasattr(self, "_pending_one_turn_model_restores"):
-                self._pending_one_turn_model_restores = {}
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
-            self._pending_one_turn_model_restores.setdefault(
-                ctx.session_key, dict(ctx.restore_snapshot or {"had_override": False, "override": None}),
-            )
+            self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are

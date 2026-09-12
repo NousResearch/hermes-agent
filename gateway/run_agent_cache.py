@@ -209,6 +209,16 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         return {"had_override": override is not None, "override": dict(override) if override is not None else None}
 
+    def _claim_one_turn_restore(self, session_key: str, snapshot: Optional[dict] = None) -> None:
+        """Arm the one-shot restore snapshot for ``/model --once`` / ``/moa``. A repeated one-shot
+        command before the turn runs keeps the EARLIEST snapshot: the later command's snapshot is
+        the first temporary model, not the user's standing override. Pass *snapshot* when the
+        caller captured the pre-switch state earlier (``/model --once`` applies its override before
+        arming); omit it to snapshot now."""
+        conv = self._session_state(session_key).conversation
+        if not conv.one_turn_restore:
+            conv.one_turn_restore = dict(snapshot) if snapshot is not None else self._snapshot_session_model_override(session_key)
+
     def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
         """Restore the session override captured before a one-turn switch."""
         if not session_key:
@@ -256,14 +266,33 @@ class GatewayAgentCacheMixin:
         self._persist_active_agents()
         return True
 
-    def _drop_turn_slot(self, session_key: str) -> None:
+    def _drop_turn_slot(self, session_key: str, *, run_generation: Optional[int] = None) -> None:
         """Release the running-agent slot and evict the cached instance (/stop, eviction, reaper).
         ``_interrupt_requested`` is cleared only by the turn finalizer, so on a hung/still-draining
         run the flag would survive and silently kill the session's NEXT message (interrupted=True,
         api_calls=0, empty response); the next message rebuilds from history while the old agent
-        keeps its flag so a hung drain still dies (#44212)."""
-        self._release_running_agent_state(session_key)
+        keeps its flag so a hung drain still dies (#44212). With ``run_generation`` (the post-bump
+        value ``_interrupt_running_turn`` returns), the release is generation-guarded: an async
+        path awaits between bump and release, so a successor claiming the slot in that window must
+        not have its sentinel/lease wiped by the displaced path's tail. Then sweep lease tokens
+        from generations OLDER than the current one: a hung evicted turn's finalizer may never run,
+        and each such generation would otherwise pin its token (and its ``_SessionLease``) forever.
+        Identity-checked + idempotent, so a live successor's token is never affected."""
+        self._release_running_agent_state(session_key, run_generation=run_generation)
         self._evict_cached_agent(session_key)
+        state = self._peek_session_state(session_key)
+        registry = getattr(self, "_turn_leases", None)
+        if state is None or registry is None:
+            return
+        current = int(state.persistent.run_generation or 0)
+        tokens = state.turn.lease_tokens
+        for gen in [g for g in tokens if int(g) < current]:
+            token = tokens.pop(gen)
+            try:
+                registry.release(token)
+            except Exception:
+                logger.debug("Failed to release displaced turn lease gen %s for %s", gen, session_key,
+                             exc_info=True)
 
     def _held_turn_lease(self, session_key: str, run_generation: int):
         """Return ``(registry, lease_tokens)`` when ``session_key`` holds a lease token for
@@ -436,7 +465,7 @@ class GatewayAgentCacheMixin:
         if not session_key:
             return
         state = self._peek_session_state(session_key)
-        self._interrupt_running_turn(
+        _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         adapter = self._adapter_for_source(source)
@@ -452,7 +481,9 @@ class GatewayAgentCacheMixin:
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:
-            self._drop_turn_slot(session_key)
+            # Guarded release: a message that arrived during the awaits above may already run as
+            # the successor generation — the displaced /stop tail must not wipe its slot.
+            self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
 
     async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard

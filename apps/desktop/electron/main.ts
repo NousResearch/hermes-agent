@@ -470,7 +470,16 @@ import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './work
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
-const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
+// readWindowsUserEnvVar returns null off-Windows and on any lookup failure, so
+// this is safe to call unconditionally. Mirrors the HERMES_HOME registry
+// fallback below (#45471): a GUI launch with no launcher environment (a bare
+// exe, a stray shortcut, Explorer) must not silently fall through to
+// Electron's own default userData, because that default has no sandbox
+// config and no configured backend connections, and the app then goes looking
+// for `hermes` on PATH -- which can find and run an entirely different,
+// unrelated install's Python backend. Local#1 (2026-09-10).
+const USER_DATA_OVERRIDE =
+  process.env.HERMES_DESKTOP_USER_DATA_DIR || readWindowsUserEnvVar('HERMES_DESKTOP_USER_DATA_DIR')
 
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
@@ -789,22 +798,32 @@ function resolveHermesHome() {
     return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   }
 
-  if (USER_DATA_OVERRIDE) {
-    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
-  }
-
   if (IS_WINDOWS) {
     // A GUI app launched from Explorer inherits the environment block captured
     // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
     // process.env even though the CLI (a fresh shell) sees it. Without this the
     // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
     // inference provider configured" despite a valid configured home (#45471).
-    // Consult the live User-scoped registry value before the default below.
+    // Consult the live User-scoped registry value.
+    //
+    // This check sits ABOVE the USER_DATA_OVERRIDE derivation on purpose. The
+    // registry value is the stand-in for an explicit HERMES_HOME when the
+    // process environment is stale, so it ranks where the explicit value ranks:
+    // above anything merely derived. Now that USER_DATA_OVERRIDE can itself come
+    // from the registry, leaving this below it would let a derived
+    // <userData>/hermes-home shadow the home the user actually configured, and
+    // split state across two directories depending on how the app was launched.
+    // Every sandbox/test entry point sets HERMES_HOME explicitly, so this cannot
+    // hijack a deliberate sandbox. Local#1 (2026-09-10).
     const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
 
     if (fromRegistry) {
       return normalizeHermesHomeRoot(fromRegistry)
     }
+  }
+
+  if (USER_DATA_OVERRIDE) {
+    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   }
 
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
@@ -923,7 +942,12 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+// Registry fallback, same reasoning as USER_DATA_OVERRIDE above: a bare launch
+// with no launcher environment must not silently become plain "Hermes" and
+// collide with a different, unrelated install of the same name. Local#1
+// (2026-09-10).
+const APP_NAME =
+  process.env.HERMES_DESKTOP_APP_NAME || readWindowsUserEnvVar('HERMES_DESKTOP_APP_NAME') || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -5097,7 +5121,17 @@ function resolveHermesBackend(backendArgs) {
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  //
+  //    Registry fallback, same as USER_DATA_OVERRIDE/APP_NAME above: this is
+  //    the step that actually runs someone else's Python as this app's
+  //    backend, so of the three sandbox variables this is the one where a
+  //    stale/absent process environment is most consequential -- a bare
+  //    launch with no launcher env previously fell through to whatever
+  //    `hermes` it found on PATH, silently running an unrelated install's
+  //    code (not just its data). Local#1 (2026-09-10).
+  const ignoreExisting =
+    process.env.HERMES_DESKTOP_IGNORE_EXISTING || readWindowsUserEnvVar('HERMES_DESKTOP_IGNORE_EXISTING')
+  if (ignoreExisting !== '1') {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 

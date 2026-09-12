@@ -101,7 +101,7 @@ def decompose_triage_task(
     """
     from hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
-        write_txn, recompute_ready,
+        write_txn, _recompute_ready_after_commit,
     )
 
     if not children:
@@ -162,7 +162,7 @@ def decompose_triage_task(
     # Outside the txn (own IMMEDIATE txn). ``auto_promote=False`` leaves the
     # children in ``todo`` for manual-review-first workflows.
     if auto_promote:
-        recompute_ready(conn)
+        _recompute_ready_after_commit(conn, f"decompose {task_id}")
     return child_ids
 
 

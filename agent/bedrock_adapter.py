@@ -406,12 +406,42 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
         agent._anthropic_client = None
 
 
+def configured_bedrock_model_allowlist(config: Optional[Dict[str, Any]] = None) -> frozenset[str]:
+    """``bedrock.discovery.model_allowlist`` lowercased/stripped; empty (= keep everything) when
+    unset, unreadable or not a list (``hermes config set ... true`` stores a real bool). A bare
+    string is tolerated. Exact ids only: listing a model is not access to it, and a prefix rule
+    would silently re-admit newly published ids nobody has verified. *config* skips disk."""
+    if config is None:
+        with suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+    discovery = ((config or {}).get("bedrock") or {}).get("discovery") or {}
+    entries = discovery.get("model_allowlist") if isinstance(discovery, dict) else None
+    if isinstance(entries, str):
+        entries = [entries]
+    if not isinstance(entries, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(e for e in (str(x).strip().lower() for x in entries) if e)
+
+
+def filter_bedrock_model_ids(model_ids: List[str], allowlist: Optional[frozenset[str]] = None) -> List[str]:
+    """Keep only *model_ids* named by the allowlist (case-insensitive); identity when it is empty."""
+    allowlist = configured_bedrock_model_allowlist() if allowlist is None else allowlist
+    if not allowlist:
+        return list(model_ids or [])
+    return [m for m in (model_ids or []) if str(m).strip().lower() in allowlist]
+
+
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
     """Live-discover Bedrock model IDs; None on failure/empty so callers use the static list."""
     with suppress(Exception):
         discovered = discover_bedrock_models(resolve_bedrock_runtime_region())
         if discovered:
-            return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
+            # Mantle ids are merged in unconditionally because the control plane never lists them,
+            # so the allowlist has to be applied once more after the merge.
+            merged = filter_bedrock_model_ids(merge_bedrock_openai_model_ids([m["id"] for m in discovered]))
+            if merged:
+                return merged
     return None
 
 
@@ -1003,12 +1033,15 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
 
 
 def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
-    by name; [] when the client cannot be built."""
+    """Foundation models + inference profiles (cached 1h per region/filter/allowlist), ``global.``
+    profiles first then by name; [] when the client cannot be built. Filtering here (not at a caller)
+    is what puts ``bedrock.discovery.model_allowlist`` in front of every consumer: the /model picker,
+    the ``hermes model`` Bedrock flow and /model validation each call this directly."""
     # The list is account-scoped (whichever credentials the control client signs with), so a routed
     # profile gets its own entry; unscoped keeps the region:filter key byte-for-byte.
     from hermes_constants import get_hermes_home_override, hermes_home_key
-    cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
+    allowlist = configured_bedrock_model_allowlist()
+    cache_key = f"{region}:{','.join(sorted(provider_filter or []))}:{','.join(sorted(allowlist))}"
     if get_hermes_home_override() is not None:
         cache_key = f"{hermes_home_key()}|{cache_key}"
     cached = _discovery_cache.get(cache_key)
@@ -1029,6 +1062,14 @@ def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = 
             step(client, filter_set, models)
         except Exception as e:
             log(message, e)
+    if allowlist and models:
+        kept = [m for m in models if m["id"].strip().lower() in allowlist]
+        # Mantle ids are never listed by the control plane and are offered through the catalog
+        # merge/fallback, so an allowlist naming one is not a zero match the user can act on.
+        if not kept and not any(is_openai_bedrock_model(m) for m in allowlist):
+            logger.warning("bedrock.discovery.model_allowlist matched none of %d discovered ids in %s; "
+                           "no live Bedrock model will be offered", len(models), region)
+        models = kept
     models.sort(key=lambda m: (0 if m["id"].startswith("global.") else 1, m["name"].lower()))
     _discovery_cache[cache_key] = {"timestamp": time.time(), "models": models}
     return models

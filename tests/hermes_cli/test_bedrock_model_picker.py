@@ -70,6 +70,23 @@ def _mock_botocore_session(*, return_value=None):
         yield session_mod.get_session
 
 
+
+@contextmanager
+def _in_memory_provider_cache():
+    """Isolate ``provider_models_cache.json`` per test: rows one test writes must not be fresh
+    hits in another. Yields the backing dict and the ``_store_cache_entry`` mock."""
+    from hermes_cli import models as models_mod
+
+    cache: dict = {}
+
+    def _store(key, entry, _cache=None):
+        cache[key] = entry
+
+    with patch.object(models_mod, "_load_provider_models_cache", side_effect=lambda: dict(cache)), \
+         patch.object(models_mod, "_store_cache_entry", side_effect=_store) as store:
+        yield cache, store
+
+
 _EU_MODELS = [
     {"id": "eu.anthropic.claude-sonnet-4-6-20250514-v1:0", "name": "Claude Sonnet 4.6 (EU)", "provider": "inference-profile"},
     {"id": "eu.anthropic.claude-haiku-4-5-20251015-v1:0",  "name": "Claude Haiku 4.5 (EU)",  "provider": "inference-profile"},
@@ -124,6 +141,90 @@ class TestProviderModelIdsBedrock:
         assert all(m.startswith("us.") or m.lower() in _MANTLE_SET for m in us_result)
         assert eu_result != us_result
 
+    def test_allowlist_filters_the_static_fallback_and_never_persists_it(self):
+        """No live catalog under an allowlist: the curated fallback obeys the allowlist (it lists
+        the ids the allowlist was written to hide), the Mantle ids are part of that pool even
+        when the curated table lacks them, and the projection is served for this open only.
+
+        Persisted with live authority the stub would cap the picker at the offline list for the
+        full TTL after credentials recover (#74151 / #74207); none of the three store paths may
+        write it: the store branch, the picker prefetch re-persist, the SWR refresh.
+        """
+        from types import SimpleNamespace
+
+        from hermes_cli import models as models_mod
+
+        def _config(allowlist):
+            return {"bedrock": {"discovery": {"model_allowlist": allowlist}}}
+
+        curated = {"bedrock": ["us.keep-me", "openai.hide-me"]}
+        with _in_memory_provider_cache() as (cache, store), \
+             patch("hermes_cli.models_bedrock._PROVIDER_MODELS", curated), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=[]) as discover, \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
+            with patch("hermes_cli.config.load_config_readonly", return_value=_config(["US.Keep-Me"])):
+                kept = models_mod.cached_provider_model_ids("bedrock")
+                models_mod.update_provider_cache_entry("bedrock", kept)
+                with patch.object(models_mod.threading, "Thread",
+                                  side_effect=lambda target, **kw: SimpleNamespace(start=target)):
+                    models_mod._spawn_swr_refresh("bedrock")
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value=_config(["nothing.matches-this"])):
+                empty = models_mod.cached_provider_model_ids("bedrock")
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value=_config([_MANTLE_MODELS[0]])):
+                mantle_only = models_mod.cached_provider_model_ids("bedrock")
+
+            assert kept == ["us.keep-me"]
+            assert empty == []
+            assert mantle_only == [_MANTLE_MODELS[0]]
+            store.assert_not_called()
+            assert cache == {}
+
+            # Credentials recover: the very next open is live, filtered end to end through
+            # provider_model_ids (the Mantle ids the merge appends are dropped too), and persisted.
+            discover.side_effect = _mock_discover
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value=_config(["US.Anthropic.Claude-Sonnet-4-6-20250514-v1:0"])):
+                recovered = models_mod.cached_provider_model_ids("bedrock")
+        assert recovered == ["us.anthropic.claude-sonnet-4-6-20250514-v1:0"]
+        assert cache["bedrock"]["models"] == recovered
+
+    def test_allowlist_change_is_visible_on_the_next_picker_open(self):
+        """[A] -> [A, B] -> [A]: a fresh row written under one policy must not serve under another.
+
+        The normalized allowlist is folded into the cache credential fingerprint, so the row is a
+        miss and live discovery re-runs on the very next open: widening shows B with no
+        ``--refresh`` and no TTL wait (a read-time filter alone could never produce B from an
+        [A]-only row), and narrowing (the opposite-side control) hides it again.
+        """
+        from hermes_cli import models as models_mod
+
+        def _config(allowlist):
+            return {"bedrock": {"discovery": {"model_allowlist": allowlist}}}
+
+        config_a = _config(["us.anthropic.claude-sonnet-4-6-20250514-v1:0"])
+        config_ab = _config(["us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+                             "us.amazon.nova-pro-v1:0"])
+
+        with _in_memory_provider_cache() as (cache, _store), \
+             patch("agent.bedrock_adapter.discover_bedrock_models",
+                   side_effect=_mock_discover) as discover, \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
+            with patch("hermes_cli.config.load_config_readonly", return_value=config_a):
+                first = models_mod.cached_provider_model_ids("bedrock")
+            assert cache["bedrock"]["models"] == first, "precondition: a fresh [A] row is on disk"
+            with patch("hermes_cli.config.load_config_readonly", return_value=config_ab):
+                widened = models_mod.cached_provider_model_ids("bedrock")
+            assert cache["bedrock"]["models"] == widened, "precondition: a fresh [A, B] row is on disk"
+            with patch("hermes_cli.config.load_config_readonly", return_value=config_a):
+                narrowed = models_mod.cached_provider_model_ids("bedrock")
+
+        assert first == ["us.anthropic.claude-sonnet-4-6-20250514-v1:0"]
+        assert widened == ["us.anthropic.claude-sonnet-4-6-20250514-v1:0", "us.amazon.nova-pro-v1:0"]
+        assert narrowed == first
+        assert discover.call_count == 3, "every policy change must re-discover, not serve the old row"
+
 
 
 
@@ -138,6 +239,26 @@ class TestListAuthenticatedProvidersBedrock:
 
 
 
+
+    def test_zero_match_allowlist_leaves_the_bedrock_row_with_no_models(self):
+        """Picker row built by the real builder: when the allowlist matches nothing the row is
+        empty. The curated us.* fallback must not step in — it lists the ids that were hidden."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = "eu-central-1"
+        config = {"bedrock": {"discovery": {"model_allowlist": ["nothing.matches-this"]}}}
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             _mock_botocore_session(return_value=mock_session):
+            providers = list_authenticated_providers(current_provider="bedrock")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None, "the row still exists; it just has nothing to offer"
+        assert bedrock["models"] == []
+        assert bedrock["total_models"] == 0
 
     def test_bedrock_not_shown_without_credentials(self, monkeypatch):
         """Bedrock must not appear when no AWS credentials are present."""

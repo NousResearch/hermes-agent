@@ -653,6 +653,10 @@ DEFAULT_CONFIG = {
         "discovery": {
             "enabled": True,           # auto-discover models via ListFoundationModels
             "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
+            # Exact model / inference-profile ids to keep, matched case-insensitively ([] keeps
+            # everything discovery returns). Listing a model is not access to it: an org SCP or a
+            # missing Marketplace agreement denies a subset the control plane still lists.
+            "model_allowlist": [],
             "refresh_interval": 3600,  # cache discovery results (seconds)
         },
         # Bedrock Guardrails: create one in the console, then set ID and version.

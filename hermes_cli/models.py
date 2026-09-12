@@ -47,6 +47,10 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
+from hermes_cli.models_bedrock import (
+    _StaticFallbackModelIds,
+    _bedrock_catalog,
+    _bedrock_policy_fingerprint_part)
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -1348,16 +1352,6 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
 
-def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    # Live discovery keyed by the resolved AWS region so EU/AP users see eu.*/ap.* ids.
-    try:
-        from agent.bedrock_adapter import bedrock_model_ids_or_none
-
-        return bedrock_model_ids_or_none()
-    except Exception:
-        return None
-
-
 def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
     # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
@@ -1497,6 +1491,8 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
+        if isinstance(live, _StaticFallbackModelIds):
+            return None  # keep the stale live row rather than overwrite it with the offline stub
         if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
             return _cache_entry(_credential_fingerprint(cache_key), live or [])
         return None
@@ -1581,6 +1577,13 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
+    if provider == "bedrock":
+        # The allowlist decides which ids discovery may return; a row written under one policy
+        # must not serve under another. Folding the policy into the fingerprint (not just the
+        # credentials) makes a widening [A] -> [A, B] invalidate the row, so the next picker
+        # open re-discovers instead of serving the old projection until TTL expiry.
+        parts.append(_bedrock_policy_fingerprint_part())
+
     try:
         from hermes_constants import get_hermes_home
         for rel in ("auth.json", "credentials.json"):
@@ -1630,7 +1633,7 @@ def update_provider_cache_entry(provider: str, models: list[str]) -> None:
     so concurrent fetches don't clobber each other's rows. Best-effort, silent on any error."""
     try:
         normalized = normalize_provider(provider) or (provider or "")
-        if not normalized or not models:
+        if not normalized or not models or isinstance(models, _StaticFallbackModelIds):
             return
         fp = _credential_fingerprint(normalized)
         with _cache_write_lock:
@@ -1680,6 +1683,12 @@ def cached_provider_model_ids(
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
+        # A static-fallback stub (Bedrock: live discovery failed under an allowlist) is served but
+        # never persisted: written with live authority it would cap the picker at the offline list
+        # for the full TTL after credentials recover (#74151). The tag stays on the returned list so
+        # the picker prefetch's re-persist (update_provider_cache_entry) can refuse it too.
+        if isinstance(live, _StaticFallbackModelIds):
+            return _StaticFallbackModelIds(live)
         _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
         return list(live)
 

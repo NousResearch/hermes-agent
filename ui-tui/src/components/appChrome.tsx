@@ -11,7 +11,7 @@ import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
-import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { activePromptIndex, promptOffsetAtRailRow, promptTicks, stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -863,7 +863,12 @@ export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: 
   return null
 }
 
-export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) {
+export function TranscriptScrollbar({
+  offsets = NO_OFFSETS,
+  promptRows = NO_ROWS,
+  scrollRef,
+  t
+}: TranscriptScrollbarProps) {
   const [hover, setHover] = useState(false)
   const [grab, setGrab] = useState<number | null>(null)
   const grabRef = useRef<number | null>(null)
@@ -880,6 +885,13 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
   const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
+  // Prompt rail — the terminal answer to the desktop's right-edge prompt rail.
+  // It SHARES this column instead of taking one of its own: a second column
+  // would re-wrap the whole transcript every time the rail appeared or its
+  // width changed, and the transcript's height estimate is width-keyed.
+  const active = activePromptIndex(offsets, promptRows, pos, s?.isSticky() === true)
+  const ticks = scrollable ? promptTicks(offsets, promptRows, total, vp, active) : []
+
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
       return
@@ -888,11 +900,57 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
     s.scrollTo(Math.round((Math.max(0, Math.min(travel, row - offset)) / travel) * Math.max(0, total - vp)))
   }
 
+  // One glyph + tone per row, then coalesced into a run per tone, so the column
+  // still paints as a handful of text nodes rather than one per row.
+  const rows: { ch: string; color: string }[] = []
+
+  for (let i = 0; i < vp; i++) {
+    const inThumb = i >= thumbTop && i < thumbTop + thumb
+
+    rows.push({ ch: inThumb ? '┃' : '│', color: inThumb ? thumbColor : trackColor })
+  }
+
+  // Ticks win their row over both the track and the thumb: the marker for the
+  // prompt you are sitting on has to stay visible, which is exactly when it
+  // would otherwise be swallowed by the thumb. The active prompt changes SHAPE
+  // as well as tone: the scrollbar already owns the accent while it is hovered
+  // or dragged, so tone alone reads as scrollbar state. Filled dot = active
+  // matches subagentGlyph's convention.
+  for (const tick of ticks) {
+    const isActive = tick.index === active
+
+    rows[tick.row] = { ch: isActive ? '●' : '•', color: isActive ? t.color.accent : t.color.border }
+  }
+
+  const runs: { color: string; text: string }[] = []
+
+  for (const row of rows) {
+    const last = runs[runs.length - 1]
+
+    if (last && last.color === row.color) {
+      last.text += `\n${row.ch}`
+    } else {
+      runs.push({ color: row.color, text: row.ch })
+    }
+  }
+
   return (
     <Box
       flexDirection="column"
       onMouseDown={(e: { localRow?: number }) => {
         const row = Math.max(0, Math.min(vp - 1, e.localRow ?? 0))
+        const precise = promptOffsetAtRailRow(offsets, promptRows, total, vp, active, row)
+
+        // A tick is a TARGET, not a scrub handle: land on its prompt exactly
+        // and skip the drag bookkeeping a scrub would otherwise start.
+        if (precise !== null && s) {
+          grabRef.current = null
+          setGrab(null)
+          s.scrollTo(precise)
+
+          return
+        }
+
         const off = row >= thumbTop && row < thumbTop + thumb ? row - thumbTop : Math.floor(thumb / 2)
 
         grabRef.current = off
@@ -913,21 +971,13 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       {/* Nothing to scroll → draw nothing (the width={1} Box still reserves
           the column). Drawn-blank cells composite to a black bar on
           transparent terminals — same class as the removed opaque fills. */}
-      {!scrollable ? null : (
-        <>
-          {thumbTop > 0 ? (
-            <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>
-          ) : null}
-          {thumb > 0 ? (
-            <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
-          ) : null}
-          {vp - thumbTop - thumb > 0 ? (
-            <Text
-              color={trackColor}
-            >{`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}</Text>
-          ) : null}
-        </>
-      )}
+      {!scrollable
+        ? null
+        : runs.map((run, i) => (
+            <Text color={run.color} key={i}>
+              {run.text}
+            </Text>
+          ))}
     </Box>
   )
 }
@@ -970,7 +1020,18 @@ interface StickyPromptTrackerProps {
   scrollRef: RefObject<ScrollBoxHandle | null>
 }
 
+// Shared empty rail inputs. Stable identity so a caller that passes nothing
+// (or a session with no prompts yet) never hands the rail a fresh array per
+// render.
+const NO_ROWS: readonly number[] = []
+const NO_OFFSETS: ArrayLike<number> = NO_ROWS
+
 interface TranscriptScrollbarProps {
+  /** Per-message top offsets from the transcript virtualizer; `promptRows`
+   *  index into it. Omitted → the column stays a plain scrollbar. */
+  offsets?: ArrayLike<number>
+  /** Message-row indexes of the user prompts, oldest first. Omitted → no rail. */
+  promptRows?: readonly number[]
   scrollRef: RefObject<ScrollBoxHandle | null>
   t: Theme
 }

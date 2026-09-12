@@ -181,6 +181,26 @@ export function shouldDetachEditedHistoryInput(historyIdx: null | number, histor
   return historyIdx !== null && value !== history[historyIdx]
 }
 
+/**
+ * Alt (Option) + ↑/↓ — the prompt-to-prompt step: -1 previous, 1 next, 0 for
+ * anything else.
+ *
+ * `key.meta` is plain Alt/Option on every platform (see lib/platform.ts); on
+ * legacy macOS terminals it can also carry Cmd, which the emulator usually
+ * swallows before the app sees it, so the reachable chord is Alt/Option+↑/↓ —
+ * and the same reason macOS users should read Option+arrows in the docs.
+ * Nothing else claims Alt+arrows (plain arrows are completions/queue/history,
+ * Shift+arrows scroll), but the chord is owned OUTRIGHT, so callers test it
+ * BEFORE the bare-arrow handlers: without that order Alt+↑ reads as history up.
+ */
+export const promptStepFor = (key: { downArrow?: boolean; meta?: boolean; upArrow?: boolean }): -1 | 0 | 1 => {
+  if (!key.meta || (!key.upArrow && !key.downArrow)) {
+    return 0
+  }
+
+  return key.upArrow ? -1 : 1
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -503,6 +523,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!fallThroughForScroll) {
         return
       }
+    }
+
+    // Alt+↑ / Alt+↓ step prompt to prompt — the terminal's counterpart to the
+    // right-edge rail's ticks, and the one jump that does not have to travel
+    // the whole distance. Owns the chord outright: placed above the bare-arrow
+    // handlers so Alt+↑ can't be read as input-history up, and above the
+    // completion cycler for the same reason.
+    const promptStep = promptStepFor(key)
+
+    if (promptStep !== 0) {
+      return terminal.jumpToPrompt(promptStep)
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {

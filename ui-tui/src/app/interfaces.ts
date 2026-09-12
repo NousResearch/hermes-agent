@@ -453,6 +453,8 @@ export interface InputHandlerContext {
   gateway: GatewayServices
   terminal: {
     hasSelection: boolean
+    /** Step the transcript to the previous (-1) / next (1) user prompt. */
+    jumpToPrompt: (dir: -1 | 1) => void
     scrollRef: RefObject<null | ScrollBoxHandle>
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi

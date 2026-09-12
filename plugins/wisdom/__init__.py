@@ -58,6 +58,13 @@ def _tty_confirm(title: str, detail: str) -> bool:
         return False
 
 
+def _confirm_for_surface() -> Callable[[str, str], bool]:
+    """``hermes wisdom`` owns a terminal; ``/wisdom`` may run inside a gateway chat where stdin is
+    nobody's, so it goes through the approval gate (pending approval on the platform, fail-closed)."""
+    from tools.approval_context import _is_gateway_approval_context
+    return _gate_confirm if _is_gateway_approval_context() else _tty_confirm
+
+
 # --- model tools ------------------------------------------------------------------------------
 def _run(fn: Callable[[], Any]) -> str:
     from plugins.wisdom.client import WisdomAuthError, WisdomError
@@ -146,15 +153,20 @@ def _cmd_mute(svc, a) -> str:
     return f"Wisdom notices muted until {time.strftime('%Y-%m-%d %H:%M', time.localtime(until))}."
 
 
+def _shared_surface() -> bool:
+    from tools.approval_context import _is_gateway_approval_context
+    return _is_gateway_approval_context()
+
+
 _COMMANDS: dict[str, Callable[[Any, argparse.Namespace], Any]] = {
     "list": _cmd_list,
     "mute": _cmd_mute,
     "show": lambda svc, a: svc.show(a.skill_id),
-    "status": lambda svc, a: svc.status(),
-    "install": lambda svc, a: svc.install(a.skill_id, version=a.version, confirm=_tty_confirm),
-    "update": lambda svc, a: svc.update(a.skill_id, confirm=_tty_confirm) or "Nothing to update.",
-    "uninstall": lambda svc, a: svc.uninstall(a.skill_id, confirm=_tty_confirm),
-    "share": lambda svc, a: svc.share(a.skill_name, description=a.description, confirm=_tty_confirm),
+    "status": lambda svc, a: svc.status(include_paths=not _shared_surface()),
+    "install": lambda svc, a: svc.install(a.skill_id, version=a.version, confirm=_confirm_for_surface()),
+    "update": lambda svc, a: svc.update(a.skill_id, confirm=_confirm_for_surface()) or "Nothing to update.",
+    "uninstall": lambda svc, a: svc.uninstall(a.skill_id, confirm=_confirm_for_surface()),
+    "share": lambda svc, a: svc.share(a.skill_name, description=a.description, confirm=_confirm_for_surface()),
 }
 
 
@@ -180,19 +192,20 @@ def _setup_cli(parser: argparse.ArgumentParser) -> None:
     sh.add_argument("--description", required=True, help="What teammates will read (plain text)")
 
 
-def _dispatch(ns: argparse.Namespace) -> str:
+def _dispatch(ns: argparse.Namespace) -> tuple[str, bool]:
+    """``(text, ok)`` — the CLI turns ``ok`` into its exit status so scripts see failures."""
     from plugins.wisdom.client import WisdomAuthError, WisdomError
     from plugins.wisdom.package import PackageError
     handler = _COMMANDS.get(ns.wisdom_command or "")
     if handler is None:
-        return "usage: wisdom {list,show,status,install,update,uninstall,share,mute}"
+        return "usage: wisdom {list,show,status,install,update,uninstall,share,mute}", False
     try:
         out = handler(_service(), ns)
     except WisdomAuthError as exc:
-        return f"{exc}\nRun `hermes login` with your team account first."
+        return f"{exc}\nRun `hermes login` with your team account first.", False
     except (WisdomError, PackageError, ValueError) as exc:
-        return f"wisdom: {exc}"
-    return out if isinstance(out, str) else _fmt(out)
+        return f"wisdom: {exc}", False
+    return (out if isinstance(out, str) else _fmt(out)), True
 
 
 def _slash(raw_args: str) -> str:
@@ -201,12 +214,13 @@ def _slash(raw_args: str) -> str:
         ns = _parser("/wisdom").parse_args(shlex.split(raw_args or "") or ["status"])
     except SystemExit:
         return "usage: /wisdom {list,show <id>,status,install <id> [--version N],update [id],uninstall <id>,share <name> --description ...,mute [hours]}"
-    return _dispatch(ns)
+    return _dispatch(ns)[0]
 
 
 def _cli(args: argparse.Namespace) -> int:
-    print(_dispatch(args))
-    return 0
+    text, ok = _dispatch(args)
+    print(text)
+    return 0 if ok else 1
 
 
 def register(ctx) -> None:

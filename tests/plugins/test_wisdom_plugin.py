@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,8 @@ class _FakeClient:
 
 
 class _State(dict):
+    data_dir = Path(tempfile.mkdtemp(prefix="wisdom-state-"))
+
     def get(self, k, default=None):
         return super().get(k, default)
 
@@ -101,6 +105,32 @@ def test_install_writes_only_after_native_confirmation(tmp_path, monkeypatch):
     assert (dest / "SKILL.md").read_bytes() == base64.b64decode(VECTORS["files"][0]["content_base64"])
     assert client.recorded[0]["installation_id"] == state["installation_id"] == client.identities[0]
     assert state["installed"]["sk1"]["version"] == 1
+
+
+def test_reinstall_keeps_local_edits_and_failed_install_leaves_no_skill(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.plugins_state import PluginState
+    from plugins.wisdom.service import Wisdom
+    from tools.skill_usage import _iter_skill_mds
+    client, state = _FakeClient(), PluginState("wisdom")
+    svc = Wisdom(state, client=client)
+    dest = Path(svc.install("sk1", version=None, confirm=lambda *_: True)["path"])
+
+    (dest / "SKILL.md").write_text("# local tweak\n", encoding="utf-8")
+    again = svc.install("sk1", version=None, confirm=lambda *_: True)
+    kept = Path(again["preserved_local_edits"])
+    assert (kept / "SKILL.md").read_text(encoding="utf-8") == "# local tweak\n"
+    assert (dest / "SKILL.md").read_bytes() == base64.b64decode(VECTORS["files"][0]["content_base64"])
+    assert "preserved_local_edits" not in svc.install("sk1", version=None, confirm=lambda *_: True)
+
+    def boom(**_):
+        raise RuntimeError("gateway down")
+    client.record_install = boom
+    shutil.rmtree(dest)
+    with pytest.raises(RuntimeError):
+        svc.install("sk1", version=None, confirm=lambda *_: True)
+    assert list(_iter_skill_mds(tmp_path / "skills", local_only=False)) == []
+    assert list(tmp_path.rglob("install-*")) == []
 
 
 def test_bundled_plugin_loads_and_gates_tools_on_entitlement(tmp_path, monkeypatch):
@@ -169,6 +199,8 @@ def test_desktop_router_install_is_bound_to_the_planned_hash(tmp_path, monkeypat
     assert plan["version"] == 1 and plan["content_hash"] == VECTORS["content_hash"]
     stale = http.post("/install", json={"skill_id": "sk1", "version": 1, "content_hash": "sha256:" + "0" * 64})
     assert stale.status_code == 409 and client.recorded == []
+    empty = http.post("/install", json={"skill_id": "sk1", "version": 1, "content_hash": ""})
+    assert empty.status_code == 422 and client.recorded == []
     ok = http.post("/install", json={"skill_id": "sk1", "version": 1, "content_hash": plan["content_hash"]})
     assert ok.status_code == 200 and Path(ok.json()["path"]).joinpath("SKILL.md").exists()
 

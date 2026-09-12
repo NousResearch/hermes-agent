@@ -84,6 +84,8 @@ class WisdomClient:
         self.base = base
         self.timeout = timeout
         self.org_id = str(identity["claims"].get("org_id") or identity["claims"].get("orgId") or "") or None
+        # The Gateway's attribution guard rejects a draft commit whose author.owner is not the caller.
+        self.owner = str(identity["owner"])
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {identity['api_key']}", "Accept": "application/json"})
         self.sync = SyncClient(base, identity["api_key"], timeout=timeout)

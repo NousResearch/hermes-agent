@@ -19,7 +19,7 @@ from typing import Any, Callable
 from hermes_constants import get_skills_dir
 from plugins.wisdom import notices
 from plugins.wisdom.client import WisdomClient, WisdomError, new_installation_id
-from plugins.wisdom.package import PackageError, prepare, slug_for
+from plugins.wisdom.package import PackageError, content_hash, prepare, sha256_address, slug_for
 
 Confirm = Callable[[str, str], bool]
 
@@ -32,6 +32,36 @@ class NotConfirmed(WisdomError):
 
 def _org_dir(org_id: str) -> str:
     return org_id if _ORG_DIR_RE.fullmatch(org_id) else "org-" + hashlib.sha256(org_id.encode()).hexdigest()
+
+
+def _swap_in(staged: Path, dest: Path, *, park: Path, installed_hash: str | None) -> Path | None:
+    """Replace ``dest`` with ``staged`` by moves. The old tree is parked under plugin state (outside the
+    skills tree, so the scanner never sees two copies) until the new one is in place: an interruption
+    leaves the old or the new skill installed, never neither. When the old tree no longer matches the
+    hash the user installed, it carries local edits and is kept; its path is returned."""
+    backup = None
+    if dest.exists():
+        park.mkdir(parents=True, exist_ok=True)
+        backup = Path(tempfile.mkdtemp(prefix=f"{dest.name}-", dir=str(park)))
+        backup.rmdir()
+        shutil.move(str(dest), str(backup))
+    try:
+        shutil.move(str(staged), str(dest))
+    except BaseException:
+        if backup is not None and not dest.exists():
+            shutil.move(str(backup), str(dest))
+        raise
+    if backup is None:
+        return None
+    if installed_hash and _hash_tree(backup) == installed_hash:
+        shutil.rmtree(backup, ignore_errors=True)
+        return None
+    return backup
+
+
+def _hash_tree(root: Path) -> str:
+    return content_hash([(p.relative_to(root).as_posix(), sha256_address(p.read_bytes()))
+                         for p in root.rglob("*") if p.is_file()])
 
 
 def _text(fields: dict[str, Any]) -> str:
@@ -84,7 +114,8 @@ class Wisdom:
         return {"skill": detail.get("skill"), "latest": latest,
                 "installed_version": installed and installed["version"], "versions": [v.get("version") for v in versions]}
 
-    def status(self) -> dict:
+    def status(self, *, include_paths: bool = True) -> dict:
+        """``include_paths=False`` for shared surfaces (gateway chats): local filesystem layout stays local."""
         ledger = self._ledger()
         updates = []
         if ledger:
@@ -95,7 +126,8 @@ class Wisdom:
                     updates.append({"skill_id": row["skill_id"], "slug": local["slug"],
                                     "installed": local["version"], "latest": latest,
                                     "required": row.get("update_mode") == "REQUIRED"})
-        return {"org_id": self.client.org_id, "installed": ledger, "updates": updates, **notices.summary(self.state)}
+        shown = ledger if include_paths else {k: {kk: vv for kk, vv in v.items() if kk != "path"} for k, v in ledger.items()}
+        return {"org_id": self.client.org_id, "installed": shown, "updates": updates, **notices.summary(self.state)}
 
     # --- install / update / uninstall -------------------------------------------------------
     def plan(self, skill_id: str, *, version: int | None = None) -> dict:
@@ -131,21 +163,31 @@ class Wisdom:
             raise PackageError("downloaded content does not match the version the user reviewed")
         dest = Path(p["target"])
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mkdtemp(prefix=".wisdom-", dir=str(dest.parent)))
-        for rel, _, body in files:
-            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
-            (tmp / rel).write_bytes(body)
-        record = self.client.record_install(skill_id=skill_id, installation_id=ident, version=p["version"],
-                                            takedown_generation=p["takedown_generation"])
-        if dest.exists():
-            shutil.rmtree(dest)
-        tmp.rename(dest)
+        # Stage under plugin state, never inside skills/: the skill scanner rglobs SKILL.md, so a
+        # half-written tree in the skills dir would be discoverable before the user's consent lands.
+        tmp = Path(tempfile.mkdtemp(prefix="install-", dir=str(self.state.data_dir)))
+        try:
+            for rel, _, body in files:
+                (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+                (tmp / rel).write_bytes(body)
+            # Network first, local swap last: the only step left after the Gateway accepts is a move.
+            record = self.client.record_install(skill_id=skill_id, installation_id=ident, version=p["version"],
+                                                takedown_generation=p["takedown_generation"])
+            previous = self._ledger().get(skill_id) or {}
+            kept = _swap_in(tmp, dest, park=self.state.data_dir / "local-edits",
+                            installed_hash=previous.get("content_hash"))
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
         ledger = self._ledger()
         ledger[skill_id] = {"slug": p["slug"], "version": p["version"], "content_hash": chash, "path": str(dest),
                             "update_mode": record.get("effective_update_mode")}
         self.state.set("installed", ledger)
         notices.dismiss(self.state, skill_id)
-        return {"installed": skill_id, "slug": p["slug"], "version": p["version"], "path": str(dest)}
+        out = {"installed": skill_id, "slug": p["slug"], "version": p["version"], "path": str(dest)}
+        if kept is not None:
+            out["preserved_local_edits"] = str(kept)
+        return out
 
     def update(self, skill_id: str | None, *, confirm: Confirm) -> list[dict]:
         pending = self.status()["updates"]
@@ -184,7 +226,7 @@ class Wisdom:
             raise WisdomError("a Wisdom-managed installation cannot be re-shared; fork it first")
         slug = slug_for(skill_name)
         with tempfile.TemporaryDirectory(prefix="wisdom-share-") as staging:
-            prepared = prepare(source, description=description, owner="owner",
+            prepared = prepare(source, description=description, owner=self.client.owner,
                                installation_id=self.installation_id(), staging=Path(staging))
             listing = "\n".join(f"  {p} ({len(b)} bytes)" for p, _, b in prepared.files)
             if not confirm(f"Share {skill_name} with your team as {slug}",
@@ -215,7 +257,6 @@ class Wisdom:
                 "review_url": result.get("review_url")}
 
     def _await_vetting(self, draft: dict, *, timeout: float = 90.0) -> dict:
-        import time
         deadline = time.monotonic() + timeout
         while draft.get("state") == "vetting" and time.monotonic() < deadline:
             time.sleep(2)

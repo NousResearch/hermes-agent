@@ -24,7 +24,7 @@ Commands: `list` (team catalog), `show <id>` (versions and Gateway checks), `sta
 
 When a teammate publishes or updates a skill, the next new conversation gets a one-line heads-up in its system prompt ("your team published deploy-checklist v2") and the agent will mention it once if relevant. The feed is polled at most every ten minutes per profile and the note is frozen into the session when it starts, so it never changes mid-conversation and never costs you a prompt-cache miss. Nothing is downloaded or installed by a notice; installing still goes through the consent flow below. Notices clear when you install or remove the skill; `hermes wisdom mute 24` (or `/wisdom mute`) silences them.
 
-Installed skills land under `~/.hermes/skills/_wisdom/<org>/<slug>/` and are indexed like any other skill. The plugin keeps a ledger of the exact version and content hash it installed, so `status` can tell you when the team has published something newer.
+Installed skills land under `~/.hermes/skills/_wisdom/<org>/<slug>/` and are indexed like any other skill. The plugin keeps a ledger of the exact version and content hash it installed, so `status` can tell you when the team has published something newer. Updating or reinstalling swaps the new version in atomically; if you had edited the installed files, your copy is kept under the plugin's data directory (the result reports `preserved_local_edits`) rather than overwritten. In shared chats `/wisdom status` omits local filesystem paths, and `hermes wisdom` exits non-zero when a command fails so scripts can react.
 
 ## Consent
 

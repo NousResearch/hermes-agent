@@ -8,7 +8,7 @@ service as the CLI and tools; only the confirmation surface differs.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from plugins.wisdom import notices, state
 from plugins.wisdom.client import WisdomAuthError, WisdomError, entitlement
@@ -25,7 +25,7 @@ class Target(BaseModel):
 class Apply(BaseModel):
     skill_id: str
     version: int
-    content_hash: str
+    content_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 def _run(fn):
@@ -52,9 +52,10 @@ def plan(body: Target):
 
 @router.post("/install")
 def install(body: Apply):
-    # The dialog showed this exact hash; a republished version between plan and click fails closed.
+    # The dialog showed this exact hash (schema-validated full sha256, so an empty echo cannot match);
+    # a republished version between plan and click fails closed.
     return _run(lambda svc: svc.install(body.skill_id, version=body.version,
-                                        confirm=lambda _t, detail: f"content_hash: {body.content_hash}" in detail))
+                                        confirm=lambda _t, detail: f"content_hash: {body.content_hash}\n" in detail + "\n"))
 
 
 @router.post("/uninstall")

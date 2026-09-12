@@ -129,3 +129,24 @@ class TestLocalEndpointLock:
                 pass
         agent._interrupt_requested = False
         t.join(timeout=5)
+
+    def test_interrupt_while_waiting_clears_wait_notice(self):
+        """An interrupted waiter must clear the wait-notice status line instead of
+        leaving stale "another request is already using..." text behind."""
+        agent, notices = _stub_agent("http://localhost:11434")
+
+        def hold():
+            with local_endpoint_lock(agent, agent.base_url):
+                time.sleep(2.0)
+
+        t = threading.Thread(target=hold)
+        t.start()
+        time.sleep(0.05)
+        agent._interrupt_requested = True
+        with pytest.raises(InterruptedError):
+            with local_endpoint_lock(agent, agent.base_url):
+                pass
+        agent._interrupt_requested = False
+        t.join(timeout=5)
+
+        assert notices[-1] == "", "wait notice was left stale after interrupt"

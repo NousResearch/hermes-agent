@@ -567,11 +567,13 @@ def local_endpoint_lock(agent, base_url: Optional[str]):
         lock = _local_endpoint_locks.setdefault(key, threading.RLock())
     if not lock.acquire(blocking=False):
         agent._emit_wait_notice(f"⏳ another request is already using the local backend ({base_url})...")
-        while not lock.acquire(timeout=0.5):
-            agent._touch_activity("waiting for local backend lock")
-            if getattr(agent, "_interrupt_requested", False):
-                raise InterruptedError("Agent interrupted while waiting for local backend lock")
-        agent._emit_wait_notice("")
+        try:
+            while not lock.acquire(timeout=0.5):
+                agent._touch_activity("waiting for local backend lock")
+                if getattr(agent, "_interrupt_requested", False):
+                    raise InterruptedError("Agent interrupted while waiting for local backend lock")
+        finally:
+            agent._emit_wait_notice("")
     try:
         yield
     finally:

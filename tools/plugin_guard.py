@@ -18,7 +18,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v2"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -45,6 +45,12 @@ CODE_EXEMPT_PATTERN_IDS = {
 SEVERITY_REMAP = {
     "binary_file": "high", "hermes_env_access": "medium", "curl_pipe_shell": "high"}
 
+# In JS/TS, these text matches cannot distinguish a UI label or DNS lookup
+# template from a write or exfiltration operation. Keep them visible and require
+# confirmation; do not silently allow them. Shell commands and instructions keep
+# their critical severity, as do separate credential-read/exfiltration findings.
+JS_CAPABILITY_REMAP = {"dns_exfil": "high", "ssh_backdoor": "high"}
+
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
@@ -69,11 +75,15 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
 def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+    is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
-        f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        f.severity = (
+            (JS_CAPABILITY_REMAP.get(f.pattern_id) if is_js else None)
+            or SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        )
         out.append(f)
     return out
 

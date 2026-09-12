@@ -973,6 +973,13 @@ _MAX_TAIL_MESSAGE_FLOOR = 8
 # Skip the LLM call when the compressible middle is below this fraction of the
 # threshold (and a prior ineffectiveness strike exists); dropping alone suffices.
 # See #60451.
+# A long tool/background-heavy transcript can fit the tail token budget while still
+# exceeding a gateway's hard row limit, leaving no middle window and making every
+# 413 retry a no-op. Past this many rows, force a boundary that keeps the newest
+# _MESSAGE_COUNT_PRESSURE_TAIL rows and summarizes everything older.
+_MESSAGE_COUNT_PRESSURE_THRESHOLD = 600
+_MESSAGE_COUNT_PRESSURE_TAIL = 200
+
 _FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 # Under pressure, demote large tool outputs even inside the protected region but
 # keep this many trailing messages verbatim.
@@ -4372,6 +4379,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Return ``(compress_start, compress_end)`` for the summarizable middle."""
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        # Message-count pressure is independent from token pressure: force a conservative
+        # boundary so a row-capped gateway still gets a shrinking transcript.
+        if len(messages) >= _MESSAGE_COUNT_PRESSURE_THRESHOLD:
+            # The flag records that row pressure applied, independently of whether the
+            # token cut already sits deeper: _feasibility_skip keys off it to stay on the
+            # summarizing path, and skipping the LLM here would leave the row count high.
+            telemetry = getattr(self, "_active_compression_telemetry", None)
+            if isinstance(telemetry, dict):
+                telemetry["message_count_pressure"] = True
+            pressure_cut = self._align_boundary_backward(
+                messages, max(compress_start + 1, len(messages) - _MESSAGE_COUNT_PRESSURE_TAIL),
+            )
+            if pressure_cut > compress_end:
+                compress_end = pressure_cut
         # A role collision can merge the summary into the first tail row; keep an actionable user
         # event out of that slot by retaining an older assistant/tool bridge.
         latest_actionable_idx = self._find_last_user_message_idx(messages, 0)
@@ -4407,6 +4428,10 @@ Write only the summary body. Do not include any preamble or prefix."""
     ) -> bool:
         """Pre-LLM skip after a real-usage ineffectiveness strike (reads the counter, never writes)."""
         if self._ineffective_compression_count < 1:
+            return False
+        # Row pressure is not a token-budget verdict: skipping here would leave the
+        # transcript above the gateway's row cap with nothing summarized.
+        if telemetry.get("message_count_pressure"):
             return False
         # Reuse the telemetry estimate so log and telemetry agree; None means the regions helper
         # no-op'd (0 is valid).

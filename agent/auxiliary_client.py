@@ -2080,7 +2080,13 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if provider_id == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                # The native client bypasses the OpenAI-wire header path below, so merge the
+                # user's model.default_headers here too — a referer-restricted Google key
+                # otherwise 403s on fallback ("Requests from referer <empty> are blocked", #102788).
+                return GeminiNativeClient(
+                    api_key=api_key, base_url=base_url,
+                    default_headers=_apply_user_default_headers(None),
+                ), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
@@ -4842,7 +4848,12 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
         if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+            # Native path skips _endpoint_default_headers below; merge the user's
+            # model.default_headers so referer-restricted keys don't 403 (#102788).
+            client = GeminiNativeClient(
+                api_key=api_key, base_url=base_url,
+                default_headers=_apply_user_default_headers(None),
+            )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)

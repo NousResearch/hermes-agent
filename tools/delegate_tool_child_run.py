@@ -505,8 +505,22 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    # Branch order matters (every branch is exclusive):
+    #   1. Explicit cooperative interrupt — a deliberate user signal that wins
+    #      over every other heuristic, including the schema-wrap promotion.
+    #   2. Forgiving-schema + prose answer — the validator already accepted the
+    #      work via wrap, so a downstream `result["failed"]=True` (provider
+    #      rate-limit, transport glitch racing the last turn) MUST NOT flip
+    #      status to "failed" and hide the real work in `summary`. This is
+    #      the v0.21.3 "活干了但汇报被吞" fix in its strict form.
+    #   3. Genuine child-loop failure (no usable summary / structured error
+    #      not explained by #2) — status="failed", exit_reason="error".
+    #   4. Schema-valid answer or no schema → "completed".
+    #   5. Constraining schema violated after bounded retry → "failed".
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+    elif schema.answer_was_wrapped and usable_summary:
+        status, exit_reason = "completed_with_warnings", "completed"
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -522,18 +536,13 @@ def _build_result_entry(
         #   * ``completed_with_warnings``— forgiving schema + prose answer that the validator wrapped. The work is
         #                                  done and the summary is preserved; the status just signals "the answer was
         #                                  not a JSON object as the contract asked" so callers can render a ⚠ icon.
+        #                                  (resolved ABOVE this branch so an upstream child-loop failed/error flag
+        #                                  cannot override it.)
         #   * ``failed``                 — constraining schema violated after the bounded retry, OR child genuinely
         #                                  failed (no summary / structured error).
         #   * ``interrupted``            — cooperative interrupt.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        if schema.answer_was_wrapped and usable_summary:
-            # Forgiving-schema prose: the work is done, the validator wrapped the
-            # answer to honor the contract, and the summary is preserved. Status
-            # "completed_with_warnings" lets UIs render a ⚠ icon without rejecting
-            # the partial output (closes the "活干了但汇报被吞" bug).
-            status = "completed_with_warnings"
-        else:
-            status = "completed" if schema.valid is not False and usable_summary else "failed"
+        status = "completed" if schema.valid is not False and usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -573,6 +582,16 @@ def _build_result_entry(
             entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
+        _failure_reason = result.get("failure_reason")
+        if isinstance(_failure_reason, str) and _failure_reason:
+            entry["failure_reason"] = _failure_reason
+    elif status == "completed_with_warnings" and (result.get("failed") or result.get("error")):
+        # Validator already accepted the work via wrap, so status stays
+        # `completed_with_warnings` — but the upstream transport / provider
+        # error is a real signal the parent should see (rate-limit, billing,
+        # mid-turn timeout that still left prose). Surface as a non-verdict
+        # field so dashboards can warn without flipping status back to failed.
+        entry["_upstream_error"] = result.get("error") or "child loop reported failure"
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason

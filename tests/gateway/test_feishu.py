@@ -2380,6 +2380,68 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
 
+    def test_bare_at_all_message_reaches_the_agent(self):
+        """A message that is nothing but @everyone (Feishu's "@_all") is a real turn.
+
+        The @_all marker is what got the message past mention gating, so stripping it must
+        not leave an empty body that the post-strip guard throws away.
+        """
+        from gateway.platforms.event import MessageType
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_all"}),
+            message_type="text",
+            message_id="m4",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m4",
+            )
+        )
+        self.assertTrue(adapter._dispatch_inbound_event.called)
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertIn("@all", event.text)
+
+    def test_bare_bot_mention_message_is_still_dropped(self):
+        """A bodyless "@Bot" ping stays dropped — the @everyone exemption is not a blanket one."""
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m5",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m5",
+            )
+        )
+        self.assertFalse(adapter._dispatch_inbound_event.called)
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

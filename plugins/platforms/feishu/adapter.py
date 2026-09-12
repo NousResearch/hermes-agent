@@ -979,6 +979,23 @@ def _strip_leading_at_all(text: str) -> str:
     return re.sub(r"^@_?all\b\s*", "", text or "")
 
 
+# Body kept for a message that carried nothing but the @everyone trigger. Feishu sends
+# @everyone as ``@_all`` with no text of its own, so the leading strip above empties a bare
+# ``@_all`` message. It is still a real turn — ``_mentions_self`` admits it on that same
+# ``@_all`` marker — so it gets a placeholder body instead of being dropped by the
+# post-strip guard the way a bodyless "@Bot" ping is.
+_AT_ALL_BODY = "@all"
+
+
+def _bare_at_all_body(raw_content: Any) -> str:
+    """Placeholder body when the message is nothing but @everyone, else ``""``.
+
+    Detection mirrors ``_mentions_self`` so admission and processing agree on what counts as
+    an @everyone trigger.
+    """
+    return _AT_ALL_BODY if isinstance(raw_content, str) and "@_all" in raw_content else ""
+
+
 # --- Multiplex isolation for the lark_oapi WebSocket client ---
 #
 # ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
@@ -2513,10 +2530,14 @@ class FeishuAdapter(BasePlatformAdapter):
             text = _strip_leading_at_all(text)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
-        # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
+        # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped. A bare
+        # @everyone survives it: the trigger is the whole message, so it gets a placeholder
+        # body rather than being thrown away as empty.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            text = _bare_at_all_body(getattr(message, "content", ""))
+            if not text:
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)
             if hint:

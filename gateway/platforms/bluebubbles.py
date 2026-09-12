@@ -6,10 +6,10 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, quote
@@ -98,7 +98,9 @@ def _setting(extra: Dict[str, Any], key: str, env: str, default: str = "") -> An
 
 
 def _temp_guid() -> str:
-    return f"temp-{datetime.utcnow().timestamp()}"
+    # time.time_ns() instead of datetime.utcnow(): monotonic-enough, tz-free, and
+    # avoids the Python 3.12+ DeprecationWarning for naive utcnow().
+    return f"temp-{time.time_ns()}"
 
 
 def _ok():

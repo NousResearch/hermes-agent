@@ -494,7 +494,7 @@ def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
 
 
 # Palette resolution order for prompt_toolkit styles: (name, skin color key, fallback). A
-# fallback starting with "@" names an earlier entry (so a missing key inherits its remapped value).
+# fallback starting with "@" names an earlier entry in the same palette.
 _STYLE_PALETTE = (
     ("prompt", "prompt", ""), ("input_rule", "input_rule", "#CD7F32"),
     ("title", "banner_title", "#FFD700"), ("text", "banner_text", "#FFF8DC"),
@@ -545,12 +545,18 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         return {}
     # `prompt` is unset by default so typed text inherits the terminal's foreground (readable
     # on light and dark schemes); skins opt into a colored prompt symbol via `prompt` in YAML.
-    # Every read goes through skin.get_color (cli.py wraps it for light-mode remapping).
+    # Only text on the terminal's own background uses its light-mode remap. Widgets
+    # that paint a background must resolve both colors from the authored palette;
+    # remapping their ink first leaves dark text on a dark menu/status bar.
     palette: Dict[str, str] = {}
+    surface_palette: Dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)
-    # This badge paints both sides; foreground-only light remapping destroys its contrast.
-    palette["badge_bg"] = skin.colors.get(
-        "status_bar_strong", skin.colors.get("banner_title", "#FFD700"))
-    palette["badge_fg"] = skin.colors.get("status_bar_bg", "#1a1a2e")
-    return {cls: tpl.format(**palette) for cls, tpl in _STYLE_TEMPLATES.items()}
+        surface_palette[name] = skin.colors.get(
+            key, surface_palette[fallback[1:]] if fallback.startswith("@") else fallback)
+    surface_palette["badge_bg"] = surface_palette["status_strong"]
+    surface_palette["badge_fg"] = surface_palette["status_bg"]
+    return {
+        cls: tpl.format(**(surface_palette if "bg:" in tpl else palette))
+        for cls, tpl in _STYLE_TEMPLATES.items()
+    }

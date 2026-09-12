@@ -286,10 +286,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             except _bd_lease.HumanHasControl as e:
                 return _refused(e)
             result = _dispatch(backend, action, args)
-            if _bd_lease.get().epoch != admitted.epoch and _bd_lease.human_holds():
+            # Any lease transition during the run voids the result — including a full take-over /
+            # hand-back cycle that already finished: the frame still belongs to the human's turn.
+            if _bd_lease.get().epoch != admitted.epoch:
                 return _refused(_bd_lease.HumanHasControl(
-                    "A human took over this desktop while the action ran; its result was discarded. Call "
-                    "computer_use action='wait_for_human' to block until they hand control back."))
+                    "A human took over this desktop while the action ran; its result was discarded. "
+                    "Re-capture (or call computer_use action='wait_for_human' if they still hold control)."))
             return result
     except Exception as e:
         logger.exception("computer_use %s failed", action)

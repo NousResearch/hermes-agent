@@ -29,12 +29,67 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 trusted_issuers: tuple[str, ...] = (), **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        # oauth.trusted_issuers — provider-documented ASM issuer values accepted for this server
+        # only (see _apply_trusted_issuer_compat). Empty for almost every server.
+        self._hermes_trusted_issuers = tuple(trusted_issuers or ())
+
+    async def _apply_trusted_issuer_compat(self, discovery_request: Any, response: Any) -> None:
+        """Reconcile a provider-documented authorization-server ``issuer`` mismatch.
+
+        Some providers (NetSuite is the shipped example) serve RFC 8414 metadata whose
+        ``issuer`` is a fixed vendor value regardless of the account-specific discovery
+        host — NetSuite always advertises ``https://system.netsuite.com`` while discovery
+        runs against ``https://<accountId>.suitetalk.api.netsuite.com/`` (Oracle, "OAuth 2.0
+        Token Structure": "The value of the iss parameter is https://system.netsuite.com").
+        The SDK's SEP-2468 validator correctly compares those strings exactly, so the flow
+        otherwise dies at discovery time with "Authorization server metadata issuer mismatch".
+
+        When (and only when) the mismatched issuer is explicitly listed in this server's
+        ``oauth.trusted_issuers``, adopt the metadata issuer as ``auth_server_url`` so the
+        SDK's own validator then passes on real equality. Guards keep this narrow:
+        the discovery request must target the expected authorization-server host on a
+        well-known metadata path, the response must be HTTP 200, and the payload issuer
+        must exactly match a configured trusted issuer. Everything else — resource
+        validation, callback ``iss`` checks, token handling — is untouched, and every
+        unlisted mismatch still reaches the SDK's strict validator unchanged.
+        """
+        trusted = getattr(self, "_hermes_trusted_issuers", ())
+        expected = getattr(self.context, "auth_server_url", None)
+        if not trusted or not expected:
+            return
+        from urllib.parse import urlsplit
+        try:
+            request_url = urlsplit(str(discovery_request.url))
+            expected_host = urlsplit(str(expected)).hostname
+        except (AttributeError, ValueError):
+            return
+        if not expected_host or request_url.hostname != expected_host:
+            return
+        path = request_url.path or ""
+        if not (path.startswith("/.well-known/oauth-authorization-server")
+                or path.startswith("/.well-known/openid-configuration")):
+            return
+        if getattr(response, "status_code", None) != 200:
+            return
+        try:
+            import json
+            payload = json.loads(await response.aread())
+        except (AttributeError, TypeError, ValueError):
+            return
+        issuer = payload.get("issuer") if isinstance(payload, dict) else None
+        if not isinstance(issuer, str) or issuer == str(expected) or issuer not in trusted:
+            return
+        self._hermes_logger.info(
+            "MCP OAuth: accepting provider-documented issuer %r for authorization server %r "
+            "(listed in oauth.trusted_issuers)", issuer, str(expected))
+        self.context.auth_server_url = issuer
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -108,9 +163,7 @@ class HermesProviderMixin:
             self.context.clear_tokens()
             return False
         # RFC 6749 §6: a refresh response may omit refresh_token (AS does not rotate) and scope
-        # (unchanged). The SDK's own _handle_refresh_response carries both forward; this override
-        # must too, or every non-rotating refresh erases the stored refresh_token and the server
-        # dies at the NEXT expiry with a forced browser re-auth (#62333).
+        # (unchanged). Preserve both from the previous token set before storing the response.
         prior = self.context.current_tokens
         if prior is not None:
             if token_response.refresh_token is None:
@@ -150,4 +203,16 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        # NetSuite's documented fixed issuer is opt-in via the server URL only.
+        # The generic setting remains available for providers with the same class of
+        # documented metadata mismatch.
+        "trusted_issuers": _normalized_trusted_issuers(cfg),
         **mo.cimd_provider_kwargs(cfg)}
+
+
+def _normalized_trusted_issuers(cfg: dict) -> tuple[str, ...]:
+    """``oauth.trusted_issuers`` as an exact-string tuple (list or single string accepted)."""
+    raw = cfg.get("trusted_issuers") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    return tuple(str(v) for v in raw if v)

@@ -246,6 +246,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
+                # Provider-documented issuer mismatches (oauth.trusted_issuers, e.g. NetSuite):
+                # normalize auth_server_url BEFORE the SDK's strict SEP-2468 validator sees the
+                # metadata, so validation then passes on real equality (HermesProviderMixin).
+                await self._apply_trusted_issuer_compat(outgoing, incoming)
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch

@@ -299,6 +299,14 @@ class TestEditFormatSteering:
 class TestProfiles:
 
 
+    def test_coding_guidance_accepts_standing_git_delivery_authority(self):
+        guidance = cc.CODING_PROFILE.guidance
+        assert "Standing authorization" in guidance
+        assert "satisfies this requirement" in guidance
+        assert "do not require a task-specific approval phrase" in guidance
+        assert "task-specific prohibition still wins" in guidance
+
+
     def test_coding_profile_shape(self):
         # The coding profile declares the seams other domains read.
         assert cc.CODING_PROFILE.toolset == cc.CODING_TOOLSET

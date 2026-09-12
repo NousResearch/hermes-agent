@@ -1272,6 +1272,85 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertIn("Cannot resolve", result["error"])
         self.assertIn("nonexistent", result["error"])
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_call_level_model_provider_override_reaches_child(self, mock_creds, mock_cfg):
+        """Top-level model/provider pins the child's route, overriding delegation config and parent."""
+        mock_cfg.return_value = {"max_iterations": 45}
+
+        def _resolver(cfg, parent):
+            if cfg.get("provider") == "deepseek":
+                return {
+                    "model": "deepseek-v4-pro", "provider": "deepseek",
+                    "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek",
+                    "api_mode": "chat_completions",
+                }
+            return {"model": None, "provider": None, "base_url": None, "api_key": None, "api_mode": None}
+
+        mock_creds.side_effect = _resolver
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "gemini"
+        parent.model = "gemini-3.8-flash"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": "done", "completed": True, "api_calls": 1}
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Adversarial review", provider="deepseek", model="deepseek-v4-pro", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "deepseek-v4-pro")
+            self.assertEqual(kwargs["provider"], "deepseek")
+            self.assertEqual(kwargs["base_url"], "https://api.deepseek.com/v1")
+            self.assertEqual(kwargs["api_key"], "sk-deepseek")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_provider_override_in_batch(self, mock_creds, mock_cfg):
+        """Per-task model/provider overrides one child while its sibling inherits the parent."""
+        mock_cfg.return_value = {"max_iterations": 45}
+
+        def _resolver(cfg, parent):
+            if cfg.get("provider") == "deepseek":
+                return {
+                    "model": "deepseek-v4-pro", "provider": "deepseek",
+                    "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek",
+                    "api_mode": "chat_completions",
+                }
+            return {"model": None, "provider": None, "base_url": None, "api_key": None, "api_mode": None}
+
+        mock_creds.side_effect = _resolver
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "gemini"
+        parent.model = "gemini-3.8-flash"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": "done", "completed": True, "api_calls": 1}
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[
+                    {"goal": "Standard task 1"},
+                    {"goal": "DeepSeek task 2", "provider": "deepseek", "model": "deepseek-v4-pro"},
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertEqual(MockAgent.call_count, 2)
+            first_call = MockAgent.call_args_list[0][1]
+            second_call = MockAgent.call_args_list[1][1]
+
+            # First child inherits the parent's route (no per-task override).
+            self.assertEqual(first_call["model"], parent.model)
+            self.assertEqual(first_call["provider"], parent.provider)
+            # Second child runs on the pinned DeepSeek route.
+            self.assertEqual(second_call["model"], "deepseek-v4-pro")
+            self.assertEqual(second_call["provider"], "deepseek")
+            self.assertEqual(second_call["base_url"], "https://api.deepseek.com/v1")
+            self.assertEqual(second_call["api_key"], "sk-deepseek")
+
 class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()

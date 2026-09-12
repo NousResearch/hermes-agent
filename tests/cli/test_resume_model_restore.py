@@ -365,3 +365,76 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+# ── late resume: the agent must be BUILT on the restored model ───────
+
+
+def test_late_resume_builds_agent_on_stored_model_not_ambient(tmp_path, monkeypatch):
+    """``hermes chat --resume <id> -q`` without ``-m``: the -q path snapshots its route from
+    the ambient config BEFORE _init_agent loads the session, so the overrides it passes still
+    name the config default. _init_agent must rebuild the route after the late restore —
+    otherwise "Model restored from session" is printed while the API is called on the
+    ambient model (the row's usage then shows the default, not the session's model)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="late1", source="cli", model="glm-4.7")
+    db.patch_session_model_config("late1", {"gateway_runtime": {"provider": "minimax"}})
+    db.append_message("late1", "user", "hi")
+    db.append_message("late1", "assistant", "hey")
+
+    built = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            built.update(kwargs)
+
+    resolved_for = []
+
+    def _resolve(requested=None, **kw):
+        resolved_for.append(requested)
+        return {"provider": requested, "api_key": f"k-{requested}",
+                "base_url": f"https://{requested}/v1", "api_mode": "chat_completions"}
+
+    monkeypatch.setattr("run_agent.AIAgent", _Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
+    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+                        lambda **kw: None)
+
+    stub = _make_stub(
+        _session_db=db, session_id="late1", _resumed=True, conversation_history=[],
+        tool_progress_mode="off", _explicit_model_override=False, _pending_title=None,
+        _single_query_mode=True, _fallback_model=None, _resume_history_error=None,
+        _explicit_api_key=None, _explicit_base_url=None,
+        acp_command=None, acp_args=None, service_tier=None, system_prompt=None,
+        prefill_messages=None, reasoning_config=None, max_tokens=None, max_turns=1,
+        enabled_toolsets=None, disabled_toolsets=None, verbose=False, ignore_rules=False,
+        pass_session_id=False, checkpoints_enabled=False, checkpoint_max_snapshots=0,
+        checkpoint_max_total_size_mb=0, checkpoint_max_file_size_mb=0,
+        streaming_enabled=False, _inline_diffs_enabled=False,
+        _providers_only=None, _providers_ignore=None, _providers_order=None,
+        _provider_sort=None, _provider_require_params=None, _provider_data_collection=None,
+        _openrouter_min_coding_score=None,
+        finalize_preloaded_skills=lambda: None, _install_tool_callbacks=lambda: None,
+        _ensure_tirith_security=lambda: None,
+        _clarify_callback=None, _current_reasoning_callback=lambda: None,
+        _on_thinking=None, _on_tool_progress=None, _on_tool_start=None,
+        _on_tool_complete=None, _stream_delta=None, _on_tool_gen_start=None,
+        _on_notice=None, _on_notice_clear=None, _on_reaction=None)
+    monkeypatch.setattr("cli._prepare_deferred_agent_startup", lambda: None)
+
+    # What _run_single_query_mode does: resolve credentials + route BEFORE the resume load.
+    assert stub._ensure_runtime_credentials() is True
+    route = stub._resolve_turn_agent_config("q")
+    assert route["model"] == "ambient-model"
+    assert route["runtime"]["provider"] == "openrouter"
+    assert stub._init_agent(model_override=route["model"], runtime_override=route["runtime"],
+                            request_overrides=route.get("request_overrides")) is True
+
+    assert built["model"] == "glm-4.7"
+    assert built["provider"] == "minimax"
+    assert built["api_key"] == "k-minimax"
+    assert built["base_url"] == "https://minimax/v1"
+    # Credentials were re-resolved for the RESTORED provider, not just the ambient one.
+    assert resolved_for[-1] == "minimax"
+    assert stub._active_agent_route_signature[:2] == ("glm-4.7", "minimax")

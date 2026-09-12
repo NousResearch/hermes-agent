@@ -19,6 +19,7 @@ import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
+import { VaultSaveLoginPrompt } from './vaultSaveLoginPrompt.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
@@ -62,6 +63,7 @@ export function PromptZone({
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
+  onVaultSaveLoginSubmit,
   onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
@@ -71,6 +73,7 @@ export function PromptZone({
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
+  | 'onVaultSaveLoginSubmit'
   | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
@@ -165,6 +168,19 @@ export function PromptZone({
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
           sub={`for ${overlay.secret.envVar}`}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultSaveLogin) {
+    return (
+      <PromptCell cols={cols} id="vault-save-login">
+        <VaultSaveLoginPrompt
+          cols={cols}
+          onSubmit={onVaultSaveLoginSubmit}
+          request={overlay.vaultSaveLogin}
           t={theme}
         />
       </PromptCell>

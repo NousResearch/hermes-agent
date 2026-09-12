@@ -243,6 +243,13 @@ export interface SecretReq {
   requestId: string
 }
 
+/** A missing origin-bound login requested by the vault; credentials stay only in component state. */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
 /** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
 export interface VaultUnlockReq {
   backend: string

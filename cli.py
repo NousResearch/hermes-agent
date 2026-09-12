@@ -4056,7 +4056,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     _run_loop(
         task_id=task_id, goal_text=goal_text, run_turn=_run_turn, task_status_fn=_task_status, block_fn=_block,
         max_turns=task.goal_max_turns or _DEF_TURNS, first_response=first_response or "",
-        log=lambda m: logger.info("%s", m),
+        log=lambda m: logger.info("%s", m), session_id=getattr(cli, "session_id", None),
     )
 
 

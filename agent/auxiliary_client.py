@@ -3416,7 +3416,7 @@ def _prepare_same_provider_retry(
     final_model: Optional[str], messages: list, temperature: Optional[float],
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
-    extra_headers: Optional[Dict[str, str]] = None,
+    extra_headers: Optional[Dict[str, str]] = None, session_id: Optional[str] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
     if task == "vision":
@@ -3439,7 +3439,7 @@ def _prepare_same_provider_retry(
         effective_provider or resolved_provider, retry_model or final_model, messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=retry_base or resolved_base_url, task=task,
+        base_url=retry_base or resolved_base_url, task=task, session_id=session_id,
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -3674,6 +3674,7 @@ def _fallback_request_kwargs(
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
     fallback_entry: dict, task_config: dict, apply_fast_lane: bool,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
     fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
@@ -3688,7 +3689,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task,
+        session_id=session_id)
     return fb_kwargs
 
 
@@ -3763,6 +3765,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    session_id: Optional[str] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -3776,7 +3779,7 @@ def _call_fallback_candidate_sync(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
         apply_fast_lane=True, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
-        reasoning_config=reasoning_config,
+        reasoning_config=reasoning_config, session_id=session_id,
     )
 
     def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
@@ -3815,13 +3818,14 @@ async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    session_id: Optional[str] = None,
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
         apply_fast_lane=False, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
-        reasoning_config=reasoning_config,
+        reasoning_config=reasoning_config, session_id=session_id,
     )
 
     async def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
@@ -6119,6 +6123,7 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
@@ -6159,7 +6164,7 @@ def _build_call_kwargs(
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
     # calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    return merge_opencode_session_headers(kwargs, provider, base_url, session_id or _runtime_main_value("session_id") or None)
 
 
 def _validate_llm_response(
@@ -6758,6 +6763,7 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]], async_mode: bool,
+    session_id: Optional[str] = None,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -6799,7 +6805,8 @@ def _prepare_aux_request(
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
+        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
+        session_id=session_id)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -7204,7 +7211,7 @@ def call_llm(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
-    latency_info: Optional[Dict[str, int]] = None,
+    latency_info: Optional[Dict[str, int]] = None, session_id: Optional[str] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -7233,6 +7240,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                session_id=session_id,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7265,7 +7273,7 @@ def _plan_aux_call(
     messages: list, temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]],
+    route_info: Optional[Dict[str, str]], session_id: Optional[str] = None,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7278,11 +7286,13 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        session_id=session_id,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, effective_timeout=req.effective_timeout,
         effective_extra_body=req.effective_extra_body, reasoning_config=reasoning_config,
+        session_id=session_id,
     )
     retry_kwargs = dict(
         candidate_kwargs, resolved_base_url=req.resolved_base_url,
@@ -7338,6 +7348,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    session_id: Optional[str] = None,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7350,6 +7361,7 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        session_id=session_id,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and

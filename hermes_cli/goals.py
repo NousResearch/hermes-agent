@@ -857,7 +857,8 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
-def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float]) -> str:
+def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float],
+                         session_id: Optional[str] = None) -> str:
     """Route through call_llm so auxiliary.goal_judge.* config (provider/model, extra_body,
     reasoning_effort, retries) all apply. Returns the raw reply text."""
     # See #35566.
@@ -866,6 +867,7 @@ def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout
         task="goal_judge",
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
         temperature=0, max_tokens=_goal_judge_max_tokens(), timeout=timeout,
+        session_id=session_id,
     )
     try:
         return resp.choices[0].message.content or ""
@@ -882,6 +884,7 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    session_id: Optional[str] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -924,7 +927,7 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
     try:
-        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout, session_id=session_id)
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
@@ -1470,6 +1473,7 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            session_id=self.session_id,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1593,6 +1597,7 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -1643,7 +1648,7 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response, session_id=session_id)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

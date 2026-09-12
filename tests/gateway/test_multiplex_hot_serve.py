@@ -54,7 +54,7 @@ def _runner(tmp_path, monkeypatch):
 
     async def _start(profile_name, profile_home, claimed):
         started.append(profile_name)
-        token = (profile_home / ".env").read_text() if (profile_home / ".env").exists() else ""
+        token = (profile_home / ".env").read_text(encoding="utf-8") if (profile_home / ".env").exists() else ""
         if "DISCORD_BOT_TOKEN" not in token:
             return 0
         runner._profile_adapters.setdefault(profile_name, {})[Platform.DISCORD] = _Adapter(token)
@@ -69,13 +69,13 @@ def _runner(tmp_path, monkeypatch):
 def _mkprofile(home, name, env=""):
     d = home / "profiles" / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "config.yaml").write_text("model: {default: m}\n")
-    (d / ".env").write_text(env)
+    (d / "config.yaml").write_text("model: {default: m}\n", encoding="utf-8")
+    (d / ".env").write_text(env, encoding="utf-8")
     return d
 
 
 def _served_record(home):
-    return json.loads((home / "gateway_state.json").read_text()).get("served_profiles")
+    return json.loads((home / "gateway_state.json").read_text(encoding="utf-8")).get("served_profiles")
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_created_then_credentialed_profile_is_served_without_restart(tmp_p
         assert Platform.DISCORD not in runner._profile_adapters.get("gamma", {})
 
         # 2. Token added afterwards: the rescan builds the adapter (never "adapter-less forever").
-        (gamma_dir / ".env").write_text("DISCORD_BOT_TOKEN=gamma-token\n")
+        (gamma_dir / ".env").write_text("DISCORD_BOT_TOKEN=gamma-token\n", encoding="utf-8")
         result = await runner.reconcile_served_profiles()
         assert result["rescanned"] == ["gamma"]
         assert runner._profile_adapters["gamma"][Platform.DISCORD].token.strip().endswith("gamma-token")

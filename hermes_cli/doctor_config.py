@@ -209,11 +209,35 @@ def _provider_has_credentials(runtime_provider: str) -> bool:
     return True
 
 
-def _validate_model_config(config_path, issues: list) -> None:
+def _normalize_native_model_id(config_path, cfg: dict, model_section: dict, default_model: str,
+                              policy_id: str, provider_raw: str, f: "Finding") -> bool:
+    """Rewrite a vendor-prefixed ``model.default`` to the provider's native id; True when written."""
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    normalized_model = normalize_model_for_provider(default_model, policy_id)
+    if normalized_model == default_model:
+        return False
+    from hermes_cli.config import atomic_config_write
+    model_section["default"] = normalized_model
+    cfg["model"] = model_section
+    atomic_config_write(config_path, cfg)
+    check_ok(f"Normalized model.default for native provider '{provider_raw}'")
+    f.fixed += 1
+    return True
+
+
+def _validate_model_config(config_path, issues: list, should_fix: bool = False,
+                          f: "Finding | None" = None) -> None:
     """Validate model.provider / model.default against the provider registry (raw file)."""
     # Detect stale root-level model keys (known bug source — PR #4329)
     from hermes_cli.config import read_user_config_raw
     cfg = read_user_config_raw(config_path)
+    if should_fix:
+        # The on-disk migration of root-level model keys belongs to the config-drift check, which
+        # runs after this one. Apply it in memory so a repair pass can also see (and canonicalize)
+        # the legacy ``model: <id>`` + root ``provider:`` shape; the write below carries both.
+        with warn_on_error(""):
+            from hermes_cli.config import _normalize_root_model_keys
+            cfg = _normalize_root_model_keys(cfg)
     model_section = cfg.get("model") or {}
     provider_raw = (model_section.get("provider") or "").strip()
     provider = provider_raw.lower()
@@ -246,10 +270,16 @@ def _validate_model_config(config_path, issues: list) -> None:
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
     accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
     if default_model and "/" in default_model and policy_id and not accepts_vendor_slug:
-        check_warn(f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
-                   "(vendor-prefixed slugs belong to aggregators like openrouter)")
-        issues.append(f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
-                      "Either set model.provider to 'openrouter', or drop the vendor prefix.")
+        # ``--fix`` can repair this in place: the vendor prefix is redundant on a native provider,
+        # so drop it instead of only telling the user to.
+        normalized = should_fix and f is not None and _normalize_native_model_id(
+            config_path, cfg, model_section, default_model, policy_id, provider_raw, f
+        )
+        if not normalized:
+            check_warn(f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
+                       "(vendor-prefixed slugs belong to aggregators like openrouter)")
+            issues.append(f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
+                          "Either set model.provider to 'openrouter', or drop the vendor prefix.")
     if runtime_provider and runtime_provider not in ("auto", "custom"):
         from hermes_cli.doctor import _DHH
         with warn_on_error(""):
@@ -268,7 +298,7 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
-            _validate_model_config(config_path, f.issues)
+            _validate_model_config(config_path, f.issues, should_fix, f)
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():
         check_ok("cli-config.yaml exists (in project directory)")
     elif should_fix:

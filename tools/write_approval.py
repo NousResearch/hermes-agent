@@ -69,12 +69,66 @@ def _pending_files(subsystem: str) -> list:
     d = _pending_path(subsystem, "").parent
     return list(d.glob("*.json")) if d.exists() else []
 
+def _dedup_key(subsystem: str, payload: Dict[str, Any]) -> Optional[tuple]:
+    """Identity of what a pending write would change, ignoring its wording.
+
+    ``replace`` and ``remove`` are both anchored on ``old_text``: two such
+    proposals naming the same anchor in the same target are mutually exclusive
+    rather than merely redundant, because once either applies the other's
+    anchor no longer exists in the file. Two ``add`` proposals with
+    byte-identical content are plainly the same write.
+
+    Anything else returns ``None`` and is never treated as a duplicate. There
+    is no safe equivalence for re-worded *content*, and collapsing proposals
+    that a reviewer might legitimately want to see separately would lose
+    information an approval queue exists to preserve.
+    """
+    action = str(payload.get("action") or "").strip().lower()
+    target = str(payload.get("target") or "")
+    if action in ("replace", "remove"):
+        # ``remove`` is anchored the same way: memory_tool rejects a remove
+        # without ``old_text``, so two removes naming the same anchor are the
+        # same write, and after either applies the other's anchor is gone.
+        old_text = payload.get("old_text")
+        if isinstance(old_text, str) and old_text.strip():
+            return (subsystem, action, target, old_text)
+    elif action == "add":
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return (subsystem, action, target, content)
+    return None
+
+
+def _find_duplicate_pending(subsystem: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Oldest pending record this payload would duplicate, if any."""
+    key = _dedup_key(subsystem, payload)
+    if key is None:
+        return None
+    try:
+        existing = list_pending(subsystem)
+    except Exception:  # pragma: no cover - unreadable queue must not block staging
+        logger.warning("Duplicate scan failed for %s; staging anyway", subsystem, exc_info=True)
+        return None
+    for record in existing:
+        candidate = record.get("payload")
+        if isinstance(candidate, dict) and _dedup_key(subsystem, candidate) == key:
+            return record
+    return None
+
 
 def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
     the safe failure for an approval gate (nothing silently committed)."""
+    duplicate = _find_duplicate_pending(subsystem, payload)
+    if duplicate is not None:
+        logger.info(
+            "Pending %s write duplicates %s; not queueing a second copy",
+            subsystem, duplicate.get("id"),
+        )
+        return {**duplicate, "deduplicated": True}
+
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
